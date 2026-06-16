@@ -1,0 +1,23 @@
+{
+  "app_name": "Hyperliquid Copy Agent",
+  "app_version": "0.1.0",
+  "app_env": "development",
+  "log_level": "info",
+  "worker_run_in_api_process": true,
+  "hyperliquid_network": "mainnet",
+  "hyperliquid_info_request_retries": 4,
+  "hyperliquid_info_retry_base_delay_seconds": 1.5,
+  "hyperliquid_info_retry_max_delay_seconds": 20,
+  "hyperliquid_info_min_request_interval_seconds": 0.5,
+  "paper_trading_enabled": true,
+  "live_trading_enabled": false,
+  "live_trading_acknowledged": false,
+  "active_copy_wallets": 10,
+  "max_realtime_wallets": 10,
+  "realtime_subscription_refresh_seconds": 300,
+  "realtime_reconnect_seconds": 5,
+  "cors_origins": [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000"
+  ]
+}

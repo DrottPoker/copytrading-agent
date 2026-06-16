@@ -1,0 +1,20 @@
+{
+  "scoring_enabled": true,
+  "scoring_run_on_worker_start": true,
+  "scoring_interval_seconds": 600,
+  "scoring_window_days": 60,
+  "scoring_min_fills": 20,
+  "scoring_target_fills": 100,
+  "scoring_min_trades": 5,
+  "scoring_target_trades": 25,
+  "scoring_target_active_days": 10,
+  "scoring_stale_days": 7,
+  "scoring_liquidation_event_gap_seconds": 300,
+  "scoring_liquidation_penalty_per_event": 2,
+  "scoring_liquidation_penalty_max": 10,
+  "scoring_weight_pnl": 0.3,
+  "scoring_weight_consistency": 0.2,
+  "scoring_weight_risk": 0.2,
+  "scoring_weight_copyability": 0.2,
+  "scoring_weight_recency": 0.1
+}

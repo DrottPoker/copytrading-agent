@@ -1,0 +1,458 @@
+from datetime import datetime
+from decimal import Decimal
+from typing import Any
+from uuid import UUID
+
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Index,
+    Integer,
+    Numeric,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.sql import func, text
+
+from app.db.base import Base
+
+
+class TimestampMixin:
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class UpdatedAtMixin:
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class WatchedWallet(Base, TimestampMixin, UpdatedAtMixin):
+    __tablename__ = "watched_wallets"
+    __table_args__ = (
+        CheckConstraint(
+            "polling_tier in ('pool', 'candidate', 'active', 'exit_only', 'cooldown')",
+            name="ck_watched_wallets_polling_tier",
+        ),
+        Index("ix_watched_wallets_enabled_eligible", "enabled", "eligible"),
+        Index("ix_watched_wallets_polling_tier", "polling_tier"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    address: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    label: Mapped[str | None] = mapped_column(Text)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    eligible: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    copy_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    polling_tier: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pool'"))
+    cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_polled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_seen_fill_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    notes: Mapped[str | None] = mapped_column(Text)
+
+
+class WalletFill(Base, TimestampMixin):
+    __tablename__ = "wallet_fills"
+    __table_args__ = (
+        CheckConstraint("side in ('buy', 'sell', 'long', 'short')", name="ck_wallet_fills_side"),
+        Index("ux_wallet_fills_wallet_external", "wallet_address", "external_fill_id", unique=True),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, server_default=text("gen_random_uuid()")
+    )
+    wallet_address: Mapped[str] = mapped_column(Text, nullable=False)
+    external_fill_id: Mapped[str | None] = mapped_column(Text)
+    coin: Mapped[str] = mapped_column(Text, nullable=False)
+    side: Mapped[str] = mapped_column(Text, nullable=False)
+    price: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    size: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    notional_usd: Mapped[Decimal | None] = mapped_column(Numeric)
+    fee_usd: Mapped[Decimal | None] = mapped_column(Numeric)
+    pnl_usd: Mapped[Decimal | None] = mapped_column(Numeric)
+    timestamp_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    source_timestamp_ms: Mapped[int | None] = mapped_column(BigInteger)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ingest_latency_ms: Mapped[int | None] = mapped_column(Integer)
+    is_snapshot: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    raw_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    __mapper_args__ = {"primary_key": [wallet_address, external_fill_id]}
+
+
+class WalletPosition(Base):
+    __tablename__ = "wallet_positions"
+    __table_args__ = (
+        CheckConstraint("side in ('long', 'short', 'flat')", name="ck_wallet_positions_side"),
+        Index("ux_wallet_positions_wallet_coin", "wallet_address", "coin", unique=True),
+        Index("ix_wallet_positions_updated_at", "updated_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    wallet_address: Mapped[str] = mapped_column(Text, nullable=False)
+    coin: Mapped[str] = mapped_column(Text, nullable=False)
+    side: Mapped[str] = mapped_column(Text, nullable=False)
+    size: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    entry_price: Mapped[Decimal | None] = mapped_column(Numeric)
+    notional_usd: Mapped[Decimal | None] = mapped_column(Numeric)
+    unrealized_pnl_usd: Mapped[Decimal | None] = mapped_column(Numeric)
+    liquidation_price: Mapped[Decimal | None] = mapped_column(Numeric)
+    raw_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class WalletScore(Base):
+    __tablename__ = "wallet_scores"
+    __table_args__ = (
+        Index("ix_wallet_scores_score", "score"),
+        Index("ix_wallet_scores_updated_at", "updated_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    wallet_address: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    score: Mapped[Decimal] = mapped_column(Numeric, nullable=False, server_default=text("0"))
+    pnl_score: Mapped[Decimal] = mapped_column(Numeric, nullable=False, server_default=text("0"))
+    copyability_score: Mapped[Decimal] = mapped_column(
+        Numeric, nullable=False, server_default=text("0")
+    )
+    risk_score: Mapped[Decimal] = mapped_column(Numeric, nullable=False, server_default=text("0"))
+    consistency_score: Mapped[Decimal] = mapped_column(
+        Numeric, nullable=False, server_default=text("0")
+    )
+    recency_score: Mapped[Decimal] = mapped_column(
+        Numeric, nullable=False, server_default=text("0")
+    )
+    penalty_score: Mapped[Decimal] = mapped_column(
+        Numeric, nullable=False, server_default=text("0")
+    )
+    copyable_pnl_usd: Mapped[Decimal] = mapped_column(
+        Numeric, nullable=False, server_default=text("0")
+    )
+    win_rate: Mapped[Decimal | None] = mapped_column(Numeric)
+    profit_factor: Mapped[Decimal | None] = mapped_column(Numeric)
+    max_drawdown_pct: Mapped[Decimal | None] = mapped_column(Numeric)
+    trade_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    last_24h_score: Mapped[Decimal | None] = mapped_column(Numeric)
+    last_7d_score: Mapped[Decimal | None] = mapped_column(Numeric)
+    last_30d_score: Mapped[Decimal | None] = mapped_column(Numeric)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class WalletScoreSnapshot(Base, TimestampMixin):
+    __tablename__ = "wallet_score_snapshots"
+    __table_args__ = (
+        Index("ix_wallet_score_snapshots_wallet_created", "wallet_address", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    wallet_address: Mapped[str] = mapped_column(Text, nullable=False)
+    score: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    score_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+
+
+class ActiveCopyWallet(Base, TimestampMixin):
+    __tablename__ = "active_copy_wallets"
+    __table_args__ = (
+        CheckConstraint(
+            "status in ('active', 'exit_only', 'promotion_pending', 'inactive')",
+            name="ck_active_copy_wallets_status",
+        ),
+        Index("ix_active_copy_wallets_status_rank", "status", "rank"),
+        Index("ix_active_copy_wallets_has_realtime_slot", "has_realtime_slot"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    wallet_address: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    desired_rank: Mapped[int | None] = mapped_column(Integer)
+    score: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    activated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    deactivated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    has_realtime_slot: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    blocked_by_wallet_address: Mapped[str | None] = mapped_column(Text)
+    reason: Mapped[str | None] = mapped_column(Text)
+    last_refreshed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class CopySignal(Base, TimestampMixin):
+    __tablename__ = "copy_signals"
+    __table_args__ = (
+        CheckConstraint(
+            "action in ('open', 'add', 'reduce', 'close', 'flip', 'unknown')",
+            name="ck_copy_signals_action",
+        ),
+        CheckConstraint(
+            "decision in ('copy', 'skip', 'exit', 'observe')", name="ck_copy_signals_decision"
+        ),
+        CheckConstraint(
+            "mode in ('monitor', 'paper', 'live_small', 'full_live')",
+            name="ck_copy_signals_mode",
+        ),
+        Index("ix_copy_signals_source_created", "source_wallet", "created_at"),
+        Index("ix_copy_signals_decision_created", "decision", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    source_wallet: Mapped[str] = mapped_column(Text, nullable=False)
+    coin: Mapped[str] = mapped_column(Text, nullable=False)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    side: Mapped[str | None] = mapped_column(Text)
+    source_price: Mapped[Decimal | None] = mapped_column(Numeric)
+    observed_price: Mapped[Decimal | None] = mapped_column(Numeric)
+    price_drift_pct: Mapped[Decimal | None] = mapped_column(Numeric)
+    decision: Mapped[str] = mapped_column(Text, nullable=False)
+    skip_reason: Mapped[str | None] = mapped_column(Text)
+    mode: Mapped[str] = mapped_column(Text, nullable=False)
+    raw_event_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    source_timestamp_ms: Mapped[int | None] = mapped_column(BigInteger)
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    decision_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+
+
+class CopyTrade(Base, TimestampMixin, UpdatedAtMixin):
+    __tablename__ = "copy_trades"
+    __table_args__ = (
+        CheckConstraint("mode in ('paper', 'live_small', 'full_live')", name="ck_copy_trades_mode"),
+        CheckConstraint(
+            "status in ('open', 'closing', 'closed', 'cancelled', 'error')",
+            name="ck_copy_trades_status",
+        ),
+        CheckConstraint("side in ('long', 'short')", name="ck_copy_trades_side"),
+        Index("ix_copy_trades_status_opened", "status", "opened_at"),
+        Index("ix_copy_trades_source_status", "source_wallet", "status"),
+        Index("ix_copy_trades_coin_status", "coin", "status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    mode: Mapped[str] = mapped_column(Text, nullable=False)
+    source_wallet: Mapped[str] = mapped_column(Text, nullable=False)
+    coin: Mapped[str] = mapped_column(Text, nullable=False)
+    side: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    source_entry_price: Mapped[Decimal | None] = mapped_column(Numeric)
+    our_entry_price: Mapped[Decimal | None] = mapped_column(Numeric)
+    source_exit_price: Mapped[Decimal | None] = mapped_column(Numeric)
+    our_exit_price: Mapped[Decimal | None] = mapped_column(Numeric)
+    size_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    risk_usd: Mapped[Decimal | None] = mapped_column(Numeric)
+    pnl_usd: Mapped[Decimal | None] = mapped_column(Numeric)
+    pnl_pct: Mapped[Decimal | None] = mapped_column(Numeric)
+    entry_signal_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    exit_signal_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class SourceTradeLink(Base, TimestampMixin):
+    __tablename__ = "source_trade_links"
+    __table_args__ = (
+        CheckConstraint(
+            "link_type in ('entry', 'add', 'reduce', 'close', 'flip')",
+            name="ck_source_trade_links_link_type",
+        ),
+        Index("ix_source_trade_links_source_fill", "source_wallet", "source_fill_id"),
+        Index("ix_source_trade_links_copy_trade_id", "copy_trade_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    source_wallet: Mapped[str] = mapped_column(Text, nullable=False)
+    source_fill_id: Mapped[str | None] = mapped_column(Text)
+    copy_trade_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    coin: Mapped[str] = mapped_column(Text, nullable=False)
+    side: Mapped[str] = mapped_column(Text, nullable=False)
+    link_type: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class RiskEvent(Base, TimestampMixin):
+    __tablename__ = "risk_events"
+    __table_args__ = (
+        CheckConstraint(
+            "severity in ('info', 'warning', 'critical')", name="ck_risk_events_severity"
+        ),
+        Index("ix_risk_events_type_created", "event_type", "created_at"),
+        Index("ix_risk_events_severity_created", "severity", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    event_type: Mapped[str] = mapped_column(Text, nullable=False)
+    severity: Mapped[str] = mapped_column(Text, nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+
+
+class DiscoveryImportRun(Base):
+    __tablename__ = "discovery_import_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "status in ('running', 'succeeded', 'failed')",
+            name="ck_discovery_import_runs_status",
+        ),
+        Index("ix_discovery_import_runs_source_started", "source", "started_at"),
+        Index("ix_discovery_import_runs_status_started", "status", "started_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'running'"))
+    requested_limit: Mapped[int] = mapped_column(Integer, nullable=False)
+    fetched_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    candidate_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    inserted_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    updated_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    skipped_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    error: Mapped[str | None] = mapped_column(Text)
+    run_metadata: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSONB)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class DiscoveryWalletCandidate(Base, TimestampMixin, UpdatedAtMixin):
+    __tablename__ = "discovery_wallet_candidates"
+    __table_args__ = (
+        CheckConstraint(
+            "status in ('discovered', 'accepted', 'rejected', 'promoted', 'ignored')",
+            name="ck_discovery_wallet_candidates_status",
+        ),
+        CheckConstraint(
+            "account_role in ('master', 'subaccount', 'unknown')",
+            name="ck_discovery_wallet_candidates_account_role",
+        ),
+        CheckConstraint(
+            "backfill_status in ('not_started', 'running', 'succeeded', 'failed')",
+            name="ck_discovery_wallet_candidates_backfill_status",
+        ),
+        UniqueConstraint("source", "wallet_address", name="ux_discovery_candidates_source_wallet"),
+        Index("ix_discovery_candidates_wallet", "wallet_address"),
+        Index("ix_discovery_candidates_source_rank", "source", "source_rank"),
+        Index("ix_discovery_candidates_source_status", "source", "status"),
+        Index("ix_discovery_candidates_status_last_seen", "status", "last_seen_at"),
+        Index("ix_discovery_candidates_backfill_status", "backfill_status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    wallet_address: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    source_rank: Mapped[int | None] = mapped_column(Integer)
+    source_label: Mapped[str | None] = mapped_column(Text)
+    source_cohort: Mapped[str | None] = mapped_column(Text)
+    account_value: Mapped[Decimal | None] = mapped_column(Numeric)
+    source_pnl: Mapped[Decimal | None] = mapped_column(Numeric)
+    source_roi: Mapped[Decimal | None] = mapped_column(Numeric)
+    source_copy_score: Mapped[Decimal | None] = mapped_column(Numeric)
+    account_role: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'unknown'")
+    )
+    parent_address: Mapped[str | None] = mapped_column(Text)
+    subaccount_name: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'discovered'"))
+    fail_reason: Mapped[str | None] = mapped_column(Text)
+    last_import_run_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    backfill_status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'not_started'")
+    )
+    backfill_error: Mapped[str | None] = mapped_column(Text)
+    last_backfilled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    backfill_fetched_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    backfill_inserted_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    backfill_duplicate_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    fill_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    closed_trade_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    open_trade_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    ignored_fill_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    net_pnl_usd: Mapped[Decimal | None] = mapped_column(Numeric)
+    profit_factor: Mapped[Decimal | None] = mapped_column(Numeric)
+    win_rate: Mapped[Decimal | None] = mapped_column(Numeric)
+    max_drawdown_pct: Mapped[Decimal | None] = mapped_column(Numeric)
+    average_trade_notional_usd: Mapped[Decimal | None] = mapped_column(Numeric)
+    last_trade_time_ms: Mapped[int | None] = mapped_column(BigInteger)
+    raw_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class Setting(Base):
+    __tablename__ = "settings"
+
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    value: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AuditLog(Base, TimestampMixin):
+    __tablename__ = "audit_logs"
+    __table_args__ = (
+        Index("ix_audit_logs_actor_created", "actor", "created_at"),
+        Index("ix_audit_logs_action_created", "action", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    actor: Mapped[str] = mapped_column(Text, nullable=False)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)

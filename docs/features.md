@@ -1,0 +1,512 @@
+# Features
+
+This document lists the current product features and the intended near-term
+features that are already represented in the architecture.
+
+## Implemented
+
+### Health Check
+
+Endpoint: `GET /health`
+
+Shows service status, environment, current mode, Hyperliquid network, and dependency
+status for Postgres and Redis.
+
+### Wallet Pool Management
+
+Endpoints:
+
+- `GET /wallets`
+- `POST /wallets`
+- `GET /wallets/{address}`
+- `PATCH /wallets/{address}`
+- `DELETE /wallets/{address}`
+- `POST /leaderboard/import`
+
+Dashboard page:
+
+- `/wallets`
+
+What it does:
+
+- Adds watched Hyperliquid wallets.
+- Enables or disables wallets.
+- Forces cooldown state.
+- Stores labels and notes.
+- Shows last seen fill time.
+- Deleting a wallet removes its fills, scores, positions, copy rows, and source
+  links so removed pool wallets do not leave orphan fill data behind.
+
+### Hyperliquid Leaderboard Import
+
+Endpoint:
+
+- `POST /leaderboard/import`
+
+Behavior:
+
+- Kept as a legacy manual endpoint.
+- Fetches the Hyperliquid public leaderboard.
+- Sorts leaderboard rows by the configured window and metric.
+- Defaults to the 30D/month PnL leaderboard.
+- Imports the top `leaderboard_import_limit` addresses, default 100.
+- Ignores duplicates with database-level `ON CONFLICT DO NOTHING`.
+- Adds new wallets to the pool for future polling and scoring.
+- Expands leaderboard master wallets through Hyperliquid `subAccounts` and imports
+  each subaccount as its own normal pool wallet.
+- Treats the master wallet and every subaccount independently for fills, scoring,
+  pruning, realtime promotion, and future copy decisions.
+- Uses the master address only as discovery context in labels/notes; a weak master
+  wallet does not need to stay in the pool just because a subaccount is useful.
+- Automatically imports recent historical fills for ranked wallets.
+- Can remove newly imported leaderboard wallets immediately when the configured
+  fill filter is `perp` and no perp fills were imported for that wallet.
+- Uses full configured backfill for first-time wallets and incremental import for already-polled wallets.
+- Can backfill unpolled duplicate leaderboard wallets once.
+
+Purpose:
+
+- Manual fallback for the older direct-to-pool leaderboard flow.
+- Normal automated sourcing now runs through Discovery Sources.
+
+### Discovery Sources
+
+Endpoints:
+
+- `GET /discovery/sources`
+- `POST /discovery/import`
+- `GET /discovery/candidates`
+- `GET /discovery/runs`
+- `POST /discovery/prefilter`
+- `POST /discovery/backfill`
+- `POST /discovery/promote` (legacy fallback)
+
+What it does:
+
+- Collects wallet candidates before quality-controlled pool admission.
+- Skips wallet addresses that already exist in discovery candidates or in the
+  wallet pool, so previously processed wallets are not reprocessed by new imports.
+- Tags every candidate with the source that found it, source rank, cohort/label,
+  account value, source PnL, ROI, copy score when available, and account role.
+- Stores discovery import runs so source quality can be measured over time.
+- Supports Hyperliquid 1D, 7D, 30D, and all-time leaderboard sources.
+- Defaults to Hyperliquid 7D and 30D leaderboard discovery.
+- Can optionally include leaderboard subaccounts as candidates.
+- Includes configurable Hyperdash source adapters, but they require stable
+  `discovery_hyperdash_*_url` config values before use.
+- Runs a configurable source-metadata prefilter after import by default.
+- Marks candidates as `accepted` or `rejected` and stores a machine-readable
+  `fail_reason` such as `account_value_too_large`, `source_pnl_not_positive`,
+  or `source_roi_below_min`.
+- Keeps prefilter rules in `backend/config/discovery.json`.
+- Candidate backfill imports configured perp fills, reconstructs source trades,
+  stores fill/trade metrics on the candidate, and applies trade-quality rules.
+- Hyperliquid 429 responses are retried with backoff; if rate limits persist, the
+  current backfill batch stops cleanly instead of failing the full API request.
+- Candidates that pass backfill quality checks are inserted directly into the
+  wallet pool and marked as `promoted`.
+- Trade-quality reject reasons include `no_perp_fills`, `too_few_closed_trades`,
+  `net_pnl_not_positive`, `profit_factor_below_min`,
+  `max_drawdown_too_high`, and `too_many_ignored_fills`.
+
+### Historical Fill Import
+
+Endpoint:
+
+- `POST /wallets/{address}/fills/import`
+- `POST /wallets/fills/import-pool`
+
+What it does:
+
+- Pulls historical fills from Hyperliquid `userFillsByTime`.
+- Stores them in Postgres.
+- Defaults to storing only perp fills, based on Hyperliquid fill direction such as
+  `Open Long`, `Close Short`, or flip directions.
+- Paginates in 2k Hyperliquid chunks until it reaches the requested `targetFills`
+  count after filtering, with an API cap of 10k stored perp fills per import call.
+- Deduplicates fills by wallet and external fill ID.
+- Stores only configured raw payload fields, default `dir`, `liquidation`, `startPosition`, and `twapId`.
+- Updates wallet last poll and last seen fill timestamps.
+- Returns fetched, inserted, and duplicate counts.
+- Returns raw fetched and page counts so spot-heavy wallets are visible during import.
+- The pool importer works through all enabled wallets in configured batches.
+- First-time wallets get the full configured backfill window; already-polled wallets refresh incrementally.
+- Manual pool reimport uses `force=true` by default, so it refreshes the full
+  enabled pool regardless of `last_polled_at`.
+- Worker pool maintenance runs every 10 minutes by default and uses the same
+  batch settings as manual reimport.
+- After worker pool reimport, wallet scoring runs immediately, then configured
+  prune rules run automatically.
+- Fill imports stop early when the database is near its configured storage limit.
+
+Config:
+
+- `backend/config/discovery.json`
+- `pool_fill_import_interval_seconds`
+- `pool_fill_import_min_wallet_interval_seconds`
+- `pool_fill_import_batch_size`
+- `pool_fill_import_max_batches`
+
+### Manual Wallet Pruning
+
+Endpoint:
+
+- `POST /wallets/prune-all`
+
+What it does:
+
+- Runs all active cleanup rules in one operation.
+- Orphan-fill cleanup removes stored fill data for addresses that are no longer
+  present in the wallet pool.
+- Zero-fill cleanup removes polled wallets with exactly zero stored fills.
+- Minimum closed-trades cleanup removes polled, scored wallets below the configured
+  reconstructed closed-trade threshold.
+- Historical max drawdown cleanup removes polled, scored wallets whose stored
+  reconstructed max drawdown is at or above the configured threshold.
+- High-fill low-score cleanup removes polled wallets whose final score matches
+  the configured cutoff in `backend/config/prune.json`.
+- Current drawdown cleanup removes wallets whose live unrealized loss breaches
+  the configured account-value threshold.
+- Excludes copy-enabled, active, and exit-only wallets from cleanup candidates
+  where the rule is wallet-pool based.
+- Runs as a dry run by default and supports `dry_run=false` for deletion.
+- Returns totals and per-rule results for review in the Database dashboard.
+
+Purpose:
+
+- Keep the research pool focused on perp traders.
+- Avoid managing several overlapping cleanup buttons for the same pruning pass.
+
+Legacy:
+
+- `POST /wallets/prune-non-perp` still exists for compatibility, but dashboard
+  pruning uses `prune-all`. With perp-only fill storage, zero-fill is the clearer
+  rule for wallets that produced no usable history.
+
+### Current Drawdown Wallet Cleanup
+
+Individual endpoint:
+
+- `POST /wallets/prune-current-drawdown`
+
+Normal manual pruning runs this through `POST /wallets/prune-all`.
+
+What it does:
+
+- Fetches live Hyperliquid `clearinghouseState` for enabled pool wallets.
+- Deletes wallets whose total open perp unrealized loss is at least the configured
+  share of account value. Default threshold is `0.40`, meaning unrealized PnL is
+  `<= -40%` of account value.
+- Excludes copy-enabled, active, and exit-only wallets from cleanup candidates.
+- Runs as a dry run by default and supports `dry_run=false` for deletion.
+- Adds deleted addresses to the leaderboard ignore list so they are not imported
+  back into the pool immediately.
+
+Config:
+
+- `wallet_prune_unrealized_loss_ratio`
+- `wallet_prune_current_state_concurrency`
+
+Purpose:
+
+- Remove wallets carrying severe current open-position losses.
+- Avoid promoting leaderboard accounts whose recent ranking is driven by realized
+  history while their live account state is currently distressed.
+
+### Historical Max Drawdown Cleanup
+
+Normal manual pruning runs this through `POST /wallets/prune-all`.
+
+What it does:
+
+- Uses stored `wallet_scores.max_drawdown_pct` from reconstructed closed perp
+  trades; it does not fetch live account state.
+- Deletes polled, scored wallets whose historical max drawdown is at least the
+  configured threshold. Default is `0.60`, meaning `>= 60%`.
+- Excludes copy-enabled, active, exit-only, never-polled, and unscored wallets.
+- Runs as a dry run by default and supports `dry_run=false` for deletion.
+
+Config:
+
+- `backend/config/prune.json`
+- `wallet_prune_max_drawdown_pct`
+
+Purpose:
+
+- Remove wallets whose realized trade history shows unacceptable drawdown even if
+  their current open-position state looks acceptable.
+
+### High-Fill Low-Score Cleanup
+
+Individual endpoint:
+
+- `POST /wallets/prune-high-fill-low-score`
+
+Normal manual pruning runs this through `POST /wallets/prune-all`.
+
+What it does:
+
+- Finds polled wallets with a stored final score and a fill count at or above the
+  configured minimum.
+- Compares final score with the configured threshold using `lte` or `gte`.
+- Excludes copy-enabled, active, exit-only, and never-polled wallets.
+- Runs as a dry run by default and supports `dry_run=false` for deletion.
+- Adds deleted addresses to the leaderboard ignore list so they are not imported
+  back into the pool immediately.
+
+Config:
+
+- `backend/config/prune.json`
+- `wallet_prune_low_score_min_fills`
+- `wallet_prune_min_closed_trades`
+- `wallet_prune_max_drawdown_pct`
+- `wallet_prune_low_score_threshold`
+- `wallet_prune_low_score_operator`
+
+Purpose:
+
+- Remove high-history wallets that still score at or below the configured cutoff.
+- Keep unpolled wallets in the pool until they have been evaluated.
+
+### Source Trade Reconstruction
+
+Endpoint:
+
+- `GET /wallets/{address}/source-trades`
+
+What it does:
+
+- Reconstructs source perp trades from imported fills.
+- Shows closed and currently open reconstructed source trades.
+- Displays entry price, exit price, size, notional, realized PnL, fees, net PnL,
+  duration, and entry/close fill counts.
+- Reports ignored close-only fills and adds to positions that already existed before the observed window.
+
+Purpose:
+
+- Inspect the actual trades behind a wallet score.
+- Separate copyable trades from historical close-only PnL.
+
+### Wallet Current State
+
+Endpoint:
+
+- `GET /wallets/{address}/stats`
+
+What it does:
+
+- Fetches Hyperliquid `clearinghouseState` for perp account value, margin, open positions, and unrealized PnL.
+- Fetches `spotClearinghouseState` for spot token balances and entry notional exposure.
+- Syncs open perp positions into `wallet_positions` for future scoring.
+- Keeps current state separate from historical realized PnL based on fills.
+
+### Fill Browsing
+
+Endpoint:
+
+- `GET /wallets/{address}/fills`
+- `GET /wallets/{address}/stats`
+- `GET /wallets/{address}/copy-trades`
+
+Dashboard page:
+
+- `/wallets/[address]`
+
+What it does:
+
+- Shows wallet-level statistics.
+- Shows total fills, notional, PnL, fees, win rate, latency, and realtime/snapshot split.
+- Shows 24h, 7d, and 30d windows.
+- Shows top traded coins.
+- Shows reconstructed source trades for the wallet.
+- Shows copy trades associated with the source wallet when paper/live trades exist.
+- Shows recent imported fills for a specific wallet.
+- Displays time, coin, side, price, size, PnL, and fee.
+
+### Realtime Fill Monitor
+
+Worker:
+
+- Runs automatically inside the backend when `worker_run_in_api_process` is `true`.
+- Can run as `python -m app.workers.monitor_worker` when the in-API worker is disabled.
+
+What it does:
+
+- Opens a Hyperliquid WebSocket connection.
+- Subscribes to `userFills` for up to `max_realtime_wallets`.
+- Selects only active, exit-only, candidate, or copy-enabled wallets.
+- Processes initial snapshot messages safely.
+- Stores realtime fills in Postgres with the same dedupe logic as historical import.
+- Publishes system and fill events to Redis.
+
+Purpose:
+
+- Active wallet monitoring.
+- Future open position management.
+- Future paper/live copy decisions.
+
+### Live Feed
+
+Endpoints:
+
+- `GET /events/recent`
+- `GET /events`
+
+Dashboard page:
+
+- `/live-feed`
+
+What it does:
+
+- Shows recent system and fill events.
+- Uses Server-Sent Events when available.
+- Falls back to polling recent events.
+- Reads from Redis, not directly from Postgres.
+
+### Redis Runtime Event Store
+
+What it does:
+
+- Publishes events to channels such as `events:all`, `events:fills`, and
+  `events:system`.
+- Stores a short recent-event list in `events:recent`.
+- Acts as runtime event infrastructure for dashboard updates.
+
+### Config Separation
+
+Files:
+
+- `backend/config/app.json`
+- `frontend/config/app.json`
+- `.env`
+
+What it does:
+
+- Keeps tweakable non-secret settings in JSON config files.
+- Keeps secrets and connection strings in `.env`.
+- Makes common system tuning possible without editing environment variables.
+
+## Partially Implemented Foundations
+
+### Database Schema
+
+The schema already includes tables for:
+
+- wallet fills
+- wallet positions
+- wallet scores
+- wallet score snapshots
+- active copy wallets
+- copy signals
+- copy trades
+- source trade links
+- risk events
+- settings
+- audit logs
+
+Not all tables are fully used yet.
+
+### Active Copy Set Shape
+
+The database supports active and exit-only wallet states, realtime-slot tracking,
+rank, score, and blocked promotion state.
+
+The full rotation logic is not implemented yet.
+
+## Planned
+
+### Periodic Fill Polling
+
+Purpose:
+
+- Poll all enabled wallets over time.
+- Import recent historical fills without requiring manual clicks.
+- Feed scoring for the full wallet pool.
+
+This is separate from realtime monitoring.
+
+### Scoring
+
+Endpoints:
+
+- `GET /scores`
+- `POST /scores/recalculate`
+
+Purpose:
+
+- Calculate wallet score, PnL score, copyability score, risk score, consistency
+  score, recency score, and penalties.
+- Rank wallets based on copyable performance, not just source-wallet PnL.
+
+Phase A behavior:
+
+- Uses imported fills from the configured scoring window, default 30 days.
+- Stores the latest score in `wallet_scores`.
+- Scores wallets with no fills as 0 so they are visible but not rankable.
+- Reconstructs source perp trades from `raw_json.dir`.
+- Counts only trades where the opening fill was observed before the close.
+- Ignores close-only PnL from positions opened before the imported window.
+- Uses reconstructed trade PnL, fees, notional, active days, recency, rough drawdown,
+  loss ratio, losing trade rate, and coin concentration.
+- Groups liquidation fills into account-level liquidation events and keeps them as a
+  separate final-score penalty instead of mixing them into the risk component.
+- Applies liquidation penalties from `backend/config/scoring.json`, default 2 points
+  per liquidation event capped at 10 points.
+- Caps scores for wallets below `scoring_min_trades` so tiny samples cannot rank high.
+- Runs after each worker pool reimport when pool maintenance is enabled.
+- If pool maintenance is disabled, the standalone scoring worker uses
+  `scoring_interval_seconds`.
+- Can be triggered manually from the Wallet Pool page.
+
+### Active Copy Set Rotation
+
+Purpose:
+
+- Promote the best wallets into the active realtime set.
+- Apply hysteresis to avoid churn.
+- Keep exit-only wallets in realtime until copied positions are closed.
+
+### Position Classification
+
+Purpose:
+
+- Convert fills into actions:
+  - open
+  - add
+  - reduce
+  - close
+  - flip
+
+This is needed before paper copytrading can behave correctly.
+
+### Paper Copytrading
+
+Purpose:
+
+- Simulate entries and exits.
+- Include delay, fees, slippage, and price drift.
+- Track copied trades per source wallet.
+- Produce paper PnL before live trading exists.
+
+### Risk Engine
+
+Purpose:
+
+- Enforce max open trades.
+- Enforce daily and weekly loss limits.
+- Enforce price drift and exposure limits.
+- Apply kill switch and emergency stop behavior.
+
+### Settings and Control Panel
+
+Purpose:
+
+- Make safe runtime controls available in the dashboard.
+- Support pause, resume, kill switch, and risk/config visibility.
+
+### Live Small Mode
+
+Purpose:
+
+- Future live execution with very small risk and strict manual enablement.
+- Not part of the current MVP implementation.

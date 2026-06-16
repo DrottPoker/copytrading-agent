@@ -1,0 +1,11 @@
+{
+  "serverApiBaseUrl": "http://127.0.0.1:8002",
+  "browserApiBaseUrl": "http://127.0.0.1:8002",
+  "liveFeedPollMs": 5000,
+  "operationStatusPollMs": 5000,
+  "manualFillImportDays": 30,
+  "manualFillImportMaxPages": 25,
+  "manualFillImportTargetFills": 10000,
+  "poolReimportBatchLimit": 50,
+  "poolReimportMaxBatches": 200
+}

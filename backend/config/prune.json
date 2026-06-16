@@ -1,0 +1,12 @@
+{
+  "wallet_prune_unrealized_loss_ratio": 0.6,
+  "wallet_prune_current_state_concurrency": 8,
+  "wallet_prune_min_closed_trades": 3,
+  "wallet_prune_max_drawdown_pct": 0.6,
+  "wallet_prune_low_score_min_fills": 2000,
+  "wallet_prune_low_score_threshold": 20,
+  "wallet_prune_low_score_operator": "lte",
+  "wallet_prune_after_pool_import_enabled": true,
+  "wallet_prune_worker_dry_run": false,
+  "wallet_prune_worker_limit": 1000
+}
