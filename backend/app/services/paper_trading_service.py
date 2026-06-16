@@ -478,14 +478,85 @@ async def load_execution_market_prices(
         mids = await client.all_mids()
     except Exception as exc:
         logger.warning("paper copy allMids fetch failed error=%s", exc)
-        return {}
+        mids = {}
 
     market_prices: dict[str, Decimal] = {}
     for coin in coins:
         price = resolve_coin_decimal(mids, coin)
         if price is not None and price > ZERO:
             market_prices[coin] = price
+
+    missing_dexes = {
+        dex_from_coin(coin)
+        for coin in coins
+        if coin not in market_prices and dex_from_coin(coin)
+    }
+    for dex in sorted(missing_dexes):
+        dex_prices = await load_dex_market_prices(client=client, dex=dex)
+        for coin in coins:
+            if coin in market_prices or dex_from_coin(coin) != dex:
+                continue
+            price = resolve_coin_decimal(dex_prices, coin)
+            if price is not None and price > ZERO:
+                market_prices[coin] = price
     return market_prices
+
+
+async def load_dex_market_prices(
+    *,
+    client: HyperliquidClient,
+    dex: str,
+) -> dict[str, Decimal]:
+    try:
+        mids = await client.all_mids(dex=dex)
+    except Exception as exc:
+        logger.warning("paper copy dex allMids fetch failed dex=%s error=%s", dex, exc)
+    else:
+        prices = market_prices_from_mids(mids)
+        if prices:
+            return prices
+
+    try:
+        payload = await client.meta_and_asset_ctxs(dex=dex)
+    except Exception as exc:
+        logger.warning("paper copy dex market price fetch failed dex=%s error=%s", dex, exc)
+        return {}
+    return market_prices_from_meta_and_asset_ctxs(payload)
+
+
+def market_prices_from_mids(mids: dict[str, Any]) -> dict[str, Decimal]:
+    prices: dict[str, Decimal] = {}
+    for coin, raw_price in mids.items():
+        price = decimal_or_none(raw_price)
+        if coin and price is not None and price > ZERO:
+            prices[str(coin)] = price
+    return prices
+
+
+def market_prices_from_meta_and_asset_ctxs(payload: list[Any]) -> dict[str, Decimal]:
+    if len(payload) < 2:
+        return {}
+    meta = payload[0]
+    contexts = payload[1]
+    if not isinstance(meta, dict) or not isinstance(contexts, list):
+        return {}
+    universe = meta.get("universe")
+    if not isinstance(universe, list):
+        return {}
+
+    prices: dict[str, Decimal] = {}
+    for asset, context in zip(universe, contexts, strict=False):
+        if not isinstance(asset, dict) or not isinstance(context, dict):
+            continue
+        coin = str(asset.get("name") or "")
+        price = (
+            decimal_or_none(context.get("midPx"))
+            or decimal_or_none(context.get("markPx"))
+            or decimal_or_none(context.get("oraclePx"))
+        )
+        if coin and price is not None and price > ZERO:
+            prices[coin] = price
+    return prices
 
 
 def plan_source_fill(fill: dict[str, Any]) -> list[SourceFillPart]:

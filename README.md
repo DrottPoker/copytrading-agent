@@ -114,7 +114,11 @@ Dashboard:
 Notes:
 
 - Hyperliquid `userFillsByTime` is queried through `POST /info`.
-- Hyperliquid `clearinghouseState` and `spotClearinghouseState` are queried for current wallet exposure.
+- Wallet detail current state queries Hyperliquid `perpDexs`, then fetches
+  `clearinghouseState` for default perp plus each known perp dex. Perp account
+  value and open positions are aggregated across those venues. Position storage
+  is only synced when every requested perp state fetch succeeds.
+- Hyperliquid `spotClearinghouseState` is queried separately for spot balances.
 - Each response is capped by Hyperliquid, so large backfills are paged conservatively.
 - Imported fills are deduplicated by `wallet_address + external_fill_id`.
 - By default, imports only store perp fills; spot-only wallets can be pruned.
@@ -234,6 +238,8 @@ Sizing policy:
   position is created.
 - Paper execution waits the configured simulated latency, reads live mids, and
   applies adverse slippage to the execution price.
+- If live mids are enabled and default `allMids` lacks a `dex:COIN` market,
+  paper copy falls back to dex-specific `allMids`, then `metaAndAssetCtxs`.
 - Paper fills are skipped when live mid price drift from the source fill price
   is above the configured drift limit.
 - Skip reasons distinguish minimum notional, source-wallet pocket cap, total

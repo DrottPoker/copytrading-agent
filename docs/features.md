@@ -227,7 +227,8 @@ Normal manual pruning runs this through `POST /wallets/prune-all`.
 
 What it does:
 
-- Fetches live Hyperliquid `clearinghouseState` for enabled pool wallets.
+- Fetches live Hyperliquid `clearinghouseState` for enabled pool wallets across
+  default perp and known perp dex prefixes from stored fills.
 - Deletes wallets whose total open perp unrealized loss is at least the configured
   share of account value. Default threshold is `0.40`, meaning unrealized PnL is
   `<= -40%` of account value.
@@ -331,9 +332,15 @@ Endpoint:
 
 What it does:
 
-- Fetches Hyperliquid `clearinghouseState` for perp account value, margin, open positions, and unrealized PnL.
+- Queries Hyperliquid `perpDexs`, then fetches `clearinghouseState` for default
+  perp plus each known perp dex so wallets with HIP-3 positions are shown
+  correctly.
+- Aggregates perp account value, margin, open positions, and unrealized PnL
+  across those venues. Spot balances are shown separately and are not counted as
+  perp account value.
 - Fetches `spotClearinghouseState` for spot token balances and entry notional exposure.
-- Syncs open perp positions into `wallet_positions` for future scoring.
+- Syncs open perp positions into `wallet_positions` only when every requested
+  perp state fetch succeeds.
 - Keeps current state separate from historical realized PnL based on fills.
 
 ### Fill Browsing
@@ -426,6 +433,9 @@ What it does:
 - Waits `paper_copy_latency_ms` before pricing paper execution.
 - Uses live Hyperliquid mids after latency when `paper_copy_use_live_mid_price`
   is enabled.
+- Falls back to dex-specific `allMids`, then Hyperliquid `metaAndAssetCtxs`, for
+  the fill's perp dex when default `allMids` does not contain a `dex:COIN`
+  market key.
 - Applies adverse slippage from `paper_copy_slippage_bps` to the observed price.
 - Skips paper fills when the observed price has moved more than
   `paper_copy_max_price_drift_bps` from the source fill price.

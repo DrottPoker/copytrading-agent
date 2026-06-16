@@ -262,10 +262,13 @@ sequenceDiagram
   participant DB as Postgres
 
   UI->>API: GET /wallets/{address}/stats
-  API->>HL: clearinghouseState
+  API->>DB: read known perp dex prefixes from stored fills
+  API->>HL: perpDexs
+  API->>HL: clearinghouseState default plus known perp dexes
   API->>HL: spotClearinghouseState
-  HL-->>API: perp positions and spot balances
-  API->>DB: upsert current perp positions
+  HL-->>API: perp positions by venue and spot balances
+  API->>API: aggregate perp account value and positions
+  API->>DB: upsert positions if all perp state fetches succeeded
   API-->>UI: fills stats plus current state
 ```
 
@@ -392,10 +395,13 @@ exposure inside each configured source-wallet pocket. Default pockets are 20% fo
 each top 10 rank, with an 80% total open copied-margin cap per paper account.
 The worker reads source per-coin leverage from Hyperliquid `clearinghouseState`
 and uses `notional / leverage` for margin accounting. If leverage is unavailable
-for a coin, paper falls back to 1x. Opens below the configured minimum notional
-are skipped before any paper position is created. Paper execution then waits the
-configured latency, prices from live mids when enabled, applies adverse slippage,
-and skips fills whose observed drift exceeds the configured max drift limit.
+for a coin, paper falls back to 1x. When live mids are enabled, dex-specific
+`allMids` and then `metaAndAssetCtxs` are used as fallbacks for `dex:COIN`
+markets missing from default `allMids`.
+Opens below the configured minimum notional are skipped before any paper position
+is created. Paper execution then waits the configured latency, prices from live
+mids when enabled, applies adverse slippage, and skips fills whose observed drift
+exceeds the configured max drift limit.
 
 ## Important Constraint
 

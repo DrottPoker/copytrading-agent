@@ -30,10 +30,9 @@ from app.schemas.wallet_cleanup import (
 )
 from app.services.job_lock_service import job_lock
 from app.services.wallet_current_state_service import (
-    decimal_value,
-    object_or_empty,
-    parse_perp_positions,
-    sum_decimal,
+    load_known_wallet_perp_dexes_for_addresses,
+    load_wallet_perp_clearinghouse_states,
+    summarize_perp_clearinghouse_states,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,6 +44,7 @@ class CurrentDrawdownScanWallet:
     address: str
     label: str | None
     score: Decimal | None
+    perp_dexes: tuple[str, ...]
 
 
 async def prune_all_wallets(
@@ -1014,6 +1014,7 @@ async def prune_current_drawdown_wallets(
                 address=wallet.address,
                 label=wallet.label,
                 score=wallet.score,
+                perp_dexes=wallet.perp_dexes,
                 threshold_ratio=threshold_ratio,
             )
 
@@ -1214,23 +1215,26 @@ async def load_current_drawdown_candidate(
     address: str,
     label: str | None,
     score: Decimal | None,
+    perp_dexes: tuple[str, ...],
     threshold_ratio: Decimal,
 ) -> CurrentDrawdownWalletCandidate | None:
-    try:
-        clearinghouse_state = await client.clearinghouse_state(user=address)
-    except Exception as exc:
-        logger.warning("current drawdown fetch failed wallet=%s error=%s", address, exc)
+    perp_states, errors = await load_wallet_perp_clearinghouse_states(
+        client=client,
+        address=address,
+        dexes=perp_dexes,
+    )
+    if errors:
         return CurrentDrawdownWalletCandidate(
             address=address,
             label=label,
             score=str(score) if score is not None else None,
-            error=str(exc) or exc.__class__.__name__,
+            error="; ".join(errors) or "Perp state unavailable.",
         )
 
-    positions = parse_perp_positions(clearinghouse_state)
-    margin_summary = object_or_empty(clearinghouse_state.get("marginSummary"))
-    account_value = decimal_value(margin_summary.get("accountValue"))
-    unrealized_pnl = sum_decimal(position.unrealized_pnl_usd for position in positions)
+    perp_summary = summarize_perp_clearinghouse_states(perp_states)
+    positions = perp_summary.positions
+    account_value = perp_summary.account_value_usd
+    unrealized_pnl = perp_summary.total_unrealized_pnl_usd
 
     if account_value <= ZERO or unrealized_pnl >= ZERO:
         return None
@@ -1278,13 +1282,27 @@ async def load_current_drawdown_scan_wallets(
         .order_by(WatchedWallet.last_polled_at.asc().nulls_first(), WatchedWallet.address.asc())
         .limit(limit)
     )
-    return [
+    wallets = [
         CurrentDrawdownScanWallet(
             address=str(row["address"]),
             label=row["label"],
             score=row["score"],
+            perp_dexes=(),
         )
         for row in result.mappings().all()
+    ]
+    dexes_by_address = await load_known_wallet_perp_dexes_for_addresses(
+        session,
+        addresses=[wallet.address for wallet in wallets],
+    )
+    return [
+        CurrentDrawdownScanWallet(
+            address=wallet.address,
+            label=wallet.label,
+            score=wallet.score,
+            perp_dexes=dexes_by_address.get(wallet.address.lower(), ()),
+        )
+        for wallet in wallets
     ]
 
 

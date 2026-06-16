@@ -156,8 +156,28 @@ class HyperliquidClient:
             )
         return result
 
-    async def all_mids(self) -> dict[str, Any]:
-        result = await self.post_info({"type": "allMids"})
+    async def perp_dexs(self) -> list[Any]:
+        result = await self.post_info({"type": "perpDexs"})
+        if not isinstance(result, list):
+            raise HyperliquidClientError("Hyperliquid perpDexs returned an unexpected shape.")
+        return result
+
+    async def meta_and_asset_ctxs(self, *, dex: str | None = None) -> list[Any]:
+        payload: dict[str, Any] = {"type": "metaAndAssetCtxs"}
+        if dex:
+            payload["dex"] = dex
+        result = await self.post_info(payload)
+        if not isinstance(result, list):
+            raise HyperliquidClientError(
+                "Hyperliquid metaAndAssetCtxs returned an unexpected shape."
+            )
+        return result
+
+    async def all_mids(self, *, dex: str | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {"type": "allMids"}
+        if dex:
+            payload["dex"] = dex
+        result = await self.post_info(payload)
         if not isinstance(result, dict):
             raise HyperliquidClientError("Hyperliquid allMids returned an unexpected shape.")
         return result
