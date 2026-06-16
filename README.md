@@ -244,12 +244,16 @@ Sizing policy:
   is above the configured drift limit.
 - Skip reasons distinguish minimum notional, source-wallet pocket cap, total
   account cap, missing matching positions, and price safety guards.
+- Paper account state, copied positions, copied fills, and allocations are stored
+  in Postgres. Worker restarts recover missed fills after the latest paper copy
+  fill from WebSocket snapshots and pool imports.
 
 Notes:
 
 - This is paper money only. It never places Hyperliquid orders.
-- Historical fills are not backfilled into paper accounts yet. Only new
-  non-snapshot realtime fills are simulated.
+- Full old history is not imported into fresh paper accounts. Recovery only
+  replays fills after a source wallet already has paper copy history or open
+  paper positions.
 - Existing paper account balances are not reset when `starting_balance_usd` is
   edited. A reset workflow should be added before serious experiments.
 

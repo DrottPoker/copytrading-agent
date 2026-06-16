@@ -19,7 +19,11 @@ from app.services.operation_status_service import (
     mark_operation_started,
     mark_operation_succeeded,
 )
-from app.services.paper_trading_service import process_paper_copy_fills
+from app.services.paper_trading_service import (
+    PaperCopyBatchResult,
+    process_paper_copy_fills,
+    process_paper_copy_recovery,
+)
 from app.services.pool_fill_import_service import import_due_pool_wallet_fills
 from app.services.realtime_event_service import publish_event
 from app.services.realtime_fill_service import store_realtime_fills
@@ -84,6 +88,13 @@ async def run_monitor_services(
             "maxRealtimeWallets": settings.max_realtime_wallets,
         },
     )
+    if settings.paper_trading_enabled and settings.paper_copy_enabled:
+        await run_paper_copy_recovery_once(
+            sessionmaker=sessionmaker,
+            redis=redis,
+            settings=settings,
+            source_wallet=None,
+        )
 
     tasks: list[asyncio.Task[None]] = []
     if settings.discovery_enabled:
@@ -403,6 +414,13 @@ async def run_pool_fill_import_loop(
                     "limit": result.limit,
                 },
             )
+            if settings.paper_trading_enabled and settings.paper_copy_enabled:
+                await run_paper_copy_recovery_once(
+                    sessionmaker=sessionmaker,
+                    redis=redis,
+                    settings=settings,
+                    source_wallet=None,
+                )
             if settings.scoring_enabled:
                 await run_wallet_scoring_once(
                     sessionmaker=sessionmaker,
@@ -485,6 +503,57 @@ async def run_wallet_scoring_once(
             message="Wallet scoring failed.",
             payload={"error": str(exc)},
         )
+
+
+async def run_paper_copy_recovery_once(
+    *,
+    sessionmaker: Any,
+    redis: Any,
+    settings: Any,
+    source_wallet: str | None,
+) -> PaperCopyBatchResult:
+    try:
+        async with sessionmaker() as session:
+            result = await process_paper_copy_recovery(
+                session,
+                source_wallet=source_wallet,
+                settings=settings,
+            )
+        if result.processed_fills > 0 or result.skipped_fills > 0:
+            logger.info(
+                "paper copy recovery completed source_wallet=%s processed=%s skipped=%s",
+                source_wallet or "all",
+                result.processed_fills,
+                result.skipped_fills,
+            )
+            await publish_event(
+                redis,
+                event_type="paper_copy_recovery",
+                channel="events:fills",
+                message=(
+                    "Paper copy recovery completed: "
+                    f"{result.processed_fills} processed, {result.skipped_fills} skipped."
+                ),
+                payload={
+                    "sourceWallet": source_wallet,
+                    "processedFills": result.processed_fills,
+                    "skippedFills": result.skipped_fills,
+                    "accountsUpdated": result.accounts_updated,
+                    "realizedPnlUsd": str(result.realized_pnl_usd),
+                    "feeUsd": str(result.fee_usd),
+                },
+            )
+        return result
+    except Exception as exc:
+        logger.exception("paper copy recovery failed source_wallet=%s", source_wallet or "all")
+        await publish_event(
+            redis,
+            event_type="paper_copy_recovery_error",
+            channel="events:system",
+            message="Paper copy recovery failed.",
+            payload={"sourceWallet": source_wallet, "error": str(exc)},
+        )
+        return PaperCopyBatchResult()
 
 
 async def run_wallet_prune_once(
@@ -615,6 +684,13 @@ async def handle_websocket_message(
         )
 
     if is_snapshot:
+        if settings.paper_trading_enabled and settings.paper_copy_enabled:
+            await run_paper_copy_recovery_once(
+                sessionmaker=sessionmaker,
+                redis=redis,
+                settings=settings,
+                source_wallet=stored.wallet_address,
+            )
         await publish_event(
             redis,
             event_type="fill_snapshot",

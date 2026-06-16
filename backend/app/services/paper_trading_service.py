@@ -15,6 +15,7 @@ from app.db.models import (
     PaperCopyFill,
     PaperPosition,
     PaperTradingAccount,
+    WalletFill,
     WalletScore,
     WatchedWallet,
 )
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 ZERO = Decimal("0")
 POSITION_EPSILON = Decimal("0.00000001")
 BPS_DENOMINATOR = Decimal("10000")
+PAPER_COPY_RECOVERY_OVERLAP_MS = 5 * 60 * 1000
 
 
 @dataclass(frozen=True)
@@ -239,6 +241,198 @@ async def process_paper_copy_fills(
     )
 
 
+async def process_paper_copy_recovery(
+    session: AsyncSession,
+    *,
+    source_wallet: str | None = None,
+    settings: Settings | None = None,
+    client: HyperliquidClient | None = None,
+    max_sources: int = 100,
+    fill_limit_per_source: int = 1000,
+) -> PaperCopyBatchResult:
+    resolved_settings = settings or get_settings()
+    if (
+        not resolved_settings.paper_trading_enabled
+        or not resolved_settings.paper_copy_enabled
+    ):
+        return PaperCopyBatchResult()
+
+    if client is None:
+        async with HyperliquidClient(resolved_settings) as hyperliquid_client:
+            return await process_paper_copy_recovery(
+                session,
+                source_wallet=source_wallet,
+                settings=resolved_settings,
+                client=hyperliquid_client,
+                max_sources=max_sources,
+                fill_limit_per_source=fill_limit_per_source,
+            )
+
+    if source_wallet:
+        source_wallets = [source_wallet.lower()]
+    else:
+        source_wallets = await load_paper_copy_recovery_sources(
+            session,
+            max_sources=max_sources,
+        )
+
+    total = PaperCopyBatchResult()
+    for wallet in source_wallets:
+        result = await process_paper_copy_recovery_for_source(
+            session,
+            source_wallet=wallet,
+            settings=resolved_settings,
+            client=client,
+            fill_limit=fill_limit_per_source,
+        )
+        total = combine_batch_results(total, result)
+    return total
+
+
+async def load_paper_copy_recovery_sources(
+    session: AsyncSession,
+    *,
+    max_sources: int,
+) -> list[str]:
+    position_result = await session.execute(
+        select(PaperPosition.source_wallet)
+        .where(PaperPosition.source_wallet != "")
+        .distinct()
+        .limit(max_sources)
+    )
+    sources = [
+        str(source).lower()
+        for source in position_result.scalars().all()
+        if source
+    ]
+    remaining = max(max_sources - len(sources), 0)
+    if remaining <= 0:
+        return unique_strings(sources)
+
+    fill_result = await session.execute(
+        select(PaperCopyFill.source_wallet)
+        .where(PaperCopyFill.source_wallet != "")
+        .distinct()
+        .limit(remaining)
+    )
+    sources.extend(
+        str(source).lower()
+        for source in fill_result.scalars().all()
+        if source
+    )
+    return unique_strings(sources)
+
+
+async def process_paper_copy_recovery_for_source(
+    session: AsyncSession,
+    *,
+    source_wallet: str,
+    settings: Settings,
+    client: HyperliquidClient,
+    fill_limit: int,
+) -> PaperCopyBatchResult:
+    start_time_ms = await paper_copy_recovery_start_time_ms(
+        session,
+        source_wallet=source_wallet,
+    )
+    if start_time_ms is None:
+        return PaperCopyBatchResult()
+
+    fills = await load_wallet_fills_for_paper_copy_recovery(
+        session,
+        source_wallet=source_wallet,
+        start_time_ms=start_time_ms,
+        limit=fill_limit,
+    )
+    if not fills:
+        return PaperCopyBatchResult()
+
+    return await process_paper_copy_fills(
+        session,
+        source_wallet=source_wallet,
+        fills=fills,
+        settings=settings,
+        client=client,
+    )
+
+
+async def paper_copy_recovery_start_time_ms(
+    session: AsyncSession,
+    *,
+    source_wallet: str,
+) -> int | None:
+    latest_processed_ms = await session.scalar(
+        select(func.max(PaperCopyFill.filled_at)).where(
+            PaperCopyFill.source_wallet == source_wallet
+        )
+    )
+    earliest_opened_at = await session.scalar(
+        select(func.min(PaperPosition.opened_at)).where(
+            PaperPosition.source_wallet == source_wallet
+        )
+    )
+    if latest_processed_ms is None and earliest_opened_at is None:
+        return None
+
+    anchor = latest_processed_ms or earliest_opened_at
+    if anchor is None:
+        return None
+    return max(0, int(anchor.timestamp() * 1000) - PAPER_COPY_RECOVERY_OVERLAP_MS)
+
+
+async def load_wallet_fills_for_paper_copy_recovery(
+    session: AsyncSession,
+    *,
+    source_wallet: str,
+    start_time_ms: int,
+    limit: int,
+) -> list[dict[str, Any]]:
+    result = await session.execute(
+        select(WalletFill)
+        .where(
+            WalletFill.wallet_address == source_wallet,
+            WalletFill.timestamp_ms >= start_time_ms,
+        )
+        .order_by(WalletFill.timestamp_ms.asc(), WalletFill.external_fill_id.asc())
+        .limit(limit)
+    )
+    return [
+        paper_source_fill_from_wallet_fill(fill)
+        for fill in result.scalars().all()
+    ]
+
+
+def paper_source_fill_from_wallet_fill(fill: WalletFill) -> dict[str, Any]:
+    return {
+        "id": str(fill.id),
+        "externalFillId": fill.external_fill_id,
+        "coin": fill.coin,
+        "side": fill.side,
+        "price": str(fill.price),
+        "size": str(fill.size),
+        "notionalUsd": str(fill.notional_usd) if fill.notional_usd is not None else None,
+        "feeUsd": str(fill.fee_usd) if fill.fee_usd is not None else None,
+        "pnlUsd": str(fill.pnl_usd) if fill.pnl_usd is not None else None,
+        "timestampMs": fill.timestamp_ms,
+        "sourceTimestampMs": fill.source_timestamp_ms,
+        "ingestLatencyMs": fill.ingest_latency_ms,
+        "rawJson": fill.raw_json,
+    }
+
+
+def combine_batch_results(
+    left: PaperCopyBatchResult,
+    right: PaperCopyBatchResult,
+) -> PaperCopyBatchResult:
+    return PaperCopyBatchResult(
+        processed_fills=left.processed_fills + right.processed_fills,
+        skipped_fills=left.skipped_fills + right.skipped_fills,
+        accounts_updated=left.accounts_updated + right.accounts_updated,
+        realized_pnl_usd=left.realized_pnl_usd + right.realized_pnl_usd,
+        fee_usd=left.fee_usd + right.fee_usd,
+    )
+
+
 async def refresh_paper_copy_allocations(
     session: AsyncSession,
     *,
@@ -351,6 +545,40 @@ async def load_paper_source_allocations(
                 allocation_pct=allocation_pct,
             )
         )
+    allocation_sources = {allocation.source_wallet for allocation in allocations}
+    retained_result = await session.execute(
+        select(
+            PaperPosition.source_wallet,
+            func.max(WalletScore.score).label("score"),
+            func.min(PaperCopyAllocation.rank).label("rank"),
+            func.max(PaperCopyAllocation.allocation_pct).label("allocation_pct"),
+        )
+        .outerjoin(WalletScore, WalletScore.wallet_address == PaperPosition.source_wallet)
+        .outerjoin(
+            PaperCopyAllocation,
+            PaperCopyAllocation.source_wallet == PaperPosition.source_wallet,
+        )
+        .where(PaperPosition.source_wallet != "")
+        .group_by(PaperPosition.source_wallet)
+    )
+    for row in retained_result.mappings().all():
+        source_wallet = str(row["source_wallet"]).lower()
+        if not source_wallet or source_wallet in allocation_sources:
+            continue
+        allocation_pct = decimal_or_none(row["allocation_pct"])
+        allocations.append(
+            PaperSourceAllocation(
+                source_wallet=source_wallet,
+                rank=int(row["rank"] or len(allocations) + 1),
+                score=row["score"],
+                allocation_pct=(
+                    allocation_pct
+                    if allocation_pct is not None and allocation_pct > ZERO
+                    else settings.paper_copy_standard_allocation_pct
+                ),
+            )
+        )
+        allocation_sources.add(source_wallet)
     return allocations
 
 

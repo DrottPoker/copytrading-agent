@@ -385,6 +385,7 @@ sequenceDiagram
   Worker->>DB: size paper fill and apply slippage or drift skip
   Worker->>DB: update paper account, position, and fill rows
   Worker->>Redis: publish paper_copy event
+  Worker->>DB: recover missed paper fills after restart or snapshot
   UI->>API: GET /paper-trading
   API->>DB: sync configured accounts and load paper state
   API-->>UI: accounts, allocations, positions, recent fills
@@ -402,6 +403,13 @@ Opens below the configured minimum notional are skipped before any paper positio
 is created. Paper execution then waits the configured latency, prices from live
 mids when enabled, applies adverse slippage, and skips fills whose observed drift
 exceeds the configured max drift limit.
+
+Paper copy state is durable in Postgres. Worker restarts keep existing
+`paper_positions` and `paper_copy_fills`, retain source wallets with open paper
+positions in the copy allocation set, and run recovery after worker start,
+WebSocket snapshots, and pool imports. Recovery scans fills after the latest
+copied source fill with overlap, then the copied-fill uniqueness constraint
+prevents duplicate simulation.
 
 ## Important Constraint
 

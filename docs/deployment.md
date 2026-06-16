@@ -104,6 +104,10 @@ docker compose -f docker-compose.vps.yml run --rm backend python -m alembic upgr
 docker compose -f docker-compose.vps.yml up -d
 ```
 
+Paper trading state is stored in Postgres, not in the worker container. After the
+worker restarts it reloads open paper positions and runs paper-copy recovery for
+fills imported while the stack was down.
+
 ## Operational Commands
 
 Check service status:

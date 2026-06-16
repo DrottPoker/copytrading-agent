@@ -443,6 +443,14 @@ What it does:
 - Uses source `startPosition` to reduce or close paper positions proportionally.
 - Splits source flip fills into a close part and an open part when the source
   payload provides enough information.
+- Persists paper accounts, positions, allocations, and copied fill IDs in
+  Postgres so Docker restarts do not reset paper trading state.
+- Runs paper-copy recovery on worker start, WebSocket snapshots, and pool imports.
+  Recovery replays fills after the latest copied source fill, with a small
+  overlap, and relies on copied fill IDs to avoid duplicate paper fills.
+- Retains allocation records for source wallets with open paper positions so
+  add, reduce, close, and flip fills can continue after the source falls out of
+  the current top 10.
 - Records skip rows when a fill cannot be copied safely, such as no matching
   paper position, missing source account value, preexisting source position,
   minimum notional, source allocation cap exhaustion, or total account cap
