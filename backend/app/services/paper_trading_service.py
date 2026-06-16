@@ -412,7 +412,7 @@ async def load_execution_market_prices(
 
     market_prices: dict[str, Decimal] = {}
     for coin in coins:
-        price = decimal_or_none(mids.get(coin))
+        price = resolve_coin_decimal(mids, coin)
         if price is not None and price > ZERO:
             market_prices[coin] = price
     return market_prices
@@ -1175,7 +1175,71 @@ def leverage_for_fill(
     source_leverages: dict[str, Decimal],
 ) -> Decimal:
     coin = str(fill.get("coin") or "")
-    return safe_leverage(source_leverages.get(coin))
+    return safe_leverage(resolve_coin_decimal(source_leverages, coin))
+
+
+def resolve_coin_decimal(values_by_coin: dict[str, Any], coin: str) -> Decimal | None:
+    candidates = coin_symbol_candidates(coin)
+    if not candidates:
+        return None
+
+    for candidate in candidates:
+        value = decimal_or_none(values_by_coin.get(candidate))
+        if value is not None:
+            return value
+
+    casefold_index = {
+        str(key).casefold(): value
+        for key, value in values_by_coin.items()
+        if str(key).strip()
+    }
+    for candidate in candidates:
+        value = decimal_or_none(casefold_index.get(candidate.casefold()))
+        if value is not None:
+            return value
+
+    normalized_candidates = {normalize_coin_symbol(candidate) for candidate in candidates}
+    normalized_candidates.discard("")
+    for key, raw_value in values_by_coin.items():
+        if normalize_coin_symbol(str(key)) in normalized_candidates:
+            value = decimal_or_none(raw_value)
+            if value is not None:
+                return value
+    return None
+
+
+def coin_symbol_candidates(coin: str) -> list[str]:
+    value = str(coin or "").strip()
+    if not value:
+        return []
+
+    candidates = [value]
+    if ":" in value:
+        candidates.append(value.rsplit(":", maxsplit=1)[-1])
+    if "/" in value:
+        candidates.append(value.split("/", maxsplit=1)[0])
+
+    expanded: list[str] = []
+    for candidate in candidates:
+        if candidate:
+            expanded.append(candidate)
+            expanded.append(candidate.upper())
+            expanded.append(candidate.lower())
+    return unique_strings(expanded)
+
+
+def normalize_coin_symbol(value: str) -> str:
+    return "".join(character for character in value.casefold() if character.isalnum())
+
+
+def unique_strings(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for value in values:
+        if value not in seen:
+            seen.add(value)
+            unique.append(value)
+    return unique
 
 
 def safe_leverage(value: Decimal | None) -> Decimal:

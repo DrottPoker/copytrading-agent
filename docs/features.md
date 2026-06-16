@@ -412,6 +412,9 @@ What it does:
 - Reads source per-coin leverage from Hyperliquid `clearinghouseState` and uses
   it for paper margin accounting. If leverage is unavailable for a coin, paper
   falls back to 1x.
+- Resolves common Hyperliquid coin aliases for live mids and leverage, including
+  matching `dex:COIN` fills against `COIN` market keys when the exact key is not
+  present.
 - Skips opens below `paper_copy_min_order_notional_usd` before any paper position
   is created.
 - Applies the configured paper fee rate to opens and closes.
