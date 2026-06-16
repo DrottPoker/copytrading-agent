@@ -1,6 +1,14 @@
 "use client";
 
-import { Activity, Compass, Database, LayoutDashboard, RadioTower, WalletCards } from "lucide-react";
+import {
+  Activity,
+  BarChart3,
+  Compass,
+  Database,
+  LayoutDashboard,
+  RadioTower,
+  WalletCards,
+} from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
@@ -29,6 +37,12 @@ const navItems = [
     icon: RadioTower,
     label: "Live Feed",
     match: (pathname: string) => pathname.startsWith("/live-feed"),
+  },
+  {
+    href: "/paper-trading",
+    icon: BarChart3,
+    label: "Paper Trading",
+    match: (pathname: string) => pathname.startsWith("/paper-trading"),
   },
   {
     href: "/database",

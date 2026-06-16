@@ -1,0 +1,28 @@
+{
+  "paper_copy_enabled": true,
+  "paper_copy_accounts": [
+    {
+      "key": "paper_1000",
+      "label": "Paper 1,000 USD",
+      "starting_balance_usd": 1000,
+      "enabled": true
+    },
+    {
+      "key": "paper_10000",
+      "label": "Paper 10,000 USD",
+      "starting_balance_usd": 10000,
+      "enabled": true
+    }
+  ],
+  "paper_copy_top_wallet_count": 10,
+  "paper_copy_top_tier_wallet_count": 3,
+  "paper_copy_top_tier_allocation_pct": 0.2,
+  "paper_copy_standard_allocation_pct": 0.2,
+  "paper_copy_max_total_allocation_pct": 0.8,
+  "paper_copy_min_order_notional_usd": 5,
+  "paper_copy_fee_rate": 0.0005,
+  "paper_copy_slippage_bps": 5,
+  "paper_copy_latency_ms": 750,
+  "paper_copy_max_price_drift_bps": 20,
+  "paper_copy_use_live_mid_price": true
+}

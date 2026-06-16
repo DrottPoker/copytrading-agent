@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
@@ -13,6 +13,14 @@ APP_CONFIG_PATH = CONFIG_DIR / "app.json"
 PRUNE_CONFIG_PATH = CONFIG_DIR / "prune.json"
 DISCOVERY_CONFIG_PATH = CONFIG_DIR / "discovery.json"
 SCORING_CONFIG_PATH = CONFIG_DIR / "scoring.json"
+PAPER_TRADING_CONFIG_PATH = CONFIG_DIR / "paper_trading.json"
+
+
+class PaperTradingAccountConfig(BaseModel):
+    key: str = Field(min_length=1, max_length=64, pattern=r"^[a-zA-Z0-9_-]+$")
+    label: str = Field(min_length=1, max_length=120)
+    starting_balance_usd: Decimal = Field(gt=0)
+    enabled: bool = True
 
 
 class Settings(BaseSettings):
@@ -39,6 +47,33 @@ class Settings(BaseSettings):
     paper_trading_enabled: bool = True
     live_trading_enabled: bool = False
     live_trading_acknowledged: bool = False
+    paper_copy_enabled: bool = True
+    paper_copy_accounts: list[PaperTradingAccountConfig] = Field(
+        default_factory=lambda: [
+            PaperTradingAccountConfig(
+                key="paper_1000",
+                label="Paper 1,000 USD",
+                starting_balance_usd=Decimal("1000"),
+            ),
+            PaperTradingAccountConfig(
+                key="paper_10000",
+                label="Paper 10,000 USD",
+                starting_balance_usd=Decimal("10000"),
+            ),
+        ],
+        max_length=10,
+    )
+    paper_copy_top_wallet_count: int = Field(default=10, ge=1, le=10)
+    paper_copy_top_tier_wallet_count: int = Field(default=3, ge=0, le=10)
+    paper_copy_top_tier_allocation_pct: Decimal = Field(default=Decimal("0.20"), ge=0, le=1)
+    paper_copy_standard_allocation_pct: Decimal = Field(default=Decimal("0.20"), ge=0, le=1)
+    paper_copy_max_total_allocation_pct: Decimal = Field(default=Decimal("0.80"), ge=0, le=1)
+    paper_copy_min_order_notional_usd: Decimal = Field(default=Decimal("5"), ge=0)
+    paper_copy_fee_rate: Decimal = Field(default=Decimal("0.0004"), ge=0, le=1)
+    paper_copy_slippage_bps: Decimal = Field(default=Decimal("5"), ge=0, le=10000)
+    paper_copy_latency_ms: int = Field(default=750, ge=0, le=60000)
+    paper_copy_max_price_drift_bps: Decimal = Field(default=Decimal("20"), ge=0, le=10000)
+    paper_copy_use_live_mid_price: bool = True
 
     active_copy_wallets: int = Field(default=10, ge=1, le=10)
     max_realtime_wallets: int = Field(default=10, ge=1, le=10)
@@ -149,6 +184,7 @@ class Settings(BaseSettings):
     scoring_weight_copyability: Decimal = Field(default=Decimal("0.20"), ge=0, le=1)
     scoring_weight_recency: Decimal = Field(default=Decimal("0.10"), ge=0, le=1)
 
+    dashboard_auth_enabled: bool = True
     dashboard_auth_username: str = "admin"
     dashboard_auth_password: str = "change-me"
 
@@ -177,12 +213,36 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def guard_live_trading(self) -> "Settings":
+        account_keys = [account.key for account in self.paper_copy_accounts]
+        if len(account_keys) != len(set(account_keys)):
+            raise ValueError("paper_copy_accounts keys must be unique.")
         if self.live_trading_enabled and not self.live_trading_acknowledged:
             raise ValueError(
                 "LIVE_TRADING_ENABLED requires LIVE_TRADING_ACKNOWLEDGED=true. "
                 "Live trading must never be enabled accidentally."
             )
+        if (
+            self.app_env == "production"
+            and self.dashboard_auth_enabled
+            and self.dashboard_auth_password == "change-me"
+        ):
+            raise ValueError(
+                "DASHBOARD_AUTH_PASSWORD must be changed before production startup."
+            )
+        if self.app_env == "production" and not self.dashboard_auth_enabled:
+            raise ValueError("DASHBOARD_AUTH_ENABLED=false is not allowed in production.")
         return self
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: Any,
+        env_settings: Any,
+        dotenv_settings: Any,
+        file_secret_settings: Any,
+    ) -> tuple[Any, ...]:
+        return env_settings, dotenv_settings, init_settings, file_secret_settings
 
     @property
     def cors_origin_list(self) -> list[str]:
@@ -232,6 +292,7 @@ def load_app_config() -> dict[str, Any]:
         PRUNE_CONFIG_PATH,
         DISCOVERY_CONFIG_PATH,
         SCORING_CONFIG_PATH,
+        PAPER_TRADING_CONFIG_PATH,
     ):
         config.update(load_json_config(config_path))
 

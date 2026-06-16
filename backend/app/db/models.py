@@ -67,13 +67,16 @@ class WalletFill(Base, TimestampMixin):
     __table_args__ = (
         CheckConstraint("side in ('buy', 'sell', 'long', 'short')", name="ck_wallet_fills_side"),
         Index("ux_wallet_fills_wallet_external", "wallet_address", "external_fill_id", unique=True),
+        Index("ix_wallet_fills_wallet_timestamp", "wallet_address", "timestamp_ms"),
+        Index("ix_wallet_fills_wallet_coin_timestamp", "wallet_address", "coin", "timestamp_ms"),
+        Index("ix_wallet_fills_timestamp", "timestamp_ms"),
     )
 
     id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True), nullable=False, server_default=text("gen_random_uuid()")
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
     wallet_address: Mapped[str] = mapped_column(Text, nullable=False)
-    external_fill_id: Mapped[str | None] = mapped_column(Text)
+    external_fill_id: Mapped[str] = mapped_column(Text, nullable=False)
     coin: Mapped[str] = mapped_column(Text, nullable=False)
     side: Mapped[str] = mapped_column(Text, nullable=False)
     price: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
@@ -90,7 +93,6 @@ class WalletFill(Base, TimestampMixin):
     ingest_latency_ms: Mapped[int | None] = mapped_column(Integer)
     is_snapshot: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
     raw_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    __mapper_args__ = {"primary_key": [wallet_address, external_fill_id]}
 
 
 class WalletPosition(Base):
@@ -441,6 +443,143 @@ class Setting(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+
+
+class JobLock(Base):
+    __tablename__ = "job_locks"
+    __table_args__ = (Index("ix_job_locks_locked_until", "locked_until"),)
+
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    owner: Mapped[str] = mapped_column(Text, nullable=False)
+    locked_until: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class PaperTradingAccount(Base, TimestampMixin, UpdatedAtMixin):
+    __tablename__ = "paper_trading_accounts"
+
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    label: Mapped[str] = mapped_column(Text, nullable=False)
+    starting_balance_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    cash_balance_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    equity_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    realized_pnl_usd: Mapped[Decimal] = mapped_column(
+        Numeric, nullable=False, server_default=text("0")
+    )
+    fee_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False, server_default=text("0"))
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    config_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+
+
+class PaperCopyAllocation(Base, UpdatedAtMixin):
+    __tablename__ = "paper_copy_allocations"
+    __table_args__ = (
+        UniqueConstraint(
+            "account_key",
+            "source_wallet",
+            name="ux_paper_copy_allocations_account_source",
+        ),
+        Index("ix_paper_copy_allocations_account_rank", "account_key", "rank"),
+        Index("ix_paper_copy_allocations_source", "source_wallet"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    account_key: Mapped[str] = mapped_column(Text, nullable=False)
+    source_wallet: Mapped[str] = mapped_column(Text, nullable=False)
+    rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    score: Mapped[Decimal | None] = mapped_column(Numeric)
+    allocation_pct: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    allocation_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    max_total_allocation_pct: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+
+
+class PaperPosition(Base, TimestampMixin, UpdatedAtMixin):
+    __tablename__ = "paper_positions"
+    __table_args__ = (
+        CheckConstraint("side in ('long', 'short')", name="ck_paper_positions_side"),
+        UniqueConstraint(
+            "account_key",
+            "source_wallet",
+            "coin",
+            name="ux_paper_positions_account_source_coin",
+        ),
+        Index("ix_paper_positions_account", "account_key"),
+        Index("ix_paper_positions_source", "source_wallet"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    account_key: Mapped[str] = mapped_column(Text, nullable=False)
+    source_wallet: Mapped[str] = mapped_column(Text, nullable=False)
+    coin: Mapped[str] = mapped_column(Text, nullable=False)
+    side: Mapped[str] = mapped_column(Text, nullable=False)
+    size: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    entry_price: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    notional_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    leverage: Mapped[Decimal] = mapped_column(Numeric, nullable=False, server_default=text("1"))
+    margin_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False, server_default=text("0"))
+    realized_pnl_usd: Mapped[Decimal] = mapped_column(
+        Numeric, nullable=False, server_default=text("0")
+    )
+    fee_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False, server_default=text("0"))
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PaperCopyFill(Base, TimestampMixin):
+    __tablename__ = "paper_copy_fills"
+    __table_args__ = (
+        CheckConstraint(
+            "action in ('open', 'add', 'reduce', 'close', 'flip_close', 'flip_open', 'skip')",
+            name="ck_paper_copy_fills_action",
+        ),
+        CheckConstraint("side in ('long', 'short')", name="ck_paper_copy_fills_side"),
+        UniqueConstraint(
+            "account_key",
+            "source_wallet",
+            "source_fill_id",
+            "sequence_index",
+            name="ux_paper_copy_fills_account_source_fill_sequence",
+        ),
+        Index("ix_paper_copy_fills_account_filled", "account_key", "filled_at"),
+        Index("ix_paper_copy_fills_source_filled", "source_wallet", "filled_at"),
+        Index("ix_paper_copy_fills_skipped_reason", "skipped_reason"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    account_key: Mapped[str] = mapped_column(Text, nullable=False)
+    source_wallet: Mapped[str] = mapped_column(Text, nullable=False)
+    source_fill_id: Mapped[str] = mapped_column(Text, nullable=False)
+    sequence_index: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    coin: Mapped[str] = mapped_column(Text, nullable=False)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    side: Mapped[str | None] = mapped_column(Text)
+    price: Mapped[Decimal | None] = mapped_column(Numeric)
+    size: Mapped[Decimal | None] = mapped_column(Numeric)
+    notional_usd: Mapped[Decimal | None] = mapped_column(Numeric)
+    leverage: Mapped[Decimal | None] = mapped_column(Numeric)
+    margin_usd: Mapped[Decimal | None] = mapped_column(Numeric)
+    fee_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False, server_default=text("0"))
+    realized_pnl_usd: Mapped[Decimal] = mapped_column(
+        Numeric, nullable=False, server_default=text("0")
+    )
+    source_price: Mapped[Decimal | None] = mapped_column(Numeric)
+    source_size: Mapped[Decimal | None] = mapped_column(Numeric)
+    source_notional_usd: Mapped[Decimal | None] = mapped_column(Numeric)
+    source_account_value_usd: Mapped[Decimal | None] = mapped_column(Numeric)
+    source_exposure_pct: Mapped[Decimal | None] = mapped_column(Numeric)
+    allocation_pct: Mapped[Decimal | None] = mapped_column(Numeric)
+    allocation_usd: Mapped[Decimal | None] = mapped_column(Numeric)
+    skipped_reason: Mapped[str | None] = mapped_column(Text)
+    filled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    raw_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
 
 class AuditLog(Base, TimestampMixin):

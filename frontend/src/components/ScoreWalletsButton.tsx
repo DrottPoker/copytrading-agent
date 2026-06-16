@@ -4,7 +4,7 @@ import { Gauge } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
-import { getPublicApiBaseUrl } from "@/lib/api";
+import { getPublicApiBaseUrl } from "@/lib/config";
 import type { WalletScoreRunResponse } from "@/types/wallet";
 
 export function ScoreWalletsButton() {

@@ -4,7 +4,7 @@ import { Search, Scissors, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
-import { getPublicApiBaseUrl } from "@/lib/api";
+import { getPublicApiBaseUrl } from "@/lib/config";
 import {
   formatCurrency,
   formatDate,
@@ -110,10 +110,11 @@ export function DatabasePrunePanel() {
 
         {result ? (
           <div className="grid gap-4">
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
               <PruneMetric label="Mode" value={result.dryRun ? "Dry run" : "Executed"} />
               <PruneMetric label="Scanned" value={formatInteger(result.scannedWallets)} />
               <PruneMetric label="Candidates" value={formatInteger(result.candidateWallets)} />
+              <PruneMetric label="Errors" value={formatInteger(result.erroredWallets)} />
               <PruneMetric label="Deleted wallets" value={formatInteger(result.deletedWallets)} />
               <PruneMetric label="Deleted fills" value={formatInteger(result.deletedFills)} />
             </div>
@@ -145,7 +146,12 @@ function RuleResult({ rule }: { rule: WalletPruneAllResponse["rules"][number] })
           <h3 className="font-semibold">{rule.label}</h3>
           <p className="mt-1 text-sm text-[#5b6770]">{rule.rule}</p>
         </div>
-        <StatusPill label={`${rule.candidateWallets} candidates`} tone="neutral" />
+        <div className="flex shrink-0 flex-col items-end gap-1">
+          <StatusPill label={`${rule.candidateWallets} candidates`} tone="neutral" />
+          {rule.erroredWallets > 0 ? (
+            <StatusPill label={`${rule.erroredWallets} errors`} tone="warning" />
+          ) : null}
+        </div>
       </div>
 
       <div className="mt-3 grid gap-2 sm:grid-cols-2">
@@ -183,6 +189,9 @@ function CandidateRow({ item }: { item: WalletPruneCandidate }) {
 }
 
 function candidateValue(item: WalletPruneCandidate) {
+  if (item.error) {
+    return "error";
+  }
   if (item.totalUnrealizedPnlUsd) {
     return formatCurrency(item.totalUnrealizedPnlUsd);
   }
@@ -196,6 +205,9 @@ function candidateValue(item: WalletPruneCandidate) {
 }
 
 function candidateScore(item: WalletPruneCandidate) {
+  if (item.error) {
+    return "not checked";
+  }
   return `score ${formatScore(item.score)}`;
 }
 

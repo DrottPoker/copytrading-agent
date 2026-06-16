@@ -1,6 +1,6 @@
 {
-  "serverApiBaseUrl": "http://127.0.0.1:8002",
-  "browserApiBaseUrl": "http://127.0.0.1:8002",
+  "serverApiBaseUrl": "http://127.0.0.1:8000",
+  "browserApiBaseUrl": "/api/backend",
   "liveFeedPollMs": 5000,
   "operationStatusPollMs": 5000,
   "manualFillImportDays": 30,

@@ -49,6 +49,7 @@ export type WalletPruneCandidate = {
   accountValueUsd: string | null;
   totalUnrealizedPnlUsd: string | null;
   detail: string | null;
+  error: string | null;
 };
 
 export type WalletPruneRuleResult = {
@@ -57,6 +58,7 @@ export type WalletPruneRuleResult = {
   dryRun: boolean;
   scannedWallets: number;
   candidateWallets: number;
+  erroredWallets: number;
   deletedWallets: number;
   deletedFills: number;
   rule: string;
@@ -67,6 +69,7 @@ export type WalletPruneAllResponse = {
   dryRun: boolean;
   scannedWallets: number;
   candidateWallets: number;
+  erroredWallets: number;
   deletedWallets: number;
   deletedFills: number;
   rules: WalletPruneRuleResult[];

@@ -2,8 +2,9 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api.routes_database import router as database_router
 from app.api.routes_discovery import router as discovery_router
@@ -11,12 +12,15 @@ from app.api.routes_events import router as events_router
 from app.api.routes_health import router as health_router
 from app.api.routes_leaderboard import router as leaderboard_router
 from app.api.routes_operations import router as operations_router
+from app.api.routes_paper_trading import router as paper_trading_router
 from app.api.routes_scores import router as scores_router
 from app.api.routes_wallets import router as wallets_router
+from app.core.auth import DashboardAuthMiddleware
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.db.session import get_sessionmaker
 from app.integrations.redis_client import get_redis
+from app.services.job_lock_service import JobLockAlreadyHeldError
 from app.workers.monitor_worker import run_monitor_services
 
 settings = get_settings()
@@ -66,6 +70,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.add_middleware(DashboardAuthMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
@@ -83,6 +88,15 @@ app.include_router(events_router)
 app.include_router(leaderboard_router)
 app.include_router(operations_router)
 app.include_router(scores_router)
+app.include_router(paper_trading_router)
+
+
+@app.exception_handler(JobLockAlreadyHeldError)
+async def job_lock_already_held_handler(
+    _request: Request,
+    exc: JobLockAlreadyHeldError,
+) -> JSONResponse:
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
 
 
 @app.get("/")

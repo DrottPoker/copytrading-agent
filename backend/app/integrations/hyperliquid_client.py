@@ -19,12 +19,31 @@ class HyperliquidRateLimitError(HyperliquidClientError):
     pass
 
 
+class HyperliquidInfoRateLimiter:
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._last_request_at = 0.0
+
+    async def wait(self, *, min_interval_seconds: float) -> None:
+        if min_interval_seconds <= 0:
+            return
+
+        async with self._lock:
+            if self._last_request_at > 0:
+                elapsed = time.monotonic() - self._last_request_at
+                if elapsed < min_interval_seconds:
+                    await asyncio.sleep(min_interval_seconds - elapsed)
+            self._last_request_at = time.monotonic()
+
+
+INFO_RATE_LIMITER = HyperliquidInfoRateLimiter()
+
+
 class HyperliquidClient:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
         self.base_url = self.settings.hyperliquid_api_url
         self._client: httpx.AsyncClient | None = None
-        self._last_info_request_at = 0.0
 
     async def __aenter__(self) -> "HyperliquidClient":
         self._client = httpx.AsyncClient(base_url=self.base_url, timeout=20)
@@ -45,7 +64,6 @@ class HyperliquidClient:
         for attempt in range(attempts):
             await self._respect_min_request_interval()
             response = await self._post_info_once(payload)
-            self._last_info_request_at = time.monotonic()
             last_response = response
 
             if response.status_code == 429 or response.status_code >= 500:
@@ -90,12 +108,9 @@ class HyperliquidClient:
             return await client.post("/info", json=payload)
 
     async def _respect_min_request_interval(self) -> None:
-        min_interval = self.settings.hyperliquid_info_min_request_interval_seconds
-        if min_interval <= 0 or self._last_info_request_at <= 0:
-            return
-        elapsed = time.monotonic() - self._last_info_request_at
-        if elapsed < min_interval:
-            await asyncio.sleep(min_interval - elapsed)
+        await INFO_RATE_LIMITER.wait(
+            min_interval_seconds=self.settings.hyperliquid_info_min_request_interval_seconds
+        )
 
     def _retry_delay_seconds(self, response: httpx.Response, *, attempt: int) -> float:
         retry_after = parse_retry_after_seconds(response.headers.get("retry-after"))
@@ -136,6 +151,12 @@ class HyperliquidClient:
             raise HyperliquidClientError(
                 "Hyperliquid clearinghouseState returned an unexpected shape."
             )
+        return result
+
+    async def all_mids(self) -> dict[str, Any]:
+        result = await self.post_info({"type": "allMids"})
+        if not isinstance(result, dict):
+            raise HyperliquidClientError("Hyperliquid allMids returned an unexpected shape.")
         return result
 
     async def spot_clearinghouse_state(self, *, user: str) -> dict[str, Any]:

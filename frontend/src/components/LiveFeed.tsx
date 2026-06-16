@@ -4,7 +4,7 @@ import { RadioTower } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { frontendConfig } from "@/lib/config";
-import { getPublicApiBaseUrl } from "@/lib/api";
+import { getPublicApiBaseUrl } from "@/lib/config";
 import type { LiveEvent } from "@/types/event";
 
 import { StatusPill } from "./StatusPill";
@@ -17,6 +17,7 @@ export function LiveFeed({ initialEvents }: { initialEvents: LiveEvent[] }) {
 
   useEffect(() => {
     let isMounted = true;
+    let pollInterval: number | null = null;
     const apiBaseUrl = getPublicApiBaseUrl();
 
     async function pollRecentEvents() {
@@ -43,20 +44,33 @@ export function LiveFeed({ initialEvents }: { initialEvents: LiveEvent[] }) {
       }
     }
 
-    if (typeof EventSource === "undefined") {
+    function startPolling() {
+      if (pollInterval !== null) {
+        return;
+      }
       void pollRecentEvents();
-      const interval = window.setInterval(() => {
+      pollInterval = window.setInterval(() => {
         void pollRecentEvents();
       }, frontendConfig.liveFeedPollMs);
+    }
+
+    if (typeof EventSource === "undefined") {
+      startPolling();
       return () => {
         isMounted = false;
-        window.clearInterval(interval);
+        if (pollInterval !== null) {
+          window.clearInterval(pollInterval);
+        }
       };
     }
 
     const source = new EventSource(`${apiBaseUrl}/events`);
     source.onopen = () => setConnectionState("live");
-    source.onerror = () => setConnectionState("offline");
+    source.onerror = () => {
+      setConnectionState("offline");
+      source.close();
+      startPolling();
+    };
     source.onmessage = (message) => {
       try {
         const event = JSON.parse(message.data) as LiveEvent;
@@ -69,6 +83,9 @@ export function LiveFeed({ initialEvents }: { initialEvents: LiveEvent[] }) {
     return () => {
       isMounted = false;
       source.close();
+      if (pollInterval !== null) {
+        window.clearInterval(pollInterval);
+      }
     };
   }, []);
 

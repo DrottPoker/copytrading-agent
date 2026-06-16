@@ -28,6 +28,7 @@ from app.schemas.wallet_cleanup import (
     ZeroFillWalletCandidate,
     ZeroFillWalletPruneResponse,
 )
+from app.services.job_lock_service import job_lock
 from app.services.wallet_current_state_service import (
     decimal_value,
     object_or_empty,
@@ -58,28 +59,49 @@ async def prune_all_wallets(
     current_drawdown_threshold_ratio: Decimal = Decimal("0.40"),
     current_drawdown_concurrency: int = 8,
     limit: int = 1000,
+    use_lock: bool = True,
 ) -> WalletPruneAllResponse:
+    if use_lock:
+        async with job_lock(session, key="wallet_prune", ttl_seconds=4 * 60 * 60):
+            return await prune_all_wallets(
+                session,
+                dry_run=dry_run,
+                high_fill_min_fills=high_fill_min_fills,
+                high_fill_score_threshold=high_fill_score_threshold,
+                high_fill_score_operator=high_fill_score_operator,
+                min_closed_trades=min_closed_trades,
+                max_drawdown_threshold_pct=max_drawdown_threshold_pct,
+                current_drawdown_threshold_ratio=current_drawdown_threshold_ratio,
+                current_drawdown_concurrency=current_drawdown_concurrency,
+                limit=limit,
+                use_lock=False,
+            )
+
     orphan_fill_result = await prune_orphan_fill_wallets(
         session,
         dry_run=dry_run,
         limit=limit,
+        use_lock=False,
     )
     zero_fill_result = await prune_zero_fill_wallets(
         session,
         dry_run=dry_run,
         limit=limit,
+        use_lock=False,
     )
     min_closed_trades_result = await prune_min_closed_trades_wallets(
         session,
         dry_run=dry_run,
         min_closed_trades=min_closed_trades,
         limit=limit,
+        use_lock=False,
     )
     max_drawdown_result = await prune_max_drawdown_wallets(
         session,
         dry_run=dry_run,
         threshold_pct=max_drawdown_threshold_pct,
         limit=limit,
+        use_lock=False,
     )
     high_fill_result = await prune_high_fill_low_score_wallets(
         session,
@@ -88,6 +110,7 @@ async def prune_all_wallets(
         score_threshold=high_fill_score_threshold,
         score_operator=high_fill_score_operator,
         limit=limit,
+        use_lock=False,
     )
     current_drawdown_result = await prune_current_drawdown_wallets(
         session,
@@ -95,6 +118,7 @@ async def prune_all_wallets(
         threshold_ratio=current_drawdown_threshold_ratio,
         limit=limit,
         concurrency=current_drawdown_concurrency,
+        use_lock=False,
     )
     rules = [
         orphan_fill_rule_result(orphan_fill_result),
@@ -109,6 +133,7 @@ async def prune_all_wallets(
         dry_run=dry_run,
         scanned_wallets=sum(rule.scanned_wallets for rule in rules),
         candidate_wallets=sum(rule.candidate_wallets for rule in rules),
+        errored_wallets=sum(rule.errored_wallets for rule in rules),
         deleted_wallets=sum(rule.deleted_wallets for rule in rules),
         deleted_fills=sum(rule.deleted_fills for rule in rules),
         rules=rules,
@@ -266,6 +291,7 @@ def current_drawdown_rule_result(
         dry_run=result.dry_run,
         scanned_wallets=result.scanned_wallets,
         candidate_wallets=result.candidate_wallets,
+        errored_wallets=result.errored_wallets,
         deleted_wallets=result.deleted_wallets,
         deleted_fills=result.deleted_fills,
         rule=f"unrealized loss >= {result.threshold_ratio} of account value",
@@ -277,9 +303,14 @@ def current_drawdown_rule_result(
                 account_value_usd=item.account_value_usd,
                 total_unrealized_pnl_usd=item.total_unrealized_pnl_usd,
                 detail=(
-                    f"{item.open_position_count} open positions, "
-                    f"loss ratio {item.unrealized_loss_ratio}"
+                    f"Fetch failed: {item.error}"
+                    if item.error
+                    else (
+                        f"{item.open_position_count} open positions, "
+                        f"loss ratio {item.unrealized_loss_ratio}"
+                    )
                 ),
+                error=item.error,
             )
             for item in result.items
         ],
@@ -291,7 +322,17 @@ async def prune_non_perp_wallets(
     *,
     dry_run: bool = True,
     limit: int = 100,
+    use_lock: bool = True,
 ) -> NonPerpWalletPruneResponse:
+    if use_lock:
+        async with job_lock(session, key="wallet_prune", ttl_seconds=4 * 60 * 60):
+            return await prune_non_perp_wallets(
+                session,
+                dry_run=dry_run,
+                limit=limit,
+                use_lock=False,
+            )
+
     candidates = await load_non_perp_wallet_candidates(session, limit=limit)
     addresses = [candidate.address for candidate in candidates]
     deleted_fills = 0
@@ -322,7 +363,17 @@ async def prune_zero_fill_wallets(
     *,
     dry_run: bool = True,
     limit: int = 250,
+    use_lock: bool = True,
 ) -> ZeroFillWalletPruneResponse:
+    if use_lock:
+        async with job_lock(session, key="wallet_prune", ttl_seconds=4 * 60 * 60):
+            return await prune_zero_fill_wallets(
+                session,
+                dry_run=dry_run,
+                limit=limit,
+                use_lock=False,
+            )
+
     scanned_wallets = await count_zero_fill_scan_wallets(session)
     candidates = await load_zero_fill_wallet_candidates(session, limit=limit)
     addresses = [candidate.address for candidate in candidates]
@@ -356,7 +407,17 @@ async def prune_orphan_fill_wallets(
     *,
     dry_run: bool = True,
     limit: int = 250,
+    use_lock: bool = True,
 ) -> OrphanFillPruneResponse:
+    if use_lock:
+        async with job_lock(session, key="wallet_prune", ttl_seconds=4 * 60 * 60):
+            return await prune_orphan_fill_wallets(
+                session,
+                dry_run=dry_run,
+                limit=limit,
+                use_lock=False,
+            )
+
     scanned_wallets = await count_orphan_fill_wallets(session)
     candidates = await load_orphan_fill_wallet_candidates(session, limit=limit)
     addresses = [candidate.address for candidate in candidates]
@@ -454,7 +515,18 @@ async def prune_min_closed_trades_wallets(
     dry_run: bool = True,
     min_closed_trades: int = 1,
     limit: int = 250,
+    use_lock: bool = True,
 ) -> MinClosedTradesPruneResponse:
+    if use_lock:
+        async with job_lock(session, key="wallet_prune", ttl_seconds=4 * 60 * 60):
+            return await prune_min_closed_trades_wallets(
+                session,
+                dry_run=dry_run,
+                min_closed_trades=min_closed_trades,
+                limit=limit,
+                use_lock=False,
+            )
+
     scanned_wallets = await count_min_closed_trades_scan_wallets(session)
     candidates = await load_min_closed_trades_wallet_candidates(
         session,
@@ -566,7 +638,18 @@ async def prune_max_drawdown_wallets(
     dry_run: bool = True,
     threshold_pct: Decimal = Decimal("0.60"),
     limit: int = 250,
+    use_lock: bool = True,
 ) -> MaxDrawdownPruneResponse:
+    if use_lock:
+        async with job_lock(session, key="wallet_prune", ttl_seconds=4 * 60 * 60):
+            return await prune_max_drawdown_wallets(
+                session,
+                dry_run=dry_run,
+                threshold_pct=threshold_pct,
+                limit=limit,
+                use_lock=False,
+            )
+
     scanned_wallets = await count_max_drawdown_scan_wallets(session)
     candidates = await load_max_drawdown_wallet_candidates(
         session,
@@ -905,7 +988,19 @@ async def prune_current_drawdown_wallets(
     threshold_ratio: Decimal = Decimal("0.40"),
     limit: int = 250,
     concurrency: int = 8,
+    use_lock: bool = True,
 ) -> CurrentDrawdownPruneResponse:
+    if use_lock:
+        async with job_lock(session, key="wallet_prune", ttl_seconds=4 * 60 * 60):
+            return await prune_current_drawdown_wallets(
+                session,
+                dry_run=dry_run,
+                threshold_ratio=threshold_ratio,
+                limit=limit,
+                concurrency=concurrency,
+                use_lock=False,
+            )
+
     wallets = await load_current_drawdown_scan_wallets(session, limit=limit)
     client = HyperliquidClient()
     semaphore = asyncio.Semaphore(concurrency)
@@ -926,19 +1021,22 @@ async def prune_current_drawdown_wallets(
         *(candidate_for_wallet(wallet) for wallet in wallets)
     )
     candidates = [
-        candidate for candidate in checked_candidates if candidate is not None
+        candidate
+        for candidate in checked_candidates
+        if candidate is not None and candidate.error is None
+    ]
+    errored_candidates = [
+        candidate
+        for candidate in checked_candidates
+        if candidate is not None and candidate.error is not None
     ]
 
     candidates.sort(
-        key=lambda candidate: Decimal(candidate.unrealized_loss_ratio),
+        key=lambda candidate: Decimal(candidate.unrealized_loss_ratio or "0"),
         reverse=True,
     )
 
-    errored_wallets = sum(
-        1
-        for candidate in checked_candidates
-        if candidate is not None and candidate.error is not None
-    )
+    errored_wallets = len(errored_candidates)
     if errored_wallets:
         logger.info(
             "current drawdown prune skipped %s wallets with fetch errors",
@@ -964,10 +1062,11 @@ async def prune_current_drawdown_wallets(
         dry_run=dry_run,
         scanned_wallets=len(wallets),
         candidate_wallets=len(candidates),
+        errored_wallets=errored_wallets,
         deleted_wallets=deleted_wallets,
         deleted_fills=deleted_fills,
         threshold_ratio=str(threshold_ratio),
-        items=candidates,
+        items=[*candidates, *errored_candidates],
     )
 
 
@@ -979,7 +1078,20 @@ async def prune_high_fill_low_score_wallets(
     score_threshold: Decimal = Decimal("0"),
     score_operator: str = "lte",
     limit: int = 250,
+    use_lock: bool = True,
 ) -> HighFillLowScorePruneResponse:
+    if use_lock:
+        async with job_lock(session, key="wallet_prune", ttl_seconds=4 * 60 * 60):
+            return await prune_high_fill_low_score_wallets(
+                session,
+                dry_run=dry_run,
+                min_fills=min_fills,
+                score_threshold=score_threshold,
+                score_operator=score_operator,
+                limit=limit,
+                use_lock=False,
+            )
+
     normalized_operator = normalize_score_operator(score_operator)
     scanned_wallets = await count_high_fill_low_score_scan_wallets(session)
     candidates = await load_high_fill_low_score_wallet_candidates(
@@ -1108,7 +1220,12 @@ async def load_current_drawdown_candidate(
         clearinghouse_state = await client.clearinghouse_state(user=address)
     except Exception as exc:
         logger.warning("current drawdown fetch failed wallet=%s error=%s", address, exc)
-        return None
+        return CurrentDrawdownWalletCandidate(
+            address=address,
+            label=label,
+            score=str(score) if score is not None else None,
+            error=str(exc) or exc.__class__.__name__,
+        )
 
     positions = parse_perp_positions(clearinghouse_state)
     margin_summary = object_or_empty(clearinghouse_state.get("marginSummary"))

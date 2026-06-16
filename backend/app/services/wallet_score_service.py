@@ -16,6 +16,7 @@ from app.schemas.score import (
     WalletScoreRunResponse,
 )
 from app.schemas.wallet import normalize_wallet_address
+from app.services.job_lock_service import job_lock
 from app.services.operation_status_service import (
     mark_operation_failed,
     mark_operation_started,
@@ -97,7 +98,17 @@ async def recalculate_wallet_scores(
     *,
     settings: Settings | None = None,
     include_disabled: bool = False,
+    use_lock: bool = True,
 ) -> WalletScoreRunResponse:
+    if use_lock:
+        async with job_lock(session, key="wallet_scoring", ttl_seconds=4 * 60 * 60):
+            return await recalculate_wallet_scores(
+                session,
+                settings=settings,
+                include_disabled=include_disabled,
+                use_lock=False,
+            )
+
     resolved_settings = settings or get_settings()
     payload = {
         "windowDays": resolved_settings.scoring_window_days,

@@ -12,6 +12,34 @@ Endpoint: `GET /health`
 Shows service status, environment, current mode, Hyperliquid network, and dependency
 status for Postgres and Redis.
 
+Behavior:
+
+- Returns `status: "ok"` only when required dependencies are healthy.
+- Returns `status: "degraded"` with HTTP 503 when Postgres or Redis is unavailable.
+- `GET /ready` returns the same readiness payload.
+
+### Dashboard API Auth
+
+Backend routes are protected by Basic Auth by default.
+
+Behavior:
+
+- `GET /health` and `GET /ready` remain unauthenticated for uptime checks.
+- All other backend routes require `DASHBOARD_AUTH_USERNAME` and
+  `DASHBOARD_AUTH_PASSWORD`.
+- Production startup fails if auth is disabled or the password is still
+  `change-me`.
+- The Next.js dashboard proxies browser API calls through `/api/backend` and adds
+  backend auth on the server side.
+- Server-side dashboard data fetches also add backend auth from environment
+  variables.
+
+Config:
+
+- `DASHBOARD_AUTH_ENABLED`
+- `DASHBOARD_AUTH_USERNAME`
+- `DASHBOARD_AUTH_PASSWORD`
+
 ### Wallet Pool Management
 
 Endpoints:
@@ -133,11 +161,13 @@ What it does:
 - First-time wallets get the full configured backfill window; already-polled wallets refresh incrementally.
 - Manual pool reimport uses `force=true` by default, so it refreshes the full
   enabled pool regardless of `last_polled_at`.
-- Worker pool maintenance runs every 10 minutes by default and uses the same
+- Worker pool maintenance runs every 30 minutes by default and uses the same
   batch settings as manual reimport.
 - After worker pool reimport, wallet scoring runs immediately, then configured
   prune rules run automatically.
 - Fill imports stop early when the database is near its configured storage limit.
+- Pool import uses a database-backed job lock and row-level `SKIP LOCKED`
+  selection to avoid duplicate refresh work across API and worker processes.
 
 Config:
 
@@ -171,6 +201,10 @@ What it does:
   where the rule is wallet-pool based.
 - Runs as a dry run by default and supports `dry_run=false` for deletion.
 - Returns totals and per-rule results for review in the Database dashboard.
+- Reports current drawdown fetch errors separately. Those wallets are shown in
+  the response but are not counted as delete candidates.
+- Uses a shared `wallet_prune` job lock, so manual pruning and scheduled worker
+  pruning cannot run concurrently.
 
 Purpose:
 
@@ -201,6 +235,8 @@ What it does:
 - Runs as a dry run by default and supports `dry_run=false` for deletion.
 - Adds deleted addresses to the leaderboard ignore list so they are not imported
   back into the pool immediately.
+- Reports Hyperliquid fetch errors per wallet and never deletes wallets whose
+  current state could not be fetched.
 
 Config:
 
@@ -329,12 +365,16 @@ Worker:
 
 - Runs automatically inside the backend when `worker_run_in_api_process` is `true`.
 - Can run as `python -m app.workers.monitor_worker` when the in-API worker is disabled.
+- Docker Compose runs a separate worker service and disables the in-API worker
+  through `WORKER_RUN_IN_API_PROCESS=false`.
 
 What it does:
 
 - Opens a Hyperliquid WebSocket connection.
 - Subscribes to `userFills` for up to `max_realtime_wallets`.
-- Selects only active, exit-only, candidate, or copy-enabled wallets.
+- Retains source wallets with open paper positions first, then selects positive
+  scored wallets and active, exit-only, candidate, or copy-enabled fallback
+  wallets for remaining slots.
 - Processes initial snapshot messages safely.
 - Stores realtime fills in Postgres with the same dedupe logic as historical import.
 - Publishes system and fill events to Redis.
@@ -344,6 +384,80 @@ Purpose:
 - Active wallet monitoring.
 - Future open position management.
 - Future paper/live copy decisions.
+
+### Paper Copytrading
+
+Endpoint:
+
+- `GET /paper-trading`
+
+Dashboard page:
+
+- `/paper-trading`
+
+What it does:
+
+- Syncs configured paper trading accounts from `backend/config/paper_trading.json`.
+- Defaults to two paper accounts, 1,000 USD and 10,000 USD.
+- Builds allocations from the top 10 positive wallet scores in the enabled wallet pool.
+- Keeps source wallets with open paper positions subscribed until all copied
+  positions from that source are closed, even if the source falls out of the top 10.
+- Makes newly promoted top 10 wallets wait when all realtime slots are occupied
+  by retained open-position sources.
+- Gives all top 10 ranks a 20% account pocket each.
+- Caps total open copied margin at 80% of each paper account equity.
+- Converts new non-snapshot realtime source fills into simulated paper fills.
+- Sizes an open by `source fill notional / source account value`, scaled inside
+  that wallet's paper allocation pocket.
+- Reads source per-coin leverage from Hyperliquid `clearinghouseState` and uses
+  it for paper margin accounting. If leverage is unavailable for a coin, paper
+  falls back to 1x.
+- Skips opens below `paper_copy_min_order_notional_usd` before any paper position
+  is created.
+- Applies the configured paper fee rate to opens and closes.
+- Waits `paper_copy_latency_ms` before pricing paper execution.
+- Uses live Hyperliquid mids after latency when `paper_copy_use_live_mid_price`
+  is enabled.
+- Applies adverse slippage from `paper_copy_slippage_bps` to the observed price.
+- Skips paper fills when the observed price has moved more than
+  `paper_copy_max_price_drift_bps` from the source fill price.
+- Tracks open paper positions by account, source wallet, and coin.
+- Uses source `startPosition` to reduce or close paper positions proportionally.
+- Splits source flip fills into a close part and an open part when the source
+  payload provides enough information.
+- Records skip rows when a fill cannot be copied safely, such as no matching
+  paper position, missing source account value, preexisting source position,
+  minimum notional, source allocation cap exhaustion, or total account cap
+  exhaustion.
+- Publishes `paper_copy` events to the live feed when realtime fills are simulated.
+
+Config:
+
+- `backend/config/paper_trading.json`
+- `paper_copy_enabled`
+- `paper_copy_accounts`
+- `paper_copy_top_wallet_count`
+- `paper_copy_top_tier_wallet_count`
+- `paper_copy_top_tier_allocation_pct`
+- `paper_copy_standard_allocation_pct`
+- `paper_copy_max_total_allocation_pct`
+- `paper_copy_min_order_notional_usd`
+- `paper_copy_fee_rate`
+- `paper_copy_slippage_bps`
+- `paper_copy_latency_ms`
+- `paper_copy_max_price_drift_bps`
+- `paper_copy_use_live_mid_price`
+
+Current limitations:
+
+- This is paper money only. It never places Hyperliquid orders.
+- The execution model is still deterministic: it uses live mids, configured
+  latency, configured adverse slippage, and a max drift guard, but it does not
+  simulate order book depth or partial fills yet.
+- Paper accounts are not backfilled from historical fills. They start recording
+  only from new non-snapshot realtime fills after the migration is applied.
+- Editing `starting_balance_usd` does not reset existing account state. A reset
+  workflow should be added before serious experiment runs.
 
 ### Live Feed
 
@@ -362,6 +476,8 @@ What it does:
 - Uses Server-Sent Events when available.
 - Falls back to polling recent events.
 - Reads from Redis, not directly from Postgres.
+- If SSE fails after connection, the dashboard falls back to polling
+  `/events/recent`.
 
 ### Redis Runtime Event Store
 
@@ -377,6 +493,10 @@ What it does:
 Files:
 
 - `backend/config/app.json`
+- `backend/config/discovery.json`
+- `backend/config/paper_trading.json`
+- `backend/config/prune.json`
+- `backend/config/scoring.json`
 - `frontend/config/app.json`
 - `.env`
 
@@ -385,6 +505,44 @@ What it does:
 - Keeps tweakable non-secret settings in JSON config files.
 - Keeps secrets and connection strings in `.env`.
 - Makes common system tuning possible without editing environment variables.
+- Environment variables override JSON config. This allows compose and deployment
+  environments to change runtime behavior without editing tracked config files.
+
+### Job Locking
+
+Table:
+
+- `job_locks`
+
+What it does:
+
+- Prevents duplicate discovery imports, discovery backfills, discovery promotion,
+  pool imports, scoring runs, and wallet pruning.
+- Uses TTL-based Postgres rows so a crashed worker does not block the job forever.
+- Returns HTTP 409 for manual API triggers when the same job is already running.
+
+### Backend Dependency Constraints
+
+File:
+
+- `backend/constraints.txt`
+
+What it does:
+
+- Pins top-level backend package versions for Docker builds.
+- Keeps local `pyproject.toml` readable while preventing silent dependency drift
+  in container builds.
+
+### Frontend Linting
+
+Command:
+
+- `npm run lint`
+
+What it does:
+
+- Runs ESLint through `eslint .`.
+- Uses the Next.js flat ESLint config in `frontend/eslint.config.mjs`.
 
 ## Partially Implemented Foundations
 
@@ -402,6 +560,11 @@ The schema already includes tables for:
 - source trade links
 - risk events
 - settings
+- job locks
+- paper trading accounts
+- paper copy allocations
+- paper positions
+- paper copy fills
 - audit logs
 
 Not all tables are fully used yet.
@@ -458,6 +621,13 @@ Phase A behavior:
   `scoring_interval_seconds`.
 - Can be triggered manually from the Wallet Pool page.
 
+Important limitation:
+
+- Current scoring ranks observed source-wallet history and feeds the initial
+  paper allocation set. Do not use the score as a live allocation engine until
+  paper copy performance has been validated with latency, slippage, exits, and
+  account-level risk controls.
+
 ### Active Copy Set Rotation
 
 Purpose:
@@ -477,16 +647,8 @@ Purpose:
   - close
   - flip
 
-This is needed before paper copytrading can behave correctly.
-
-### Paper Copytrading
-
-Purpose:
-
-- Simulate entries and exits.
-- Include delay, fees, slippage, and price drift.
-- Track copied trades per source wallet.
-- Produce paper PnL before live trading exists.
+Paper copy now has basic fill classification. A reusable classification layer is
+still needed before live execution, richer analytics, and risk controls.
 
 ### Risk Engine
 

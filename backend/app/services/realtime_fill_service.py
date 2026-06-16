@@ -61,8 +61,13 @@ async def store_realtime_fills(
                 WalletFill.side,
                 WalletFill.price,
                 WalletFill.size,
+                WalletFill.notional_usd,
+                WalletFill.fee_usd,
+                WalletFill.pnl_usd,
                 WalletFill.timestamp_ms,
+                WalletFill.source_timestamp_ms,
                 WalletFill.ingest_latency_ms,
+                WalletFill.raw_json,
             )
         )
         result = await session.execute(stmt)
@@ -98,6 +103,13 @@ def _row_to_dict(row: Row[Any]) -> dict[str, Any]:
         "side": mapping["side"],
         "price": str(mapping["price"]),
         "size": str(mapping["size"]),
+        "notionalUsd": (
+            str(mapping["notional_usd"]) if mapping["notional_usd"] is not None else None
+        ),
+        "feeUsd": str(mapping["fee_usd"]) if mapping["fee_usd"] is not None else None,
+        "pnlUsd": str(mapping["pnl_usd"]) if mapping["pnl_usd"] is not None else None,
         "timestampMs": mapping["timestamp_ms"],
+        "sourceTimestampMs": mapping["source_timestamp_ms"],
         "ingestLatencyMs": mapping["ingest_latency_ms"],
+        "rawJson": mapping["raw_json"],
     }

@@ -4,7 +4,7 @@ import { Download } from "lucide-react";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
-import { getPublicApiBaseUrl } from "@/lib/api";
+import { getPublicApiBaseUrl } from "@/lib/config";
 import { frontendConfig } from "@/lib/config";
 import type { WalletFillImportResponse } from "@/types/wallet";
 

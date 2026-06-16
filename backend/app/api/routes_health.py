@@ -1,7 +1,7 @@
 import asyncio
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response, status
 
 from app.core.config import Settings, get_settings
 from app.db.session import check_postgres
@@ -11,14 +11,20 @@ router = APIRouter(tags=["health"])
 
 
 @router.get("/health")
-async def health(settings: Annotated[Settings, Depends(get_settings)]) -> dict[str, object]:
+async def health(
+    response: Response,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> dict[str, object]:
     postgres_status, redis_status = await asyncio.gather(
         check_postgres(settings),
         check_redis(settings),
     )
+    service_status = dependency_status(postgres_status, redis_status)
+    if service_status != "ok":
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
 
     return {
-        "status": "ok",
+        "status": service_status,
         "service": settings.app_name,
         "version": settings.app_version,
         "environment": settings.app_env,
@@ -34,3 +40,18 @@ async def health(settings: Annotated[Settings, Depends(get_settings)]) -> dict[s
             "redis": redis_status,
         },
     }
+
+
+@router.get("/ready")
+async def ready(
+    response: Response,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> dict[str, object]:
+    payload = await health(response=response, settings=settings)
+    return payload
+
+
+def dependency_status(*dependencies: dict[str, object]) -> str:
+    if all(dependency.get("status") == "ok" for dependency in dependencies):
+        return "ok"
+    return "degraded"

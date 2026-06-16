@@ -1,3 +1,5 @@
+import "server-only";
+
 import type { LiveEventListResponse } from "@/types/event";
 import type { DatabaseStatsResponse } from "@/types/database";
 import type {
@@ -7,6 +9,7 @@ import type {
 } from "@/types/discovery";
 import type { HealthResponse } from "@/types/health";
 import type { OperationStatusListResponse } from "@/types/operation";
+import type { PaperTradingSummaryResponse } from "@/types/paper";
 import type {
   CopyTradeListResponse,
   SourceTradeListResponse,
@@ -23,18 +26,30 @@ export function getApiBaseUrl() {
   return frontendConfig.serverApiBaseUrl;
 }
 
-export function getPublicApiBaseUrl() {
-  return frontendConfig.browserApiBaseUrl;
+function getBackendAuthHeaders(): HeadersInit {
+  const username = process.env.DASHBOARD_AUTH_USERNAME ?? "admin";
+  const password = process.env.DASHBOARD_AUTH_PASSWORD ?? "change-me";
+  if (!username || !password) {
+    return {};
+  }
+
+  const token = Buffer.from(`${username}:${password}`).toString("base64");
+  return { Authorization: `Basic ${token}` };
+}
+
+function backendGet(url: string) {
+  return fetch(url, {
+    cache: "no-store",
+    next: { revalidate: 0 },
+    headers: getBackendAuthHeaders(),
+  });
 }
 
 export async function getHealth(): Promise<HealthResponse | null> {
   try {
-    const response = await fetch(`${getApiBaseUrl()}/health`, {
-      cache: "no-store",
-      next: { revalidate: 0 },
-    });
+    const response = await backendGet(`${getApiBaseUrl()}/health`);
 
-    if (!response.ok) {
+    if (!response.ok && response.status !== 503) {
       return null;
     }
 
@@ -46,10 +61,7 @@ export async function getHealth(): Promise<HealthResponse | null> {
 
 export async function getDatabaseStats(): Promise<DatabaseStatsResponse | null> {
   try {
-    const response = await fetch(`${getApiBaseUrl()}/database/stats`, {
-      cache: "no-store",
-      next: { revalidate: 0 },
-    });
+    const response = await backendGet(`${getApiBaseUrl()}/database/stats`);
 
     if (!response.ok) {
       return null;
@@ -63,10 +75,7 @@ export async function getDatabaseStats(): Promise<DatabaseStatsResponse | null> 
 
 export async function getDiscoverySources(): Promise<DiscoverySourceListResponse> {
   try {
-    const response = await fetch(`${getApiBaseUrl()}/discovery/sources`, {
-      cache: "no-store",
-      next: { revalidate: 0 },
-    });
+    const response = await backendGet(`${getApiBaseUrl()}/discovery/sources`);
 
     if (!response.ok) {
       return { items: [] };
@@ -106,10 +115,7 @@ export async function getDiscoveryCandidates({
   }
 
   try {
-    const response = await fetch(`${getApiBaseUrl()}/discovery/candidates?${params.toString()}`, {
-      cache: "no-store",
-      next: { revalidate: 0 },
-    });
+    const response = await backendGet(`${getApiBaseUrl()}/discovery/candidates?${params.toString()}`);
 
     if (!response.ok) {
       return { items: [], total: 0, limit, offset };
@@ -123,10 +129,7 @@ export async function getDiscoveryCandidates({
 
 export async function getDiscoveryRuns(limit = 25): Promise<DiscoveryImportRunListResponse> {
   try {
-    const response = await fetch(`${getApiBaseUrl()}/discovery/runs?limit=${limit}`, {
-      cache: "no-store",
-      next: { revalidate: 0 },
-    });
+    const response = await backendGet(`${getApiBaseUrl()}/discovery/runs?limit=${limit}`);
 
     if (!response.ok) {
       return { items: [], total: 0, limit, offset: 0 };
@@ -145,10 +148,7 @@ export async function getWallets(query?: string): Promise<WalletListResponse> {
   }
 
   try {
-    const response = await fetch(`${getApiBaseUrl()}/wallets?${params.toString()}`, {
-      cache: "no-store",
-      next: { revalidate: 0 },
-    });
+    const response = await backendGet(`${getApiBaseUrl()}/wallets?${params.toString()}`);
 
     if (!response.ok) {
       return { items: [], total: 0, limit: 250, offset: 0 };
@@ -162,10 +162,7 @@ export async function getWallets(query?: string): Promise<WalletListResponse> {
 
 export async function getWallet(address: string): Promise<Wallet | null> {
   try {
-    const response = await fetch(`${getApiBaseUrl()}/wallets/${address}`, {
-      cache: "no-store",
-      next: { revalidate: 0 },
-    });
+    const response = await backendGet(`${getApiBaseUrl()}/wallets/${address}`);
 
     if (!response.ok) {
       return null;
@@ -179,10 +176,7 @@ export async function getWallet(address: string): Promise<Wallet | null> {
 
 export async function getWalletFills(address: string): Promise<WalletFillListResponse> {
   try {
-    const response = await fetch(`${getApiBaseUrl()}/wallets/${address}/fills?limit=100`, {
-      cache: "no-store",
-      next: { revalidate: 0 },
-    });
+    const response = await backendGet(`${getApiBaseUrl()}/wallets/${address}/fills?limit=100`);
 
     if (!response.ok) {
       return { items: [], total: 0, limit: 100, offset: 0 };
@@ -196,10 +190,7 @@ export async function getWalletFills(address: string): Promise<WalletFillListRes
 
 export async function getWalletStats(address: string): Promise<WalletStats | null> {
   try {
-    const response = await fetch(`${getApiBaseUrl()}/wallets/${address}/stats`, {
-      cache: "no-store",
-      next: { revalidate: 0 },
-    });
+    const response = await backendGet(`${getApiBaseUrl()}/wallets/${address}/stats`);
 
     if (!response.ok) {
       return null;
@@ -213,10 +204,7 @@ export async function getWalletStats(address: string): Promise<WalletStats | nul
 
 export async function getWalletScoreDetail(address: string): Promise<WalletScoreDetail | null> {
   try {
-    const response = await fetch(`${getApiBaseUrl()}/scores/${address}/detail`, {
-      cache: "no-store",
-      next: { revalidate: 0 },
-    });
+    const response = await backendGet(`${getApiBaseUrl()}/scores/${address}/detail`);
 
     if (!response.ok) {
       return null;
@@ -230,10 +218,7 @@ export async function getWalletScoreDetail(address: string): Promise<WalletScore
 
 export async function getWalletCopyTrades(address: string): Promise<CopyTradeListResponse> {
   try {
-    const response = await fetch(`${getApiBaseUrl()}/wallets/${address}/copy-trades?limit=100`, {
-      cache: "no-store",
-      next: { revalidate: 0 },
-    });
+    const response = await backendGet(`${getApiBaseUrl()}/wallets/${address}/copy-trades?limit=100`);
 
     if (!response.ok) {
       return { items: [], total: 0, limit: 100, offset: 0 };
@@ -247,12 +232,8 @@ export async function getWalletCopyTrades(address: string): Promise<CopyTradeLis
 
 export async function getWalletSourceTrades(address: string): Promise<SourceTradeListResponse> {
   try {
-    const response = await fetch(
+    const response = await backendGet(
       `${getApiBaseUrl()}/wallets/${address}/source-trades?days=30&limit=100`,
-      {
-        cache: "no-store",
-        next: { revalidate: 0 },
-      },
     );
 
     if (!response.ok) {
@@ -287,10 +268,7 @@ function emptySourceTrades(): SourceTradeListResponse {
 
 export async function getLiveEvents(limit = 100): Promise<LiveEventListResponse> {
   try {
-    const response = await fetch(`${getApiBaseUrl()}/events/recent?limit=${limit}`, {
-      cache: "no-store",
-      next: { revalidate: 0 },
-    });
+    const response = await backendGet(`${getApiBaseUrl()}/events/recent?limit=${limit}`);
 
     if (!response.ok) {
       return { items: [], total: 0 };
@@ -304,10 +282,7 @@ export async function getLiveEvents(limit = 100): Promise<LiveEventListResponse>
 
 export async function getOperationStatuses(): Promise<OperationStatusListResponse> {
   try {
-    const response = await fetch(`${getApiBaseUrl()}/operations/status`, {
-      cache: "no-store",
-      next: { revalidate: 0 },
-    });
+    const response = await backendGet(`${getApiBaseUrl()}/operations/status`);
 
     if (!response.ok) {
       return { items: [] };
@@ -317,4 +292,41 @@ export async function getOperationStatuses(): Promise<OperationStatusListRespons
   } catch {
     return { items: [] };
   }
+}
+
+export async function getPaperTradingSummary(): Promise<PaperTradingSummaryResponse> {
+  try {
+    const response = await backendGet(`${getApiBaseUrl()}/paper-trading`);
+
+    if (!response.ok) {
+      return emptyPaperTradingSummary();
+    }
+
+    return (await response.json()) as PaperTradingSummaryResponse;
+  } catch {
+    return emptyPaperTradingSummary();
+  }
+}
+
+function emptyPaperTradingSummary(): PaperTradingSummaryResponse {
+  return {
+    policy: {
+      enabled: false,
+      topWalletCount: 10,
+      topTierWalletCount: 3,
+      topTierAllocationPct: "0.05",
+      standardAllocationPct: "0.03",
+      maxTotalAllocationPct: "0.30",
+      minOrderNotionalUsd: "10",
+      feeRate: "0.0004",
+      slippageBps: "5",
+      latencyMs: 750,
+      maxPriceDriftBps: "20",
+      useLiveMidPrice: true,
+    },
+    accounts: [],
+    allocations: [],
+    positions: [],
+    recentFills: [],
+  };
 }

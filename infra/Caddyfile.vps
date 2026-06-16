@@ -1,0 +1,12 @@
+{$DASHBOARD_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy frontend:3000
+}
+
+# Optional direct API domain. The dashboard does not need this because it uses
+# the Next.js server-side proxy at /api/backend.
+#
+# {$API_DOMAIN} {
+# 	encode zstd gzip
+# 	reverse_proxy backend:8000
+# }

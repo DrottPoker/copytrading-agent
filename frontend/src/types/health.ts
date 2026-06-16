@@ -4,13 +4,14 @@ export type DependencyStatus = {
 };
 
 export type HealthResponse = {
-  status: "ok";
+  status: "ok" | "degraded";
   service: string;
   version: string;
   environment: string;
   mode: "monitor" | "paper" | "live_small";
   paperTradingEnabled: boolean;
   liveTradingEnabled: boolean;
+  workerRunInApiProcess: boolean;
   hyperliquidNetwork: "mainnet" | "testnet";
   activeCopyWallets: number;
   maxRealtimeWallets: number;

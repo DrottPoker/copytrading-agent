@@ -3,7 +3,7 @@
 import { DownloadCloud, Loader2, Play } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { getPublicApiBaseUrl } from "@/lib/api";
+import { getPublicApiBaseUrl } from "@/lib/config";
 import { frontendConfig } from "@/lib/config";
 import { formatDate, formatInteger } from "@/lib/format";
 import type { DiscoverySource } from "@/types/discovery";

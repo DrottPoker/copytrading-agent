@@ -58,10 +58,10 @@ class CurrentDrawdownWalletCandidate(CamelModel):
     address: str
     label: str | None
     score: str | None = None
-    account_value_usd: str
-    total_unrealized_pnl_usd: str
-    unrealized_loss_ratio: str
-    open_position_count: int
+    account_value_usd: str | None = None
+    total_unrealized_pnl_usd: str | None = None
+    unrealized_loss_ratio: str | None = None
+    open_position_count: int = 0
     top_position_coin: str | None = None
     top_position_unrealized_pnl_usd: str | None = None
     top_position_value_usd: str | None = None
@@ -72,6 +72,7 @@ class CurrentDrawdownPruneResponse(CamelModel):
     dry_run: bool
     scanned_wallets: int
     candidate_wallets: int
+    errored_wallets: int = 0
     deleted_wallets: int
     deleted_fills: int
     threshold_ratio: str
@@ -152,6 +153,7 @@ class WalletPruneCandidate(CamelModel):
     account_value_usd: str | None = None
     total_unrealized_pnl_usd: str | None = None
     detail: str | None = None
+    error: str | None = None
 
 
 class WalletPruneRuleResult(CamelModel):
@@ -160,6 +162,7 @@ class WalletPruneRuleResult(CamelModel):
     dry_run: bool
     scanned_wallets: int
     candidate_wallets: int
+    errored_wallets: int = 0
     deleted_wallets: int
     deleted_fills: int
     rule: str
@@ -170,6 +173,7 @@ class WalletPruneAllResponse(CamelModel):
     dry_run: bool
     scanned_wallets: int
     candidate_wallets: int
+    errored_wallets: int = 0
     deleted_wallets: int
     deleted_fills: int
     rules: list[WalletPruneRuleResult]

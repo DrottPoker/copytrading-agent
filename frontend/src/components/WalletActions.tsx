@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
-import { getPublicApiBaseUrl } from "@/lib/api";
+import { getPublicApiBaseUrl } from "@/lib/config";
 import type { Wallet } from "@/types/wallet";
 
 import { ImportFillsButton } from "./ImportFillsButton";
@@ -37,6 +37,13 @@ export function WalletActions({ wallet }: { wallet: Wallet }) {
   }
 
   async function deleteWallet() {
+    const confirmed = window.confirm(
+      `Delete ${shortAddress(wallet.address)} and all related rows? This cannot be undone.`,
+    );
+    if (!confirmed) {
+      return;
+    }
+
     setIsBusy(true);
     setError(null);
     try {
@@ -113,4 +120,8 @@ export function WalletActions({ wallet }: { wallet: Wallet }) {
       {error ? <p className="text-xs font-medium text-danger">{error}</p> : null}
     </div>
   );
+}
+
+function shortAddress(address: string) {
+  return `${address.slice(0, 8)}...${address.slice(-6)}`;
 }

@@ -30,6 +30,7 @@ from app.schemas.discovery import (
 from app.schemas.fill import WalletFillImportRequest
 from app.schemas.wallet import normalize_wallet_address
 from app.services.fill_import_service import FillImportStorageLimitError, import_address_fills
+from app.services.job_lock_service import job_lock
 from app.services.leaderboard_import_service import (
     get_window,
     load_subaccount_wallet_candidates,
@@ -261,7 +262,19 @@ async def run_discovery_import(
     limit: int | None = None,
     run_pipeline: bool = True,
     settings: Settings | None = None,
+    use_lock: bool = True,
 ) -> DiscoveryImportResponse:
+    if use_lock:
+        async with job_lock(session, key="discovery_import", ttl_seconds=12 * 60 * 60):
+            return await run_discovery_import(
+                session,
+                sources=sources,
+                limit=limit,
+                run_pipeline=run_pipeline,
+                settings=settings,
+                use_lock=False,
+            )
+
     resolved_settings = settings or get_settings()
     requested_sources = normalize_requested_sources(
         sources or resolved_settings.discovery_default_sources
@@ -335,7 +348,19 @@ async def run_discovery_prefilter(
     status: str | None = None,
     limit: int = 500,
     settings: Settings | None = None,
+    use_lock: bool = True,
 ) -> DiscoveryPrefilterResponse:
+    if use_lock:
+        async with job_lock(session, key="discovery_prefilter", ttl_seconds=2 * 60 * 60):
+            return await run_discovery_prefilter(
+                session,
+                source=source,
+                status=status,
+                limit=limit,
+                settings=settings,
+                use_lock=False,
+            )
+
     resolved_settings = settings or get_settings()
     payload = {"source": source, "status": status, "limit": limit}
     await mark_operation_started(session, key="discovery_prefilter", payload=payload)
@@ -379,7 +404,19 @@ async def run_discovery_candidate_backfill(
     limit: int | None = None,
     retry_failed: bool = False,
     settings: Settings | None = None,
+    use_lock: bool = True,
 ) -> DiscoveryBackfillResponse:
+    if use_lock:
+        async with job_lock(session, key="discovery_backfill", ttl_seconds=12 * 60 * 60):
+            return await run_discovery_candidate_backfill(
+                session,
+                source=source,
+                limit=limit,
+                retry_failed=retry_failed,
+                settings=settings,
+                use_lock=False,
+            )
+
     resolved_settings = settings or get_settings()
     batch_limit = limit or resolved_settings.discovery_candidate_backfill_batch_size
     payload = {
@@ -437,7 +474,21 @@ async def run_discovery_candidate_promotion(
     run_all: bool = False,
     max_batches: int = 1,
     settings: Settings | None = None,
+    use_lock: bool = True,
 ) -> DiscoveryPromoteResponse:
+    if use_lock:
+        async with job_lock(session, key="discovery_promotion", ttl_seconds=2 * 60 * 60):
+            return await run_discovery_candidate_promotion(
+                session,
+                source=source,
+                limit=limit,
+                include_unbackfilled=include_unbackfilled,
+                run_all=run_all,
+                max_batches=max_batches,
+                settings=settings,
+                use_lock=False,
+            )
+
     resolved_settings = settings or get_settings()
     batch_limit = limit or resolved_settings.discovery_promotion_batch_size
     require_backfill = (
@@ -1470,6 +1521,7 @@ async def backfill_discovery_candidates(
             DiscoveryWalletCandidate.source_rank.asc().nulls_last(),
         )
         .limit(limit)
+        .with_for_update(skip_locked=True)
     )
     candidates = list(result.scalars().all())
 

@@ -5,6 +5,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Setting
+from app.db.session import get_sessionmaker
 from app.schemas.operation import OperationStatusListResponse, OperationStatusRead
 
 OPERATION_STATUS_PREFIX = "operation_status:"
@@ -171,6 +172,22 @@ async def save_operation_value(
     key: str,
     value: dict[str, Any],
 ) -> None:
+    sessionmaker = get_sessionmaker()
+    if sessionmaker is not None:
+        async with sessionmaker() as status_session:
+            await upsert_operation_value(status_session, key, value)
+            await status_session.commit()
+        return
+
+    await upsert_operation_value(session, key, value)
+    await session.commit()
+
+
+async def upsert_operation_value(
+    session: AsyncSession,
+    key: str,
+    value: dict[str, Any],
+) -> None:
     stmt = insert(Setting).values(key=setting_key(key), value=value)
     await session.execute(
         stmt.on_conflict_do_update(
@@ -178,7 +195,6 @@ async def save_operation_value(
             set_={"value": stmt.excluded.value},
         )
     )
-    await session.commit()
 
 
 def setting_key(key: str) -> str:

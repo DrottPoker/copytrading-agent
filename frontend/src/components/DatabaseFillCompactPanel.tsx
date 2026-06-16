@@ -4,7 +4,7 @@ import { Archive, Search, Zap } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
-import { getPublicApiBaseUrl } from "@/lib/api";
+import { getPublicApiBaseUrl } from "@/lib/config";
 import { formatBytes, formatInteger } from "@/lib/format";
 import type { FillRawJsonCompactResponse } from "@/types/database";
 

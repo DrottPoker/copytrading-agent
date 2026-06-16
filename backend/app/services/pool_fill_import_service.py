@@ -15,6 +15,7 @@ from app.services.fill_import_service import (
     import_wallet_fills,
     target_fills_for_pages,
 )
+from app.services.job_lock_service import job_lock
 from app.services.operation_status_service import (
     mark_operation_failed,
     mark_operation_progress,
@@ -34,6 +35,32 @@ class PoolFillImportTarget:
 async def import_due_pool_wallet_fills(
     session: AsyncSession,
     *,
+    limit: int,
+    days: int,
+    max_pages: int,
+    min_wallet_interval_seconds: int,
+    overlap_seconds: int,
+    max_batches: int = 1,
+    force: bool = False,
+    client: HyperliquidClient | None = None,
+) -> PoolFillImportResponse:
+    async with job_lock(session, key="pool_fill_import", ttl_seconds=12 * 60 * 60):
+        return await _import_due_pool_wallet_fills_locked(
+            session=session,
+            limit=limit,
+            days=days,
+            max_pages=max_pages,
+            min_wallet_interval_seconds=min_wallet_interval_seconds,
+            overlap_seconds=overlap_seconds,
+            max_batches=max_batches,
+            force=force,
+            client=client,
+        )
+
+
+async def _import_due_pool_wallet_fills_locked(
+    *,
+    session: AsyncSession,
     limit: int,
     days: int,
     max_pages: int,
@@ -302,6 +329,7 @@ async def load_due_pool_fill_targets(
         .where(due_condition)
         .order_by(unpolled_priority, WatchedWallet.last_polled_at.asc().nulls_first())
         .limit(limit)
+        .with_for_update(skip_locked=True)
     )
     if exclude_addresses:
         statement = statement.where(WatchedWallet.address.not_in(exclude_addresses))

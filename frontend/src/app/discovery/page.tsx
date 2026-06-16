@@ -1,6 +1,5 @@
 import {
   AlertTriangle,
-  ArrowUpRight,
   CheckCircle2,
   Clock3,
   Compass,
@@ -8,8 +7,6 @@ import {
   Filter,
   ListChecks,
   Search,
-  TrendingUp,
-  WalletCards,
   X,
   type LucideIcon,
 } from "lucide-react";

@@ -4,20 +4,22 @@ import signal
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import case, desc, select
+from sqlalchemy import case, desc, func, select
 
 from app.core.config import get_settings
 from app.core.logging import configure_logging
-from app.db.models import WatchedWallet
+from app.db.models import PaperPosition, WalletScore, WatchedWallet
 from app.db.session import get_sessionmaker
 from app.integrations.hyperliquid_ws_client import HyperliquidWebSocketError, stream_user_fills
 from app.integrations.redis_client import get_redis
 from app.services.discovery_service import run_discovery_import
+from app.services.job_lock_service import JobLockAlreadyHeldError, job_lock
 from app.services.operation_status_service import (
     mark_operation_failed,
     mark_operation_started,
     mark_operation_succeeded,
 )
+from app.services.paper_trading_service import process_paper_copy_fills
 from app.services.pool_fill_import_service import import_due_pool_wallet_fills
 from app.services.realtime_event_service import publish_event
 from app.services.realtime_fill_service import store_realtime_fills
@@ -185,6 +187,7 @@ async def run_realtime_monitor_loop(
                 sessionmaker=sessionmaker,
                 redis=redis,
                 wallet_addresses=wallet_addresses_for_subscription,
+                settings=settings,
             )
 
         try:
@@ -216,6 +219,9 @@ def main() -> None:
 
 
 async def load_realtime_wallets(*, sessionmaker: Any, max_wallets: int) -> list[str]:
+    if max_wallets <= 0:
+        return []
+
     tier_priority = case(
         (WatchedWallet.polling_tier == "active", 0),
         (WatchedWallet.polling_tier == "exit_only", 1),
@@ -224,19 +230,57 @@ async def load_realtime_wallets(*, sessionmaker: Any, max_wallets: int) -> list[
         else_=4,
     )
     async with sessionmaker() as session:
-        result = await session.execute(
+        retained_result = await session.execute(
+            select(PaperPosition.source_wallet)
+            .outerjoin(WalletScore, WalletScore.wallet_address == PaperPosition.source_wallet)
+            .where(PaperPosition.source_wallet != "")
+            .group_by(PaperPosition.source_wallet)
+            .order_by(
+                func.max(WalletScore.score).desc().nulls_last(),
+                PaperPosition.source_wallet.asc(),
+            )
+            .limit(max_wallets)
+        )
+        retained_addresses = [
+            str(address).lower()
+            for address in retained_result.scalars().all()
+            if address
+        ]
+        remaining_slots = max_wallets - len(retained_addresses)
+        if remaining_slots <= 0:
+            return retained_addresses
+
+        candidate_query = (
             select(WatchedWallet.address)
+            .outerjoin(WalletScore, WalletScore.wallet_address == WatchedWallet.address)
             .where(
                 WatchedWallet.enabled.is_(True),
+                WatchedWallet.polling_tier != "cooldown",
                 (
-                    WatchedWallet.polling_tier.in_(["active", "exit_only", "candidate"])
+                    (WalletScore.score > 0)
+                    | WatchedWallet.polling_tier.in_(["active", "exit_only", "candidate"])
                     | WatchedWallet.copy_enabled.is_(True)
                 ),
             )
-            .order_by(tier_priority, desc(WatchedWallet.last_seen_fill_at).nulls_last())
-            .limit(max_wallets)
+            .order_by(
+                WalletScore.score.desc().nulls_last(),
+                tier_priority,
+                desc(WatchedWallet.last_seen_fill_at).nulls_last(),
+            )
+            .limit(remaining_slots)
         )
-        return list(result.scalars().all())
+        if retained_addresses:
+            candidate_query = candidate_query.where(
+                ~WatchedWallet.address.in_(retained_addresses)
+            )
+
+        result = await session.execute(candidate_query)
+        candidate_addresses = [
+            str(address).lower()
+            for address in result.scalars().all()
+            if address
+        ]
+        return retained_addresses + candidate_addresses
 
 
 async def run_discovery_import_loop(
@@ -293,6 +337,8 @@ async def run_discovery_import_loop(
                     "limit": result.limit,
                 },
             )
+        except JobLockAlreadyHeldError as exc:
+            logger.info("discovery import skipped: %s", exc)
         except Exception as exc:
             logger.exception("discovery import failed")
             await publish_event(
@@ -369,6 +415,8 @@ async def run_pool_fill_import_loop(
                     redis=redis,
                     settings=settings,
                 )
+        except JobLockAlreadyHeldError as exc:
+            logger.info("pool fill import skipped: %s", exc)
         except Exception as exc:
             logger.exception("pool fill import failed")
             await publish_event(
@@ -426,6 +474,8 @@ async def run_wallet_scoring_once(
             ),
             payload=result.model_dump(mode="json"),
         )
+    except JobLockAlreadyHeldError as exc:
+        logger.info("wallet scoring skipped: %s", exc)
     except Exception as exc:
         logger.exception("wallet scoring failed")
         await publish_event(
@@ -449,30 +499,33 @@ async def run_wallet_prune_once(
     }
     try:
         async with sessionmaker() as session:
-            await mark_operation_started(session, key="wallet_prune", payload=payload)
-            result = await prune_all_wallets(
-                session,
-                dry_run=settings.wallet_prune_worker_dry_run,
-                high_fill_min_fills=settings.wallet_prune_low_score_min_fills,
-                high_fill_score_threshold=settings.wallet_prune_low_score_threshold,
-                high_fill_score_operator=settings.wallet_prune_low_score_operator,
-                min_closed_trades=settings.wallet_prune_min_closed_trades,
-                max_drawdown_threshold_pct=settings.wallet_prune_max_drawdown_pct,
-                current_drawdown_threshold_ratio=settings.wallet_prune_unrealized_loss_ratio,
-                current_drawdown_concurrency=settings.wallet_prune_current_state_concurrency,
-                limit=settings.wallet_prune_worker_limit,
-            )
-            await mark_operation_succeeded(
-                session,
-                key="wallet_prune",
-                payload={
-                    **payload,
-                    "scannedWallets": result.scanned_wallets,
-                    "candidateWallets": result.candidate_wallets,
-                    "deletedWallets": result.deleted_wallets,
-                    "deletedFills": result.deleted_fills,
-                },
-            )
+            async with job_lock(session, key="wallet_prune", ttl_seconds=4 * 60 * 60):
+                await mark_operation_started(session, key="wallet_prune", payload=payload)
+                result = await prune_all_wallets(
+                    session,
+                    dry_run=settings.wallet_prune_worker_dry_run,
+                    high_fill_min_fills=settings.wallet_prune_low_score_min_fills,
+                    high_fill_score_threshold=settings.wallet_prune_low_score_threshold,
+                    high_fill_score_operator=settings.wallet_prune_low_score_operator,
+                    min_closed_trades=settings.wallet_prune_min_closed_trades,
+                    max_drawdown_threshold_pct=settings.wallet_prune_max_drawdown_pct,
+                    current_drawdown_threshold_ratio=settings.wallet_prune_unrealized_loss_ratio,
+                    current_drawdown_concurrency=settings.wallet_prune_current_state_concurrency,
+                    limit=settings.wallet_prune_worker_limit,
+                    use_lock=False,
+                )
+                await mark_operation_succeeded(
+                    session,
+                    key="wallet_prune",
+                    payload={
+                        **payload,
+                        "scannedWallets": result.scanned_wallets,
+                        "candidateWallets": result.candidate_wallets,
+                        "erroredWallets": result.errored_wallets,
+                        "deletedWallets": result.deleted_wallets,
+                        "deletedFills": result.deleted_fills,
+                    },
+                )
         logger.info(
             "wallet prune completed scanned=%s candidates=%s deleted_wallets=%s deleted_fills=%s",
             result.scanned_wallets,
@@ -493,10 +546,13 @@ async def run_wallet_prune_once(
                 **payload,
                 "scannedWallets": result.scanned_wallets,
                 "candidateWallets": result.candidate_wallets,
+                "erroredWallets": result.errored_wallets,
                 "deletedWallets": result.deleted_wallets,
                 "deletedFills": result.deleted_fills,
             },
         )
+    except JobLockAlreadyHeldError as exc:
+        logger.info("wallet prune skipped: %s", exc)
     except Exception as exc:
         logger.exception("wallet prune failed")
         async with sessionmaker() as session:
@@ -521,6 +577,7 @@ async def handle_websocket_message(
     sessionmaker: Any,
     redis: Any,
     wallet_addresses: list[str],
+    settings: Any,
 ) -> None:
     channel = message.get("channel")
     if channel in {"subscriptionResponse", "pong"}:
@@ -589,6 +646,47 @@ async def handle_websocket_message(
                 "fill": fill,
             },
         )
+
+    if (
+        settings.paper_trading_enabled
+        and settings.paper_copy_enabled
+        and stored.inserted_rows
+    ):
+        try:
+            async with sessionmaker() as session:
+                paper_result = await process_paper_copy_fills(
+                    session,
+                    source_wallet=stored.wallet_address,
+                    fills=stored.inserted_rows,
+                    settings=settings,
+                )
+            if paper_result.processed_fills > 0 or paper_result.skipped_fills > 0:
+                await publish_event(
+                    redis,
+                    event_type="paper_copy",
+                    channel="events:fills",
+                    message=(
+                        f"Paper copied {paper_result.processed_fills} fills from "
+                        f"{short_address(stored.wallet_address)}."
+                    ),
+                    payload={
+                        "walletAddress": stored.wallet_address,
+                        "processedFills": paper_result.processed_fills,
+                        "skippedFills": paper_result.skipped_fills,
+                        "accountsUpdated": paper_result.accounts_updated,
+                        "realizedPnlUsd": str(paper_result.realized_pnl_usd),
+                        "feeUsd": str(paper_result.fee_usd),
+                    },
+                )
+        except Exception as exc:
+            logger.exception("paper copy processing failed wallet=%s", stored.wallet_address)
+            await publish_event(
+                redis,
+                event_type="paper_copy_error",
+                channel="events:system",
+                message="Paper copy processing failed.",
+                payload={"walletAddress": stored.wallet_address, "error": str(exc)},
+            )
 
 
 async def sleep_until_stop(stop_event: asyncio.Event, seconds: int) -> None:

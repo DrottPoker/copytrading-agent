@@ -4,56 +4,64 @@ services:
       context: ./backend
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     env_file:
-      - path: .env
-        required: false
+      - .env
     environment:
       WORKER_RUN_IN_API_PROCESS: "false"
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     depends_on:
       - redis
+    restart: unless-stopped
 
   worker:
     build:
       context: ./backend
     command: python -m app.workers.monitor_worker
     env_file:
-      - path: .env
-        required: false
+      - .env
     depends_on:
       - redis
+    restart: unless-stopped
 
   frontend:
     build:
       context: ./frontend
     environment:
       SERVER_API_BASE_URL: http://backend:8000
-      DASHBOARD_AUTH_USERNAME: ${DASHBOARD_AUTH_USERNAME:-admin}
-      DASHBOARD_AUTH_PASSWORD: ${DASHBOARD_AUTH_PASSWORD:-change-me}
-    ports:
-      - "3000:3000"
+      DASHBOARD_AUTH_USERNAME: ${DASHBOARD_AUTH_USERNAME}
+      DASHBOARD_AUTH_PASSWORD: ${DASHBOARD_AUTH_PASSWORD}
+    expose:
+      - "3000"
     depends_on:
       - backend
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
-    command: redis-server --appendonly no --save ""
+    command: redis-server --appendonly yes --save 60 1
+    volumes:
+      - redis_data:/data
     expose:
       - "6379"
+    restart: unless-stopped
 
   caddy:
     image: caddy:2-alpine
+    environment:
+      DASHBOARD_DOMAIN: ${DASHBOARD_DOMAIN}
     ports:
-      - "8080:8080"
-      - "8001:8001"
+      - "80:80"
+      - "443:443"
     volumes:
-      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./infra/Caddyfile.vps:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
       - frontend
       - backend
+    restart: unless-stopped
 
 volumes:
   caddy_data:
   caddy_config:
+  redis_data:

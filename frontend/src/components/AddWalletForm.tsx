@@ -4,7 +4,7 @@ import { Plus } from "lucide-react";
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 
-import { getPublicApiBaseUrl } from "@/lib/api";
+import { getPublicApiBaseUrl } from "@/lib/config";
 
 const addressPattern = /^0x[a-fA-F0-9]{40}$/;
 

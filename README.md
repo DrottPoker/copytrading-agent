@@ -34,6 +34,11 @@ Current schema includes:
 - `source_trade_links`
 - `risk_events`
 - `settings`
+- `job_locks`
+- `paper_trading_accounts`
+- `paper_copy_allocations`
+- `paper_positions`
+- `paper_copy_fills`
 - `audit_logs`
 
 Run migrations from the repository root:
@@ -46,6 +51,12 @@ Check current migration:
 
 ```bash
 .\.venv\Scripts\python.exe -m alembic -c backend\alembic.ini current
+```
+
+When running with Docker Compose, use:
+
+```bash
+docker compose -f docker-compose.vps.yml run --rm backend python -m alembic upgrade head
 ```
 
 ## Phase 3
@@ -118,8 +129,8 @@ Notes:
 
 Realtime fill monitoring is available through the worker, Redis, API events, and dashboard.
 
-The worker also imports the public Hyperliquid 30D leaderboard into the wallet
-pool every 24 hours by default.
+Automated sourcing now runs through Discovery. The legacy direct leaderboard
+import worker loop is disabled by default.
 
 Worker loops:
 
@@ -128,6 +139,11 @@ That means starting the backend also starts discovery, pool reimport, wallet
 scoring, pruning, and realtime monitoring. Run `python -m app.workers.monitor_worker`
 separately only if you first set `worker_run_in_api_process` to `false`.
 
+Docker Compose runs a dedicated `worker` service and overrides
+`WORKER_RUN_IN_API_PROCESS=false` for the backend service. That keeps one worker
+owner in compose while preserving the single-process default for local backend
+development.
+
 API:
 
 - `POST /leaderboard/import`
@@ -135,17 +151,23 @@ API:
 - `POST /wallets/prune-all`
 - `GET /events/recent`
 - `GET /events` Server-Sent Events stream
+- `GET /paper-trading`
 
 Dashboard:
 
 - `http://127.0.0.1:3000/live-feed`
+- `http://127.0.0.1:3000/paper-trading`
 
 Notes:
 
 - The worker subscribes to Hyperliquid `userFills` for up to `max_realtime_wallets`.
+- Realtime subscriptions reserve slots for source wallets with open paper
+  positions first, then fill remaining slots with the highest positive
+  `wallet_scores.score` wallets and active, exit-only, candidate, or copy-enabled
+  fallback wallets.
 - Automated sourcing runs through Discovery using `backend/config/discovery.json`.
 - Discovery defaults to the configured Hyperliquid leaderboard and Hyperdash sources.
-- Discovery auto-import runs every hour by default.
+- Discovery auto-import runs every 6 hours by default.
 - Discovery imports only new addresses, skipping wallets already in candidates or in the pool.
 - Discovery prefilters new candidates, then backfills accepted candidates.
 - Candidates that pass backfill quality checks are inserted directly into the wallet pool.
@@ -156,12 +178,72 @@ Notes:
   and current drawdown cleanup in one reviewed operation.
 - Pool wallets are incrementally refreshed from their last poll time with a small overlap.
 - Manual pool reimport forces the enabled pool to refresh regardless of last poll time.
-- The worker runs pool maintenance every 10 minutes by default: pool reimport,
+- The worker runs pool maintenance every 30 minutes by default: pool reimport,
   wallet scoring, then configured prune rules.
+- Worker pruning is intentionally sharp by default. `backend/config/prune.json`
+  sets `wallet_prune_worker_dry_run` to `false`, so scheduled pruning deletes
+  matching wallets and related rows after pool import.
+- Discovery import, pool import, scoring, and pruning use database-backed job
+  locks so the API process, worker service, and manual dashboard actions do not
+  run the same long job concurrently.
 - The pool fill importer works through all due wallets in configured batches so older pool wallets are not left unpolled.
 - Snapshot messages are stored safely through the same dedupe key as historical imports.
 - Non-snapshot realtime fills are published to Redis and shown in the live feed.
-- The realtime selector only monitors active, exit-only, candidate, or copy-enabled wallets.
+- Non-snapshot realtime fills for selected scored wallets feed paper copy simulation.
+- A source wallet that falls out of the top 10 stays monitored while any paper
+  account still has an open position from that source. When those positions are
+  closed, the slot is released to the next highest eligible wallet.
+
+## Phase 6
+
+Paper copy simulation is available as the first execution layer.
+
+API:
+
+- `GET /paper-trading`
+
+Dashboard:
+
+- `http://127.0.0.1:3000/paper-trading`
+
+Config:
+
+- `backend/config/paper_trading.json`
+
+Default paper accounts:
+
+- `paper_1000`: starts with 1,000 USD.
+- `paper_10000`: starts with 10,000 USD.
+
+Sizing policy:
+
+- The top 10 scored wallets are eligible for paper copy allocation.
+- Open paper-position sources have realtime priority until exit, so a newly
+  promoted top 10 wallet may wait for a free subscription slot.
+- All top 10 ranks receive a 20% account pocket.
+- Total open copied margin is capped at 80% of each paper account equity.
+- Paper order size is based on source fill notional divided by source account
+  value, scaled inside that source wallet's pocket.
+- Paper copy reads the source wallet's current per-coin leverage from
+  Hyperliquid `clearinghouseState` and uses it for margin accounting. If leverage
+  is unavailable for a coin, paper falls back to 1x.
+- A configurable fee rate is applied to paper fills.
+- Paper opens below `paper_copy_min_order_notional_usd` are skipped before any
+  position is created.
+- Paper execution waits the configured simulated latency, reads live mids, and
+  applies adverse slippage to the execution price.
+- Paper fills are skipped when live mid price drift from the source fill price
+  is above the configured drift limit.
+- Skip reasons distinguish minimum notional, source-wallet pocket cap, total
+  account cap, missing matching positions, and price safety guards.
+
+Notes:
+
+- This is paper money only. It never places Hyperliquid orders.
+- Historical fills are not backfilled into paper accounts yet. Only new
+  non-snapshot realtime fills are simulated.
+- Existing paper account balances are not reset when `starting_balance_usd` is
+  edited. A reset workflow should be added before serious experiments.
 
 ## Local Development
 
@@ -169,6 +251,7 @@ Tweakable non-secret settings live in config files:
 
 - `backend/config/app.json`
 - `backend/config/discovery.json`
+- `backend/config/paper_trading.json`
 - `backend/config/prune.json`
 - `backend/config/scoring.json`
 - `frontend/config/app.json`
@@ -179,14 +262,17 @@ Use `.env` only for secrets and connection strings:
 cp .env.example .env
 ```
 
+Change `DASHBOARD_AUTH_PASSWORD` before exposing the dashboard or API. Backend
+auth is enabled by default and protects every route except `/health` and
+`/ready`. The dashboard sends backend credentials from the Next.js server and
+proxies browser API calls through `/api/backend`, so credentials are not placed in
+the client bundle.
+
 Run the stack:
 
 ```bash
 docker compose up --build
 ```
-
-If the frontend runs inside Docker, set `frontend/config/app.json` `serverApiBaseUrl`
-to `http://backend:8000` before building the image.
 
 Services:
 
@@ -195,6 +281,24 @@ Services:
 - Health: http://localhost:8000/health
 - Caddy dashboard proxy: http://localhost:8080
 - Caddy API proxy: http://localhost:8001
+
+## VPS Deployment
+
+Use `docker-compose.vps.yml` for a Linux VPS. It exposes only Caddy on ports 80
+and 443, keeps backend and frontend on the internal Docker network, and persists
+Redis data in a Docker volume.
+
+Required first-time flow:
+
+```bash
+cp .env.example .env
+# Edit DATABASE_URL, DATABASE_URL_DIRECT, DASHBOARD_AUTH_PASSWORD, and DASHBOARD_DOMAIN.
+docker compose -f docker-compose.vps.yml build
+docker compose -f docker-compose.vps.yml run --rm backend python -m alembic upgrade head
+docker compose -f docker-compose.vps.yml up -d
+```
+
+Full guide: [docs/deployment.md](docs/deployment.md)
 
 ## Safety Defaults
 
@@ -209,3 +313,7 @@ Live trading is disabled in `backend/config/app.json` unless both flags are expl
 
 Do not enable live trading before paper trading proves edge after delay, fees,
 slippage, and exit behavior.
+
+Current wallet scoring feeds paper copy allocation, but it is still a research
+ranking signal. Do not use it for live allocation until paper performance has
+been validated with latency, slippage, exits, and account-level risk controls.
