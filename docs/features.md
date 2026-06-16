@@ -409,6 +409,11 @@ What it does:
 - Converts new non-snapshot realtime source fills into simulated paper fills.
 - Sizes an open by `source fill notional / source account value`, scaled inside
   that wallet's paper allocation pocket.
+- Fetches source account value from Hyperliquid `clearinghouseState`, which is
+  perp account state. Spot balances are not used for paper copy sizing.
+- Fetches `clearinghouseState` per perp dex when fills use prefixed coins such
+  as `dex:COIN`, so account value, leverage, and open positions are read from
+  the matching perp venue.
 - Reads source per-coin leverage from Hyperliquid `clearinghouseState` and uses
   it for paper margin accounting. If leverage is unavailable for a coin, paper
   falls back to 1x.

@@ -23,7 +23,7 @@ from app.schemas.paper_trading import (
     PaperTradingPolicyRead,
     PaperTradingSummaryResponse,
 )
-from app.services.wallet_current_state_service import decimal_value, object_or_empty
+from app.services.wallet_current_state_service import object_or_empty
 
 logger = logging.getLogger(__name__)
 ZERO = Decimal("0")
@@ -41,8 +41,10 @@ class PaperSourceAllocation:
 
 @dataclass(frozen=True)
 class PaperSourceAccountState:
+    dex: str
     account_value: Decimal
     leverage_by_coin: dict[str, Decimal]
+    skip_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -151,22 +153,11 @@ async def process_paper_copy_fills(
                 client=hyperliquid_client,
             )
 
-    source_account_state = await load_source_account_state(
+    source_account_states = await load_source_account_states(
         client=client,
         source_wallet=source_wallet,
+        fills=fills,
     )
-    source_account_value = source_account_state.account_value
-    if source_account_value <= ZERO:
-        result = await record_batch_skip(
-            session,
-            accounts=accounts,
-            allocation=allocation,
-            fills=fills,
-            reason="source_account_value_unavailable",
-            settings=resolved_settings,
-        )
-        await session.commit()
-        return result
 
     market_prices = await load_execution_market_prices(
         client=client,
@@ -181,6 +172,30 @@ async def process_paper_copy_fills(
     accounts_updated: set[str] = set()
 
     for fill in fills:
+        source_account_state = source_account_states.get(dex_from_coin(fill.get("coin")))
+        if source_account_state is None:
+            skip_result = await record_skip_for_accounts(
+                session,
+                accounts=accounts,
+                allocation=allocation,
+                fill=fill,
+                reason="source_account_state_missing",
+                settings=resolved_settings,
+            )
+            skipped += skip_result.skipped_fills
+            continue
+        if source_account_state.skip_reason is not None:
+            skip_result = await record_skip_for_accounts(
+                session,
+                accounts=accounts,
+                allocation=allocation,
+                fill=fill,
+                reason=source_account_state.skip_reason,
+                settings=resolved_settings,
+            )
+            skipped += skip_result.skipped_fills
+            continue
+
         parts = plan_source_fill(fill)
         if not parts:
             skip_result = await record_skip_for_accounts(
@@ -202,7 +217,7 @@ async def process_paper_copy_fills(
                     allocation=allocation,
                     fill=fill,
                     part=part,
-                    source_account_value=source_account_value,
+                    source_account_value=source_account_state.account_value,
                     source_leverages=source_account_state.leverage_by_coin,
                     market_prices=market_prices,
                     settings=resolved_settings,
@@ -348,24 +363,79 @@ async def load_enabled_paper_accounts(session: AsyncSession) -> list[PaperTradin
     return list(result.scalars().all())
 
 
+async def load_source_account_states(
+    *,
+    client: HyperliquidClient,
+    source_wallet: str,
+    fills: list[dict[str, Any]],
+) -> dict[str, PaperSourceAccountState]:
+    dexes = {dex_from_coin(fill.get("coin")) for fill in fills}
+    if not dexes:
+        dexes.add("")
+
+    states: dict[str, PaperSourceAccountState] = {}
+    for dex in sorted(dexes):
+        states[dex] = await load_source_account_state(
+            client=client,
+            source_wallet=source_wallet,
+            dex=dex,
+        )
+    return states
+
+
 async def load_source_account_state(
     *,
     client: HyperliquidClient,
     source_wallet: str,
+    dex: str,
 ) -> PaperSourceAccountState:
     try:
-        clearinghouse_state = await client.clearinghouse_state(user=source_wallet)
+        clearinghouse_state = await client.clearinghouse_state(
+            user=source_wallet,
+            dex=dex or None,
+        )
     except Exception as exc:
         logger.warning(
-            "paper copy source account fetch failed wallet=%s error=%s",
+            "paper copy source account fetch failed wallet=%s dex=%s error=%s",
             source_wallet,
+            dex or "default",
             exc,
         )
-        return PaperSourceAccountState(account_value=ZERO, leverage_by_coin={})
+        return PaperSourceAccountState(
+            dex=dex,
+            account_value=ZERO,
+            leverage_by_coin={},
+            skip_reason="source_account_state_fetch_failed",
+        )
 
-    margin_summary = object_or_empty(clearinghouse_state.get("marginSummary"))
+    margin_summary_raw = clearinghouse_state.get("marginSummary")
+    if not isinstance(margin_summary_raw, dict):
+        return PaperSourceAccountState(
+            dex=dex,
+            account_value=ZERO,
+            leverage_by_coin=parse_source_leverages(clearinghouse_state),
+            skip_reason="source_account_margin_summary_missing",
+        )
+
+    account_value = decimal_or_none(margin_summary_raw.get("accountValue"))
+    if account_value is None:
+        return PaperSourceAccountState(
+            dex=dex,
+            account_value=ZERO,
+            leverage_by_coin=parse_source_leverages(clearinghouse_state),
+            skip_reason="source_account_value_missing",
+        )
+    if account_value <= ZERO:
+        return PaperSourceAccountState(
+            dex=dex,
+            account_value=ZERO,
+            leverage_by_coin=parse_source_leverages(clearinghouse_state),
+            skip_reason="source_account_value_zero",
+        )
+
     return PaperSourceAccountState(
-        account_value=decimal_value(margin_summary.get("accountValue")),
+        dex=dex,
+        account_value=account_value,
         leverage_by_coin=parse_source_leverages(clearinghouse_state),
     )
 
@@ -1427,6 +1497,14 @@ def price_drift_bps(*, source_price: Decimal, observed_price: Decimal) -> Decima
 def raw_json_from_fill(fill: dict[str, Any]) -> dict[str, Any]:
     raw_json = fill.get("rawJson")
     return raw_json if isinstance(raw_json, dict) else {}
+
+
+def dex_from_coin(value: Any) -> str:
+    coin = str(value or "").strip()
+    if ":" not in coin:
+        return ""
+    dex = coin.split(":", maxsplit=1)[0].strip()
+    return dex
 
 
 def side_from_fill_direction(value: Any) -> str:

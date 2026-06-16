@@ -145,8 +145,11 @@ class HyperliquidClient:
             )
         return [item for item in result if isinstance(item, dict)]
 
-    async def clearinghouse_state(self, *, user: str) -> dict[str, Any]:
-        result = await self.post_info({"type": "clearinghouseState", "user": user})
+    async def clearinghouse_state(self, *, user: str, dex: str | None = None) -> dict[str, Any]:
+        payload = {"type": "clearinghouseState", "user": user}
+        if dex:
+            payload["dex"] = dex
+        result = await self.post_info(payload)
         if not isinstance(result, dict):
             raise HyperliquidClientError(
                 "Hyperliquid clearinghouseState returned an unexpected shape."

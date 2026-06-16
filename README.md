@@ -224,6 +224,8 @@ Sizing policy:
 - Total open copied margin is capped at 80% of each paper account equity.
 - Paper order size is based on source fill notional divided by source account
   value, scaled inside that source wallet's pocket.
+- Source account value is fetched from Hyperliquid `clearinghouseState` per perp
+  dex. Spot balances are not used for paper copy sizing.
 - Paper copy reads the source wallet's current per-coin leverage from
   Hyperliquid `clearinghouseState` and uses it for margin accounting. If leverage
   is unavailable for a coin, paper falls back to 1x.
