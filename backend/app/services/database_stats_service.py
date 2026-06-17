@@ -216,12 +216,13 @@ async def get_score_stats(session: AsyncSession) -> DatabaseScoreStats:
         """
         select
           count(*) as scored_wallets,
-          avg(score) as average_score,
-          max(score) as best_score,
-          count(*) filter (where score <= 0) as zero_or_negative,
-          count(*) filter (where score >= 70) as above_70,
-          max(updated_at) as last_scored_at
-        from wallet_scores
+          avg(ws.score) as average_score,
+          max(ws.score) as best_score,
+          count(*) filter (where ws.score <= 0) as zero_or_negative,
+          count(*) filter (where ws.score >= 70) as above_70,
+          max(ws.updated_at) as last_scored_at
+        from wallet_scores ws
+        join watched_wallets ww on ww.address = ws.wallet_address
         """,
     )
     return DatabaseScoreStats(

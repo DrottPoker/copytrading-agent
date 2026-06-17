@@ -32,6 +32,9 @@ Current schema includes:
 - `copy_signals`
 - `copy_trades`
 - `source_trade_links`
+- `source_trades`
+- `source_trade_ignored_fills`
+- `source_trade_sync_states`
 - `risk_events`
 - `settings`
 - `job_locks`
@@ -128,6 +131,12 @@ Notes:
 - Fill rows store only compact configured raw payload fields to keep database growth under control.
 - Wallet scores can be recalculated with `POST /scores/recalculate` and are shown in the wallet pool.
 - Scoring reconstructs source perp trades and ignores close-only PnL from positions that opened before the observed import window.
+- Reconstructed source trades are materialized in `source_trades` and refreshed
+  only when a wallet's fill count or latest fill timestamp changes.
+- Consistency score now penalizes concentrated profits by measuring effective
+  winning trades from winning closed trade profit shares.
+- Score rows are kept only for wallets that still exist in the watched wallet
+  pool, so pruned wallets do not remain rankable through stale scores.
 - Wallet detail pages show reconstructed source trades from `GET /wallets/{address}/source-trades`.
 
 ## Phase 5
@@ -183,7 +192,10 @@ Notes:
   and current drawdown cleanup in one reviewed operation.
 - Wallet risk scoring can include current open perp drawdown from Hyperliquid.
   `backend/config/scoring.json` controls whether it is enabled, fetch concurrency,
-  and the max risk penalty.
+  missing-state penalty, and the max risk penalty.
+- Paper allocation only selects positive-score enabled wallets. When current
+  drawdown scoring is enabled, the source wallet must also have
+  `current_drawdown_status = "ok"` from its latest score.
 - Pool wallets are incrementally refreshed from their last poll time with a small overlap.
 - Manual pool reimport forces the enabled pool to refresh regardless of last poll time.
 - The worker runs pool maintenance every 30 minutes by default: pool reimport,

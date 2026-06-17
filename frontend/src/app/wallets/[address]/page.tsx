@@ -237,6 +237,8 @@ function ScoreBreakdownSection({
   const penalty = numberValue(scoreDetail?.penaltyScore ?? score.penaltyScore);
   const liquidationEvents = scoreDetail?.liquidationEventCount ?? scoreDetail?.liquidationCount ?? 0;
   const currentDrawdownPct = scoreDetail?.currentDrawdownPct ?? score.currentDrawdownPct;
+  const currentDrawdownStatus =
+    scoreDetail?.currentDrawdownStatus ?? score.currentDrawdownStatus;
 
   return (
     <section className="overflow-hidden rounded-lg border border-line bg-panel">
@@ -277,7 +279,10 @@ function ScoreBreakdownSection({
               <p>Win rate {formatPercent(score.winRate)}</p>
               <p>Profit factor {formatNullableNumber(score.profitFactor)}</p>
               <p>Historical max drawdown {formatPercent(score.maxDrawdownPct)}</p>
-              <p>Current drawdown {formatPercent(currentDrawdownPct)}</p>
+              <p>
+                Current drawdown {formatPercent(currentDrawdownPct)}
+                {formatCurrentDrawdownStatus(currentDrawdownStatus)}
+              </p>
             </div>
           </div>
 
@@ -1083,6 +1088,18 @@ function formatPercent(value: string | number | null) {
     maximumFractionDigits: 1,
     style: "percent",
   }).format(numberValue(value));
+}
+
+function formatCurrentDrawdownStatus(status: string | null | undefined) {
+  if (!status || status === "ok") {
+    return "";
+  }
+  const labels: Record<string, string> = {
+    disabled: "disabled",
+    unavailable: "unavailable",
+    zero_equity: "zero equity",
+  };
+  return ` (${labels[status] ?? status})`;
 }
 
 function formatNullableNumber(value: string | null) {

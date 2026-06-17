@@ -168,18 +168,26 @@ class Settings(BaseSettings):
     scoring_enabled: bool = True
     scoring_run_on_worker_start: bool = True
     scoring_interval_seconds: int = Field(default=600, ge=60)
-    scoring_window_days: int = Field(default=30, ge=1, le=365)
+    scoring_window_days: int = Field(default=60, ge=1, le=365)
     scoring_min_fills: int = Field(default=20, ge=1)
     scoring_target_fills: int = Field(default=100, ge=1)
     scoring_min_trades: int = Field(default=5, ge=1)
     scoring_target_trades: int = Field(default=25, ge=1)
+    scoring_target_profit_winners: int = Field(default=10, ge=1)
     scoring_target_active_days: int = Field(default=10, ge=1)
-    scoring_stale_days: int = Field(default=14, ge=1)
+    scoring_stale_days: int = Field(default=7, ge=1)
     scoring_liquidation_event_gap_seconds: int = Field(default=300, ge=1)
     scoring_liquidation_penalty_per_event: Decimal = Field(default=Decimal("2"), ge=0, le=100)
     scoring_liquidation_penalty_max: Decimal = Field(default=Decimal("10"), ge=0, le=100)
+    scoring_confidence_target_trades: int = Field(default=50, ge=1)
+    scoring_confidence_penalty_max: Decimal = Field(default=Decimal("20"), ge=0, le=100)
     scoring_current_drawdown_enabled: bool = True
     scoring_current_drawdown_concurrency: int = Field(default=8, ge=1, le=25)
+    scoring_current_drawdown_missing_penalty: Decimal = Field(
+        default=Decimal("18"),
+        ge=0,
+        le=100,
+    )
     scoring_current_drawdown_full_penalty_ratio: Decimal = Field(
         default=Decimal("0.40"),
         gt=0,

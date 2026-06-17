@@ -289,9 +289,10 @@ sequenceDiagram
   Worker->>API: periodic scoring service call
   UI->>API: POST /scores/recalculate
   API->>DB: aggregate wallet_fills over scoring window
-  API->>DB: reconstruct observed source trades from fill directions
+  API->>DB: refresh changed source_trades from fill directions
+  API->>DB: load materialized source trade metrics
   API->>HL: fetch default and known-dex live perp state for current drawdown
-  API->>DB: upsert wallet_scores
+  API->>DB: upsert wallet_scores and remove stale score rows
   API-->>UI: score run summary
   UI->>API: GET /wallets
   API-->>UI: wallets ordered by score
@@ -299,10 +300,16 @@ sequenceDiagram
 
 Risk score combines historical reconstructed-trade risk with current open perp
 drawdown when `scoring_current_drawdown_enabled` is true. Current drawdown is
-stored as `wallet_scores.current_drawdown_pct`; if live perp state is incomplete,
-the scoring run keeps the history-only risk score for that wallet. Scoring only
-checks default perp plus dexes already observed in stored fills, so full HIP-3
-discovery remains limited to single-wallet current-state views.
+stored as `wallet_scores.current_drawdown_pct` with
+`wallet_scores.current_drawdown_status`. If live perp state is incomplete or
+perp equity is zero, the scoring run keeps the history-only risk component and
+applies the configured missing-state penalty. Scoring only checks default perp
+plus dexes already observed in stored fills, so full HIP-3 discovery remains
+limited to single-wallet current-state views.
+Consistency score uses win rate, profit factor, active days, and profit
+distribution. Profit distribution is calculated from winning closed trades as
+effective winning trades, `1 / sum(profit_share^2)`, then scored against
+`scoring_target_profit_winners`.
 The scoring job lock uses a 30 minute TTL so a killed scoring process does not
 block future runs for the longer maintenance lock window.
 
@@ -315,8 +322,8 @@ sequenceDiagram
   participant DB as Postgres
 
   UI->>API: GET /wallets/{address}/source-trades
-  API->>DB: load fills with open and close directions
-  API->>API: reconstruct observed source trades
+  API->>DB: refresh materialized source trades when fills changed
+  API->>DB: load source_trades and source_trade_ignored_fills
   API-->>UI: closed trades, open trades, ignored-fill summary
 ```
 
@@ -411,6 +418,8 @@ sequenceDiagram
 Paper sizing uses `source fill notional / source perp equity` and applies that
 exposure inside each configured source-wallet pocket. Default pockets are 20% for
 each top 10 rank, with an 80% total open copied-margin cap per paper account.
+When current drawdown scoring is enabled, paper allocation only selects top
+score wallets whose latest `wallet_scores.current_drawdown_status` is `ok`.
 The worker reads source per-coin leverage from Hyperliquid `clearinghouseState`
 and uses `notional / leverage` for margin accounting. If leverage is unavailable
 for a coin, paper falls back to 1x. When live mids are enabled, dex-specific

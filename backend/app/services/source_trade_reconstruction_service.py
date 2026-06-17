@@ -4,13 +4,16 @@ from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import delete, text
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models import SourceTrade, SourceTradeIgnoredFill, SourceTradeSyncState
 from app.schemas.source_trade import SourceTradeListResponse, SourceTradeSummary
 from app.schemas.wallet import normalize_wallet_address
 
 ZERO = Decimal("0")
+ONE = Decimal("1")
 POSITION_EPSILON = Decimal("0.00000001")
 
 
@@ -36,6 +39,14 @@ class ReconstructedSourceTrade:
     net_pnl_usd: Decimal
     entry_fill_count: int
     close_fill_count: int
+
+
+@dataclass(frozen=True)
+class IgnoredSourceFill:
+    wallet_address: str
+    external_fill_id: str
+    timestamp_ms: int
+    reason: str
 
 
 @dataclass
@@ -143,6 +154,8 @@ class ReconstructedWalletTrades:
     notional_7d: Decimal = ZERO
     net_pnl_7d: Decimal = ZERO
     items: list[ReconstructedSourceTrade] = field(default_factory=list)
+    ignored_fills: list[IgnoredSourceFill] = field(default_factory=list)
+    winning_trade_pnls: list[Decimal] = field(default_factory=list)
     _cumulative_pnl_usd: Decimal = ZERO
     _peak_pnl_usd: Decimal = ZERO
 
@@ -165,6 +178,23 @@ class ReconstructedWalletTrades:
         if not self.coin_notional_usd:
             return ZERO
         return max(self.coin_notional_usd.values())
+
+    @property
+    def effective_winning_trade_count(self) -> Decimal | None:
+        if self.gross_profit_usd <= ZERO or not self.winning_trade_pnls:
+            return None
+        hhi = sum(
+            (
+                (profit_usd / self.gross_profit_usd)
+                * (profit_usd / self.gross_profit_usd)
+                for profit_usd in self.winning_trade_pnls
+                if profit_usd > ZERO
+            ),
+            ZERO,
+        )
+        if hhi <= ZERO:
+            return None
+        return ONE / hhi
 
     def record_closed_trade(
         self,
@@ -191,6 +221,7 @@ class ReconstructedWalletTrades:
         if net_pnl_usd > ZERO:
             self.gross_profit_usd += net_pnl_usd
             self.winning_trade_count += 1
+            self.winning_trade_pnls.append(net_pnl_usd)
         elif net_pnl_usd < ZERO:
             self.gross_loss_usd += net_pnl_usd.copy_abs()
             self.losing_trade_count += 1
@@ -232,6 +263,20 @@ class ReconstructedWalletTrades:
                 sequence=self.closed_trade_count + self.open_trade_count,
                 status="open",
                 closed_at_ms=None,
+            )
+        )
+
+    def record_ignored_fill(self, fill: "FillParts", *, reason: str) -> None:
+        if reason == "unmatched_close":
+            self.unmatched_close_fill_count += 1
+        elif reason == "preexisting_open":
+            self.preexisting_open_fill_count += 1
+        self.ignored_fills.append(
+            IgnoredSourceFill(
+                wallet_address=fill.wallet_address,
+                external_fill_id=fill.external_fill_id,
+                timestamp_ms=fill.timestamp_ms,
+                reason=reason,
             )
         )
 
@@ -324,7 +369,12 @@ async def list_reconstructed_source_trades(
     window_start_ms = int((now.timestamp() - days * 86_400) * 1000)
     start_24h_ms = int((now.timestamp() - 86_400) * 1000)
     start_7d_ms = int((now.timestamp() - 7 * 86_400) * 1000)
-    trades_by_wallet = await reconstruct_wallet_trades(
+    await sync_materialized_source_trades(
+        session,
+        include_disabled=True,
+        wallet_address=normalized_address,
+    )
+    trades_by_wallet = await load_materialized_wallet_trades(
         session,
         window_start_ms=window_start_ms,
         start_24h_ms=start_24h_ms,
@@ -357,6 +407,383 @@ async def list_reconstructed_source_trades(
             fee_usd=wallet_trades.fee_usd,
             net_pnl_usd=wallet_trades.net_pnl_usd,
         ),
+    )
+
+
+async def sync_materialized_source_trades(
+    session: AsyncSession,
+    *,
+    include_disabled: bool,
+    wallet_address: str | None = None,
+) -> int:
+    candidates = await load_source_trade_refresh_candidates(
+        session,
+        include_disabled=include_disabled,
+        wallet_address=wallet_address,
+    )
+    for candidate in candidates:
+        await refresh_materialized_source_trades_for_wallet(
+            session,
+            wallet_address=str(candidate["wallet_address"]),
+            fill_count=int(candidate["fill_count"] or 0),
+            last_fill_timestamp_ms=(
+                int(candidate["last_fill_timestamp_ms"])
+                if candidate["last_fill_timestamp_ms"] is not None
+                else None
+            ),
+        )
+    return len(candidates)
+
+
+async def load_source_trade_refresh_candidates(
+    session: AsyncSession,
+    *,
+    include_disabled: bool,
+    wallet_address: str | None,
+) -> list[Mapping[str, Any]]:
+    result = await session.execute(
+        text(
+            """
+            with target_wallets as (
+              select address
+              from watched_wallets
+              where (:include_disabled or enabled is true)
+                and (
+                  cast(:wallet_address as text) is null
+                  or address = cast(:wallet_address as text)
+                )
+            ),
+            fill_state as (
+              select
+                tw.address as wallet_address,
+                count(wf.id) as fill_count,
+                max(wf.timestamp_ms) as last_fill_timestamp_ms
+              from target_wallets tw
+              left join wallet_fills wf on wf.wallet_address = tw.address
+              group by tw.address
+            )
+            select
+              fs.wallet_address,
+              fs.fill_count,
+              fs.last_fill_timestamp_ms
+            from fill_state fs
+            left join source_trade_sync_states sts on sts.wallet_address = fs.wallet_address
+            where sts.wallet_address is null
+               or sts.fill_count <> fs.fill_count
+               or coalesce(sts.last_fill_timestamp_ms, -1)
+                  <> coalesce(fs.last_fill_timestamp_ms, -1)
+            order by fs.wallet_address
+            """
+        ),
+        {
+            "include_disabled": include_disabled,
+            "wallet_address": wallet_address,
+        },
+    )
+    return list(result.mappings().all())
+
+
+async def refresh_materialized_source_trades_for_wallet(
+    session: AsyncSession,
+    *,
+    wallet_address: str,
+    fill_count: int,
+    last_fill_timestamp_ms: int | None,
+) -> None:
+    trades_by_wallet = await reconstruct_wallet_trades(
+        session,
+        window_start_ms=0,
+        start_24h_ms=2**63 - 1,
+        start_7d_ms=2**63 - 1,
+        include_disabled=True,
+        wallet_address=wallet_address,
+    )
+    wallet_trades = trades_by_wallet.get(
+        wallet_address,
+        ReconstructedWalletTrades(wallet_address=wallet_address),
+    )
+
+    await session.execute(delete(SourceTrade).where(SourceTrade.wallet_address == wallet_address))
+    await session.execute(
+        delete(SourceTradeIgnoredFill).where(
+            SourceTradeIgnoredFill.wallet_address == wallet_address
+        )
+    )
+    records = [source_trade_record(item) for item in wallet_trades.items]
+    if records:
+        await session.execute(insert(SourceTrade).values(records))
+    ignored_records = [ignored_fill_record(item) for item in wallet_trades.ignored_fills]
+    if ignored_records:
+        await session.execute(insert(SourceTradeIgnoredFill).values(ignored_records))
+
+    stmt = insert(SourceTradeSyncState).values(
+        wallet_address=wallet_address,
+        fill_count=fill_count,
+        last_fill_timestamp_ms=last_fill_timestamp_ms,
+        unmatched_close_fill_count=wallet_trades.unmatched_close_fill_count,
+        preexisting_open_fill_count=wallet_trades.preexisting_open_fill_count,
+    )
+    await session.execute(
+        stmt.on_conflict_do_update(
+            index_elements=["wallet_address"],
+            set_={
+                "fill_count": stmt.excluded.fill_count,
+                "last_fill_timestamp_ms": stmt.excluded.last_fill_timestamp_ms,
+                "unmatched_close_fill_count": stmt.excluded.unmatched_close_fill_count,
+                "preexisting_open_fill_count": stmt.excluded.preexisting_open_fill_count,
+                "synced_at": text("now()"),
+            },
+        )
+    )
+
+
+def source_trade_record(item: ReconstructedSourceTrade) -> dict[str, Any]:
+    return {
+        "trade_key": item.id,
+        "wallet_address": item.wallet_address,
+        "coin": item.coin,
+        "side": item.side,
+        "status": item.status,
+        "opened_at_ms": item.opened_at_ms,
+        "closed_at_ms": item.closed_at_ms,
+        "duration_ms": item.duration_ms,
+        "entry_size": item.entry_size,
+        "closed_size": item.closed_size,
+        "remaining_size": item.remaining_size,
+        "entry_notional_usd": item.entry_notional_usd,
+        "close_notional_usd": item.close_notional_usd,
+        "average_entry_price": item.average_entry_price,
+        "average_exit_price": item.average_exit_price,
+        "realized_pnl_usd": item.realized_pnl_usd,
+        "fee_usd": item.fee_usd,
+        "net_pnl_usd": item.net_pnl_usd,
+        "entry_fill_count": item.entry_fill_count,
+        "close_fill_count": item.close_fill_count,
+    }
+
+
+def ignored_fill_record(item: IgnoredSourceFill) -> dict[str, Any]:
+    return {
+        "wallet_address": item.wallet_address,
+        "external_fill_id": item.external_fill_id,
+        "timestamp_ms": item.timestamp_ms,
+        "reason": item.reason,
+    }
+
+
+async def load_materialized_wallet_trades(
+    session: AsyncSession,
+    *,
+    window_start_ms: int,
+    start_24h_ms: int,
+    start_7d_ms: int,
+    include_disabled: bool,
+    wallet_address: str | None = None,
+) -> dict[str, ReconstructedWalletTrades]:
+    trades_by_wallet: dict[str, ReconstructedWalletTrades] = {}
+    await apply_materialized_ignored_fill_counts(
+        session,
+        trades_by_wallet=trades_by_wallet,
+        window_start_ms=window_start_ms,
+        include_disabled=include_disabled,
+        wallet_address=wallet_address,
+    )
+
+    result = await session.execute(
+        text(
+            """
+            select
+              st.trade_key,
+              st.wallet_address,
+              st.coin,
+              st.side,
+              st.status,
+              st.opened_at_ms,
+              st.closed_at_ms,
+              st.duration_ms,
+              st.entry_size,
+              st.closed_size,
+              st.remaining_size,
+              st.entry_notional_usd,
+              st.close_notional_usd,
+              st.average_entry_price,
+              st.average_exit_price,
+              st.realized_pnl_usd,
+              st.fee_usd,
+              st.net_pnl_usd,
+              st.entry_fill_count,
+              st.close_fill_count
+            from source_trades st
+            left join watched_wallets ww on ww.address = st.wallet_address
+            where (
+                cast(:wallet_address as text) is not null
+                or ww.address is not null
+              )
+              and (
+                cast(:wallet_address as text) is not null
+                or :include_disabled
+                or ww.enabled is true
+              )
+              and (
+                cast(:wallet_address as text) is null
+                or st.wallet_address = cast(:wallet_address as text)
+              )
+              and (
+                st.status = 'open'
+                or st.closed_at_ms >= :window_start_ms
+              )
+            order by st.wallet_address, coalesce(st.closed_at_ms, st.opened_at_ms), st.trade_key
+            """
+        ),
+        {
+            "window_start_ms": window_start_ms,
+            "include_disabled": include_disabled,
+            "wallet_address": wallet_address,
+        },
+    )
+    for row in result.mappings().all():
+        record_materialized_trade(
+            row,
+            trades_by_wallet=trades_by_wallet,
+            start_24h_ms=start_24h_ms,
+            start_7d_ms=start_7d_ms,
+        )
+    return trades_by_wallet
+
+
+async def apply_materialized_ignored_fill_counts(
+    session: AsyncSession,
+    *,
+    trades_by_wallet: dict[str, ReconstructedWalletTrades],
+    window_start_ms: int,
+    include_disabled: bool,
+    wallet_address: str | None,
+) -> None:
+    result = await session.execute(
+        text(
+            """
+            select
+              sif.wallet_address,
+              count(*) filter (where sif.reason = 'unmatched_close')
+                as unmatched_close_fill_count,
+              count(*) filter (where sif.reason = 'preexisting_open')
+                as preexisting_open_fill_count
+            from source_trade_ignored_fills sif
+            left join watched_wallets ww on ww.address = sif.wallet_address
+            where (
+                cast(:wallet_address as text) is not null
+                or ww.address is not null
+              )
+              and (
+                cast(:wallet_address as text) is not null
+                or :include_disabled
+                or ww.enabled is true
+              )
+              and (
+                cast(:wallet_address as text) is null
+                or sif.wallet_address = cast(:wallet_address as text)
+              )
+              and sif.timestamp_ms >= :window_start_ms
+            group by sif.wallet_address
+            """
+        ),
+        {
+            "window_start_ms": window_start_ms,
+            "include_disabled": include_disabled,
+            "wallet_address": wallet_address,
+        },
+    )
+    for row in result.mappings().all():
+        wallet_trades = get_wallet_trades(trades_by_wallet, str(row["wallet_address"]))
+        wallet_trades.unmatched_close_fill_count = int(row["unmatched_close_fill_count"] or 0)
+        wallet_trades.preexisting_open_fill_count = int(row["preexisting_open_fill_count"] or 0)
+
+
+def record_materialized_trade(
+    row: Mapping[str, Any],
+    *,
+    trades_by_wallet: dict[str, ReconstructedWalletTrades],
+    start_24h_ms: int,
+    start_7d_ms: int,
+) -> None:
+    wallet_trades = get_wallet_trades(trades_by_wallet, str(row["wallet_address"]))
+    item = reconstructed_source_trade_from_row(row)
+    if item.status == "open":
+        wallet_trades.open_trade_count += 1
+        wallet_trades.items.append(item)
+        return
+
+    closed_at_ms = int(item.closed_at_ms or item.opened_at_ms)
+    net_pnl_usd = item.net_pnl_usd
+    wallet_trades.closed_trade_count += 1
+    wallet_trades.entry_fill_count += item.entry_fill_count
+    wallet_trades.close_fill_count += item.close_fill_count
+    wallet_trades.unique_coins.add(item.coin)
+    wallet_trades.active_days.add(datetime.fromtimestamp(closed_at_ms / 1000, tz=UTC).date())
+    wallet_trades.coin_notional_usd[item.coin] = (
+        wallet_trades.coin_notional_usd.get(item.coin, ZERO) + item.entry_notional_usd
+    )
+    wallet_trades.total_entry_notional_usd += item.entry_notional_usd
+    wallet_trades.total_close_notional_usd += item.close_notional_usd
+    wallet_trades.realized_pnl_usd += item.realized_pnl_usd
+    wallet_trades.fee_usd += item.fee_usd
+    wallet_trades.net_pnl_usd += net_pnl_usd
+    if net_pnl_usd > ZERO:
+        wallet_trades.gross_profit_usd += net_pnl_usd
+        wallet_trades.winning_trade_count += 1
+        wallet_trades.winning_trade_pnls.append(net_pnl_usd)
+    elif net_pnl_usd < ZERO:
+        wallet_trades.gross_loss_usd += net_pnl_usd.copy_abs()
+        wallet_trades.losing_trade_count += 1
+
+    wallet_trades._cumulative_pnl_usd += net_pnl_usd
+    wallet_trades._peak_pnl_usd = max(
+        wallet_trades._peak_pnl_usd,
+        wallet_trades._cumulative_pnl_usd,
+    )
+    wallet_trades.max_drawdown_usd = max(
+        wallet_trades.max_drawdown_usd,
+        wallet_trades._peak_pnl_usd - wallet_trades._cumulative_pnl_usd,
+    )
+
+    if wallet_trades.first_trade_time_ms is None:
+        wallet_trades.first_trade_time_ms = closed_at_ms
+    wallet_trades.last_trade_time_ms = closed_at_ms
+
+    if closed_at_ms >= start_24h_ms:
+        wallet_trades.trades_24h += 1
+        wallet_trades.notional_24h += item.entry_notional_usd
+        wallet_trades.net_pnl_24h += net_pnl_usd
+    if closed_at_ms >= start_7d_ms:
+        wallet_trades.trades_7d += 1
+        wallet_trades.notional_7d += item.entry_notional_usd
+        wallet_trades.net_pnl_7d += net_pnl_usd
+
+    wallet_trades.items.append(item)
+
+
+def reconstructed_source_trade_from_row(row: Mapping[str, Any]) -> ReconstructedSourceTrade:
+    return ReconstructedSourceTrade(
+        id=str(row["trade_key"]),
+        wallet_address=str(row["wallet_address"]),
+        coin=str(row["coin"]),
+        side=str(row["side"]),
+        status=str(row["status"]),
+        opened_at_ms=int(row["opened_at_ms"]),
+        closed_at_ms=int(row["closed_at_ms"]) if row["closed_at_ms"] is not None else None,
+        duration_ms=int(row["duration_ms"]) if row["duration_ms"] is not None else None,
+        entry_size=decimal_value(row["entry_size"]),
+        closed_size=decimal_value(row["closed_size"]),
+        remaining_size=decimal_value(row["remaining_size"]),
+        entry_notional_usd=decimal_value(row["entry_notional_usd"]),
+        close_notional_usd=decimal_value(row["close_notional_usd"]),
+        average_entry_price=decimal_or_none(row["average_entry_price"]),
+        average_exit_price=decimal_or_none(row["average_exit_price"]),
+        realized_pnl_usd=decimal_value(row["realized_pnl_usd"]),
+        fee_usd=decimal_value(row["fee_usd"]),
+        net_pnl_usd=decimal_value(row["net_pnl_usd"]),
+        entry_fill_count=int(row["entry_fill_count"] or 0),
+        close_fill_count=int(row["close_fill_count"] or 0),
     )
 
 
@@ -413,6 +840,7 @@ def process_trade_fill(
     start_position = decimal_or_none(row["start_position"])
     fill = FillParts(
         wallet_address=wallet_address,
+        external_fill_id=str(row["external_fill_id"]),
         coin=coin,
         timestamp_ms=int(row["timestamp_ms"]),
         size=size,
@@ -469,6 +897,7 @@ def process_trade_fill(
 @dataclass(frozen=True)
 class FillParts:
     wallet_address: str
+    external_fill_id: str
     coin: str
     timestamp_ms: int
     size: Decimal
@@ -491,7 +920,7 @@ def apply_open(
         get_wallet_trades(
             trades_by_wallet,
             fill.wallet_address,
-        ).preexisting_open_fill_count += 1
+        ).record_ignored_fill(fill, reason="preexisting_open")
         return
 
     trade = existing_trade or OpenSourceTrade(
@@ -522,7 +951,7 @@ def apply_close(
     trade = open_trades.get(key)
     wallet_trades = get_wallet_trades(trades_by_wallet, fill.wallet_address)
     if trade is None:
-        wallet_trades.unmatched_close_fill_count += 1
+        wallet_trades.record_ignored_fill(fill, reason="unmatched_close")
         return ZERO
 
     closed_size = trade.add_close(
@@ -532,7 +961,7 @@ def apply_close(
         fee_usd=fill.fee_usd,
     )
     if closed_size < fill.size:
-        wallet_trades.unmatched_close_fill_count += 1
+        wallet_trades.record_ignored_fill(fill, reason="unmatched_close")
 
     if trade.is_closed:
         wallet_trades.record_closed_trade(
@@ -573,6 +1002,7 @@ def apply_flip(
         open_fill = proportional_fill(
             FillParts(
                 wallet_address=fill.wallet_address,
+                external_fill_id=fill.external_fill_id,
                 coin=fill.coin,
                 timestamp_ms=fill.timestamp_ms,
                 size=fill.size,
@@ -611,6 +1041,7 @@ def proportional_fill(fill: FillParts, *, size: Decimal) -> FillParts:
         ratio = size / fill.size
     return FillParts(
         wallet_address=fill.wallet_address,
+        external_fill_id=fill.external_fill_id,
         coin=fill.coin,
         timestamp_ms=fill.timestamp_ms,
         size=size,

@@ -414,6 +414,8 @@ What it does:
 - Syncs configured paper trading accounts from `backend/config/paper_trading.json`.
 - Defaults to two paper accounts, 1,000 USD and 10,000 USD.
 - Builds allocations from the top 10 positive wallet scores in the enabled wallet pool.
+- When current drawdown scoring is enabled, allocation only uses wallets whose
+  latest score has `current_drawdown_status = "ok"`.
 - Keeps source wallets with open paper positions subscribed until all copied
   positions from that source are closed, even if the source falls out of the top 10.
 - Makes newly promoted top 10 wallets wait when all realtime slots are occupied
@@ -607,6 +609,9 @@ The schema already includes tables for:
 - copy signals
 - copy trades
 - source trade links
+- source trades
+- source trade ignored fills
+- source trade sync states
 - risk events
 - settings
 - job locks
@@ -652,24 +657,40 @@ Purpose:
 
 Phase A behavior:
 
-- Uses imported fills from the configured scoring window, default 30 days.
+- Uses imported fills from the configured scoring window, default 60 days.
 - Stores the latest score in `wallet_scores`.
+- Deletes stale `wallet_scores` rows for wallets that no longer exist in the
+  watched wallet pool.
 - Scores wallets with no fills as 0 so they are visible but not rankable.
-- Reconstructs source perp trades from `raw_json.dir`.
+- Reconstructs source perp trades from `raw_json.dir`, materializes them in
+  `source_trades`, and refreshes a wallet's materialized trades only when its
+  fill count or latest fill timestamp changes.
+- Stores ignored source fills with timestamp and reason in
+  `source_trade_ignored_fills`, so ignored-fill penalties stay scoped to the
+  scoring window.
 - Counts only trades where the opening fill was observed before the close.
 - Ignores close-only PnL from positions opened before the imported window.
 - Uses reconstructed trade PnL, fees, notional, active days, recency, historical
-  drawdown, current drawdown, loss ratio, losing trade rate, and coin concentration.
+  drawdown, current drawdown, loss ratio, losing trade rate, profit distribution,
+  and coin concentration.
+- Consistency score includes profit distribution across winning closed trades.
+  It calculates effective winning trades as `1 / sum(profit_share^2)` and scores
+  it against `scoring_target_profit_winners`, so wallets where most profit comes
+  from one or two trades score lower than wallets with repeated independent wins.
 - The stored `max_drawdown_pct` is a historical realized drawdown metric from
   reconstructed closed trades. It does not include current open unrealized PnL.
 - When `scoring_current_drawdown_enabled` is true, scoring fetches live perp state
   from Hyperliquid for default perp and any perp dexes already observed in stored
-  wallet fills, then stores `current_drawdown_pct` on `wallet_scores`. Current
-  drawdown is open unrealized perp loss divided by perp equity.
+  wallet fills, then stores `current_drawdown_pct` and
+  `current_drawdown_status` on `wallet_scores`. Current drawdown is open
+  unrealized perp loss divided by perp equity.
 - Current drawdown reduces the risk component. By default it scales up to a 35
   point risk penalty at 40 percent current drawdown.
-- If current perp state cannot be fetched completely, the wallet keeps a
-  history-only risk score for that scoring run instead of using partial live data.
+- If current perp state cannot be fetched completely or perp equity is zero, the
+  wallet keeps a history-only risk component and receives the configured
+  `scoring_current_drawdown_missing_penalty`.
+- Adds a confidence penalty up to `scoring_confidence_penalty_max` until the
+  wallet reaches `scoring_confidence_target_trades`.
 - Groups liquidation fills into account-level liquidation events and keeps them as a
   separate final-score penalty instead of mixing them into the risk component.
 - Applies liquidation penalties from `backend/config/scoring.json`, default 2 points

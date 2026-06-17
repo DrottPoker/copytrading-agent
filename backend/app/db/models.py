@@ -131,6 +131,10 @@ class WalletPosition(Base):
 class WalletScore(Base):
     __tablename__ = "wallet_scores"
     __table_args__ = (
+        CheckConstraint(
+            "current_drawdown_status in ('ok', 'unavailable', 'zero_equity', 'disabled')",
+            name="ck_wallet_scores_current_drawdown_status",
+        ),
         Index("ix_wallet_scores_score", "score"),
         Index("ix_wallet_scores_updated_at", "updated_at"),
     )
@@ -161,6 +165,9 @@ class WalletScore(Base):
     profit_factor: Mapped[Decimal | None] = mapped_column(Numeric)
     max_drawdown_pct: Mapped[Decimal | None] = mapped_column(Numeric)
     current_drawdown_pct: Mapped[Decimal | None] = mapped_column(Numeric)
+    current_drawdown_status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'disabled'")
+    )
     trade_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     last_24h_score: Mapped[Decimal | None] = mapped_column(Numeric)
     last_7d_score: Mapped[Decimal | None] = mapped_column(Numeric)
@@ -311,6 +318,88 @@ class SourceTradeLink(Base, TimestampMixin):
     coin: Mapped[str] = mapped_column(Text, nullable=False)
     side: Mapped[str] = mapped_column(Text, nullable=False)
     link_type: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class SourceTrade(Base, UpdatedAtMixin):
+    __tablename__ = "source_trades"
+    __table_args__ = (
+        CheckConstraint(
+            "status in ('open', 'closed')",
+            name="ck_source_trades_status",
+        ),
+        CheckConstraint("side in ('long', 'short')", name="ck_source_trades_side"),
+        UniqueConstraint("trade_key", name="ux_source_trades_trade_key"),
+        Index("ix_source_trades_wallet_closed", "wallet_address", "closed_at_ms"),
+        Index("ix_source_trades_wallet_status", "wallet_address", "status"),
+        Index("ix_source_trades_wallet_coin", "wallet_address", "coin"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    trade_key: Mapped[str] = mapped_column(Text, nullable=False)
+    wallet_address: Mapped[str] = mapped_column(Text, nullable=False)
+    coin: Mapped[str] = mapped_column(Text, nullable=False)
+    side: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    opened_at_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    closed_at_ms: Mapped[int | None] = mapped_column(BigInteger)
+    duration_ms: Mapped[int | None] = mapped_column(BigInteger)
+    entry_size: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    closed_size: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    remaining_size: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    entry_notional_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    close_notional_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    average_entry_price: Mapped[Decimal | None] = mapped_column(Numeric)
+    average_exit_price: Mapped[Decimal | None] = mapped_column(Numeric)
+    realized_pnl_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    fee_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    net_pnl_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    entry_fill_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    close_fill_count: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class SourceTradeSyncState(Base):
+    __tablename__ = "source_trade_sync_states"
+
+    wallet_address: Mapped[str] = mapped_column(Text, primary_key=True)
+    fill_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    last_fill_timestamp_ms: Mapped[int | None] = mapped_column(BigInteger)
+    unmatched_close_fill_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    preexisting_open_fill_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    synced_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class SourceTradeIgnoredFill(Base):
+    __tablename__ = "source_trade_ignored_fills"
+    __table_args__ = (
+        CheckConstraint(
+            "reason in ('unmatched_close', 'preexisting_open')",
+            name="ck_source_trade_ignored_fills_reason",
+        ),
+        UniqueConstraint(
+            "wallet_address",
+            "external_fill_id",
+            "reason",
+            name="ux_source_trade_ignored_fills_wallet_external_reason",
+        ),
+        Index("ix_source_trade_ignored_fills_wallet_timestamp", "wallet_address", "timestamp_ms"),
+        Index("ix_source_trade_ignored_fills_reason", "reason"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    wallet_address: Mapped[str] = mapped_column(Text, nullable=False)
+    external_fill_id: Mapped[str] = mapped_column(Text, nullable=False)
+    timestamp_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
 
 
 class RiskEvent(Base, TimestampMixin):

@@ -873,14 +873,18 @@ async def load_paper_source_allocations(
     *,
     settings: Settings,
 ) -> list[PaperSourceAllocation]:
+    score_filters = [
+        WatchedWallet.enabled.is_(True),
+        WatchedWallet.polling_tier != "cooldown",
+        WalletScore.score > ZERO,
+    ]
+    if settings.scoring_current_drawdown_enabled:
+        score_filters.append(WalletScore.current_drawdown_status == "ok")
+
     result = await session.execute(
         select(WatchedWallet.address, WalletScore.score)
         .join(WalletScore, WalletScore.wallet_address == WatchedWallet.address)
-        .where(
-            WatchedWallet.enabled.is_(True),
-            WatchedWallet.polling_tier != "cooldown",
-            WalletScore.score > ZERO,
-        )
+        .where(*score_filters)
         .order_by(WalletScore.score.desc(), WalletScore.updated_at.desc())
         .limit(settings.paper_copy_top_wallet_count)
     )

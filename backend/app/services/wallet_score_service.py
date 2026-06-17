@@ -5,12 +5,12 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
-from app.db.models import WalletScore
+from app.db.models import WalletScore, WatchedWallet
 from app.integrations.hyperliquid_client import HyperliquidClient
 from app.schemas.score import (
     WalletScoreDetailResponse,
@@ -27,7 +27,8 @@ from app.services.operation_status_service import (
 )
 from app.services.source_trade_reconstruction_service import (
     ReconstructedWalletTrades,
-    reconstruct_wallet_trades,
+    load_materialized_wallet_trades,
+    sync_materialized_source_trades,
 )
 from app.services.wallet_current_state_service import (
     load_known_wallet_perp_dexes_for_addresses,
@@ -65,6 +66,7 @@ class WalletScoreMetrics:
     gross_loss_usd: Decimal
     profitable_trade_count: int
     losing_trade_count: int
+    effective_winning_trade_count: Decimal | None
     liquidation_fill_count: int
     liquidation_event_count: int
     max_coin_notional_usd: Decimal
@@ -72,6 +74,7 @@ class WalletScoreMetrics:
     current_perp_equity_usd: Decimal | None
     current_unrealized_pnl_usd: Decimal | None
     current_drawdown_pct: Decimal | None
+    current_drawdown_status: str
     first_trade_time_ms: int | None
     last_trade_time_ms: int | None
     trades_24h: int
@@ -100,6 +103,7 @@ class WalletScoreBreakdown:
     profit_factor: Decimal | None
     max_drawdown_pct: Decimal | None
     current_drawdown_pct: Decimal | None
+    current_drawdown_status: str
     trade_count: int
     last_24h_score: Decimal | None
     last_7d_score: Decimal | None
@@ -192,6 +196,7 @@ async def _recalculate_wallet_scores(
                 "profit_factor": breakdown.profit_factor,
                 "max_drawdown_pct": breakdown.max_drawdown_pct,
                 "current_drawdown_pct": breakdown.current_drawdown_pct,
+                "current_drawdown_status": breakdown.current_drawdown_status,
                 "trade_count": breakdown.trade_count,
                 "last_24h_score": breakdown.last_24h_score,
                 "last_7d_score": breakdown.last_7d_score,
@@ -213,6 +218,13 @@ async def _recalculate_wallet_scores(
                 set_=update_columns,
             )
         )
+    await session.execute(
+        delete(WalletScore).where(
+            ~select(WatchedWallet.address)
+            .where(WatchedWallet.address == WalletScore.wallet_address)
+            .exists()
+        )
+    )
     await session.commit()
 
     return WalletScoreRunResponse(
@@ -232,9 +244,14 @@ async def list_wallet_scores(
     limit: int = 100,
     offset: int = 0,
 ) -> WalletScoreListResponse:
-    total = await session.scalar(select(func.count()).select_from(WalletScore))
+    total = await session.scalar(
+        select(func.count())
+        .select_from(WalletScore)
+        .join(WatchedWallet, WatchedWallet.address == WalletScore.wallet_address)
+    )
     result = await session.execute(
         select(WalletScore)
+        .join(WatchedWallet, WatchedWallet.address == WalletScore.wallet_address)
         .order_by(WalletScore.score.desc(), WalletScore.updated_at.desc())
         .limit(limit)
         .offset(offset)
@@ -280,6 +297,11 @@ async def get_wallet_score_detail(
             resolved_settings.scoring_liquidation_penalty_per_event
         ),
         liquidation_penalty_max=resolved_settings.scoring_liquidation_penalty_max,
+        confidence_target_trades=resolved_settings.scoring_confidence_target_trades,
+        confidence_penalty_max=resolved_settings.scoring_confidence_penalty_max,
+        current_drawdown_missing_penalty=(
+            resolved_settings.scoring_current_drawdown_missing_penalty
+        ),
     )
 
     return WalletScoreDetailResponse(
@@ -300,6 +322,7 @@ async def get_wallet_score_detail(
         current_account_value_usd=wallet_metrics.current_perp_equity_usd,
         current_unrealized_pnl_usd=wallet_metrics.current_unrealized_pnl_usd,
         current_drawdown_pct=breakdown.current_drawdown_pct,
+        current_drawdown_status=breakdown.current_drawdown_status,
         penalty_score=breakdown.penalty_score,
         penalty_items=penalty_items,
     )
@@ -331,19 +354,20 @@ async def load_wallet_score_metrics(
             ),
             fills as (
               select
-                wallet_address,
-                id,
-                external_fill_id,
-                coin,
-                timestamp_ms,
-                coalesce(notional_usd, 0) as notional_usd,
-                coalesce(pnl_usd, 0) as pnl_usd,
-                coalesce(fee_usd, 0) as fee_usd,
-                coalesce(pnl_usd, 0) - coalesce(fee_usd, 0) as net_pnl_usd,
-                raw_json,
-                to_timestamp(timestamp_ms / 1000.0)::date as fill_day
-              from wallet_fills
-              where timestamp_ms >= :window_start_ms
+                wf.wallet_address,
+                wf.id,
+                wf.external_fill_id,
+                wf.coin,
+                wf.timestamp_ms,
+                coalesce(wf.notional_usd, 0) as notional_usd,
+                coalesce(wf.pnl_usd, 0) as pnl_usd,
+                coalesce(wf.fee_usd, 0) as fee_usd,
+                coalesce(wf.pnl_usd, 0) - coalesce(wf.fee_usd, 0) as net_pnl_usd,
+                wf.raw_json,
+                to_timestamp(wf.timestamp_ms / 1000.0)::date as fill_day
+              from wallet_fills wf
+              join target_wallets tw on tw.address = wf.wallet_address
+              where wf.timestamp_ms >= :window_start_ms
             ),
             wallet_agg as (
               select
@@ -480,7 +504,12 @@ async def load_wallet_score_metrics(
     )
 
     base_metrics = [metrics_from_row(row) for row in result.mappings().all()]
-    reconstructed_trades = await reconstruct_wallet_trades(
+    await sync_materialized_source_trades(
+        session,
+        include_disabled=include_disabled,
+        wallet_address=wallet_address,
+    )
+    reconstructed_trades = await load_materialized_wallet_trades(
         session,
         window_start_ms=window_start_ms,
         start_24h_ms=start_24h_ms,
@@ -554,13 +583,15 @@ async def metric_with_current_drawdown(
             metric.wallet_address,
             "; ".join(errors) or "Perp state unavailable.",
         )
-        return metric
+        return replace(metric, current_drawdown_status="unavailable")
 
     perp_summary = summarize_perp_clearinghouse_states(perp_states)
     perp_equity = perp_summary.account_value_usd
     current_drawdown_pct: Decimal | None = ZERO
+    current_drawdown_status = "ok"
     if perp_equity <= ZERO:
         current_drawdown_pct = None
+        current_drawdown_status = "zero_equity"
     elif perp_summary.total_unrealized_pnl_usd < ZERO:
         current_drawdown_pct = (
             perp_summary.total_unrealized_pnl_usd.copy_abs()
@@ -572,6 +603,7 @@ async def metric_with_current_drawdown(
         current_perp_equity_usd=perp_equity,
         current_unrealized_pnl_usd=perp_summary.total_unrealized_pnl_usd,
         current_drawdown_pct=current_drawdown_pct,
+        current_drawdown_status=current_drawdown_status,
     )
 
 
@@ -595,6 +627,7 @@ def calculate_wallet_score(
             profit_factor=None,
             max_drawdown_pct=None,
             current_drawdown_pct=metrics.current_drawdown_pct,
+            current_drawdown_status=metrics.current_drawdown_status,
             trade_count=0,
             last_24h_score=ZERO,
             last_7d_score=ZERO,
@@ -615,7 +648,9 @@ def calculate_wallet_score(
     consistency_score = calculate_consistency_score(
         win_rate=win_rate,
         profit_factor=profit_factor,
+        effective_winning_trade_count=metrics.effective_winning_trade_count,
         active_days=metrics.active_days,
+        target_profit_winners=settings.scoring_target_profit_winners,
         target_active_days=settings.scoring_target_active_days,
     )
     risk_score = calculate_risk_score(
@@ -642,6 +677,9 @@ def calculate_wallet_score(
         recency_score=recency_score,
         liquidation_penalty_per_event=settings.scoring_liquidation_penalty_per_event,
         liquidation_penalty_max=settings.scoring_liquidation_penalty_max,
+        confidence_target_trades=settings.scoring_confidence_target_trades,
+        confidence_penalty_max=settings.scoring_confidence_penalty_max,
+        current_drawdown_missing_penalty=settings.scoring_current_drawdown_missing_penalty,
     )
 
     weight_sum = (
@@ -663,9 +701,10 @@ def calculate_wallet_score(
     ) / weight_sum
     final_score = score_value(gross_score - penalty_score)
     if metrics.trade_count < settings.scoring_min_trades:
+        min_trade_count = max(settings.scoring_min_trades, 1)
         sample_cap = (
             Decimal(metrics.trade_count)
-            / Decimal(settings.scoring_min_trades)
+            / Decimal(min_trade_count)
             * Decimal("45")
         )
         final_score = min_decimal(final_score, score_value(sample_cap))
@@ -683,6 +722,7 @@ def calculate_wallet_score(
         profit_factor=profit_factor.quantize(SCORE_QUANT) if profit_factor is not None else None,
         max_drawdown_pct=max_drawdown_pct,
         current_drawdown_pct=metrics.current_drawdown_pct,
+        current_drawdown_status=metrics.current_drawdown_status,
         trade_count=metrics.trade_count,
         last_24h_score=calculate_window_score(
             trades=metrics.trades_24h,
@@ -704,8 +744,12 @@ def calculate_wallet_score(
 
 def calculate_pnl_score(net_pnl_usd: Decimal, notional_usd: Decimal) -> Decimal:
     roi = net_pnl_usd / notional_usd if notional_usd > ZERO else ZERO
-    roi_score = range_score(roi, Decimal("-0.05"), Decimal("0.05"))
-    net_score = range_score(net_pnl_usd, Decimal("-5000"), Decimal("5000"))
+    roi_score = range_score(roi, Decimal("-0.03"), Decimal("0.10"))
+    net_score = signed_log_score(
+        net_pnl_usd,
+        scale=Decimal("1000"),
+        max_value=Decimal("100000"),
+    )
     return roi_score * Decimal("0.70") + net_score * Decimal("0.30")
 
 
@@ -713,7 +757,9 @@ def calculate_consistency_score(
     *,
     win_rate: Decimal | None,
     profit_factor: Decimal | None,
+    effective_winning_trade_count: Decimal | None,
     active_days: int,
+    target_profit_winners: int,
     target_active_days: int,
 ) -> Decimal:
     win_score = (
@@ -724,14 +770,32 @@ def calculate_consistency_score(
     pf_score = (
         Decimal("50")
         if profit_factor is None
-        else range_score(profit_factor, ONE, Decimal("3"))
+        else profit_factor_score(profit_factor)
     )
-    activity_score = score_value(Decimal(active_days) / Decimal(target_active_days) * HUNDRED)
+    distribution_score = calculate_profit_distribution_score(
+        effective_winning_trade_count=effective_winning_trade_count,
+        target_profit_winners=target_profit_winners,
+    )
+    target_day_count = max(target_active_days, 1)
+    activity_score = score_value(Decimal(active_days) / Decimal(target_day_count) * HUNDRED)
     return (
-        win_score * Decimal("0.45")
-        + pf_score * Decimal("0.35")
-        + activity_score * Decimal("0.20")
+        win_score * Decimal("0.30")
+        + pf_score * Decimal("0.25")
+        + distribution_score * Decimal("0.30")
+        + activity_score * Decimal("0.15")
     )
+
+
+def calculate_profit_distribution_score(
+    *,
+    effective_winning_trade_count: Decimal | None,
+    target_profit_winners: int,
+) -> Decimal:
+    if effective_winning_trade_count is None or effective_winning_trade_count <= ZERO:
+        return ZERO
+    target_count = max(target_profit_winners, 1)
+    effective_ratio = min_decimal(effective_winning_trade_count / Decimal(target_count), ONE)
+    return score_value(effective_ratio.sqrt() * HUNDRED)
 
 
 def calculate_risk_score(
@@ -745,12 +809,14 @@ def calculate_risk_score(
     loss_ratio = metrics.gross_loss_usd / max_decimal(metrics.gross_profit_usd, ONE)
     drawdown_ratio = metrics.max_drawdown_usd / drawdown_base
     current_drawdown_ratio = metrics.current_drawdown_pct or ZERO
-    current_drawdown_penalty = min_decimal(
-        current_drawdown_ratio
-        / current_drawdown_full_penalty_ratio
-        * current_drawdown_penalty_max,
-        current_drawdown_penalty_max,
-    )
+    current_drawdown_penalty = ZERO
+    if current_drawdown_full_penalty_ratio > ZERO:
+        current_drawdown_penalty = min_decimal(
+            current_drawdown_ratio
+            / current_drawdown_full_penalty_ratio
+            * current_drawdown_penalty_max,
+            current_drawdown_penalty_max,
+        )
     losing_rate = (
         Decimal(metrics.losing_trade_count) / Decimal(closed_trade_count)
         if closed_trade_count > 0
@@ -770,7 +836,10 @@ def calculate_copyability_score(
     metrics: WalletScoreMetrics,
     target_trades: int,
 ) -> Decimal:
-    trade_score = score_value(Decimal(metrics.trade_count) / Decimal(target_trades) * HUNDRED)
+    target_trade_count = max(target_trades, 1)
+    trade_score = score_value(
+        Decimal(metrics.trade_count) / Decimal(target_trade_count) * HUNDRED
+    )
     avg_notional_score = calculate_average_notional_score(metrics.average_trade_notional_usd)
     concentration = (
         metrics.max_coin_notional_usd / metrics.total_notional_usd
@@ -812,7 +881,8 @@ def calculate_recency_score(
         return ZERO
     age_ms = max(0, timestamp_ms(now) - int(last_fill_time_ms))
     age_days = Decimal(age_ms) / Decimal(86_400_000)
-    return score_value(HUNDRED - (age_days / Decimal(stale_days) * HUNDRED))
+    stale_day_count = max(stale_days, 1)
+    return score_value(HUNDRED - (age_days / Decimal(stale_day_count) * HUNDRED))
 
 
 def calculate_penalty_score(
@@ -822,6 +892,9 @@ def calculate_penalty_score(
     recency_score: Decimal,
     liquidation_penalty_per_event: Decimal,
     liquidation_penalty_max: Decimal,
+    confidence_target_trades: int,
+    confidence_penalty_max: Decimal,
+    current_drawdown_missing_penalty: Decimal,
 ) -> Decimal:
     penalty = sum(
         (
@@ -832,6 +905,9 @@ def calculate_penalty_score(
                 recency_score=recency_score,
                 liquidation_penalty_per_event=liquidation_penalty_per_event,
                 liquidation_penalty_max=liquidation_penalty_max,
+                confidence_target_trades=confidence_target_trades,
+                confidence_penalty_max=confidence_penalty_max,
+                current_drawdown_missing_penalty=current_drawdown_missing_penalty,
             )
         ),
         ZERO,
@@ -846,6 +922,9 @@ def calculate_penalty_items(
     recency_score: Decimal,
     liquidation_penalty_per_event: Decimal,
     liquidation_penalty_max: Decimal,
+    confidence_target_trades: int,
+    confidence_penalty_max: Decimal,
+    current_drawdown_missing_penalty: Decimal,
 ) -> list[WalletScorePenaltyItem]:
     if metrics.trade_count <= 0:
         return [
@@ -892,6 +971,17 @@ def calculate_penalty_items(
         Decimal(metrics.liquidation_event_count) * liquidation_penalty_per_event,
         liquidation_penalty_max,
     )
+    confidence_trade_count = max(confidence_target_trades, 1)
+    confidence_ratio = min_decimal(
+        Decimal(metrics.trade_count) / Decimal(confidence_trade_count),
+        ONE,
+    )
+    confidence_penalty = (ONE - confidence_ratio) * confidence_penalty_max
+    current_drawdown_penalty = (
+        current_drawdown_missing_penalty
+        if metrics.current_drawdown_status in {"unavailable", "zero_equity"}
+        else ZERO
+    )
 
     return [
         penalty_item(
@@ -902,6 +992,25 @@ def calculate_penalty_items(
             detail=(
                 f"{metrics.trade_count} closed trades reconstructed; "
                 f"target minimum is {min_trades}."
+            ),
+        ),
+        penalty_item(
+            key="confidence",
+            label="Low confidence",
+            value=confidence_penalty,
+            max_value=confidence_penalty_max,
+            detail=(
+                f"{metrics.trade_count} closed trades reconstructed; confidence target is "
+                f"{confidence_target_trades}."
+            ),
+        ),
+        penalty_item(
+            key="current_drawdown_unavailable",
+            label="Current drawdown unavailable",
+            value=current_drawdown_penalty,
+            max_value=current_drawdown_missing_penalty,
+            detail=(
+                "Live perp state was unavailable or had zero perp equity during scoring."
             ),
         ),
         penalty_item(
@@ -1014,6 +1123,7 @@ def metrics_from_row(row: Any) -> WalletScoreMetrics:
         gross_loss_usd=decimal_value(row["gross_loss_usd"]),
         profitable_trade_count=int(row["profitable_fill_count"] or 0),
         losing_trade_count=int(row["losing_fill_count"] or 0),
+        effective_winning_trade_count=None,
         liquidation_fill_count=int(row["liquidation_fill_count"] or 0),
         liquidation_event_count=int(row["liquidation_event_count"] or 0),
         max_coin_notional_usd=decimal_value(row["max_coin_notional_usd"]),
@@ -1021,6 +1131,7 @@ def metrics_from_row(row: Any) -> WalletScoreMetrics:
         current_perp_equity_usd=None,
         current_unrealized_pnl_usd=None,
         current_drawdown_pct=None,
+        current_drawdown_status="disabled",
         first_trade_time_ms=(
             int(row["first_fill_time_ms"]) if row["first_fill_time_ms"] is not None else None
         ),
@@ -1058,6 +1169,7 @@ def metrics_with_reconstructed_trades(
             gross_loss_usd=ZERO,
             profitable_trade_count=0,
             losing_trade_count=0,
+            effective_winning_trade_count=None,
             liquidation_fill_count=base_metrics.liquidation_fill_count,
             liquidation_event_count=base_metrics.liquidation_event_count,
             max_coin_notional_usd=ZERO,
@@ -1065,6 +1177,7 @@ def metrics_with_reconstructed_trades(
             current_perp_equity_usd=base_metrics.current_perp_equity_usd,
             current_unrealized_pnl_usd=base_metrics.current_unrealized_pnl_usd,
             current_drawdown_pct=base_metrics.current_drawdown_pct,
+            current_drawdown_status=base_metrics.current_drawdown_status,
             first_trade_time_ms=None,
             last_trade_time_ms=None,
             trades_24h=0,
@@ -1093,6 +1206,7 @@ def metrics_with_reconstructed_trades(
         gross_loss_usd=trades.gross_loss_usd,
         profitable_trade_count=trades.winning_trade_count,
         losing_trade_count=trades.losing_trade_count,
+        effective_winning_trade_count=trades.effective_winning_trade_count,
         liquidation_fill_count=base_metrics.liquidation_fill_count,
         liquidation_event_count=base_metrics.liquidation_event_count,
         max_coin_notional_usd=trades.max_coin_notional_usd,
@@ -1100,6 +1214,7 @@ def metrics_with_reconstructed_trades(
         current_perp_equity_usd=base_metrics.current_perp_equity_usd,
         current_unrealized_pnl_usd=base_metrics.current_unrealized_pnl_usd,
         current_drawdown_pct=base_metrics.current_drawdown_pct,
+        current_drawdown_status=base_metrics.current_drawdown_status,
         first_trade_time_ms=trades.first_trade_time_ms,
         last_trade_time_ms=trades.last_trade_time_ms,
         trades_24h=trades.trades_24h,
@@ -1109,6 +1224,41 @@ def metrics_with_reconstructed_trades(
         notional_7d=trades.notional_7d,
         net_pnl_7d=trades.net_pnl_7d,
     )
+
+
+def signed_log_score(value: Decimal, *, scale: Decimal, max_value: Decimal) -> Decimal:
+    if scale <= ZERO or max_value <= ZERO:
+        return Decimal("50")
+    if value == ZERO:
+        return Decimal("50")
+
+    magnitude = min_decimal(value.copy_abs(), max_value)
+    denominator = (ONE + max_value / scale).ln()
+    if denominator <= ZERO:
+        return Decimal("50")
+
+    normalized = (ONE + magnitude / scale).ln() / denominator * Decimal("50")
+    if value > ZERO:
+        return score_value(Decimal("50") + normalized)
+    return score_value(Decimal("50") - normalized)
+
+
+def profit_factor_score(profit_factor: Decimal) -> Decimal:
+    if profit_factor <= Decimal("0.75"):
+        return ZERO
+    if profit_factor < ONE:
+        return score_value((profit_factor - Decimal("0.75")) / Decimal("0.25") * Decimal("25"))
+    if profit_factor < Decimal("2"):
+        return score_value(Decimal("25") + (profit_factor - ONE) * Decimal("35"))
+    if profit_factor < Decimal("4"):
+        return score_value(
+            Decimal("60") + (profit_factor - Decimal("2")) / Decimal("2") * Decimal("30")
+        )
+    if profit_factor < Decimal("8"):
+        return score_value(
+            Decimal("90") + (profit_factor - Decimal("4")) / Decimal("4") * Decimal("10")
+        )
+    return HUNDRED
 
 
 def range_score(value: Decimal, low: Decimal, high: Decimal) -> Decimal:
