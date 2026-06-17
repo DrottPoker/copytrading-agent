@@ -653,7 +653,8 @@ Phase A behavior:
 - The stored `max_drawdown_pct` is a historical realized drawdown metric from
   reconstructed closed trades. It does not include current open unrealized PnL.
 - When `scoring_current_drawdown_enabled` is true, scoring fetches live perp state
-  from Hyperliquid and stores `current_drawdown_pct` on `wallet_scores`. Current
+  from Hyperliquid for default perp and any perp dexes already observed in stored
+  wallet fills, then stores `current_drawdown_pct` on `wallet_scores`. Current
   drawdown is open unrealized perp loss divided by perp account value.
 - Current drawdown reduces the risk component. By default it scales up to a 35
   point risk penalty at 40 percent current drawdown.

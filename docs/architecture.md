@@ -290,7 +290,7 @@ sequenceDiagram
   UI->>API: POST /scores/recalculate
   API->>DB: aggregate wallet_fills over scoring window
   API->>DB: reconstruct observed source trades from fill directions
-  API->>HL: fetch live perp state when current drawdown scoring is enabled
+  API->>HL: fetch default and known-dex live perp state for current drawdown
   API->>DB: upsert wallet_scores
   API-->>UI: score run summary
   UI->>API: GET /wallets
@@ -300,7 +300,11 @@ sequenceDiagram
 Risk score combines historical reconstructed-trade risk with current open perp
 drawdown when `scoring_current_drawdown_enabled` is true. Current drawdown is
 stored as `wallet_scores.current_drawdown_pct`; if live perp state is incomplete,
-the scoring run keeps the history-only risk score for that wallet.
+the scoring run keeps the history-only risk score for that wallet. Scoring only
+checks default perp plus dexes already observed in stored fills, so full HIP-3
+discovery remains limited to single-wallet current-state views.
+The scoring job lock uses a 30 minute TTL so a killed scoring process does not
+block future runs for the longer maintenance lock window.
 
 ### Source Trade Detail
 

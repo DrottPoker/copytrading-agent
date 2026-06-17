@@ -30,7 +30,6 @@ from app.services.source_trade_reconstruction_service import (
     reconstruct_wallet_trades,
 )
 from app.services.wallet_current_state_service import (
-    load_all_perp_dex_names,
     load_known_wallet_perp_dexes_for_addresses,
     load_wallet_perp_clearinghouse_states,
     summarize_perp_clearinghouse_states,
@@ -115,7 +114,7 @@ async def recalculate_wallet_scores(
     use_lock: bool = True,
 ) -> WalletScoreRunResponse:
     if use_lock:
-        async with job_lock(session, key="wallet_scoring", ttl_seconds=4 * 60 * 60):
+        async with job_lock(session, key="wallet_scoring", ttl_seconds=30 * 60):
             return await recalculate_wallet_scores(
                 session,
                 settings=settings,
@@ -515,28 +514,25 @@ async def metrics_with_current_drawdowns(
     if not scorable_metrics:
         return metrics
 
-    client = HyperliquidClient()
     addresses = [metric.wallet_address for metric in scorable_metrics]
     known_dexes_by_address = await load_known_wallet_perp_dexes_for_addresses(
         session,
         addresses=addresses,
     )
-    all_dexes, dex_list_error = await load_all_perp_dex_names(client=client)
     semaphore = asyncio.Semaphore(settings.scoring_current_drawdown_concurrency)
 
-    async def load_metric(metric: WalletScoreMetrics) -> WalletScoreMetrics:
-        if metric.trade_count <= 0:
-            return metric
-        async with semaphore:
-            return await metric_with_current_drawdown(
-                metric,
-                client=client,
-                known_dexes=known_dexes_by_address.get(metric.wallet_address.lower(), ()),
-                all_dexes=all_dexes,
-                dex_list_error=dex_list_error,
-            )
+    async with HyperliquidClient() as client:
+        async def load_metric(metric: WalletScoreMetrics) -> WalletScoreMetrics:
+            if metric.trade_count <= 0:
+                return metric
+            async with semaphore:
+                return await metric_with_current_drawdown(
+                    metric,
+                    client=client,
+                    known_dexes=known_dexes_by_address.get(metric.wallet_address.lower(), ()),
+                )
 
-    return list(await asyncio.gather(*(load_metric(metric) for metric in metrics)))
+        return list(await asyncio.gather(*(load_metric(metric) for metric in metrics)))
 
 
 async def metric_with_current_drawdown(
@@ -544,28 +540,12 @@ async def metric_with_current_drawdown(
     *,
     client: HyperliquidClient,
     known_dexes: tuple[str, ...],
-    all_dexes: tuple[str, ...],
-    dex_list_error: str | None,
 ) -> WalletScoreMetrics:
     perp_states, errors = await load_wallet_perp_clearinghouse_states(
         client=client,
         address=metric.wallet_address,
         dexes=known_dexes,
     )
-    if dex_list_error is not None:
-        errors.append(dex_list_error)
-
-    known_dex_set = set(known_dexes)
-    missing_dexes = tuple(dex for dex in all_dexes if dex not in known_dex_set)
-    if missing_dexes:
-        fallback_states, fallback_errors = await load_wallet_perp_clearinghouse_states(
-            client=client,
-            address=metric.wallet_address,
-            dexes=missing_dexes,
-            include_default=False,
-        )
-        perp_states.extend(fallback_states)
-        errors.extend(fallback_errors)
 
     if errors or not perp_states:
         logger.debug(
