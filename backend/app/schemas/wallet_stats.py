@@ -9,6 +9,7 @@ class WalletWindowStats(CamelModel):
     notional_usd: Decimal
     pnl_usd: Decimal
     fee_usd: Decimal
+    roi_pct: Decimal | None
 
 
 class WalletCoinStats(CamelModel):

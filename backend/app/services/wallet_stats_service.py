@@ -135,12 +135,17 @@ async def get_window_stats(
             )
         )
     ).one()
+    notional_usd = decimal_value(row.notional_usd)
+    pnl_usd = decimal_value(row.pnl_usd)
+    fee_usd = decimal_value(row.fee_usd)
+    net_pnl_usd = pnl_usd - fee_usd
     return WalletWindowStats(
         label=label,
         fill_count=int(row.fill_count or 0),
-        notional_usd=decimal_value(row.notional_usd),
-        pnl_usd=decimal_value(row.pnl_usd),
-        fee_usd=decimal_value(row.fee_usd),
+        notional_usd=notional_usd,
+        pnl_usd=pnl_usd,
+        fee_usd=fee_usd,
+        roi_pct=net_pnl_usd / notional_usd if notional_usd > ZERO else None,
     )
 
 

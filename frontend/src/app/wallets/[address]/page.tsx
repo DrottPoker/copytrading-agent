@@ -299,12 +299,6 @@ function ScoreBreakdownSection({
             </div>
           </div>
 
-          <div className="mt-5 grid gap-3 md:grid-cols-3">
-            <MiniScoreTile label="24H" value={score.last24hScore} />
-            <MiniScoreTile label="7D" value={score.last7dScore} />
-            <MiniScoreTile label="30D" value={score.last30dScore} />
-          </div>
-
           <div className="mt-5 grid gap-4 md:grid-cols-2">
             <ScoreSignalList title="Shines" items={strengths} empty="No component above 70." />
             <ScoreSignalList title="Falls" items={weakSpots} empty="No component below 45." />
@@ -328,17 +322,6 @@ function ScoreBreakdownSection({
         </div>
       </div>
     </section>
-  );
-}
-
-function MiniScoreTile({ label, value }: { label: string; value: string | null }) {
-  return (
-    <div className="border-l-2 border-line pl-3">
-      <p className="text-xs font-medium uppercase text-[#526070]">{label}</p>
-      <p className={`mt-1 text-lg font-semibold ${scoreTextClass(value)}`}>
-        {value ? formatScore(value) : "-"}
-      </p>
-    </div>
   );
 }
 
@@ -635,8 +618,14 @@ function WindowStatsSection({ windows }: { windows: WalletWindowStats[] }) {
         {windows.map((window) => (
           <div key={window.label} className="p-4">
             <p className="text-xs font-medium uppercase text-[#526070]">{window.label}</p>
-            <p className="mt-2 text-lg font-semibold">{formatCurrency(window.pnlUsd)}</p>
+            <p className={windowPnlClass(window.pnlUsd)}>{formatCurrency(window.pnlUsd)}</p>
             <div className="mt-3 grid gap-1 text-sm text-[#526070]">
+              <p>
+                ROI{" "}
+                <span className={windowRoiClass(window.roiPct)}>
+                  {formatPercent(window.roiPct)}
+                </span>
+              </p>
               <p>{formatInteger(window.fillCount)} fills</p>
               <p>{formatCurrency(window.notionalUsd)} notional</p>
               <p>{formatCurrency(window.feeUsd)} fees</p>
@@ -946,9 +935,9 @@ type ScoreComponent = {
 function scoreComponents(score: WalletScore): ScoreComponent[] {
   return [
     {
-      detail: "Net realized PnL against traded notional.",
+      detail: "Total, average, and median realized trade ROI.",
       key: "pnl",
-      label: "PnL",
+      label: "Profitability",
       value: numberValue(score.pnlScore),
     },
     {
@@ -997,6 +986,21 @@ function pnlClass(value: string | null) {
     return base;
   }
   return numberValue(value) >= 0 ? `${base} text-positive` : `${base} text-danger`;
+}
+
+function windowPnlClass(value: string | null) {
+  const base = "mt-2 text-lg font-semibold";
+  if (!value) {
+    return base;
+  }
+  return numberValue(value) >= 0 ? `${base} text-positive` : `${base} text-danger`;
+}
+
+function windowRoiClass(value: string | null) {
+  if (!value) {
+    return "font-semibold text-[#526070]";
+  }
+  return numberValue(value) >= 0 ? "font-semibold text-positive" : "font-semibold text-danger";
 }
 
 function scoreTextClass(

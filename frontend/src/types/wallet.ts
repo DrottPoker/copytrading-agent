@@ -34,9 +34,6 @@ export type WalletScore = {
   openPositionStressPct: string | null;
   currentDrawdownStatus: string;
   tradeCount: number;
-  last24hScore: string | null;
-  last7dScore: string | null;
-  last30dScore: string | null;
   updatedAt: string;
 };
 
@@ -209,6 +206,7 @@ export type WalletWindowStats = {
   notionalUsd: string;
   pnlUsd: string;
   feeUsd: string;
+  roiPct: string | null;
 };
 
 export type WalletCoinStats = {

@@ -43,6 +43,11 @@ ONE = Decimal("1")
 HUNDRED = Decimal("100")
 SCORE_QUANT = Decimal("0.01")
 RATIO_QUANT = Decimal("0.0001")
+PROFITABILITY_NET_ROI_WEIGHT = Decimal("0.55")
+PROFITABILITY_AVERAGE_TRADE_ROI_WEIGHT = Decimal("0.30")
+PROFITABILITY_MEDIAN_TRADE_ROI_WEIGHT = Decimal("0.15")
+PROFITABILITY_TRADE_ROI_FLOOR = Decimal("-0.05")
+PROFITABILITY_TRADE_ROI_CEILING = Decimal("0.10")
 logger = logging.getLogger(__name__)
 
 
@@ -61,6 +66,8 @@ class WalletScoreMetrics:
     active_days: int
     total_notional_usd: Decimal
     average_trade_notional_usd: Decimal
+    average_trade_roi: Decimal | None
+    median_trade_roi: Decimal | None
     total_pnl_usd: Decimal
     total_fee_usd: Decimal
     net_pnl_usd: Decimal
@@ -701,7 +708,7 @@ def calculate_wallet_score(
     drawdown_base = max_decimal(metrics.gross_profit_usd, abs(metrics.net_pnl_usd), ONE)
     max_drawdown_pct = (metrics.max_drawdown_usd / drawdown_base).quantize(RATIO_QUANT)
 
-    pnl_score = calculate_pnl_score(metrics.net_pnl_usd, metrics.total_notional_usd)
+    pnl_score = calculate_profitability_score(metrics)
     consistency_score = calculate_consistency_score(
         win_rate=win_rate,
         profit_factor=profit_factor,
@@ -816,12 +823,14 @@ def calculate_score_explanation(
     weighted_components = [
         score_component_detail(
             key="pnl",
-            label="PnL",
+            label="Profitability",
             score=breakdown.pnl_score,
             weight=settings.scoring_weight_pnl,
             weight_sum=weight_sum,
-            detail="Net realized PnL is scored from ROI and absolute net PnL.",
-            items=pnl_score_items(metrics),
+            detail=(
+                "Profitability scores total, average, and median realized trade ROI."
+            ),
+            items=profitability_score_items(metrics),
         ),
         score_component_detail(
             key="consistency",
@@ -903,17 +912,32 @@ def calculate_score_explanation(
     )
 
 
-def pnl_score_items(metrics: WalletScoreMetrics) -> list[WalletScoreDetailItem]:
-    roi = (
-        metrics.net_pnl_usd / metrics.total_notional_usd
-        if metrics.total_notional_usd > ZERO
-        else ZERO
+def profitability_score_items(metrics: WalletScoreMetrics) -> list[WalletScoreDetailItem]:
+    roi = profitability_roi(metrics)
+    roi_score = profitability_ratio_score(
+        roi,
+        full_loss=Decimal("-0.01"),
+        full_gain=Decimal("0.02"),
     )
-    roi_score = range_score(roi, Decimal("-0.03"), Decimal("0.10"))
-    net_score = signed_log_score(
-        metrics.net_pnl_usd,
-        scale=Decimal("1000"),
-        max_value=Decimal("100000"),
+    average_trade_roi_score = profitability_ratio_score(
+        metrics.average_trade_roi or ZERO,
+        full_loss=Decimal("-0.01"),
+        full_gain=Decimal("0.02"),
+    )
+    median_trade_roi_score = profitability_ratio_score(
+        metrics.median_trade_roi or ZERO,
+        full_loss=Decimal("-0.01"),
+        full_gain=Decimal("0.02"),
+    )
+    wallet_return = wallet_size_adjusted_return(metrics)
+    wallet_return_detail = (
+        "Reference only. Net realized PnL divided by current perp equity can be "
+        "distorted by deposits or withdrawals, so it is not scored."
+        if wallet_return is not None
+        else (
+            "Reference only. Current perp equity is missing or zero, and current "
+            "equity is not used for historical profitability scoring."
+        )
     )
     return [
         detail_item(
@@ -922,17 +946,46 @@ def pnl_score_items(metrics: WalletScoreMetrics) -> list[WalletScoreDetailItem]:
             value=roi,
             value_kind="percent",
             score=roi_score,
-            weight=Decimal("0.70"),
-            detail="Net realized PnL divided by reconstructed entry notional.",
+            weight=PROFITABILITY_NET_ROI_WEIGHT,
+            detail=(
+                "Net realized PnL divided by reconstructed entry notional. "
+                "0% is neutral, +2% reaches full score, -1% reaches zero."
+            ),
         ),
         detail_item(
-            key="net_pnl",
+            key="average_trade_roi",
+            label="Average trade ROI",
+            value=metrics.average_trade_roi,
+            value_kind="percent",
+            score=average_trade_roi_score,
+            weight=PROFITABILITY_AVERAGE_TRADE_ROI_WEIGHT,
+            detail=(
+                "Average per-trade ROI after capping each trade between -5% and +10%. "
+                "This reduces outlier impact from tiny or abnormal trades."
+            ),
+        ),
+        detail_item(
+            key="median_trade_roi",
+            label="Median trade ROI",
+            value=metrics.median_trade_roi,
+            value_kind="percent",
+            score=median_trade_roi_score,
+            weight=PROFITABILITY_MEDIAN_TRADE_ROI_WEIGHT,
+            detail="Median per-trade ROI. This checks whether the typical trade is profitable.",
+        ),
+        reference_detail_item(
+            key="wallet_size_adjusted_return",
+            label="Wallet-size adjusted return",
+            value=wallet_return,
+            value_kind="percent",
+            detail=wallet_return_detail,
+        ),
+        reference_detail_item(
+            key="net_pnl_reference",
             label="Net PnL",
             value=metrics.net_pnl_usd,
             value_kind="currency",
-            score=net_score,
-            weight=Decimal("0.30"),
-            detail="Signed log score for absolute net realized PnL.",
+            detail="Reference only. Absolute dollar PnL is not scored.",
         ),
     ]
 
@@ -1292,15 +1345,103 @@ def score_sample_cap(trade_count: int, min_trades: int) -> Decimal | None:
     return score_value(Decimal(trade_count) / Decimal(min_trade_count) * Decimal("45"))
 
 
+def calculate_profitability_score(metrics: WalletScoreMetrics) -> Decimal:
+    net_roi_score = profitability_ratio_score(
+        profitability_roi(metrics),
+        full_loss=Decimal("-0.01"),
+        full_gain=Decimal("0.02"),
+    )
+    average_trade_roi_score = profitability_ratio_score(
+        metrics.average_trade_roi or ZERO,
+        full_loss=Decimal("-0.01"),
+        full_gain=Decimal("0.02"),
+    )
+    median_trade_roi_score = profitability_ratio_score(
+        metrics.median_trade_roi or ZERO,
+        full_loss=Decimal("-0.01"),
+        full_gain=Decimal("0.02"),
+    )
+    return score_value(
+        net_roi_score * PROFITABILITY_NET_ROI_WEIGHT
+        + average_trade_roi_score * PROFITABILITY_AVERAGE_TRADE_ROI_WEIGHT
+        + median_trade_roi_score * PROFITABILITY_MEDIAN_TRADE_ROI_WEIGHT
+    )
+
+
 def calculate_pnl_score(net_pnl_usd: Decimal, notional_usd: Decimal) -> Decimal:
     roi = net_pnl_usd / notional_usd if notional_usd > ZERO else ZERO
-    roi_score = range_score(roi, Decimal("-0.03"), Decimal("0.10"))
-    net_score = signed_log_score(
-        net_pnl_usd,
-        scale=Decimal("1000"),
-        max_value=Decimal("100000"),
+    return profitability_ratio_score(
+        roi,
+        full_loss=Decimal("-0.01"),
+        full_gain=Decimal("0.02"),
     )
-    return roi_score * Decimal("0.70") + net_score * Decimal("0.30")
+
+
+def profitability_roi(metrics: WalletScoreMetrics) -> Decimal:
+    if metrics.total_notional_usd <= ZERO:
+        return ZERO
+    return metrics.net_pnl_usd / metrics.total_notional_usd
+
+
+def wallet_size_adjusted_return(metrics: WalletScoreMetrics) -> Decimal | None:
+    if metrics.current_perp_equity_usd is None or metrics.current_perp_equity_usd <= ZERO:
+        return None
+    return metrics.net_pnl_usd / metrics.current_perp_equity_usd
+
+
+def source_trade_roi_values(trades: ReconstructedWalletTrades) -> list[Decimal]:
+    return [
+        item.net_pnl_usd / item.entry_notional_usd
+        for item in trades.items
+        if item.status == "closed" and item.entry_notional_usd > ZERO
+    ]
+
+
+def capped_trade_roi_values(values: list[Decimal]) -> list[Decimal]:
+    return [
+        clamp_decimal(
+            value,
+            PROFITABILITY_TRADE_ROI_FLOOR,
+            PROFITABILITY_TRADE_ROI_CEILING,
+        )
+        for value in values
+    ]
+
+
+def average_decimal(values: list[Decimal]) -> Decimal | None:
+    if not values:
+        return None
+    return sum(values, ZERO) / Decimal(len(values))
+
+
+def median_decimal(values: list[Decimal]) -> Decimal | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    midpoint = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[midpoint]
+    return (ordered[midpoint - 1] + ordered[midpoint]) / Decimal("2")
+
+
+def profitability_ratio_score(
+    value: Decimal,
+    *,
+    full_loss: Decimal,
+    full_gain: Decimal,
+) -> Decimal:
+    if value >= ZERO:
+        if full_gain <= ZERO:
+            return Decimal("50")
+        return score_value(
+            Decimal("50") + min_decimal(value / full_gain, ONE) * Decimal("50")
+        )
+    if full_loss >= ZERO:
+        return Decimal("50")
+    return score_value(
+        Decimal("50")
+        - min_decimal(value.copy_abs() / full_loss.copy_abs(), ONE) * Decimal("50")
+    )
 
 
 def calculate_consistency_score(
@@ -1690,6 +1831,8 @@ def metrics_from_row(row: Any) -> WalletScoreMetrics:
         active_days=int(row["active_days"] or 0),
         total_notional_usd=decimal_value(row["total_notional_usd"]),
         average_trade_notional_usd=decimal_value(row["average_fill_notional_usd"]),
+        average_trade_roi=None,
+        median_trade_roi=None,
         total_pnl_usd=decimal_value(row["total_pnl_usd"]),
         total_fee_usd=decimal_value(row["total_fee_usd"]),
         net_pnl_usd=decimal_value(row["net_pnl_usd"]),
@@ -1739,6 +1882,8 @@ def metrics_with_reconstructed_trades(
             active_days=0,
             total_notional_usd=ZERO,
             average_trade_notional_usd=ZERO,
+            average_trade_roi=None,
+            median_trade_roi=None,
             total_pnl_usd=ZERO,
             total_fee_usd=ZERO,
             net_pnl_usd=ZERO,
@@ -1769,6 +1914,7 @@ def metrics_with_reconstructed_trades(
         )
 
     ignored_fill_count = trades.unmatched_close_fill_count + trades.preexisting_open_fill_count
+    trade_roi_values = source_trade_roi_values(trades)
     return WalletScoreMetrics(
         wallet_address=base_metrics.wallet_address,
         fill_count=base_metrics.fill_count,
@@ -1779,6 +1925,8 @@ def metrics_with_reconstructed_trades(
         active_days=trades.active_day_count,
         total_notional_usd=trades.total_entry_notional_usd,
         average_trade_notional_usd=trades.average_trade_notional_usd,
+        average_trade_roi=average_decimal(capped_trade_roi_values(trade_roi_values)),
+        median_trade_roi=median_decimal(trade_roi_values),
         total_pnl_usd=trades.realized_pnl_usd,
         total_fee_usd=trades.fee_usd,
         net_pnl_usd=trades.net_pnl_usd,
@@ -1807,23 +1955,6 @@ def metrics_with_reconstructed_trades(
         notional_7d=trades.notional_7d,
         net_pnl_7d=trades.net_pnl_7d,
     )
-
-
-def signed_log_score(value: Decimal, *, scale: Decimal, max_value: Decimal) -> Decimal:
-    if scale <= ZERO or max_value <= ZERO:
-        return Decimal("50")
-    if value == ZERO:
-        return Decimal("50")
-
-    magnitude = min_decimal(value.copy_abs(), max_value)
-    denominator = (ONE + max_value / scale).ln()
-    if denominator <= ZERO:
-        return Decimal("50")
-
-    normalized = (ONE + magnitude / scale).ln() / denominator * Decimal("50")
-    if value > ZERO:
-        return score_value(Decimal("50") + normalized)
-    return score_value(Decimal("50") - normalized)
 
 
 def profit_factor_score(profit_factor: Decimal) -> Decimal:

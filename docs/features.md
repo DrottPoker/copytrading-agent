@@ -368,7 +368,7 @@ What it does:
 
 - Shows wallet-level statistics.
 - Shows total fills, notional, PnL, fees, win rate, latency, and realtime/snapshot split.
-- Shows 24h, 7d, and 30d windows.
+- Shows 24h, 7d, and 30d windows with PnL, net ROI, notional, fees, and fills.
 - Shows top traded coins.
 - Shows reconstructed source trades for the wallet.
 - Shows copy trades associated with the source wallet when paper/live trades exist.
@@ -674,8 +674,8 @@ Endpoints:
 
 Purpose:
 
-- Calculate wallet score, PnL score, copyability score, risk score, consistency
-  score, recency score, and penalties.
+- Calculate wallet score, profitability score, copyability score, risk score,
+  consistency score, recency score, and penalties.
 - Rank wallets based on copyable performance, not just source-wallet PnL.
 
 Phase A behavior:
@@ -696,6 +696,11 @@ Phase A behavior:
 - Uses reconstructed trade PnL, fees, notional, active days, recency, realized
   drawdown, current drawdown, open-position stress, loss ratio, losing trade
   rate, profit distribution, and coin concentration.
+- Profitability score is scale-invariant. It combines total net ROI against
+  reconstructed entry notional, capped average trade ROI, and median trade ROI.
+  The weights are 55/30/15. Current-equity return is shown as reference data
+  only because deposits and withdrawals can distort it. Absolute dollar PnL is
+  also reference data only and does not increase the score.
 - Consistency score includes profit distribution across winning closed trades.
   It calculates effective winning trades as `1 / sum(profit_share^2)` and scores
   it against `scoring_target_profit_winners`, so wallets where most profit comes
@@ -719,8 +724,8 @@ Phase A behavior:
 - `GET /scores/{address}/detail` returns component-level explanations for the
   wallet detail scoring modal. The response includes gross score, penalty,
   final score before sample cap, any sample cap, component weights, weighted
-  scores, and the input-level subscores used inside PnL, consistency, risk,
-  copyability, recency, and penalty calculations.
+  scores, and the input-level subscores used inside profitability, consistency,
+  risk, copyability, recency, and penalty calculations.
 - If current perp state cannot be fetched completely or perp equity is zero, the
   wallet keeps a history-only risk component and receives the configured
   `scoring_current_drawdown_missing_penalty`.

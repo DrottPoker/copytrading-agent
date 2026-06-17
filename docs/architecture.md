@@ -314,6 +314,11 @@ Consistency score uses win rate, profit factor, active days, and profit
 distribution. Profit distribution is calculated from winning closed trades as
 effective winning trades, `1 / sum(profit_share^2)`, then scored against
 `scoring_target_profit_winners`.
+Profitability score is scale-invariant. It combines total net ROI against
+reconstructed entry notional, capped average trade ROI, and median trade ROI.
+The weights are 55/30/15. Current-equity return is exposed in the detail modal
+as reference data only because deposits and withdrawals can distort it. Absolute
+net PnL is also reference data only and does not raise the profitability score.
 Wallet detail pages use `GET /scores/{address}/detail` for the Detailed scoring
 modal. The endpoint recalculates the current wallet score from the same
 materialized trade metrics, then returns gross score, penalty, final score
