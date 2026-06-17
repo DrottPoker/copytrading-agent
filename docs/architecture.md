@@ -388,7 +388,9 @@ sequenceDiagram
   Worker->>DB: recover missed paper fills after restart or snapshot
   UI->>API: GET /paper-trading
   API->>DB: sync configured accounts and load paper state
-  API-->>UI: accounts, allocations, positions, recent fills
+  API->>HL: current market prices for open paper positions
+  API->>API: compute unrealized PnL and source-wallet PnL
+  API-->>UI: accounts, allocations, positions, wallet PnL, recent fills
 ```
 
 Paper sizing uses `source fill notional / source account value` and applies that
@@ -410,6 +412,10 @@ positions in the copy allocation set, and run recovery after worker start,
 WebSocket snapshots, and pool imports. Recovery scans fills after the latest
 copied source fill with overlap, then the copied-fill uniqueness constraint
 prevents duplicate simulation.
+
+The paper trading page is a client dashboard that polls the summary API for live
+mark prices and unrealized PnL. The API also aggregates source-wallet PnL from
+all copied fills, not just the most recent fill rows shown in the UI.
 
 ## Important Constraint
 

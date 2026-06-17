@@ -327,6 +327,9 @@ function emptyPaperTradingSummary(): PaperTradingSummaryResponse {
     accounts: [],
     allocations: [],
     positions: [],
+    walletPerformance: [],
     recentFills: [],
+    updatedAt: new Date(0).toISOString(),
+    marketDataStatus: "unavailable",
   };
 }

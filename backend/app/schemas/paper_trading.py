@@ -12,6 +12,12 @@ class PaperTradingAccountRead(CamelModel):
     cash_balance_usd: Decimal
     equity_usd: Decimal
     realized_pnl_usd: Decimal
+    unrealized_pnl_usd: Decimal = Decimal("0")
+    total_pnl_usd: Decimal = Decimal("0")
+    total_pnl_pct: Decimal | None = None
+    open_position_count: int = 0
+    open_notional_usd: Decimal = Decimal("0")
+    open_margin_usd: Decimal = Decimal("0")
     fee_usd: Decimal
     enabled: bool
     created_at: datetime
@@ -43,6 +49,11 @@ class PaperPositionRead(CamelModel):
     leverage: Decimal
     margin_usd: Decimal
     realized_pnl_usd: Decimal
+    mark_price: Decimal | None = None
+    current_notional_usd: Decimal | None = None
+    unrealized_pnl_usd: Decimal | None = None
+    unrealized_pnl_pct: Decimal | None = None
+    price_updated_at: datetime | None = None
     fee_usd: Decimal
     opened_at: datetime
     created_at: datetime
@@ -92,9 +103,31 @@ class PaperTradingPolicyRead(CamelModel):
     use_live_mid_price: bool
 
 
+class PaperWalletPerformanceRead(CamelModel):
+    source_wallet: str
+    rank: int | None = None
+    score: Decimal | None = None
+    allocation_pct: Decimal | None = None
+    active: bool
+    account_count: int
+    open_position_count: int
+    copied_fill_count: int
+    skipped_fill_count: int
+    realized_pnl_usd: Decimal
+    unrealized_pnl_usd: Decimal
+    total_pnl_usd: Decimal
+    fee_usd: Decimal
+    open_notional_usd: Decimal
+    open_margin_usd: Decimal
+    last_fill_at: datetime | None = None
+
+
 class PaperTradingSummaryResponse(CamelModel):
     policy: PaperTradingPolicyRead
     accounts: list[PaperTradingAccountRead]
     allocations: list[PaperCopyAllocationRead]
     positions: list[PaperPositionRead]
+    wallet_performance: list[PaperWalletPerformanceRead]
     recent_fills: list[PaperCopyFillRead]
+    updated_at: datetime
+    market_data_status: str

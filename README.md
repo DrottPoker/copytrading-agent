@@ -244,6 +244,9 @@ Sizing policy:
   is above the configured drift limit.
 - Skip reasons distinguish minimum notional, source-wallet pocket cap, total
   account cap, missing matching positions, and price safety guards.
+- The paper trading dashboard polls the summary API and shows live mark prices,
+  unrealized PnL, account PnL, open positions, source-wallet PnL, allocations,
+  and recent paper fills.
 - Paper account state, copied positions, copied fills, and allocations are stored
   in Postgres. Worker restarts recover missed fills after the latest paper copy
   fill from WebSocket snapshots and pool imports.

@@ -85,6 +85,7 @@ async def get_paper_trading_summary(
     *,
     settings: Settings | None = None,
     recent_fill_limit: int = 100,
+    client: HyperliquidClient | None = None,
 ) -> PaperTradingSummaryResponse:
     resolved_settings = settings or get_settings()
     await refresh_paper_copy_allocations(session, settings=resolved_settings)
@@ -111,13 +112,310 @@ async def get_paper_trading_summary(
         .order_by(PaperCopyFill.filled_at.desc(), PaperCopyFill.created_at.desc())
         .limit(recent_fill_limit)
     )
+    fill_performance_result = await session.execute(
+        select(
+            PaperCopyFill.source_wallet,
+            func.count(PaperCopyFill.id)
+            .filter(PaperCopyFill.action != "skip")
+            .label("copied_fill_count"),
+            func.count(PaperCopyFill.id)
+            .filter(PaperCopyFill.action == "skip")
+            .label("skipped_fill_count"),
+            func.coalesce(func.sum(PaperCopyFill.realized_pnl_usd), ZERO).label(
+                "realized_pnl_usd"
+            ),
+            func.coalesce(func.sum(PaperCopyFill.fee_usd), ZERO).label("fee_usd"),
+            func.max(PaperCopyFill.filled_at).label("last_fill_at"),
+        )
+        .group_by(PaperCopyFill.source_wallet)
+    )
+    accounts = list(accounts_result.scalars().all())
+    allocations = list(allocations_result.scalars().all())
+    positions = list(positions_result.scalars().all())
+    recent_fills = list(fills_result.scalars().all())
+    fill_performance_rows = list(fill_performance_result.mappings().all())
+
+    if client is None:
+        async with HyperliquidClient(resolved_settings) as hyperliquid_client:
+            return await get_paper_trading_summary(
+                session,
+                settings=resolved_settings,
+                recent_fill_limit=recent_fill_limit,
+                client=hyperliquid_client,
+            )
+
+    updated_at = datetime.now(UTC)
+    market_prices = await load_open_position_market_prices(
+        client=client,
+        positions=positions,
+    )
+    position_rows = [
+        paper_position_read(
+            position,
+            mark_price=resolve_coin_decimal(market_prices, position.coin),
+            price_updated_at=updated_at if position.coin in market_prices else None,
+        )
+        for position in positions
+    ]
     return PaperTradingSummaryResponse(
         policy=paper_trading_policy(resolved_settings),
-        accounts=list(accounts_result.scalars().all()),
-        allocations=list(allocations_result.scalars().all()),
-        positions=list(positions_result.scalars().all()),
-        recent_fills=list(fills_result.scalars().all()),
+        accounts=paper_account_reads(accounts=accounts, positions=position_rows),
+        allocations=allocations,
+        positions=position_rows,
+        wallet_performance=paper_wallet_performance_reads(
+            allocations=allocations,
+            positions=position_rows,
+            fill_performance_rows=fill_performance_rows,
+        ),
+        recent_fills=recent_fills,
+        updated_at=updated_at,
+        market_data_status=market_data_status(
+            open_position_count=len(positions),
+            priced_position_count=sum(
+                1 for position in position_rows if position["mark_price"] is not None
+            ),
+        ),
     )
+
+
+async def load_open_position_market_prices(
+    *,
+    client: HyperliquidClient,
+    positions: list[PaperPosition],
+) -> dict[str, Decimal]:
+    coins = {position.coin for position in positions if position.coin}
+    if not coins:
+        return {}
+
+    try:
+        mids = await client.all_mids()
+    except Exception as exc:
+        logger.warning("paper summary allMids fetch failed error=%s", exc)
+        mids = {}
+
+    market_prices: dict[str, Decimal] = {}
+    for coin in coins:
+        price = resolve_coin_decimal(mids, coin)
+        if price is not None and price > ZERO:
+            market_prices[coin] = price
+
+    missing_dexes = {
+        dex_from_coin(coin)
+        for coin in coins
+        if coin not in market_prices and dex_from_coin(coin)
+    }
+    for dex in sorted(missing_dexes):
+        dex_prices = await load_dex_market_prices(client=client, dex=dex)
+        for coin in coins:
+            if coin in market_prices or dex_from_coin(coin) != dex:
+                continue
+            price = resolve_coin_decimal(dex_prices, coin)
+            if price is not None and price > ZERO:
+                market_prices[coin] = price
+    return market_prices
+
+
+def paper_position_read(
+    position: PaperPosition,
+    *,
+    mark_price: Decimal | None,
+    price_updated_at: datetime | None,
+) -> dict[str, Any]:
+    current_notional = (
+        abs(position.size) * mark_price
+        if mark_price is not None and mark_price > ZERO
+        else None
+    )
+    unrealized_pnl = paper_unrealized_pnl(position=position, mark_price=mark_price)
+    return {
+        "id": position.id,
+        "account_key": position.account_key,
+        "source_wallet": position.source_wallet,
+        "coin": position.coin,
+        "side": position.side,
+        "size": position.size,
+        "entry_price": position.entry_price,
+        "notional_usd": position.notional_usd,
+        "leverage": position.leverage,
+        "margin_usd": position.margin_usd,
+        "realized_pnl_usd": position.realized_pnl_usd,
+        "mark_price": mark_price,
+        "current_notional_usd": current_notional,
+        "unrealized_pnl_usd": unrealized_pnl,
+        "unrealized_pnl_pct": (
+            unrealized_pnl / position.margin_usd
+            if unrealized_pnl is not None and position.margin_usd > ZERO
+            else None
+        ),
+        "price_updated_at": price_updated_at,
+        "fee_usd": position.fee_usd,
+        "opened_at": position.opened_at,
+        "created_at": position.created_at,
+        "updated_at": position.updated_at,
+    }
+
+
+def paper_unrealized_pnl(
+    *,
+    position: PaperPosition,
+    mark_price: Decimal | None,
+) -> Decimal | None:
+    if mark_price is None or mark_price <= ZERO or position.size <= ZERO:
+        return None
+    if position.side == "long":
+        return (mark_price - position.entry_price) * position.size
+    return (position.entry_price - mark_price) * position.size
+
+
+def paper_account_reads(
+    *,
+    accounts: list[PaperTradingAccount],
+    positions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    positions_by_account: dict[str, list[dict[str, Any]]] = {}
+    for position in positions:
+        positions_by_account.setdefault(str(position["account_key"]), []).append(position)
+
+    rows: list[dict[str, Any]] = []
+    for account in accounts:
+        account_positions = positions_by_account.get(account.key, [])
+        unrealized_pnl = sum_decimal(
+            position["unrealized_pnl_usd"] for position in account_positions
+        )
+        total_pnl = account.realized_pnl_usd + unrealized_pnl
+        rows.append(
+            {
+                "key": account.key,
+                "label": account.label,
+                "starting_balance_usd": account.starting_balance_usd,
+                "cash_balance_usd": account.cash_balance_usd,
+                "equity_usd": account.equity_usd,
+                "realized_pnl_usd": account.realized_pnl_usd,
+                "unrealized_pnl_usd": unrealized_pnl,
+                "total_pnl_usd": total_pnl,
+                "total_pnl_pct": (
+                    total_pnl / account.starting_balance_usd
+                    if account.starting_balance_usd > ZERO
+                    else None
+                ),
+                "open_position_count": len(account_positions),
+                "open_notional_usd": sum_decimal(
+                    position["current_notional_usd"] or position["notional_usd"]
+                    for position in account_positions
+                ),
+                "open_margin_usd": sum_decimal(
+                    position["margin_usd"] for position in account_positions
+                ),
+                "fee_usd": account.fee_usd,
+                "enabled": account.enabled,
+                "created_at": account.created_at,
+                "updated_at": account.updated_at,
+            }
+        )
+    return rows
+
+
+def paper_wallet_performance_reads(
+    *,
+    allocations: list[PaperCopyAllocation],
+    positions: list[dict[str, Any]],
+    fill_performance_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    sources = {
+        allocation.source_wallet.lower()
+        for allocation in allocations
+        if allocation.source_wallet
+    }
+    sources.update(
+        str(position["source_wallet"]).lower()
+        for position in positions
+        if position["source_wallet"]
+    )
+    sources.update(
+        str(row["source_wallet"]).lower()
+        for row in fill_performance_rows
+        if row["source_wallet"]
+    )
+
+    allocations_by_source: dict[str, list[PaperCopyAllocation]] = {}
+    for allocation in allocations:
+        allocations_by_source.setdefault(allocation.source_wallet.lower(), []).append(allocation)
+    positions_by_source: dict[str, list[dict[str, Any]]] = {}
+    for position in positions:
+        positions_by_source.setdefault(str(position["source_wallet"]).lower(), []).append(position)
+    fills_by_source = {
+        str(row["source_wallet"]).lower(): row
+        for row in fill_performance_rows
+        if row["source_wallet"]
+    }
+
+    rows: list[dict[str, Any]] = []
+    for source in sources:
+        source_allocations = allocations_by_source.get(source, [])
+        source_positions = positions_by_source.get(source, [])
+        fill_row = fills_by_source.get(source, {})
+        unrealized_pnl = sum_decimal(
+            position["unrealized_pnl_usd"] for position in source_positions
+        )
+        realized_pnl = decimal_or_zero(fill_row.get("realized_pnl_usd"))
+        allocation_pct = first_decimal(
+            allocation.allocation_pct for allocation in source_allocations
+        )
+        rows.append(
+            {
+                "source_wallet": source,
+                "rank": min((allocation.rank for allocation in source_allocations), default=None),
+                "score": first_decimal(allocation.score for allocation in source_allocations),
+                "allocation_pct": allocation_pct,
+                "active": any(allocation.active for allocation in source_allocations),
+                "account_count": len({allocation.account_key for allocation in source_allocations}),
+                "open_position_count": len(source_positions),
+                "copied_fill_count": int(fill_row.get("copied_fill_count") or 0),
+                "skipped_fill_count": int(fill_row.get("skipped_fill_count") or 0),
+                "realized_pnl_usd": realized_pnl,
+                "unrealized_pnl_usd": unrealized_pnl,
+                "total_pnl_usd": realized_pnl + unrealized_pnl,
+                "fee_usd": decimal_or_zero(fill_row.get("fee_usd")),
+                "open_notional_usd": sum_decimal(
+                    position["current_notional_usd"] or position["notional_usd"]
+                    for position in source_positions
+                ),
+                "open_margin_usd": sum_decimal(
+                    position["margin_usd"] for position in source_positions
+                ),
+                "last_fill_at": fill_row.get("last_fill_at"),
+            }
+        )
+    return sorted(
+        rows,
+        key=lambda row: (
+            -row["open_position_count"],
+            row["rank"] or 9999,
+            -row["total_pnl_usd"],
+        ),
+    )
+
+
+def first_decimal(values: Any) -> Decimal | None:
+    for value in values:
+        parsed = decimal_or_none(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def market_data_status(
+    *,
+    open_position_count: int,
+    priced_position_count: int,
+) -> str:
+    if open_position_count == 0:
+        return "no_open_positions"
+    if priced_position_count == open_position_count:
+        return "live"
+    if priced_position_count > 0:
+        return "partial"
+    return "unavailable"
 
 
 async def process_paper_copy_fills(
@@ -1879,3 +2177,11 @@ def decimal_or_none(value: Any) -> Decimal | None:
 
 def decimal_or_zero(value: Any) -> Decimal:
     return decimal_or_none(value) or ZERO
+
+
+def sum_decimal(values: Any) -> Decimal:
+    total = ZERO
+    for value in values:
+        if value is not None:
+            total += decimal_or_zero(value)
+    return total

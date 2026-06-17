@@ -440,6 +440,11 @@ What it does:
 - Skips paper fills when the observed price has moved more than
   `paper_copy_max_price_drift_bps` from the source fill price.
 - Tracks open paper positions by account, source wallet, and coin.
+- Computes live mark price, current notional, unrealized PnL, and ROE for open
+  paper positions in the paper summary API when Hyperliquid market data is
+  available.
+- Aggregates paper PnL by source wallet so the dashboard can show which copied
+  wallets made or lost money across accounts.
 - Uses source `startPosition` to reduce or close paper positions proportionally.
 - Splits source flip fills into a close part and an open part when the source
   payload provides enough information.
@@ -456,6 +461,9 @@ What it does:
   minimum notional, source allocation cap exhaustion, or total account cap
   exhaustion.
 - Publishes `paper_copy` events to the live feed when realtime fills are simulated.
+- The paper trading dashboard polls the summary API and shows account PnL, open
+  position PnL, source-wallet PnL, allocations, and recent fills without a full
+  page refresh.
 
 Config:
 

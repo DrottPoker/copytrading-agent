@@ -5,6 +5,12 @@ export type PaperTradingAccount = {
   cashBalanceUsd: string;
   equityUsd: string;
   realizedPnlUsd: string;
+  unrealizedPnlUsd: string;
+  totalPnlUsd: string;
+  totalPnlPct: string | null;
+  openPositionCount: number;
+  openNotionalUsd: string;
+  openMarginUsd: string;
   feeUsd: string;
   enabled: boolean;
   createdAt: string;
@@ -36,6 +42,11 @@ export type PaperPosition = {
   leverage: string;
   marginUsd: string;
   realizedPnlUsd: string;
+  markPrice: string | null;
+  currentNotionalUsd: string | null;
+  unrealizedPnlUsd: string | null;
+  unrealizedPnlPct: string | null;
+  priceUpdatedAt: string | null;
   feeUsd: string;
   openedAt: string;
   createdAt: string;
@@ -85,10 +96,32 @@ export type PaperTradingPolicy = {
   useLiveMidPrice: boolean;
 };
 
+export type PaperWalletPerformance = {
+  sourceWallet: string;
+  rank: number | null;
+  score: string | null;
+  allocationPct: string | null;
+  active: boolean;
+  accountCount: number;
+  openPositionCount: number;
+  copiedFillCount: number;
+  skippedFillCount: number;
+  realizedPnlUsd: string;
+  unrealizedPnlUsd: string;
+  totalPnlUsd: string;
+  feeUsd: string;
+  openNotionalUsd: string;
+  openMarginUsd: string;
+  lastFillAt: string | null;
+};
+
 export type PaperTradingSummaryResponse = {
   policy: PaperTradingPolicy;
   accounts: PaperTradingAccount[];
   allocations: PaperCopyAllocation[];
   positions: PaperPosition[];
+  walletPerformance: PaperWalletPerformance[];
   recentFills: PaperCopyFill[];
+  updatedAt: string;
+  marketDataStatus: "live" | "partial" | "unavailable" | "no_open_positions";
 };
