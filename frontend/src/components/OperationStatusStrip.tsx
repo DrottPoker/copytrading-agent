@@ -157,7 +157,9 @@ export function OperationStatusStrip({ initialItems }: { initialItems: Operation
 }
 
 function manualOperationUrl(card: (typeof OPERATION_CARDS)[number]) {
-  const url = new URL(`${frontendConfig.browserApiBaseUrl}${card.manualEndpoint}`);
+  const apiBase = frontendConfig.browserApiBaseUrl || "/api/backend";
+  const apiPath = `${apiBase.replace(/\/$/, "")}${card.manualEndpoint}`;
+  const url = new URL(apiPath, window.location.origin);
   if (card.key === "pool_fill_import") {
     url.searchParams.set(
       "limit",
