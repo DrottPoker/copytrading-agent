@@ -263,13 +263,16 @@ export function PaperTradingDashboard({
       </Panel>
 
       <section className="grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
-        <Panel title="Allocations" meta={`${formatInteger(activeAllocationCount(summary.allocations))} active`}>
+        <Panel
+          title="Allocations"
+          meta={`${formatInteger(activeAllocationSourceCount(summary.allocations))} active sources, ${formatInteger(retainedAllocationSourceCount(summary.allocations))} retained`}
+        >
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[820px] border-collapse text-left text-sm">
-              <TableHead columns={["Account", "Source", "Rank", "Score", "Pocket", "State"]} />
+            <table className="w-full min-w-[980px] border-collapse text-left text-sm">
+              <TableHead columns={["Account", "Source", "Rank", "Score", "Pocket", "Used", "State"]} />
               <tbody>
                 {summary.allocations.length === 0 ? (
-                  <EmptyRow colSpan={6} text="No active allocation sources." />
+                  <EmptyRow colSpan={7} text="No active allocation sources." />
                 ) : (
                   summary.allocations.map((allocation) => (
                     <AllocationRow key={allocation.id} allocation={allocation} />
@@ -473,6 +476,8 @@ function PositionRow({ position }: { position: PaperPosition }) {
 }
 
 function AllocationRow({ allocation }: { allocation: PaperCopyAllocation }) {
+  const usedPct = clampPercent(numberValue(allocation.pocketUsedPct ?? 0));
+
   return (
     <tr className="border-b border-line last:border-b-0">
       <td className="px-4 py-3 font-mono text-xs">{allocation.accountKey}</td>
@@ -484,11 +489,30 @@ function AllocationRow({ allocation }: { allocation: PaperCopyAllocation }) {
           {shortAddress(allocation.sourceWallet)}
         </Link>
       </td>
-      <td className="px-4 py-3 font-mono">#{allocation.rank}</td>
+      <td className="px-4 py-3">
+        <p className="font-mono">{allocation.active ? `#${allocation.rank}` : "retained"}</p>
+        {!allocation.active ? (
+          <p className="mt-1 text-xs text-[#5b6770]">slot #{allocation.rank}</p>
+        ) : null}
+      </td>
       <td className="px-4 py-3 font-mono">{formatScore(allocation.score)}</td>
       <td className="px-4 py-3">
         <p className="font-mono">{formatCurrency(allocation.allocationUsd)}</p>
         <p className="mt-1 text-xs text-[#5b6770]">{formatPercent(allocation.allocationPct)}</p>
+      </td>
+      <td className="px-4 py-3">
+        <div className="h-2 w-full min-w-28 overflow-hidden rounded-full bg-[#e8edf2]">
+          <div
+            className={`h-full ${usedPct >= 0.9 ? "bg-danger" : usedPct >= 0.7 ? "bg-warning" : "bg-positive"}`}
+            style={{ width: `${Math.min(usedPct * 100, 100)}%` }}
+          />
+        </div>
+        <p className="mt-2 font-mono text-xs">
+          {formatCurrency(allocation.openMarginUsd)} used
+        </p>
+        <p className="mt-1 text-xs text-[#5b6770]">
+          {formatPercent(allocation.pocketUsedPct)} used, {formatCurrency(allocation.remainingAllocationUsd)} free
+        </p>
       </td>
       <td className="px-4 py-3">
         <StatusPill label={allocation.active ? "active" : "retained"} tone={allocation.active ? "positive" : "warning"} />
@@ -592,8 +616,23 @@ function accountNetEquity(account: { equityUsd: string; unrealizedPnlUsd: string
   return numberValue(account.equityUsd) + numberValue(account.unrealizedPnlUsd);
 }
 
-function activeAllocationCount(allocations: PaperCopyAllocation[]) {
-  return allocations.filter((allocation) => allocation.active).length;
+function activeAllocationSourceCount(allocations: PaperCopyAllocation[]) {
+  return uniqueAllocationSources(allocations.filter((allocation) => allocation.active)).length;
+}
+
+function retainedAllocationSourceCount(allocations: PaperCopyAllocation[]) {
+  return uniqueAllocationSources(allocations.filter((allocation) => !allocation.active)).length;
+}
+
+function uniqueAllocationSources(allocations: PaperCopyAllocation[]) {
+  return Array.from(new Set(allocations.map((allocation) => allocation.sourceWallet)));
+}
+
+function clampPercent(value: number) {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(value, 1));
 }
 
 function pnlCellClass(value: string | number | null | undefined) {

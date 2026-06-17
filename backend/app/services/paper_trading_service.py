@@ -39,6 +39,7 @@ class PaperSourceAllocation:
     rank: int
     score: Decimal | None
     allocation_pct: Decimal
+    active: bool
 
 
 @dataclass(frozen=True)
@@ -94,8 +95,19 @@ async def get_paper_trading_summary(
     accounts_result = await session.execute(
         select(PaperTradingAccount).order_by(PaperTradingAccount.key.asc())
     )
+    open_position_sources = (
+        select(PaperPosition.source_wallet)
+        .where(PaperPosition.source_wallet != "")
+        .distinct()
+    )
     allocations_result = await session.execute(
-        select(PaperCopyAllocation).order_by(
+        select(PaperCopyAllocation)
+        .where(
+            PaperCopyAllocation.active.is_(True)
+            | PaperCopyAllocation.source_wallet.in_(open_position_sources)
+        )
+        .order_by(
+            PaperCopyAllocation.active.desc(),
             PaperCopyAllocation.account_key.asc(),
             PaperCopyAllocation.rank.asc(),
         )
@@ -160,7 +172,7 @@ async def get_paper_trading_summary(
     return PaperTradingSummaryResponse(
         policy=paper_trading_policy(resolved_settings),
         accounts=paper_account_reads(accounts=accounts, positions=position_rows),
-        allocations=allocations,
+        allocations=paper_allocation_reads(allocations=allocations, positions=position_rows),
         positions=position_rows,
         wallet_performance=paper_wallet_performance_reads(
             allocations=allocations,
@@ -310,6 +322,50 @@ def paper_account_reads(
                 "enabled": account.enabled,
                 "created_at": account.created_at,
                 "updated_at": account.updated_at,
+            }
+        )
+    return rows
+
+
+def paper_allocation_reads(
+    *,
+    allocations: list[PaperCopyAllocation],
+    positions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    open_margin_by_allocation: dict[tuple[str, str], Decimal] = {}
+    for position in positions:
+        key = (
+            str(position["account_key"]),
+            str(position["source_wallet"]).lower(),
+        )
+        open_margin_by_allocation[key] = open_margin_by_allocation.get(key, ZERO) + decimal_or_zero(
+            position["margin_usd"]
+        )
+
+    rows: list[dict[str, Any]] = []
+    for allocation in allocations:
+        key = (allocation.account_key, allocation.source_wallet.lower())
+        open_margin = open_margin_by_allocation.get(key, ZERO)
+        remaining = max(allocation.allocation_usd - open_margin, ZERO)
+        rows.append(
+            {
+                "id": allocation.id,
+                "account_key": allocation.account_key,
+                "source_wallet": allocation.source_wallet,
+                "rank": allocation.rank,
+                "score": allocation.score,
+                "allocation_pct": allocation.allocation_pct,
+                "allocation_usd": allocation.allocation_usd,
+                "open_margin_usd": open_margin,
+                "remaining_allocation_usd": remaining,
+                "pocket_used_pct": (
+                    open_margin / allocation.allocation_usd
+                    if allocation.allocation_usd > ZERO
+                    else None
+                ),
+                "max_total_allocation_pct": allocation.max_total_allocation_pct,
+                "active": allocation.active,
+                "updated_at": allocation.updated_at,
             }
         )
     return rows
@@ -758,7 +814,7 @@ async def refresh_paper_copy_allocations(
                 allocation_pct=allocation.allocation_pct,
                 allocation_usd=allocation_usd,
                 max_total_allocation_pct=settings.paper_copy_max_total_allocation_pct,
-                active=account.enabled,
+                active=account.enabled and allocation.active,
             )
             await session.execute(
                 stmt.on_conflict_do_update(
@@ -841,6 +897,7 @@ async def load_paper_source_allocations(
                 rank=index,
                 score=row["score"],
                 allocation_pct=allocation_pct,
+                active=True,
             )
         )
     allocation_sources = {allocation.source_wallet for allocation in allocations}
@@ -848,7 +905,6 @@ async def load_paper_source_allocations(
         select(
             PaperPosition.source_wallet,
             func.max(WalletScore.score).label("score"),
-            func.min(PaperCopyAllocation.rank).label("rank"),
             func.max(PaperCopyAllocation.allocation_pct).label("allocation_pct"),
         )
         .outerjoin(WalletScore, WalletScore.wallet_address == PaperPosition.source_wallet)
@@ -859,6 +915,7 @@ async def load_paper_source_allocations(
         .where(PaperPosition.source_wallet != "")
         .group_by(PaperPosition.source_wallet)
     )
+    retained_rank = settings.paper_copy_top_wallet_count + 1
     for row in retained_result.mappings().all():
         source_wallet = str(row["source_wallet"]).lower()
         if not source_wallet or source_wallet in allocation_sources:
@@ -867,15 +924,17 @@ async def load_paper_source_allocations(
         allocations.append(
             PaperSourceAllocation(
                 source_wallet=source_wallet,
-                rank=int(row["rank"] or len(allocations) + 1),
+                rank=retained_rank,
                 score=row["score"],
                 allocation_pct=(
                     allocation_pct
                     if allocation_pct is not None and allocation_pct > ZERO
                     else settings.paper_copy_standard_allocation_pct
                 ),
+                active=False,
             )
         )
+        retained_rank += 1
         allocation_sources.add(source_wallet)
     return allocations
 

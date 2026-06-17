@@ -25,6 +25,9 @@ export type PaperCopyAllocation = {
   score: string | null;
   allocationPct: string;
   allocationUsd: string;
+  openMarginUsd: string;
+  remainingAllocationUsd: string;
+  pocketUsedPct: string | null;
   maxTotalAllocationPct: string;
   active: boolean;
   updatedAt: string;

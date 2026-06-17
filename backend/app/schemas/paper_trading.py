@@ -32,6 +32,9 @@ class PaperCopyAllocationRead(CamelModel):
     score: Decimal | None
     allocation_pct: Decimal
     allocation_usd: Decimal
+    open_margin_usd: Decimal = Decimal("0")
+    remaining_allocation_usd: Decimal = Decimal("0")
+    pocket_used_pct: Decimal | None = None
     max_total_allocation_pct: Decimal
     active: bool
     updated_at: datetime

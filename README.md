@@ -247,6 +247,9 @@ Sizing policy:
 - The paper trading dashboard polls the summary API and shows live mark prices,
   unrealized PnL, account PnL, open positions, source-wallet PnL, allocations,
   and recent paper fills.
+- Allocation rows show current pocket usage from open paper margin. The dashboard
+  hides old inactive allocation rows unless that source still has open paper
+  positions.
 - Paper account state, copied positions, copied fills, and allocations are stored
   in Postgres. Worker restarts recover missed fills after the latest paper copy
   fill from WebSocket snapshots and pool imports.

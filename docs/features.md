@@ -456,6 +456,9 @@ What it does:
 - Retains allocation records for source wallets with open paper positions so
   add, reduce, close, and flip fills can continue after the source falls out of
   the current top 10.
+- Shows allocation pocket usage as current open paper margin divided by that
+  account/source wallet pocket. Old inactive allocation rows without open paper
+  positions are hidden from the dashboard.
 - Records skip rows when a fill cannot be copied safely, such as no matching
   paper position, missing source account value, preexisting source position,
   minimum notional, source allocation cap exhaustion, or total account cap
