@@ -28,6 +28,7 @@ from app.services.wallet_current_state_service import object_or_empty
 
 logger = logging.getLogger(__name__)
 ZERO = Decimal("0")
+ONE = Decimal("1")
 POSITION_EPSILON = Decimal("0.00000001")
 BPS_DENOMINATOR = Decimal("10000")
 PAPER_COPY_RECOVERY_OVERLAP_MS = 5 * 60 * 1000
@@ -61,7 +62,15 @@ class PaperSourceAccountState:
     dex: str
     perp_equity: Decimal
     leverage_by_coin: dict[str, Decimal]
+    positions_by_coin: dict[str, "PaperSourceCurrentPosition"]
     skip_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class PaperSourceCurrentPosition:
+    coin: str
+    side: str
+    size: Decimal
 
 
 @dataclass(frozen=True)
@@ -712,16 +721,22 @@ async def process_paper_copy_recovery_for_source(
         start_time_ms=start_time_ms,
         limit=fill_limit,
     )
-    if not fills:
-        return PaperCopyBatchResult()
-
-    return await process_paper_copy_fills(
+    replay_result = PaperCopyBatchResult()
+    if fills:
+        replay_result = await process_paper_copy_fills(
+            session,
+            source_wallet=source_wallet,
+            fills=fills,
+            settings=settings,
+            client=client,
+        )
+    reconcile_result = await reconcile_open_paper_positions_for_source(
         session,
         source_wallet=source_wallet,
-        fills=fills,
         settings=settings,
         client=client,
     )
+    return combine_batch_results(replay_result, reconcile_result)
 
 
 async def paper_copy_recovery_start_time_ms(
@@ -742,7 +757,10 @@ async def paper_copy_recovery_start_time_ms(
     if latest_processed_ms is None and earliest_opened_at is None:
         return None
 
-    anchor = latest_processed_ms or earliest_opened_at
+    if earliest_opened_at is not None:
+        anchor = earliest_opened_at
+    else:
+        anchor = latest_processed_ms
     if anchor is None:
         return None
     return max(0, int(anchor.timestamp() * 1000) - PAPER_COPY_RECOVERY_OVERLAP_MS)
@@ -785,6 +803,291 @@ def paper_source_fill_from_wallet_fill(fill: WalletFill) -> dict[str, Any]:
         "sourceTimestampMs": fill.source_timestamp_ms,
         "ingestLatencyMs": fill.ingest_latency_ms,
         "rawJson": fill.raw_json,
+    }
+
+
+async def reconcile_open_paper_positions_for_source(
+    session: AsyncSession,
+    *,
+    source_wallet: str,
+    settings: Settings,
+    client: HyperliquidClient,
+) -> PaperCopyBatchResult:
+    positions = await load_open_paper_positions_for_source(
+        session,
+        source_wallet=source_wallet,
+    )
+    if not positions:
+        return PaperCopyBatchResult()
+
+    await refresh_paper_copy_allocations(session, settings=settings)
+    accounts = {
+        account.key: account
+        for account in await load_enabled_paper_accounts(session)
+    }
+    allocations = await load_paper_copy_allocations_for_source(
+        session,
+        source_wallet=source_wallet,
+    )
+    market_prices = await load_open_position_market_prices(client=client, positions=positions)
+    source_states = await load_source_account_states_for_positions(
+        client=client,
+        source_wallet=source_wallet,
+        positions=positions,
+    )
+
+    result = PaperCopyBatchResult()
+    updated_accounts: set[str] = set()
+    for position in positions:
+        source_state = source_states.get(dex_from_coin(position.coin))
+        if not source_state_available_for_reconciliation(source_state):
+            continue
+        source_position = resolve_source_current_position(
+            source_state.positions_by_coin,
+            position.coin,
+        )
+        if source_position is not None and source_position.side == position.side:
+            continue
+
+        account = accounts.get(position.account_key)
+        allocation = allocations.get(position.account_key)
+        mark_price = market_prices.get(position.coin)
+        if account is None or allocation is None or mark_price is None or mark_price <= ZERO:
+            continue
+
+        close_result = await reconcile_closed_source_position(
+            session,
+            account=account,
+            allocation=allocation,
+            position=position,
+            mark_price=mark_price,
+            source_perp_equity=source_state.perp_equity,
+            settings=settings,
+        )
+        result = combine_batch_results(result, close_result)
+        if close_result.accounts_updated > 0:
+            updated_accounts.add(account.key)
+
+    if result.processed_fills > 0:
+        await session.commit()
+    return PaperCopyBatchResult(
+        processed_fills=result.processed_fills,
+        skipped_fills=result.skipped_fills,
+        accounts_updated=len(updated_accounts),
+        realized_pnl_usd=result.realized_pnl_usd,
+        fee_usd=result.fee_usd,
+    )
+
+
+def source_state_available_for_reconciliation(
+    source_state: PaperSourceAccountState | None,
+) -> bool:
+    if source_state is None:
+        return False
+    return source_state.skip_reason not in {
+        "source_account_state_fetch_failed",
+        "source_account_margin_summary_missing",
+    }
+
+
+def resolve_source_current_position(
+    positions_by_coin: dict[str, PaperSourceCurrentPosition],
+    coin: str,
+) -> PaperSourceCurrentPosition | None:
+    candidates = coin_symbol_candidates(coin)
+    for candidate in candidates:
+        position = positions_by_coin.get(candidate)
+        if position is not None:
+            return position
+
+    casefold_index = {
+        key.casefold(): position
+        for key, position in positions_by_coin.items()
+        if key.strip()
+    }
+    for candidate in candidates:
+        position = casefold_index.get(candidate.casefold())
+        if position is not None:
+            return position
+
+    normalized_candidates = {normalize_coin_symbol(candidate) for candidate in candidates}
+    normalized_candidates.discard("")
+    for key, position in positions_by_coin.items():
+        if normalize_coin_symbol(key) in normalized_candidates:
+            return position
+    return None
+
+
+async def load_open_paper_positions_for_source(
+    session: AsyncSession,
+    *,
+    source_wallet: str,
+) -> list[PaperPosition]:
+    result = await session.execute(
+        select(PaperPosition)
+        .where(PaperPosition.source_wallet == source_wallet)
+        .order_by(PaperPosition.opened_at.asc(), PaperPosition.account_key.asc())
+    )
+    return list(result.scalars().all())
+
+
+async def load_paper_copy_allocations_for_source(
+    session: AsyncSession,
+    *,
+    source_wallet: str,
+) -> dict[str, PaperSourceAllocation]:
+    result = await session.execute(
+        select(PaperCopyAllocation).where(PaperCopyAllocation.source_wallet == source_wallet)
+    )
+    rows: dict[str, PaperSourceAllocation] = {}
+    for allocation in result.scalars().all():
+        rows[allocation.account_key] = PaperSourceAllocation(
+            source_wallet=allocation.source_wallet,
+            rank=allocation.rank,
+            score=allocation.score,
+            allocation_pct=allocation.allocation_pct,
+            active=allocation.active,
+        )
+    return rows
+
+
+async def load_source_account_states_for_positions(
+    *,
+    client: HyperliquidClient,
+    source_wallet: str,
+    positions: list[PaperPosition],
+) -> dict[str, PaperSourceAccountState]:
+    states: dict[str, PaperSourceAccountState] = {}
+    for dex in sorted({dex_from_coin(position.coin) for position in positions}):
+        states[dex] = await load_source_account_state(
+            client=client,
+            source_wallet=source_wallet,
+            dex=dex,
+        )
+    return states
+
+
+async def reconcile_closed_source_position(
+    session: AsyncSession,
+    *,
+    account: PaperTradingAccount,
+    allocation: PaperSourceAllocation,
+    position: PaperPosition,
+    mark_price: Decimal,
+    source_perp_equity: Decimal,
+    settings: Settings,
+) -> PaperCopyBatchResult:
+    leverage = safe_leverage(position.leverage)
+    execution_price = apply_adverse_slippage(
+        price=mark_price,
+        side=position.side,
+        action="close",
+        slippage_bps=settings.paper_copy_slippage_bps,
+    )
+    if execution_price <= ZERO or position.size <= POSITION_EPSILON:
+        return PaperCopyBatchResult()
+
+    source_fill_id = f"reconcile-close:{position.id}"
+    if await paper_fill_exists(
+        session,
+        account_key=account.key,
+        source_wallet=allocation.source_wallet,
+        source_fill_id=source_fill_id,
+        sequence_index=0,
+    ):
+        return PaperCopyBatchResult()
+
+    close_size = position.size
+    notional_usd = close_size * execution_price
+    margin_usd = margin_from_notional(notional_usd, leverage)
+    realized_pnl = realized_pnl_for_close(
+        side=position.side,
+        entry_price=position.entry_price,
+        exit_price=execution_price,
+        size=close_size,
+    )
+    fee = notional_usd * settings.paper_copy_fee_rate
+    allocation_usd = max(account.equity_usd, ZERO) * allocation.allocation_pct
+    filled_at = datetime.now(UTC)
+    fill = reconciled_close_fill_payload(
+        source_fill_id=source_fill_id,
+        position=position,
+        price=mark_price,
+        timestamp_ms=timestamp_ms(filled_at),
+    )
+    part = SourceFillPart(
+        action="close",
+        side=position.side,
+        source_size=ZERO,
+        source_notional_usd=ZERO,
+        sequence_index=0,
+        close_ratio=ONE,
+    )
+    execution_context = PaperExecutionContext(
+        source_price=mark_price,
+        observed_price=mark_price,
+        execution_price=execution_price,
+        price_drift_bps=ZERO,
+        slippage_bps=settings.paper_copy_slippage_bps,
+        latency_ms=settings.paper_copy_latency_ms,
+        price_source="reconciled_live_mid",
+    )
+
+    apply_account_realized_result(account, pnl_usd=realized_pnl, fee_usd=fee)
+    await session.delete(position)
+    session.add(
+        paper_copy_fill(
+            account=account,
+            allocation=allocation,
+            fill=fill,
+            part=part,
+            action="close",
+            price=execution_price,
+            size=close_size,
+            notional_usd=notional_usd,
+            leverage=leverage,
+            margin_usd=margin_usd,
+            fee_usd=fee,
+            realized_pnl_usd=realized_pnl,
+            source_perp_equity=source_perp_equity,
+            allocation_usd=allocation_usd,
+            settings=settings,
+            execution_context=execution_context,
+        )
+    )
+    return PaperCopyBatchResult(
+        processed_fills=1,
+        accounts_updated=1,
+        realized_pnl_usd=realized_pnl,
+        fee_usd=fee,
+    )
+
+
+def reconciled_close_fill_payload(
+    *,
+    source_fill_id: str,
+    position: PaperPosition,
+    price: Decimal,
+    timestamp_ms: int,
+) -> dict[str, Any]:
+    direction = "Close Long" if position.side == "long" else "Close Short"
+    return {
+        "externalFillId": source_fill_id,
+        "coin": position.coin,
+        "side": position.side,
+        "price": str(price),
+        "size": str(position.size),
+        "notionalUsd": str(position.size * price),
+        "feeUsd": "0",
+        "pnlUsd": None,
+        "timestampMs": timestamp_ms,
+        "sourceTimestampMs": None,
+        "ingestLatencyMs": None,
+        "rawJson": {
+            "dir": direction,
+            "reconciled": True,
+            "reason": "source_position_absent",
+        },
     }
 
 
@@ -1008,15 +1311,19 @@ async def load_source_account_state(
             dex=dex,
             perp_equity=ZERO,
             leverage_by_coin={},
+            positions_by_coin={},
             skip_reason="source_account_state_fetch_failed",
         )
 
+    leverage_by_coin = parse_source_leverages(clearinghouse_state)
+    positions_by_coin = parse_source_current_positions(clearinghouse_state)
     margin_summary_raw = clearinghouse_state.get("marginSummary")
     if not isinstance(margin_summary_raw, dict):
         return PaperSourceAccountState(
             dex=dex,
             perp_equity=ZERO,
-            leverage_by_coin=parse_source_leverages(clearinghouse_state),
+            leverage_by_coin=leverage_by_coin,
+            positions_by_coin=positions_by_coin,
             skip_reason="source_account_margin_summary_missing",
         )
 
@@ -1025,21 +1332,24 @@ async def load_source_account_state(
         return PaperSourceAccountState(
             dex=dex,
             perp_equity=ZERO,
-            leverage_by_coin=parse_source_leverages(clearinghouse_state),
+            leverage_by_coin=leverage_by_coin,
+            positions_by_coin=positions_by_coin,
             skip_reason="source_perp_equity_missing",
         )
     if perp_equity <= ZERO:
         return PaperSourceAccountState(
             dex=dex,
             perp_equity=ZERO,
-            leverage_by_coin=parse_source_leverages(clearinghouse_state),
+            leverage_by_coin=leverage_by_coin,
+            positions_by_coin=positions_by_coin,
             skip_reason="source_perp_equity_zero",
         )
 
     return PaperSourceAccountState(
         dex=dex,
         perp_equity=perp_equity,
-        leverage_by_coin=parse_source_leverages(clearinghouse_state),
+        leverage_by_coin=leverage_by_coin,
+        positions_by_coin=positions_by_coin,
     )
 
 
@@ -1059,6 +1369,30 @@ def parse_source_leverages(payload: dict[str, Any]) -> dict[str, Decimal]:
         if coin and leverage_value is not None and leverage_value > ZERO:
             leverages[coin] = leverage_value
     return leverages
+
+
+def parse_source_current_positions(
+    payload: dict[str, Any],
+) -> dict[str, PaperSourceCurrentPosition]:
+    raw_positions = payload.get("assetPositions")
+    if not isinstance(raw_positions, list):
+        return {}
+
+    positions: dict[str, PaperSourceCurrentPosition] = {}
+    for item in raw_positions:
+        if not isinstance(item, dict):
+            continue
+        position = object_or_empty(item.get("position"))
+        coin = str(position.get("coin") or "")
+        signed_size = decimal_or_none(position.get("szi"))
+        if not coin or signed_size is None or signed_size.copy_abs() <= POSITION_EPSILON:
+            continue
+        positions[coin] = PaperSourceCurrentPosition(
+            coin=coin,
+            side="long" if signed_size > ZERO else "short",
+            size=signed_size.copy_abs(),
+        )
+    return positions
 
 
 async def load_execution_market_prices(
@@ -2261,6 +2595,10 @@ def fill_datetime(fill: dict[str, Any]) -> datetime:
     if timestamp_ms <= 0:
         return datetime.now(UTC)
     return datetime.fromtimestamp(timestamp_ms / 1000, tz=UTC)
+
+
+def timestamp_ms(value: datetime) -> int:
+    return int(value.timestamp() * 1000)
 
 
 def paper_fill_payload(

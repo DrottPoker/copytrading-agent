@@ -105,8 +105,9 @@ docker compose -f docker-compose.vps.yml up -d
 ```
 
 Paper trading state is stored in Postgres, not in the worker container. After the
-worker restarts it reloads open paper positions and runs paper-copy recovery for
-fills imported while the stack was down.
+worker restarts it reloads open paper positions, replays recent source fills, and
+checks source live perp state so paper positions can close if the source exited
+while the stack was down.
 
 ## Operational Commands
 

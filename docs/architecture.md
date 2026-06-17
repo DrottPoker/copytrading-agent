@@ -453,11 +453,16 @@ falling back to the fill id. This keeps large split exits deterministic.
 Paper copy state is durable in Postgres. Worker restarts keep existing
 `paper_positions` and `paper_copy_fills`, retain source wallets with open paper
 positions in the copy allocation set, and run recovery after worker start,
-WebSocket snapshots, and pool imports. Recovery scans fills after the latest
-copied source fill with overlap, then the copied-fill uniqueness constraint
-prevents duplicate simulation. Exit skip rows caused by unavailable source state
-or unavailable execution price are retriable during recovery so copied positions
-can still close after transient data issues.
+WebSocket snapshots, and pool imports. When a source has open paper exposure,
+recovery scans fills from the oldest open paper position with overlap, then the
+copied-fill uniqueness constraint prevents duplicate simulation. Exit skip rows
+caused by unavailable source state or unavailable execution price are retriable
+during recovery so copied positions can still close after transient data issues.
+After replay, recovery fetches the source wallet's live perp state. If an open
+paper position no longer has a matching source coin and side, paper closes it at
+the current simulated market price with normal fee and slippage. Coin matching
+uses the same `dex:COIN` alias handling as market data, so HIP-3 prefixed fills
+can match unprefixed live position keys.
 
 Paper copy fill rows store source wallet sizing context in
 `paper_copy_fills.source_perp_equity_usd`. The old

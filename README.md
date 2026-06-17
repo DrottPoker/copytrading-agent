@@ -284,11 +284,15 @@ Sizing policy:
   hides old inactive allocation rows unless that source still has open paper
   positions.
 - Paper account state, copied positions, copied fills, and allocations are stored
-  in Postgres. Worker restarts recover missed fills after the latest paper copy
-  fill from WebSocket snapshots and pool imports.
+  in Postgres. Worker restarts recover missed fills from the oldest open paper
+  position when a source still has copied exposure, and rely on copied fill IDs
+  to avoid duplicate simulation.
 - Recovery can retry exit skip rows caused by unavailable source state or
   unavailable execution price, so a copied close is not permanently blocked by a
   transient data issue.
+- Recovery also compares open paper positions against source live perp state. If
+  the source no longer has the same coin and side, paper closes the position at
+  the current simulated market price with normal fee and slippage.
 
 Notes:
 

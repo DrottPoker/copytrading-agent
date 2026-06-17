@@ -473,11 +473,15 @@ What it does:
 - Persists paper accounts, positions, allocations, and copied fill IDs in
   Postgres so Docker restarts do not reset paper trading state.
 - Runs paper-copy recovery on worker start, WebSocket snapshots, and pool imports.
-  Recovery replays fills after the latest copied source fill, with a small
-  overlap, and relies on copied fill IDs to avoid duplicate paper fills.
+  Recovery replays fills from the oldest open paper position when a source still
+  has copied exposure, with a small overlap, and relies on copied fill IDs to
+  avoid duplicate paper fills.
 - Recovery can retry earlier exit skip rows caused by unavailable source state
   or unavailable execution price, so a close is not permanently blocked by a
   transient paper-copy data issue.
+- Recovery also compares open paper positions with the source wallet's live perp
+  state. If the source no longer has the same coin and side, paper closes the
+  position at the current simulated market price with normal fee and slippage.
 - Retains allocation records for source wallets with open paper positions so
   add, reduce, close, and flip fills can continue after the source falls out of
   the current top 10.
