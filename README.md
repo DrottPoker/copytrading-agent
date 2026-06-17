@@ -138,6 +138,7 @@ Notes:
 - Profitability score is scale-invariant. It combines total net ROI, average
   trade ROI, and median trade ROI with 55/30/15 weights instead of rewarding
   absolute dollar PnL or current-equity effects from deposits and withdrawals.
+  Each ROI subscore maps 0% or lower to 0 and +5% to 100.
 - Score rows are kept only for wallets that still exist in the watched wallet
   pool, so pruned wallets do not remain rankable through stale scores.
 - Wallet detail pages show reconstructed source trades from `GET /wallets/{address}/source-trades`.
@@ -146,8 +147,8 @@ Notes:
 
 Realtime fill monitoring is available through the worker, Redis, API events, and dashboard.
 
-Automated sourcing now runs through Discovery. The legacy direct leaderboard
-import worker loop is disabled by default.
+Automated sourcing runs through Discovery. Hyperliquid leaderboard data is used
+as a discovery source, not as a separate direct-to-pool import flow.
 
 Worker loops:
 
@@ -163,7 +164,6 @@ development.
 
 API:
 
-- `POST /leaderboard/import`
 - `POST /wallets/fills/import-pool`
 - `POST /wallets/prune-all`
 - `GET /events/recent`
@@ -185,6 +185,10 @@ Notes:
 - Automated sourcing runs through Discovery using `backend/config/discovery.json`.
 - Discovery defaults to the configured Hyperliquid leaderboard and Hyperdash sources.
 - Discovery auto-import runs every 6 hours by default.
+- Discovery config is organized into discovery sources, import scheduling,
+  prefiltering, candidate backfill, quality checks, and promotion.
+- Pool reimport and shared fill-import guards live in
+  `backend/config/pool_fill_import.json`.
 - Discovery imports only new addresses, skipping wallets already in candidates or in the pool.
 - Discovery prefilters new candidates, then backfills accepted candidates.
 - Candidates that pass backfill quality checks are inserted directly into the wallet pool.
@@ -203,7 +207,7 @@ Notes:
   penalties.
 - Wallet detail pages include a Detailed scoring modal next to the score header.
   It shows gross score, penalty, final score before sample cap, component
-  weights, weighted scores, and the input-level subscores behind PnL,
+  weights, weighted scores, and the input-level subscores behind profitability,
   consistency, risk, copyability, recency, and penalty scoring.
 - Paper allocation only selects positive-score enabled wallets. When current
   drawdown scoring is enabled, the source wallet must also have
@@ -262,8 +266,8 @@ Sizing policy:
 - Paper order size is based on source fill notional divided by source perp
   equity, scaled inside that source wallet's pocket.
 - Paper fill rows store that source perp equity snapshot as
-  `paper_copy_fills.source_perp_equity_usd`. The legacy API alias
-  `sourceAccountValueUsd` remains for old dashboard clients.
+  `paper_copy_fills.source_perp_equity_usd`. The API also exposes the read alias
+  `sourceAccountValueUsd` for the same value.
 - Source perp equity is fetched from Hyperliquid `clearinghouseState` per perp
   dex. Spot balances are not used for paper copy sizing. For isolated HIP-3
   positions, Hyperliquid `accountValue` can be isolated position equity and can
@@ -321,9 +325,21 @@ Tweakable non-secret settings live in config files:
 - `backend/config/app.json`
 - `backend/config/discovery.json`
 - `backend/config/paper_trading.json`
+- `backend/config/pool_fill_import.json`
 - `backend/config/prune.json`
 - `backend/config/scoring.json`
 - `frontend/config/app.json`
+
+`backend/config/scoring.json` uses organized sections for schedule, window,
+component weights, profitability, consistency, risk, copyability, recency,
+penalties, and window scores.
+
+`backend/config/discovery.json` uses organized sections for discovery sources,
+discovery import, prefiltering, candidate backfill, quality checks, and
+promotion.
+
+`backend/config/pool_fill_import.json` owns scheduled pool reimport settings and
+the shared fill-import storage and market-filter settings.
 
 Use `.env` only for secrets and connection strings:
 

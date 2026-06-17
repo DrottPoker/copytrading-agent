@@ -49,7 +49,6 @@ Endpoints:
 - `GET /wallets/{address}`
 - `PATCH /wallets/{address}`
 - `DELETE /wallets/{address}`
-- `POST /leaderboard/import`
 
 Dashboard page:
 
@@ -65,38 +64,6 @@ What it does:
 - Deleting a wallet removes its fills, scores, positions, copy rows, and source
   links so removed pool wallets do not leave orphan fill data behind.
 
-### Hyperliquid Leaderboard Import
-
-Endpoint:
-
-- `POST /leaderboard/import`
-
-Behavior:
-
-- Kept as a legacy manual endpoint.
-- Fetches the Hyperliquid public leaderboard.
-- Sorts leaderboard rows by the configured window and metric.
-- Defaults to the 30D/month PnL leaderboard.
-- Imports the top `leaderboard_import_limit` addresses, default 100.
-- Ignores duplicates with database-level `ON CONFLICT DO NOTHING`.
-- Adds new wallets to the pool for future polling and scoring.
-- Expands leaderboard master wallets through Hyperliquid `subAccounts` and imports
-  each subaccount as its own normal pool wallet.
-- Treats the master wallet and every subaccount independently for fills, scoring,
-  pruning, realtime promotion, and future copy decisions.
-- Uses the master address only as discovery context in labels/notes; a weak master
-  wallet does not need to stay in the pool just because a subaccount is useful.
-- Automatically imports recent historical fills for ranked wallets.
-- Can remove newly imported leaderboard wallets immediately when the configured
-  fill filter is `perp` and no perp fills were imported for that wallet.
-- Uses full configured backfill for first-time wallets and incremental import for already-polled wallets.
-- Can backfill unpolled duplicate leaderboard wallets once.
-
-Purpose:
-
-- Manual fallback for the older direct-to-pool leaderboard flow.
-- Normal automated sourcing now runs through Discovery Sources.
-
 ### Discovery Sources
 
 Endpoints:
@@ -107,7 +74,7 @@ Endpoints:
 - `GET /discovery/runs`
 - `POST /discovery/prefilter`
 - `POST /discovery/backfill`
-- `POST /discovery/promote` (legacy fallback)
+- `POST /discovery/promote`
 
 What it does:
 
@@ -124,6 +91,11 @@ What it does:
 - Includes configurable Hyperdash source adapters, but they require stable
   `discovery_hyperdash_*_url` config values before use.
 - Runs a configurable source-metadata prefilter after import by default.
+- Keeps discovery tunables in organized `backend/config/discovery.json` sections:
+  discovery sources, discovery import, prefilter, candidate backfill, quality,
+  and promotion.
+- Keeps pool reimport and shared fill import tunables in
+  `backend/config/pool_fill_import.json`.
 - Marks candidates as `accepted` or `rejected` and stores a machine-readable
   `fail_reason` such as `account_value_too_large`, `source_pnl_not_positive`,
   or `source_roi_below_min`.
@@ -172,11 +144,7 @@ What it does:
 
 Config:
 
-- `backend/config/discovery.json`
-- `pool_fill_import_interval_seconds`
-- `pool_fill_import_min_wallet_interval_seconds`
-- `pool_fill_import_batch_size`
-- `pool_fill_import_max_batches`
+- `backend/config/pool_fill_import.json`
 
 ### Manual Wallet Pruning
 
@@ -213,12 +181,6 @@ Purpose:
 - Keep the research pool focused on perp traders.
 - Avoid managing several overlapping cleanup buttons for the same pruning pass.
 
-Legacy:
-
-- `POST /wallets/prune-non-perp` still exists for compatibility, but dashboard
-  pruning uses `prune-all`. With perp-only fill storage, zero-fill is the clearer
-  rule for wallets that produced no usable history.
-
 ### Current Drawdown Wallet Cleanup
 
 Individual endpoint:
@@ -236,7 +198,7 @@ What it does:
   `<= -40%` of perp equity.
 - Excludes copy-enabled, active, and exit-only wallets from cleanup candidates.
 - Runs as a dry run by default and supports `dry_run=false` for deletion.
-- Adds deleted addresses to the leaderboard ignore list so they are not imported
+- Adds deleted addresses to the discovery ignore list so they are not imported
   back into the pool immediately.
 - Reports Hyperliquid fetch errors per wallet and never deletes wallets whose
   current state could not be fetched.
@@ -291,7 +253,7 @@ What it does:
 - Compares final score with the configured threshold using `lte` or `gte`.
 - Excludes copy-enabled, active, exit-only, and never-polled wallets.
 - Runs as a dry run by default and supports `dry_run=false` for deletion.
-- Adds deleted addresses to the leaderboard ignore list so they are not imported
+- Adds deleted addresses to the discovery ignore list so they are not imported
   back into the pool immediately.
 
 Config:
@@ -569,6 +531,7 @@ Files:
 - `backend/config/app.json`
 - `backend/config/discovery.json`
 - `backend/config/paper_trading.json`
+- `backend/config/pool_fill_import.json`
 - `backend/config/prune.json`
 - `backend/config/scoring.json`
 - `frontend/config/app.json`
@@ -581,6 +544,12 @@ What it does:
 - Makes common system tuning possible without editing environment variables.
 - Environment variables override JSON config. This allows compose and deployment
   environments to change runtime behavior without editing tracked config files.
+- `backend/config/discovery.json` owns source discovery, candidate filtering,
+  backfill quality checks, and promotion.
+- `backend/config/pool_fill_import.json` owns scheduled pool reimport and shared
+  fill import storage and market-filter settings.
+- `backend/config/scoring.json` owns scoring schedule, score windows, weights,
+  score curves, thresholds, and penalties.
 
 ### Job Locking
 
@@ -696,15 +665,21 @@ Phase A behavior:
 - Uses reconstructed trade PnL, fees, notional, active days, recency, realized
   drawdown, current drawdown, open-position stress, loss ratio, losing trade
   rate, profit distribution, and coin concentration.
+- Keeps scoring tunables in organized `backend/config/scoring.json` sections:
+  schedule, window, component weights, profitability, consistency, risk,
+  copyability, recency, penalties, and window scores.
 - Profitability score is scale-invariant. It combines total net ROI against
   reconstructed entry notional, capped average trade ROI, and median trade ROI.
-  The weights are 55/30/15. Current-equity return is shown as reference data
-  only because deposits and withdrawals can distort it. Absolute dollar PnL is
-  also reference data only and does not increase the score.
+  The weights are 55/30/15, and each ROI subscore maps 0% or lower to 0 and +5%
+  to 100. Current-equity return is shown as reference data only because deposits
+  and withdrawals can distort it. Absolute dollar PnL is also reference data only
+  and does not increase the score.
 - Consistency score includes profit distribution across winning closed trades.
   It calculates effective winning trades as `1 / sum(profit_share^2)` and scores
-  it against `scoring_target_profit_winners`, so wallets where most profit comes
-  from one or two trades score lower than wallets with repeated independent wins.
+  it against the configured profit-winner target, so wallets where most profit
+  comes from one or two trades score lower than wallets with repeated independent
+  wins. Consistency subweights, win-rate span, and profit-factor curve are
+  configurable.
 - The stored `max_drawdown_pct` is exposed to the UI as realized drawdown. It is
   based on reconstructed closed trades and does not include intratrade open
   unrealized PnL.
@@ -721,6 +696,8 @@ Phase A behavior:
   Open-position stress can scale up to a 25 point risk penalty at full stress.
   The larger of those two live-state penalties is used so the same open loss is
   not double-counted.
+- Risk loss-ratio, realized-drawdown, and losing-rate penalty multipliers and
+  caps are configurable.
 - `GET /scores/{address}/detail` returns component-level explanations for the
   wallet detail scoring modal. The response includes gross score, penalty,
   final score before sample cap, any sample cap, component weights, weighted
@@ -735,7 +712,8 @@ Phase A behavior:
   separate final-score penalty instead of mixing them into the risk component.
 - Applies liquidation penalties from `backend/config/scoring.json`, default 2 points
   per liquidation event capped at 10 points.
-- Caps scores for wallets below `scoring_min_trades` so tiny samples cannot rank high.
+- Caps scores for wallets below the configured minimum trade count so tiny
+  samples cannot rank high. The sample-cap max score is configurable.
 - Runs after each worker pool reimport when pool maintenance is enabled.
 - If pool maintenance is disabled, the standalone scoring worker uses
   `scoring_interval_seconds`.

@@ -1,24 +1,6 @@
 from app.schemas.base import CamelModel
 
 
-class NonPerpWalletCandidate(CamelModel):
-    address: str
-    label: str | None
-    fill_count: int
-    score: str | None = None
-    last_polled_at: str | None
-    last_seen_fill_at: str | None
-
-
-class NonPerpWalletPruneResponse(CamelModel):
-    dry_run: bool
-    scanned_wallets: int
-    candidate_wallets: int
-    deleted_wallets: int
-    deleted_fills: int
-    items: list[NonPerpWalletCandidate]
-
-
 class ZeroFillWalletCandidate(CamelModel):
     address: str
     label: str | None

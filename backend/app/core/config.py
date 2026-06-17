@@ -12,8 +12,247 @@ CONFIG_DIR = BACKEND_ROOT / "config"
 APP_CONFIG_PATH = CONFIG_DIR / "app.json"
 PRUNE_CONFIG_PATH = CONFIG_DIR / "prune.json"
 DISCOVERY_CONFIG_PATH = CONFIG_DIR / "discovery.json"
+POOL_FILL_IMPORT_CONFIG_PATH = CONFIG_DIR / "pool_fill_import.json"
 SCORING_CONFIG_PATH = CONFIG_DIR / "scoring.json"
 PAPER_TRADING_CONFIG_PATH = CONFIG_DIR / "paper_trading.json"
+DISCOVERY_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
+    ("enabled",): "discovery_enabled",
+    ("sources", "default"): "discovery_default_sources",
+    ("sources", "hyperliquid", "sort_metric"): "discovery_hyperliquid_sort_metric",
+    ("sources", "hyperliquid", "url"): "discovery_hyperliquid_leaderboard_url",
+    ("sources", "hyperdash", "urls", "copytrading"): (
+        "discovery_hyperdash_copytrading_url"
+    ),
+    ("sources", "hyperdash", "urls", "cohorts"): (
+        "discovery_hyperdash_cohorts_url"
+    ),
+    ("sources", "hyperdash", "urls", "tagged"): (
+        "discovery_hyperdash_tagged_url"
+    ),
+    ("import", "limit"): "discovery_import_limit",
+    ("import", "interval_seconds"): "discovery_import_interval_seconds",
+    ("import", "run_on_worker_start"): "discovery_import_on_worker_start",
+    ("import", "subaccounts", "enabled"): "discovery_import_subaccounts_enabled",
+    ("import", "subaccounts", "max_per_wallet"): (
+        "discovery_import_max_subaccounts_per_wallet"
+    ),
+    ("prefilter", "enabled"): "discovery_prefilter_enabled",
+    ("prefilter", "run_after_import"): "discovery_prefilter_run_after_import",
+    ("prefilter", "reject_missing_source_pnl"): (
+        "discovery_prefilter_reject_missing_source_pnl"
+    ),
+    ("prefilter", "require_positive_source_pnl"): (
+        "discovery_prefilter_require_positive_source_pnl"
+    ),
+    ("prefilter", "min_source_pnl_usd"): "discovery_prefilter_min_source_pnl_usd",
+    ("prefilter", "min_source_roi"): "discovery_prefilter_min_source_roi",
+    ("prefilter", "min_account_value_usd"): (
+        "discovery_prefilter_min_account_value_usd"
+    ),
+    ("prefilter", "max_account_value_usd"): (
+        "discovery_prefilter_max_account_value_usd"
+    ),
+    ("prefilter", "min_copy_score"): "discovery_prefilter_min_copy_score",
+    ("prefilter", "max_source_rank"): "discovery_prefilter_max_source_rank",
+    ("prefilter", "accept_if_metrics_missing"): (
+        "discovery_prefilter_accept_if_metrics_missing"
+    ),
+    ("candidate_backfill", "days"): "discovery_candidate_backfill_days",
+    ("candidate_backfill", "max_pages"): (
+        "discovery_candidate_backfill_max_pages"
+    ),
+    ("candidate_backfill", "target_fills"): (
+        "discovery_candidate_backfill_target_fills"
+    ),
+    ("candidate_backfill", "batch_size"): (
+        "discovery_candidate_backfill_batch_size"
+    ),
+    ("quality", "min_fills"): "discovery_quality_min_fills",
+    ("quality", "min_closed_trades"): "discovery_quality_min_closed_trades",
+    ("quality", "require_positive_net_pnl"): (
+        "discovery_quality_require_positive_net_pnl"
+    ),
+    ("quality", "min_profit_factor"): "discovery_quality_min_profit_factor",
+    ("quality", "min_win_rate"): "discovery_quality_min_win_rate",
+    ("quality", "max_drawdown_pct"): "discovery_quality_max_drawdown_pct",
+    ("quality", "max_ignored_fill_ratio"): (
+        "discovery_quality_max_ignored_fill_ratio"
+    ),
+    ("quality", "min_average_trade_notional_usd"): (
+        "discovery_quality_min_average_trade_notional_usd"
+    ),
+    ("quality", "max_average_trade_notional_usd"): (
+        "discovery_quality_max_average_trade_notional_usd"
+    ),
+    ("promotion", "batch_size"): "discovery_promotion_batch_size",
+    ("promotion", "require_backfill"): "discovery_promotion_require_backfill",
+}
+POOL_FILL_IMPORT_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
+    ("pool_fill_import", "enabled"): "pool_fill_import_enabled",
+    ("pool_fill_import", "run_on_worker_start"): "pool_fill_import_run_on_worker_start",
+    ("pool_fill_import", "start_delay_seconds"): "pool_fill_import_start_delay_seconds",
+    ("pool_fill_import", "interval_seconds"): "pool_fill_import_interval_seconds",
+    ("pool_fill_import", "min_wallet_interval_seconds"): (
+        "pool_fill_import_min_wallet_interval_seconds"
+    ),
+    ("pool_fill_import", "batch_size"): "pool_fill_import_batch_size",
+    ("pool_fill_import", "max_batches"): "pool_fill_import_max_batches",
+    ("pool_fill_import", "days"): "pool_fill_import_days",
+    ("pool_fill_import", "max_pages"): "pool_fill_import_max_pages",
+    ("pool_fill_import", "overlap_seconds"): "pool_fill_import_overlap_seconds",
+    ("fill_import", "storage_guard", "enabled"): "fill_import_storage_guard_enabled",
+    ("fill_import", "storage_guard", "min_free_database_mb"): (
+        "fill_import_min_free_database_mb"
+    ),
+    ("fill_import", "market_filter"): "fill_import_market_filter",
+    ("fill_import", "raw_json_fields"): "fill_import_raw_json_fields",
+}
+SCORING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
+    ("enabled",): "scoring_enabled",
+    ("schedule", "run_on_worker_start"): "scoring_run_on_worker_start",
+    ("schedule", "interval_seconds"): "scoring_interval_seconds",
+    ("window", "days"): "scoring_window_days",
+    ("window", "min_fills"): "scoring_min_fills",
+    ("window", "target_fills"): "scoring_target_fills",
+    ("window", "min_trades"): "scoring_min_trades",
+    ("window", "sample_cap_max_score"): "scoring_sample_cap_max_score",
+    ("component_weights", "profitability"): "scoring_weight_pnl",
+    ("component_weights", "consistency"): "scoring_weight_consistency",
+    ("component_weights", "risk"): "scoring_weight_risk",
+    ("component_weights", "copyability"): "scoring_weight_copyability",
+    ("component_weights", "recency"): "scoring_weight_recency",
+    ("profitability", "weights", "net_roi"): "scoring_profitability_weight_net_roi",
+    (
+        "profitability",
+        "weights",
+        "average_trade_roi",
+    ): "scoring_profitability_weight_average_trade_roi",
+    (
+        "profitability",
+        "weights",
+        "median_trade_roi",
+    ): "scoring_profitability_weight_median_trade_roi",
+    ("profitability", "roi_score", "full_score_at"): (
+        "scoring_profitability_roi_full_score_at"
+    ),
+    ("profitability", "average_trade_roi", "cap_min"): (
+        "scoring_profitability_average_trade_roi_cap_min"
+    ),
+    ("profitability", "average_trade_roi", "cap_max"): (
+        "scoring_profitability_average_trade_roi_cap_max"
+    ),
+    ("consistency", "weights", "win_rate"): "scoring_consistency_weight_win_rate",
+    ("consistency", "weights", "profit_factor"): (
+        "scoring_consistency_weight_profit_factor"
+    ),
+    ("consistency", "weights", "profit_distribution"): (
+        "scoring_consistency_weight_profit_distribution"
+    ),
+    ("consistency", "weights", "active_days"): "scoring_consistency_weight_active_days",
+    ("consistency", "win_rate", "missing_score"): (
+        "scoring_consistency_win_rate_missing_score"
+    ),
+    ("consistency", "win_rate", "zero_score_at"): (
+        "scoring_consistency_win_rate_zero_score_at"
+    ),
+    ("consistency", "win_rate", "full_score_at"): (
+        "scoring_consistency_win_rate_full_score_at"
+    ),
+    ("consistency", "profit_factor", "missing_score"): (
+        "scoring_consistency_profit_factor_missing_score"
+    ),
+    ("consistency", "profit_factor", "curve"): (
+        "scoring_consistency_profit_factor_curve"
+    ),
+    ("consistency", "profit_distribution", "target_winners"): (
+        "scoring_target_profit_winners"
+    ),
+    ("consistency", "active_days", "target"): "scoring_target_active_days",
+    ("risk", "loss_ratio", "penalty_per_ratio"): (
+        "scoring_risk_loss_ratio_penalty_per_ratio"
+    ),
+    ("risk", "loss_ratio", "penalty_max"): "scoring_risk_loss_ratio_penalty_max",
+    ("risk", "realized_drawdown", "penalty_per_ratio"): (
+        "scoring_risk_realized_drawdown_penalty_per_ratio"
+    ),
+    ("risk", "realized_drawdown", "penalty_max"): (
+        "scoring_risk_realized_drawdown_penalty_max"
+    ),
+    ("risk", "losing_trade_rate", "penalty_per_ratio"): (
+        "scoring_risk_losing_trade_rate_penalty_per_ratio"
+    ),
+    ("risk", "current_drawdown", "enabled"): "scoring_current_drawdown_enabled",
+    ("risk", "current_drawdown", "concurrency"): "scoring_current_drawdown_concurrency",
+    ("risk", "current_drawdown", "missing_penalty"): (
+        "scoring_current_drawdown_missing_penalty"
+    ),
+    ("risk", "current_drawdown", "full_penalty_ratio"): (
+        "scoring_current_drawdown_full_penalty_ratio"
+    ),
+    ("risk", "current_drawdown", "penalty_max"): (
+        "scoring_current_drawdown_penalty_max"
+    ),
+    ("risk", "open_position_stress", "notional_full_ratio"): (
+        "scoring_open_position_stress_notional_full_ratio"
+    ),
+    ("risk", "open_position_stress", "penalty_max"): (
+        "scoring_open_position_stress_penalty_max"
+    ),
+    ("copyability", "target_trades"): "scoring_target_trades",
+    ("copyability", "target_fills"): "scoring_target_fills",
+    ("copyability", "weights", "trade_count"): "scoring_copyability_weight_trade_count",
+    ("copyability", "weights", "average_notional"): (
+        "scoring_copyability_weight_average_notional"
+    ),
+    ("copyability", "weights", "coin_concentration"): (
+        "scoring_copyability_weight_coin_concentration"
+    ),
+    ("copyability", "weights", "unique_coins"): (
+        "scoring_copyability_weight_unique_coins"
+    ),
+    ("copyability", "average_notional", "min_full_score_usd"): (
+        "scoring_copyability_average_notional_min_full_score_usd"
+    ),
+    ("copyability", "average_notional", "max_full_score_usd"): (
+        "scoring_copyability_average_notional_max_full_score_usd"
+    ),
+    ("copyability", "average_notional", "too_large_min_score_usd"): (
+        "scoring_copyability_average_notional_too_large_min_score_usd"
+    ),
+    ("copyability", "average_notional", "too_small_max_score"): (
+        "scoring_copyability_average_notional_too_small_max_score"
+    ),
+    ("copyability", "average_notional", "too_large_min_score"): (
+        "scoring_copyability_average_notional_too_large_min_score"
+    ),
+    ("copyability", "coin_concentration", "full_score_at_or_below"): (
+        "scoring_copyability_coin_concentration_full_score_at_or_below"
+    ),
+    ("copyability", "unique_coins", "full_score_at"): (
+        "scoring_copyability_unique_coins_full_score_at"
+    ),
+    ("recency", "stale_days"): "scoring_stale_days",
+    ("penalties", "no_closed_trades"): "scoring_penalty_no_closed_trades",
+    ("penalties", "low_sample_max"): "scoring_penalty_low_sample_max",
+    ("penalties", "negative_pnl_max"): "scoring_penalty_negative_pnl_max",
+    ("penalties", "stale_recency"): "scoring_penalty_stale_recency",
+    ("penalties", "ignored_fills_max"): "scoring_penalty_ignored_fills_max",
+    ("penalties", "open_only"): "scoring_penalty_open_only",
+    ("penalties", "liquidation", "event_gap_seconds"): (
+        "scoring_liquidation_event_gap_seconds"
+    ),
+    ("penalties", "liquidation", "per_event"): (
+        "scoring_liquidation_penalty_per_event"
+    ),
+    ("penalties", "liquidation", "max"): "scoring_liquidation_penalty_max",
+    ("penalties", "confidence", "target_trades"): "scoring_confidence_target_trades",
+    ("penalties", "confidence", "max"): "scoring_confidence_penalty_max",
+    ("window_scores", "activity_trade_cap"): "scoring_window_score_activity_trade_cap",
+    ("window_scores", "weight_profitability"): (
+        "scoring_window_score_weight_profitability"
+    ),
+    ("window_scores", "weight_activity"): "scoring_window_score_weight_activity",
+}
 
 
 class PaperTradingAccountConfig(BaseModel):
@@ -21,6 +260,11 @@ class PaperTradingAccountConfig(BaseModel):
     label: str = Field(min_length=1, max_length=120)
     starting_balance_usd: Decimal = Field(gt=0)
     enabled: bool = True
+
+
+class ScoreCurvePointConfig(BaseModel):
+    value: Decimal
+    score: Decimal = Field(ge=0, le=100)
 
 
 class Settings(BaseSettings):
@@ -79,22 +323,6 @@ class Settings(BaseSettings):
     max_realtime_wallets: int = Field(default=10, ge=1, le=10)
     realtime_subscription_refresh_seconds: int = Field(default=300, ge=30)
     realtime_reconnect_seconds: int = Field(default=5, ge=1)
-    leaderboard_import_enabled: bool = True
-    leaderboard_import_limit: int = Field(default=100, ge=1, le=500)
-    leaderboard_import_window: Literal["day", "week", "month", "allTime"] = "month"
-    leaderboard_import_sort_metric: Literal["pnl", "roi"] = "pnl"
-    leaderboard_import_interval_seconds: int = Field(default=86400, ge=3600)
-    leaderboard_import_on_worker_start: bool = True
-    leaderboard_import_url: str | None = None
-    leaderboard_import_subaccounts_enabled: bool = True
-    leaderboard_import_max_subaccounts_per_wallet: int = Field(default=25, ge=0, le=100)
-    leaderboard_auto_import_fills_enabled: bool = True
-    leaderboard_auto_import_fills_days: int = Field(default=30, ge=1, le=365)
-    leaderboard_auto_import_fills_max_pages: int = Field(default=5, ge=1, le=50)
-    leaderboard_auto_import_fills_for_unpolled_duplicates: bool = True
-    leaderboard_auto_import_fills_for_ranked_wallets: bool = True
-    leaderboard_auto_import_fills_overlap_seconds: int = Field(default=300, ge=0, le=86400)
-    leaderboard_prune_non_perp_wallets_enabled: bool = True
     discovery_enabled: bool = True
     discovery_default_sources: list[str] = Field(
         default_factory=lambda: [
@@ -107,6 +335,7 @@ class Settings(BaseSettings):
     discovery_import_interval_seconds: int = Field(default=3600, ge=3600)
     discovery_import_on_worker_start: bool = True
     discovery_hyperliquid_sort_metric: Literal["pnl", "roi"] = "pnl"
+    discovery_hyperliquid_leaderboard_url: str | None = None
     discovery_import_subaccounts_enabled: bool = False
     discovery_import_max_subaccounts_per_wallet: int = Field(default=10, ge=0, le=50)
     discovery_hyperdash_copytrading_url: str | None = None
@@ -176,6 +405,7 @@ class Settings(BaseSettings):
     scoring_target_profit_winners: int = Field(default=10, ge=1)
     scoring_target_active_days: int = Field(default=10, ge=1)
     scoring_stale_days: int = Field(default=7, ge=1)
+    scoring_sample_cap_max_score: Decimal = Field(default=Decimal("45"), ge=0, le=100)
     scoring_liquidation_event_gap_seconds: int = Field(default=300, ge=1)
     scoring_liquidation_penalty_per_event: Decimal = Field(default=Decimal("2"), ge=0, le=100)
     scoring_liquidation_penalty_max: Decimal = Field(default=Decimal("10"), ge=0, le=100)
@@ -213,6 +443,157 @@ class Settings(BaseSettings):
     scoring_weight_risk: Decimal = Field(default=Decimal("0.20"), ge=0, le=1)
     scoring_weight_copyability: Decimal = Field(default=Decimal("0.20"), ge=0, le=1)
     scoring_weight_recency: Decimal = Field(default=Decimal("0.10"), ge=0, le=1)
+    scoring_profitability_weight_net_roi: Decimal = Field(default=Decimal("0.55"), ge=0, le=1)
+    scoring_profitability_weight_average_trade_roi: Decimal = Field(
+        default=Decimal("0.30"),
+        ge=0,
+        le=1,
+    )
+    scoring_profitability_weight_median_trade_roi: Decimal = Field(
+        default=Decimal("0.15"),
+        ge=0,
+        le=1,
+    )
+    scoring_profitability_roi_full_score_at: Decimal = Field(
+        default=Decimal("0.05"),
+        gt=0,
+        le=10,
+    )
+    scoring_profitability_average_trade_roi_cap_min: Decimal = Field(
+        default=Decimal("-0.05"),
+        ge=-10,
+        le=10,
+    )
+    scoring_profitability_average_trade_roi_cap_max: Decimal = Field(
+        default=Decimal("0.10"),
+        ge=-10,
+        le=10,
+    )
+    scoring_consistency_weight_win_rate: Decimal = Field(default=Decimal("0.30"), ge=0, le=1)
+    scoring_consistency_weight_profit_factor: Decimal = Field(
+        default=Decimal("0.25"),
+        ge=0,
+        le=1,
+    )
+    scoring_consistency_weight_profit_distribution: Decimal = Field(
+        default=Decimal("0.30"),
+        ge=0,
+        le=1,
+    )
+    scoring_consistency_weight_active_days: Decimal = Field(
+        default=Decimal("0.15"),
+        ge=0,
+        le=1,
+    )
+    scoring_consistency_win_rate_missing_score: Decimal = Field(
+        default=Decimal("50"),
+        ge=0,
+        le=100,
+    )
+    scoring_consistency_win_rate_zero_score_at: Decimal = Field(
+        default=Decimal("0.35"),
+        ge=0,
+        le=1,
+    )
+    scoring_consistency_win_rate_full_score_at: Decimal = Field(
+        default=Decimal("0.65"),
+        ge=0,
+        le=1,
+    )
+    scoring_consistency_profit_factor_missing_score: Decimal = Field(
+        default=Decimal("50"),
+        ge=0,
+        le=100,
+    )
+    scoring_consistency_profit_factor_curve: list[ScoreCurvePointConfig] = Field(
+        default_factory=lambda: [
+            ScoreCurvePointConfig(value=Decimal("0.75"), score=Decimal("0")),
+            ScoreCurvePointConfig(value=Decimal("1"), score=Decimal("25")),
+            ScoreCurvePointConfig(value=Decimal("2"), score=Decimal("60")),
+            ScoreCurvePointConfig(value=Decimal("4"), score=Decimal("90")),
+            ScoreCurvePointConfig(value=Decimal("8"), score=Decimal("100")),
+        ],
+        min_length=2,
+        max_length=12,
+    )
+    scoring_risk_loss_ratio_penalty_per_ratio: Decimal = Field(
+        default=Decimal("40"),
+        ge=0,
+        le=1000,
+    )
+    scoring_risk_loss_ratio_penalty_max: Decimal = Field(default=Decimal("40"), ge=0, le=100)
+    scoring_risk_realized_drawdown_penalty_per_ratio: Decimal = Field(
+        default=Decimal("35"),
+        ge=0,
+        le=1000,
+    )
+    scoring_risk_realized_drawdown_penalty_max: Decimal = Field(
+        default=Decimal("35"),
+        ge=0,
+        le=100,
+    )
+    scoring_risk_losing_trade_rate_penalty_per_ratio: Decimal = Field(
+        default=Decimal("15"),
+        ge=0,
+        le=1000,
+    )
+    scoring_copyability_weight_trade_count: Decimal = Field(default=Decimal("0.35"), ge=0, le=1)
+    scoring_copyability_weight_average_notional: Decimal = Field(
+        default=Decimal("0.25"),
+        ge=0,
+        le=1,
+    )
+    scoring_copyability_weight_coin_concentration: Decimal = Field(
+        default=Decimal("0.20"),
+        ge=0,
+        le=1,
+    )
+    scoring_copyability_weight_unique_coins: Decimal = Field(
+        default=Decimal("0.20"),
+        ge=0,
+        le=1,
+    )
+    scoring_copyability_average_notional_min_full_score_usd: Decimal = Field(
+        default=Decimal("50"),
+        gt=0,
+    )
+    scoring_copyability_average_notional_max_full_score_usd: Decimal = Field(
+        default=Decimal("250000"),
+        gt=0,
+    )
+    scoring_copyability_average_notional_too_large_min_score_usd: Decimal = Field(
+        default=Decimal("1000000"),
+        gt=0,
+    )
+    scoring_copyability_average_notional_too_small_max_score: Decimal = Field(
+        default=Decimal("70"),
+        ge=0,
+        le=100,
+    )
+    scoring_copyability_average_notional_too_large_min_score: Decimal = Field(
+        default=Decimal("40"),
+        ge=0,
+        le=100,
+    )
+    scoring_copyability_coin_concentration_full_score_at_or_below: Decimal = Field(
+        default=Decimal("0.30"),
+        ge=0,
+        le=1,
+    )
+    scoring_copyability_unique_coins_full_score_at: int = Field(default=4, ge=1, le=50)
+    scoring_penalty_no_closed_trades: Decimal = Field(default=Decimal("100"), ge=0, le=100)
+    scoring_penalty_low_sample_max: Decimal = Field(default=Decimal("30"), ge=0, le=100)
+    scoring_penalty_negative_pnl_max: Decimal = Field(default=Decimal("30"), ge=0, le=100)
+    scoring_penalty_stale_recency: Decimal = Field(default=Decimal("20"), ge=0, le=100)
+    scoring_penalty_ignored_fills_max: Decimal = Field(default=Decimal("35"), ge=0, le=100)
+    scoring_penalty_open_only: Decimal = Field(default=Decimal("10"), ge=0, le=100)
+    scoring_window_score_activity_trade_cap: int = Field(default=10, ge=1, le=1000)
+    scoring_window_score_weight_profitability: Decimal = Field(
+        default=Decimal("0.80"),
+        ge=0,
+        le=1,
+    )
+    scoring_window_score_weight_activity: Decimal = Field(default=Decimal("0.20"), ge=0, le=1)
 
     dashboard_auth_enabled: bool = True
     dashboard_auth_username: str = "admin"
@@ -246,6 +627,63 @@ class Settings(BaseSettings):
         account_keys = [account.key for account in self.paper_copy_accounts]
         if len(account_keys) != len(set(account_keys)):
             raise ValueError("paper_copy_accounts keys must be unique.")
+        if (
+            self.discovery_prefilter_min_account_value_usd is not None
+            and self.discovery_prefilter_max_account_value_usd is not None
+            and self.discovery_prefilter_min_account_value_usd
+            > self.discovery_prefilter_max_account_value_usd
+        ):
+            raise ValueError(
+                "discovery_prefilter_min_account_value_usd must be less than or "
+                "equal to discovery_prefilter_max_account_value_usd."
+            )
+        if (
+            self.discovery_quality_min_average_trade_notional_usd is not None
+            and self.discovery_quality_max_average_trade_notional_usd is not None
+            and self.discovery_quality_min_average_trade_notional_usd
+            > self.discovery_quality_max_average_trade_notional_usd
+        ):
+            raise ValueError(
+                "discovery_quality_min_average_trade_notional_usd must be less than "
+                "or equal to discovery_quality_max_average_trade_notional_usd."
+            )
+        if (
+            self.scoring_profitability_average_trade_roi_cap_min
+            > self.scoring_profitability_average_trade_roi_cap_max
+        ):
+            raise ValueError(
+                "scoring_profitability_average_trade_roi_cap_min must be less than "
+                "or equal to scoring_profitability_average_trade_roi_cap_max."
+            )
+        if (
+            self.scoring_consistency_win_rate_zero_score_at
+            >= self.scoring_consistency_win_rate_full_score_at
+        ):
+            raise ValueError(
+                "scoring_consistency_win_rate_zero_score_at must be less than "
+                "scoring_consistency_win_rate_full_score_at."
+            )
+        profit_factor_values = [
+            point.value for point in self.scoring_consistency_profit_factor_curve
+        ]
+        if profit_factor_values != sorted(profit_factor_values):
+            raise ValueError("scoring_consistency_profit_factor_curve must be sorted by value.")
+        if (
+            self.scoring_copyability_average_notional_min_full_score_usd
+            > self.scoring_copyability_average_notional_max_full_score_usd
+        ):
+            raise ValueError(
+                "scoring_copyability_average_notional_min_full_score_usd must be less "
+                "than or equal to scoring_copyability_average_notional_max_full_score_usd."
+            )
+        if (
+            self.scoring_copyability_average_notional_max_full_score_usd
+            >= self.scoring_copyability_average_notional_too_large_min_score_usd
+        ):
+            raise ValueError(
+                "scoring_copyability_average_notional_too_large_min_score_usd must be "
+                "greater than scoring_copyability_average_notional_max_full_score_usd."
+            )
         if self.live_trading_enabled and not self.live_trading_acknowledged:
             raise ValueError(
                 "LIVE_TRADING_ENABLED requires LIVE_TRADING_ACKNOWLEDGED=true. "
@@ -321,6 +759,7 @@ def load_app_config() -> dict[str, Any]:
         APP_CONFIG_PATH,
         PRUNE_CONFIG_PATH,
         DISCOVERY_CONFIG_PATH,
+        POOL_FILL_IMPORT_CONFIG_PATH,
         SCORING_CONFIG_PATH,
         PAPER_TRADING_CONFIG_PATH,
     ):
@@ -338,7 +777,35 @@ def load_json_config(config_path: Path) -> dict[str, Any]:
 
     if not isinstance(config, dict):
         raise ValueError(f"{config_path} must contain a JSON object.")
+    if config_path == DISCOVERY_CONFIG_PATH:
+        return normalize_nested_config(config, DISCOVERY_CONFIG_PATH_MAP)
+    if config_path == POOL_FILL_IMPORT_CONFIG_PATH:
+        return normalize_nested_config(config, POOL_FILL_IMPORT_CONFIG_PATH_MAP)
+    if config_path == SCORING_CONFIG_PATH:
+        return normalize_nested_config(config, SCORING_CONFIG_PATH_MAP)
     return config
+
+
+def normalize_nested_config(
+    config: dict[str, Any],
+    path_map: dict[tuple[str, ...], str],
+) -> dict[str, Any]:
+    normalized: dict[str, Any] = {}
+    for nested_path, flat_key in path_map.items():
+        value = get_nested_config_value(config, nested_path)
+        if value is not None:
+            normalized[flat_key] = value
+
+    return normalized
+
+
+def get_nested_config_value(config: dict[str, Any], path: tuple[str, ...]) -> Any:
+    current: Any = config
+    for key in path:
+        if not isinstance(current, dict) or key not in current:
+            return None
+        current = current[key]
+    return current
 
 
 @lru_cache

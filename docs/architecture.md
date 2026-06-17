@@ -38,6 +38,7 @@ copytrading-agent/
       app.json
       discovery.json
       paper_trading.json
+      pool_fill_import.json
       prune.json
       scoring.json
   frontend/
@@ -78,8 +79,9 @@ Important folders:
 - `backend/app/integrations`: external clients for Hyperliquid and Redis.
 - `backend/app/db`: SQLAlchemy models, sessions, and Alembic migrations.
 - `backend/config/app.json`: non-secret app/runtime settings.
-- `backend/config/discovery.json`: discovery, import, backfill, and pool refresh settings.
+- `backend/config/discovery.json`: discovery source, filter, backfill, and promotion settings.
 - `backend/config/paper_trading.json`: paper accounts and copy allocation policy.
+- `backend/config/pool_fill_import.json`: pool reimport and shared fill import settings.
 - `backend/config/prune.json`: wallet cleanup and pruning thresholds.
 - `backend/config/scoring.json`: scoring windows, weights, and penalty settings.
 
@@ -194,9 +196,19 @@ Tweakable non-secret config lives in JSON files:
 - `backend/config/app.json`
 - `backend/config/discovery.json`
 - `backend/config/paper_trading.json`
+- `backend/config/pool_fill_import.json`
 - `backend/config/prune.json`
 - `backend/config/scoring.json`
 - `frontend/config/app.json`
+
+The backend config files are grouped by operational area:
+
+- `discovery.json` owns source discovery, candidate filtering, backfill quality
+  checks, and promotion.
+- `pool_fill_import.json` owns scheduled pool reimport and shared fill import
+  storage and market-filter settings.
+- `scoring.json` owns scoring schedule, score windows, weights, score curves,
+  thresholds, and penalties.
 
 Secrets and connection strings live in `.env`:
 
@@ -313,12 +325,19 @@ limited to single-wallet current-state views.
 Consistency score uses win rate, profit factor, active days, and profit
 distribution. Profit distribution is calculated from winning closed trades as
 effective winning trades, `1 / sum(profit_share^2)`, then scored against
-`scoring_target_profit_winners`.
+the configured profit-winner target. Consistency subweights, win-rate span, and
+profit-factor curve are configurable.
 Profitability score is scale-invariant. It combines total net ROI against
 reconstructed entry notional, capped average trade ROI, and median trade ROI.
-The weights are 55/30/15. Current-equity return is exposed in the detail modal
-as reference data only because deposits and withdrawals can distort it. Absolute
-net PnL is also reference data only and does not raise the profitability score.
+The weights are 55/30/15, and each ROI subscore maps 0% or lower to 0 and +5%
+to 100. Current-equity return is exposed in the detail modal as reference data
+only because deposits and withdrawals can distort it. Absolute net PnL is also
+reference data only and does not raise the profitability score.
+Risk loss-ratio, realized-drawdown, losing-rate, live drawdown, and position
+stress penalty spans are configurable. Copyability trade-count, notional,
+concentration, unique-coin spans, and subweights are configurable. Penalty caps
+for low sample, stale trading, ignored fills, negative PnL, open-only activity,
+liquidations, confidence, and missing live state are configurable.
 Wallet detail pages use `GET /scores/{address}/detail` for the Detailed scoring
 modal. The endpoint recalculates the current wallet score from the same
 materialized trade metrics, then returns gross score, penalty, final score
@@ -342,7 +361,7 @@ sequenceDiagram
   API-->>UI: closed trades, open trades, ignored-fill summary
 ```
 
-### Leaderboard Pool Import
+### Discovery Pool Admission
 
 ```mermaid
 sequenceDiagram
@@ -384,7 +403,7 @@ sequenceDiagram
 - All pruning rules exclude source wallets with open `paper_positions`. Orphan
   fill pruning also keeps fill rows for those sources even if their
   `watched_wallets` row is missing.
-- Pruned wallets are also added to the leaderboard ignore list so scheduled imports
+- Pruned wallets are also added to the discovery ignore list so scheduled imports
   do not immediately re-add the same address.
 
 ### Realtime Monitoring
@@ -479,15 +498,14 @@ uses the same `dex:COIN` alias handling as market data, so HIP-3 prefixed fills
 can match unprefixed live position keys.
 
 Paper copy fill rows store source wallet sizing context in
-`paper_copy_fills.source_perp_equity_usd`. The old
-`sourceAccountValueUsd` API field is kept as a read alias only. Current wallet
+`paper_copy_fills.source_perp_equity_usd`. The API also exposes
+`sourceAccountValueUsd` as a read alias for the same value. Current wallet
 position snapshots store Hyperliquid `positionValue` in
 `wallet_positions.position_value_usd`, while historical fill notional remains in
 `wallet_fills.notional_usd`.
 
 Discovery candidate source metrics use explicit unit-bearing database columns:
-`source_account_value_usd`, `source_pnl_usd`, and `source_roi_pct`. The previous
-API names remain as read aliases for compatibility.
+`source_account_value_usd`, `source_pnl_usd`, and `source_roi_pct`.
 
 The paper trading page is a client dashboard that polls the summary API for live
 mark prices and unrealized PnL. The API also aggregates source-wallet PnL from

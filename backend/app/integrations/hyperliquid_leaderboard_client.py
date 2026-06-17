@@ -14,7 +14,7 @@ class HyperliquidLeaderboardClient:
         self.settings = settings or get_settings()
 
     async def get_leaderboard(self) -> dict[str, Any]:
-        url = self.settings.leaderboard_import_url or self.default_leaderboard_url
+        url = self.settings.discovery_hyperliquid_leaderboard_url or self.default_leaderboard_url
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.get(url)
         if response.status_code >= 400:

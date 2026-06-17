@@ -10,7 +10,6 @@ from app.api.routes_database import router as database_router
 from app.api.routes_discovery import router as discovery_router
 from app.api.routes_events import router as events_router
 from app.api.routes_health import router as health_router
-from app.api.routes_leaderboard import router as leaderboard_router
 from app.api.routes_operations import router as operations_router
 from app.api.routes_paper_trading import router as paper_trading_router
 from app.api.routes_scores import router as scores_router
@@ -85,7 +84,6 @@ app.include_router(database_router)
 app.include_router(discovery_router)
 app.include_router(wallets_router)
 app.include_router(events_router)
-app.include_router(leaderboard_router)
 app.include_router(operations_router)
 app.include_router(scores_router)
 app.include_router(paper_trading_router)

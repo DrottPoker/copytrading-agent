@@ -4,10 +4,9 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from sqlalchemy import bindparam, select, text
-from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import PaperPosition, Setting, WalletScore, WatchedWallet
+from app.db.models import PaperPosition, WalletScore, WatchedWallet
 from app.integrations.hyperliquid_client import HyperliquidClient
 from app.schemas.wallet_cleanup import (
     CurrentDrawdownPruneResponse,
@@ -18,8 +17,6 @@ from app.schemas.wallet_cleanup import (
     MaxDrawdownWalletCandidate,
     MinClosedTradesPruneResponse,
     MinClosedTradesWalletCandidate,
-    NonPerpWalletCandidate,
-    NonPerpWalletPruneResponse,
     OrphanFillPruneResponse,
     OrphanFillWalletCandidate,
     WalletPruneAllResponse,
@@ -34,6 +31,7 @@ from app.services.wallet_current_state_service import (
     load_wallet_perp_clearinghouse_states,
     summarize_perp_clearinghouse_states,
 )
+from app.services.wallet_ignore_service import add_ignored_wallet_addresses
 
 logger = logging.getLogger(__name__)
 ZERO = Decimal("0")
@@ -315,47 +313,6 @@ def current_drawdown_rule_result(
             )
             for item in result.items
         ],
-    )
-
-
-async def prune_non_perp_wallets(
-    session: AsyncSession,
-    *,
-    dry_run: bool = True,
-    limit: int = 100,
-    use_lock: bool = True,
-) -> NonPerpWalletPruneResponse:
-    if use_lock:
-        async with job_lock(session, key="wallet_prune", ttl_seconds=4 * 60 * 60):
-            return await prune_non_perp_wallets(
-                session,
-                dry_run=dry_run,
-                limit=limit,
-                use_lock=False,
-            )
-
-    candidates = await load_non_perp_wallet_candidates(session, limit=limit)
-    addresses = [candidate.address for candidate in candidates]
-    deleted_fills = 0
-    deleted_wallets = 0
-
-    if not dry_run and addresses:
-        deleted_fills, deleted_wallets = await delete_wallet_related_rows(
-            session, addresses=addresses
-        )
-        await session.commit()
-
-    candidate_wallets = await count_non_perp_wallet_candidates(session)
-    scanned_wallets = int(
-        await session.scalar(text("select count(*) from watched_wallets")) or 0
-    )
-    return NonPerpWalletPruneResponse(
-        dry_run=dry_run,
-        scanned_wallets=scanned_wallets,
-        candidate_wallets=candidate_wallets,
-        deleted_wallets=deleted_wallets,
-        deleted_fills=deleted_fills,
-        items=candidates,
     )
 
 
@@ -862,112 +819,6 @@ async def count_zero_fill_scan_wallets(session: AsyncSession) -> int:
     )
 
 
-async def load_non_perp_wallet_candidates(
-    session: AsyncSession,
-    *,
-    limit: int,
-) -> list[NonPerpWalletCandidate]:
-    result = await session.execute(
-        text(
-            """
-            select
-              ww.address,
-              ww.label,
-              ww.last_polled_at,
-              ww.last_seen_fill_at,
-              ws.score,
-              count(wf.external_fill_id) as fill_count
-            from watched_wallets ww
-            left join wallet_fills wf on wf.wallet_address = ww.address
-            left join wallet_scores ws on ws.wallet_address = ww.address
-            where ww.last_polled_at is not null
-              and ww.copy_enabled is false
-              and ww.polling_tier not in ('active', 'exit_only')
-              and not exists (
-                select 1
-                from paper_positions pp
-                where pp.source_wallet = ww.address
-              )
-              and not exists (
-                select 1
-                from wallet_fills pf
-                where pf.wallet_address = ww.address
-                  and (
-                    pf.raw_json->>'dir' in (
-                      'Open Long',
-                      'Close Long',
-                      'Open Short',
-                      'Close Short',
-                      'Long > Short',
-                      'Short > Long'
-                    )
-                    or pf.raw_json->>'dir' like '%Long%'
-                    or pf.raw_json->>'dir' like '%Short%'
-                    or pf.raw_json->>'dir' like '%Liquidated%'
-                    or pf.raw_json->>'dir' = 'Auto-Deleveraging'
-                  )
-              )
-            group by ww.address, ww.label, ww.last_polled_at, ww.last_seen_fill_at, ws.score
-            order by ww.last_polled_at asc
-            limit :limit
-            """
-        ),
-        {"limit": limit},
-    )
-    return [
-        NonPerpWalletCandidate(
-            address=str(row["address"]),
-            label=row["label"],
-            fill_count=int(row["fill_count"] or 0),
-            score=str(row["score"]) if row["score"] is not None else None,
-            last_polled_at=str(row["last_polled_at"]) if row["last_polled_at"] else None,
-            last_seen_fill_at=str(row["last_seen_fill_at"]) if row["last_seen_fill_at"] else None,
-        )
-        for row in result.mappings().all()
-    ]
-
-
-async def count_non_perp_wallet_candidates(session: AsyncSession) -> int:
-    return int(
-        await session.scalar(
-            text(
-                """
-                select count(*)
-                from watched_wallets ww
-                where ww.last_polled_at is not null
-                  and ww.copy_enabled is false
-                  and ww.polling_tier not in ('active', 'exit_only')
-                  and not exists (
-                    select 1
-                    from paper_positions pp
-                    where pp.source_wallet = ww.address
-                  )
-                  and not exists (
-                    select 1
-                    from wallet_fills pf
-                    where pf.wallet_address = ww.address
-                      and (
-                        pf.raw_json->>'dir' in (
-                          'Open Long',
-                          'Close Long',
-                          'Open Short',
-                          'Close Short',
-                          'Long > Short',
-                          'Short > Long'
-                        )
-                        or pf.raw_json->>'dir' like '%Long%'
-                        or pf.raw_json->>'dir' like '%Short%'
-                        or pf.raw_json->>'dir' like '%Liquidated%'
-                        or pf.raw_json->>'dir' = 'Auto-Deleveraging'
-                      )
-                  )
-                """
-            )
-        )
-        or 0
-    )
-
-
 async def delete_wallet_related_rows(
     session: AsyncSession,
     *,
@@ -1399,33 +1250,3 @@ def normalize_score_operator(score_operator: str) -> str:
     if score_operator not in {"lte", "gte"}:
         raise ValueError("score_operator must be one of: lte, gte.")
     return score_operator
-
-
-async def add_ignored_wallet_addresses(
-    session: AsyncSession,
-    *,
-    addresses: list[str],
-    reason: str,
-) -> None:
-    setting = await session.get(Setting, "leaderboard_ignored_wallet_addresses")
-    existing_addresses: list[str] = []
-    if setting is not None and isinstance(setting.value, dict):
-        raw_addresses = setting.value.get("addresses")
-        if isinstance(raw_addresses, list):
-            existing_addresses = [
-                str(address).lower() for address in raw_addresses if isinstance(address, str)
-            ]
-
-    merged_addresses = sorted(
-        set(existing_addresses) | {address.lower() for address in addresses}
-    )
-    stmt = insert(Setting).values(
-        key="leaderboard_ignored_wallet_addresses",
-        value={"addresses": merged_addresses, "reason": reason},
-    )
-    await session.execute(
-        stmt.on_conflict_do_update(
-            index_elements=["key"],
-            set_={"value": stmt.excluded.value},
-        )
-    )

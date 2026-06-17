@@ -20,7 +20,6 @@ from app.schemas.wallet import WalletCreate, WalletListResponse, WalletRead, Wal
 from app.schemas.wallet_cleanup import (
     CurrentDrawdownPruneResponse,
     HighFillLowScorePruneResponse,
-    NonPerpWalletPruneResponse,
     WalletPruneAllResponse,
     ZeroFillWalletPruneResponse,
 )
@@ -36,7 +35,6 @@ from app.services.wallet_cleanup_service import (
     prune_all_wallets,
     prune_current_drawdown_wallets,
     prune_high_fill_low_score_wallets,
-    prune_non_perp_wallets,
     prune_zero_fill_wallets,
 )
 from app.services.wallet_service import (
@@ -101,15 +99,6 @@ async def import_due_pool_wallet_fills_route(
     if not include_items:
         response.items = []
     return response
-
-
-@router.post("/prune-non-perp", response_model=NonPerpWalletPruneResponse)
-async def prune_non_perp_wallets_route(
-    session: Annotated[AsyncSession, Depends(db_session)],
-    dry_run: Annotated[bool, Query()] = True,
-    limit: Annotated[int, Query(ge=1, le=500)] = 100,
-) -> NonPerpWalletPruneResponse:
-    return await prune_non_perp_wallets(session, dry_run=dry_run, limit=limit)
 
 
 @router.post("/prune-zero-fill", response_model=ZeroFillWalletPruneResponse)

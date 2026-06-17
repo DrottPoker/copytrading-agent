@@ -1,0 +1,27 @@
+{
+  "pool_fill_import": {
+    "enabled": true,
+    "run_on_worker_start": true,
+    "start_delay_seconds": 0,
+    "interval_seconds": 1800,
+    "min_wallet_interval_seconds": 1800,
+    "batch_size": 50,
+    "max_batches": 200,
+    "days": 60,
+    "max_pages": 5,
+    "overlap_seconds": 300
+  },
+  "fill_import": {
+    "storage_guard": {
+      "enabled": true,
+      "min_free_database_mb": 24
+    },
+    "market_filter": "perp",
+    "raw_json_fields": [
+      "dir",
+      "liquidation",
+      "startPosition",
+      "twapId"
+    ]
+  }
+}

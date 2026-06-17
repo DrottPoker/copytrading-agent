@@ -1,30 +1,151 @@
 {
-  "scoring_enabled": true,
-  "scoring_run_on_worker_start": true,
-  "scoring_interval_seconds": 600,
-  "scoring_window_days": 60,
-  "scoring_min_fills": 20,
-  "scoring_target_fills": 100,
-  "scoring_min_trades": 5,
-  "scoring_target_trades": 25,
-  "scoring_target_profit_winners": 10,
-  "scoring_target_active_days": 10,
-  "scoring_stale_days": 7,
-  "scoring_liquidation_event_gap_seconds": 300,
-  "scoring_liquidation_penalty_per_event": 2,
-  "scoring_liquidation_penalty_max": 10,
-  "scoring_confidence_target_trades": 50,
-  "scoring_confidence_penalty_max": 20,
-  "scoring_current_drawdown_enabled": true,
-  "scoring_current_drawdown_concurrency": 8,
-  "scoring_current_drawdown_missing_penalty": 18,
-  "scoring_current_drawdown_full_penalty_ratio": 0.4,
-  "scoring_current_drawdown_penalty_max": 35,
-  "scoring_open_position_stress_notional_full_ratio": 10,
-  "scoring_open_position_stress_penalty_max": 25,
-  "scoring_weight_pnl": 0.3,
-  "scoring_weight_consistency": 0.2,
-  "scoring_weight_risk": 0.2,
-  "scoring_weight_copyability": 0.2,
-  "scoring_weight_recency": 0.1
+  "enabled": true,
+  "schedule": {
+    "run_on_worker_start": true,
+    "interval_seconds": 600
+  },
+  "window": {
+    "days": 60,
+    "min_fills": 20,
+    "target_fills": 100,
+    "min_trades": 5,
+    "sample_cap_max_score": 45
+  },
+  "component_weights": {
+    "profitability": 0.3,
+    "consistency": 0.2,
+    "risk": 0.2,
+    "copyability": 0.2,
+    "recency": 0.1
+  },
+  "profitability": {
+    "weights": {
+      "net_roi": 0.55,
+      "average_trade_roi": 0.3,
+      "median_trade_roi": 0.15
+    },
+    "roi_score": {
+      "full_score_at": 0.05
+    },
+    "average_trade_roi": {
+      "cap_min": -0.05,
+      "cap_max": 0.1
+    }
+  },
+  "consistency": {
+    "weights": {
+      "win_rate": 0.3,
+      "profit_factor": 0.25,
+      "profit_distribution": 0.3,
+      "active_days": 0.15
+    },
+    "win_rate": {
+      "missing_score": 50,
+      "zero_score_at": 0.35,
+      "full_score_at": 0.65
+    },
+    "profit_factor": {
+      "missing_score": 50,
+      "curve": [
+        {
+          "value": 0.75,
+          "score": 0
+        },
+        {
+          "value": 1,
+          "score": 25
+        },
+        {
+          "value": 2,
+          "score": 60
+        },
+        {
+          "value": 4,
+          "score": 90
+        },
+        {
+          "value": 8,
+          "score": 100
+        }
+      ]
+    },
+    "profit_distribution": {
+      "target_winners": 10
+    },
+    "active_days": {
+      "target": 10
+    }
+  },
+  "risk": {
+    "loss_ratio": {
+      "penalty_per_ratio": 40,
+      "penalty_max": 40
+    },
+    "realized_drawdown": {
+      "penalty_per_ratio": 35,
+      "penalty_max": 35
+    },
+    "losing_trade_rate": {
+      "penalty_per_ratio": 15
+    },
+    "current_drawdown": {
+      "enabled": true,
+      "concurrency": 8,
+      "missing_penalty": 18,
+      "full_penalty_ratio": 0.4,
+      "penalty_max": 35
+    },
+    "open_position_stress": {
+      "notional_full_ratio": 10,
+      "penalty_max": 25
+    }
+  },
+  "copyability": {
+    "target_trades": 25,
+    "target_fills": 100,
+    "weights": {
+      "trade_count": 0.35,
+      "average_notional": 0.25,
+      "coin_concentration": 0.2,
+      "unique_coins": 0.2
+    },
+    "average_notional": {
+      "min_full_score_usd": 50,
+      "max_full_score_usd": 250000,
+      "too_large_min_score_usd": 1000000,
+      "too_small_max_score": 70,
+      "too_large_min_score": 40
+    },
+    "coin_concentration": {
+      "full_score_at_or_below": 0.3
+    },
+    "unique_coins": {
+      "full_score_at": 4
+    }
+  },
+  "recency": {
+    "stale_days": 7
+  },
+  "penalties": {
+    "no_closed_trades": 100,
+    "low_sample_max": 30,
+    "negative_pnl_max": 30,
+    "stale_recency": 20,
+    "ignored_fills_max": 35,
+    "open_only": 10,
+    "liquidation": {
+      "event_gap_seconds": 300,
+      "per_event": 2,
+      "max": 10
+    },
+    "confidence": {
+      "target_trades": 50,
+      "max": 20
+    }
+  },
+  "window_scores": {
+    "activity_trade_cap": 10,
+    "weight_profitability": 0.8,
+    "weight_activity": 0.2
+  }
 }

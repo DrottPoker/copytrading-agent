@@ -1,77 +1,66 @@
 {
-  "discovery_enabled": true,
-  "discovery_default_sources": [
-    "hyperliquid_leaderboard_week",
-    "hyperliquid_leaderboard_month",
-    "hyperdash_tagged",
-    "hyperdash_cohorts",
-    "hyperdash_copytrading"
-  ],
-  "discovery_import_limit": 150,
-  "discovery_import_interval_seconds": 21600,
-  "discovery_import_on_worker_start": true,
-  "discovery_hyperliquid_sort_metric": "pnl",
-  "discovery_import_subaccounts_enabled": false,
-  "discovery_import_max_subaccounts_per_wallet": 10,
-  "discovery_hyperdash_copytrading_url": "https://hyperdash.com/explore/copytraders",
-  "discovery_hyperdash_cohorts_url": "https://hyperdash.com/explore/cohorts/profitable",
-  "discovery_hyperdash_tagged_url": "https://hyperdash.com/explore/tagged",
-  "discovery_prefilter_enabled": true,
-  "discovery_prefilter_run_after_import": true,
-  "discovery_prefilter_reject_missing_source_pnl": false,
-  "discovery_prefilter_require_positive_source_pnl": true,
-  "discovery_prefilter_min_source_pnl_usd": 0,
-  "discovery_prefilter_min_source_roi": 0,
-  "discovery_prefilter_min_account_value_usd": 1000,
-  "discovery_prefilter_max_account_value_usd": 100000000,
-  "discovery_prefilter_min_copy_score": null,
-  "discovery_prefilter_max_source_rank": null,
-  "discovery_prefilter_accept_if_metrics_missing": true,
-  "discovery_candidate_backfill_days": 60,
-  "discovery_candidate_backfill_max_pages": 5,
-  "discovery_candidate_backfill_target_fills": 10000,
-  "discovery_candidate_backfill_batch_size": 10,
-  "discovery_quality_min_fills": 20,
-  "discovery_quality_min_closed_trades": 5,
-  "discovery_quality_require_positive_net_pnl": true,
-  "discovery_quality_min_profit_factor": 1.2,
-  "discovery_quality_min_win_rate": null,
-  "discovery_quality_max_drawdown_pct": 0.25,
-  "discovery_quality_max_ignored_fill_ratio": 0.6,
-  "discovery_quality_min_average_trade_notional_usd": 50,
-  "discovery_quality_max_average_trade_notional_usd": 250000,
-  "pool_fill_import_enabled": true,
-  "pool_fill_import_run_on_worker_start": true,
-  "pool_fill_import_start_delay_seconds": 0,
-  "pool_fill_import_interval_seconds": 1800,
-  "pool_fill_import_min_wallet_interval_seconds": 1800,
-  "pool_fill_import_batch_size": 50,
-  "pool_fill_import_max_batches": 200,
-  "pool_fill_import_days": 60,
-  "pool_fill_import_max_pages": 5,
-  "pool_fill_import_overlap_seconds": 300,
-  "fill_import_storage_guard_enabled": true,
-  "fill_import_min_free_database_mb": 24,
-  "fill_import_market_filter": "perp",
-  "fill_import_raw_json_fields": [
-    "dir",
-    "liquidation",
-    "startPosition",
-    "twapId"
-  ],
-  "leaderboard_import_enabled": false,
-  "leaderboard_import_limit": 150,
-  "leaderboard_import_window": "month",
-  "leaderboard_import_sort_metric": "pnl",
-  "leaderboard_import_interval_seconds": 86400,
-  "leaderboard_import_on_worker_start": false,
-  "leaderboard_import_subaccounts_enabled": true,
-  "leaderboard_import_max_subaccounts_per_wallet": 25,
-  "leaderboard_auto_import_fills_enabled": true,
-  "leaderboard_auto_import_fills_days": 60,
-  "leaderboard_auto_import_fills_max_pages": 5,
-  "leaderboard_auto_import_fills_for_unpolled_duplicates": true,
-  "leaderboard_auto_import_fills_for_ranked_wallets": true,
-  "leaderboard_auto_import_fills_overlap_seconds": 300,
-  "leaderboard_prune_non_perp_wallets_enabled": true
+  "enabled": true,
+  "sources": {
+    "default": [
+      "hyperliquid_leaderboard_week",
+      "hyperliquid_leaderboard_month",
+      "hyperdash_tagged",
+      "hyperdash_cohorts",
+      "hyperdash_copytrading"
+    ],
+    "hyperliquid": {
+      "sort_metric": "pnl",
+      "url": null
+    },
+    "hyperdash": {
+      "urls": {
+        "copytrading": "https://hyperdash.com/explore/copytraders",
+        "cohorts": "https://hyperdash.com/explore/cohorts/profitable",
+        "tagged": "https://hyperdash.com/explore/tagged"
+      }
+    }
+  },
+  "import": {
+    "limit": 150,
+    "interval_seconds": 21600,
+    "run_on_worker_start": true,
+    "subaccounts": {
+      "enabled": false,
+      "max_per_wallet": 10
+    }
+  },
+  "prefilter": {
+    "enabled": true,
+    "run_after_import": true,
+    "reject_missing_source_pnl": false,
+    "require_positive_source_pnl": true,
+    "min_source_pnl_usd": 0,
+    "min_source_roi": 0,
+    "min_account_value_usd": 1000,
+    "max_account_value_usd": 100000000,
+    "min_copy_score": null,
+    "max_source_rank": null,
+    "accept_if_metrics_missing": true
+  },
+  "candidate_backfill": {
+    "days": 60,
+    "max_pages": 5,
+    "target_fills": 10000,
+    "batch_size": 10
+  },
+  "quality": {
+    "min_fills": 20,
+    "min_closed_trades": 5,
+    "require_positive_net_pnl": true,
+    "min_profit_factor": 1.2,
+    "min_win_rate": null,
+    "max_drawdown_pct": 0.25,
+    "max_ignored_fill_ratio": 0.6,
+    "min_average_trade_notional_usd": 50,
+    "max_average_trade_notional_usd": 250000
+  },
+  "promotion": {
+    "batch_size": 25,
+    "require_backfill": true
+  }
 }

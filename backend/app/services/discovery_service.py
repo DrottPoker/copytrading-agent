@@ -30,13 +30,16 @@ from app.schemas.discovery import (
 from app.schemas.fill import WalletFillImportRequest
 from app.schemas.wallet import normalize_wallet_address
 from app.services.fill_import_service import FillImportStorageLimitError, import_address_fills
-from app.services.job_lock_service import job_lock
-from app.services.leaderboard_import_service import (
+from app.services.hyperliquid_leaderboard_source import (
     get_window,
     load_subaccount_wallet_candidates,
     select_ranked_rows,
     string_or_none,
 )
+from app.services.hyperliquid_leaderboard_source import (
+    window_label as leaderboard_window_label,
+)
+from app.services.job_lock_service import job_lock
 from app.services.operation_status_service import (
     mark_operation_failed,
     mark_operation_progress,
@@ -48,6 +51,7 @@ from app.services.source_trade_reconstruction_service import (
     reconstruct_wallet_trades,
 )
 from app.services.wallet_cleanup_service import delete_wallet_data_rows
+from app.services.wallet_ignore_service import load_ignored_wallet_addresses
 
 HYPERLIQUID_LEADERBOARD_SOURCES = {
     "hyperliquid_leaderboard_day": "day",
@@ -962,8 +966,8 @@ async def fetch_hyperliquid_leaderboard_source(
                 wallet_address=address,
                 source=source,
                 source_rank=rank,
-                source_label=display_name or f"HL {window_label(window)} #{rank}",
-                source_cohort=window_label(window),
+                source_label=display_name or f"HL {leaderboard_window_label(window)} #{rank}",
+                source_cohort=leaderboard_window_label(window),
                 account_value=account_value,
                 source_pnl=decimal_or_none(performance.get("pnl")),
                 source_roi=decimal_or_none(performance.get("roi")),
@@ -989,7 +993,7 @@ async def fetch_hyperliquid_leaderboard_source(
                         source=source,
                         source_rank=rank,
                         source_label=subaccount.label,
-                        source_cohort=f"{window_label(window)} subaccount",
+                        source_cohort=f"{leaderboard_window_label(window)} subaccount",
                         account_value=decimal_or_none(subaccount.account_value),
                         source_pnl=decimal_or_none(subaccount.window_pnl),
                         source_roi=decimal_or_none(subaccount.window_roi),
@@ -1351,12 +1355,19 @@ async def upsert_discovery_candidates(
         select(WatchedWallet.address).where(WatchedWallet.address.in_(addresses))
     )
     existing_pool_addresses = set(existing_pool_result.scalars().all())
+    ignored_addresses = await load_ignored_wallet_addresses(session)
     address_set = set(addresses)
     already_pool = existing_pool_addresses & address_set
     already_candidate = (existing_candidate_addresses - existing_pool_addresses) & address_set
+    ignored_candidates = ignored_addresses & address_set
     add_count(skip_reasons, "already_in_pool", len(already_pool))
     add_count(skip_reasons, "already_in_candidates", len(already_candidate))
-    skipped_addresses = existing_candidate_addresses | existing_pool_addresses
+    add_count(skip_reasons, "ignored_wallet", len(ignored_candidates))
+    skipped_addresses = (
+        existing_candidate_addresses
+        | existing_pool_addresses
+        | ignored_candidates
+    )
     new_candidates = [
         candidate
         for address, candidate in deduped.items()

@@ -15,7 +15,6 @@ OPERATION_LABELS = {
     "discovery_prefilter": "Discovery prefilter",
     "discovery_backfill": "Discovery backfill",
     "discovery_promotion": "Discovery promotion",
-    "leaderboard_import": "Leaderboard import",
     "pool_fill_import": "Pool reimport",
     "wallet_scoring": "Wallet pool scoring",
     "wallet_prune": "Wallet pool prune",
