@@ -130,6 +130,9 @@ async def _import_due_pool_wallet_fills(
     force: bool,
     exclude_addresses: set[str] | None = None,
     client: HyperliquidClient | None = None,
+    progress_base_payload: dict[str, Any] | None = None,
+    progress_batch_number: int | None = None,
+    prior_totals: PoolFillImportResponse | None = None,
 ) -> PoolFillImportResponse:
     if client is None:
         async with HyperliquidClient() as hyperliquid_client:
@@ -143,6 +146,9 @@ async def _import_due_pool_wallet_fills(
                 force=force,
                 exclude_addresses=exclude_addresses,
                 client=hyperliquid_client,
+                progress_base_payload=progress_base_payload,
+                progress_batch_number=progress_batch_number,
+                prior_totals=prior_totals,
             )
 
     targets = await load_due_pool_fill_targets(
@@ -154,7 +160,7 @@ async def _import_due_pool_wallet_fills(
     )
     items: list[PoolFillImportItem] = []
 
-    for target in targets:
+    for index, target in enumerate(targets, start=1):
         request = WalletFillImportRequest(
             days=days,
             max_pages=max_pages,
@@ -181,6 +187,17 @@ async def _import_due_pool_wallet_fills(
                     error=str(exc) or exc.__class__.__name__,
                 )
             )
+            if progress_base_payload is not None:
+                await mark_pool_fill_wallet_progress(
+                    session=session,
+                    base_payload=progress_base_payload,
+                    batch_number=progress_batch_number,
+                    batch_index=index,
+                    batch_size=len(targets),
+                    current_wallet=target.address,
+                    prior_totals=prior_totals,
+                    items=items,
+                )
             break
         except Exception as exc:
             await session.rollback()
@@ -191,6 +208,17 @@ async def _import_due_pool_wallet_fills(
                     error=str(exc) or exc.__class__.__name__,
                 )
             )
+            if progress_base_payload is not None:
+                await mark_pool_fill_wallet_progress(
+                    session=session,
+                    base_payload=progress_base_payload,
+                    batch_number=progress_batch_number,
+                    batch_index=index,
+                    batch_size=len(targets),
+                    current_wallet=target.address,
+                    prior_totals=prior_totals,
+                    items=items,
+                )
             continue
 
         items.append(
@@ -201,6 +229,17 @@ async def _import_due_pool_wallet_fills(
                 duplicate=result.duplicate,
             )
         )
+        if progress_base_payload is not None:
+            await mark_pool_fill_wallet_progress(
+                session,
+                base_payload=progress_base_payload,
+                batch_number=progress_batch_number,
+                batch_index=index,
+                batch_size=len(targets),
+                current_wallet=target.address,
+                prior_totals=prior_totals,
+                items=items,
+            )
 
     failed = sum(1 for item in items if item.error is not None)
     return PoolFillImportResponse(
@@ -266,6 +305,9 @@ async def _import_due_pool_wallet_fill_batches(
             force=force,
             exclude_addresses=processed_addresses,
             client=client,
+            progress_base_payload=base_payload,
+            progress_batch_number=batch_number,
+            prior_totals=totals,
         )
         totals.scanned += batch.scanned
         totals.imported_wallets += batch.imported_wallets
@@ -300,6 +342,68 @@ async def _import_due_pool_wallet_fill_batches(
             break
 
     return totals
+
+
+async def mark_pool_fill_wallet_progress(
+    session: AsyncSession,
+    *,
+    base_payload: dict[str, Any],
+    batch_number: int | None,
+    batch_index: int,
+    batch_size: int,
+    current_wallet: str,
+    prior_totals: PoolFillImportResponse | None,
+    items: list[PoolFillImportItem],
+) -> None:
+    await mark_operation_progress(
+        session,
+        key="pool_fill_import",
+        payload=pool_fill_progress_payload(
+            base_payload=base_payload,
+            batch_number=batch_number,
+            batch_index=batch_index,
+            batch_size=batch_size,
+            current_wallet=current_wallet,
+            prior_totals=prior_totals,
+            items=items,
+        ),
+    )
+
+
+def pool_fill_progress_payload(
+    *,
+    base_payload: dict[str, Any],
+    batch_number: int | None,
+    batch_index: int,
+    batch_size: int,
+    current_wallet: str,
+    prior_totals: PoolFillImportResponse | None,
+    items: list[PoolFillImportItem],
+) -> dict[str, Any]:
+    prior = prior_totals or PoolFillImportResponse(
+        scanned=0,
+        imported_wallets=0,
+        fetched=0,
+        inserted=0,
+        duplicate=0,
+        failed=0,
+        limit=0,
+        items=[],
+    )
+    failed = sum(1 for item in items if item.error is not None)
+    return {
+        **base_payload,
+        "batch": batch_number,
+        "batchIndex": batch_index,
+        "batchSize": batch_size,
+        "currentWallet": current_wallet,
+        "scanned": prior.scanned + batch_size,
+        "importedWallets": prior.imported_wallets + len(items),
+        "fetched": prior.fetched + sum(item.fetched for item in items),
+        "inserted": prior.inserted + sum(item.inserted for item in items),
+        "duplicate": prior.duplicate + sum(item.duplicate for item in items),
+        "failed": prior.failed + failed,
+    }
 
 
 async def load_due_pool_fill_targets(

@@ -336,7 +336,10 @@ function operationTimeText(operation?: OperationStatus) {
     return "No run recorded";
   }
   if (operation.status === "running") {
-    return `Started ${formatDate(operation.startedAt)}`;
+    const progress = operationProgressText(operation.payload);
+    return progress
+      ? `Started ${formatDate(operation.startedAt)} (${progress})`
+      : `Started ${formatDate(operation.startedAt)}`;
   }
   if (operation.status === "succeeded") {
     return `Last success ${formatDate(operation.lastSuccessAt ?? operation.completedAt)}`;
@@ -345,6 +348,36 @@ function operationTimeText(operation?: OperationStatus) {
     return `Failed ${formatDate(operation.completedAt ?? operation.updatedAt)}`;
   }
   return "No run recorded";
+}
+
+function operationProgressText(payload: Record<string, unknown>) {
+  const batchIndex = numericPayloadValue(payload.batchIndex);
+  const batchSize = numericPayloadValue(payload.batchSize);
+  const currentWallet = payload.currentWallet;
+  if (batchIndex === null || batchSize === null) {
+    return "";
+  }
+  const walletText =
+    typeof currentWallet === "string" ? ` ${shortAddress(currentWallet)}` : "";
+  return `${formatInteger(batchIndex)}/${formatInteger(batchSize)}${walletText}`;
+}
+
+function numericPayloadValue(value: unknown) {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function shortAddress(address: string) {
+  if (address.length <= 14) {
+    return address;
+  }
+  return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
 function formatPayloadMetric(payload: Record<string, unknown>, metric: OperationMetric) {
