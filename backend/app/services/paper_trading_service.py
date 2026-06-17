@@ -31,6 +31,20 @@ ZERO = Decimal("0")
 POSITION_EPSILON = Decimal("0.00000001")
 BPS_DENOMINATOR = Decimal("10000")
 PAPER_COPY_RECOVERY_OVERLAP_MS = 5 * 60 * 1000
+SOURCE_EQUITY_ACTIONS = frozenset({"open", "flip_open"})
+SOURCE_CLOSE_DIRECTIONS = frozenset(
+    {"Close Long", "Close Short", "Long > Short", "Short > Long"}
+)
+RETRIABLE_EXIT_SKIP_REASONS = frozenset(
+    {
+        "source_account_state_missing",
+        "source_account_state_fetch_failed",
+        "source_account_margin_summary_missing",
+        "source_perp_equity_missing",
+        "source_perp_equity_zero",
+        "execution_price_unavailable",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -527,31 +541,7 @@ async def process_paper_copy_fills(
     fee_usd = ZERO
     accounts_updated: set[str] = set()
 
-    for fill in fills:
-        source_account_state = source_account_states.get(dex_from_coin(fill.get("coin")))
-        if source_account_state is None:
-            skip_result = await record_skip_for_accounts(
-                session,
-                accounts=accounts,
-                allocation=allocation,
-                fill=fill,
-                reason="source_account_state_missing",
-                settings=resolved_settings,
-            )
-            skipped += skip_result.skipped_fills
-            continue
-        if source_account_state.skip_reason is not None:
-            skip_result = await record_skip_for_accounts(
-                session,
-                accounts=accounts,
-                allocation=allocation,
-                fill=fill,
-                reason=source_account_state.skip_reason,
-                settings=resolved_settings,
-            )
-            skipped += skip_result.skipped_fills
-            continue
-
+    for fill in sorted_paper_source_fills(fills):
         parts = plan_source_fill(fill)
         if not parts:
             skip_result = await record_skip_for_accounts(
@@ -565,16 +555,40 @@ async def process_paper_copy_fills(
             skipped += skip_result.skipped_fills
             continue
 
+        source_account_state = source_account_states.get(dex_from_coin(fill.get("coin")))
+        if source_account_state is None:
+            source_perp_equity = ZERO
+            source_leverages: dict[str, Decimal] = {}
+            source_state_skip_reason = "source_account_state_missing"
+        else:
+            source_perp_equity = source_account_state.perp_equity
+            source_leverages = source_account_state.leverage_by_coin
+            source_state_skip_reason = source_account_state.skip_reason
+
         for account in accounts:
             for part in parts:
+                if source_state_skip_reason is not None and part_requires_source_equity(part):
+                    fill_result = await record_skip(
+                        session,
+                        account=account,
+                        allocation=allocation,
+                        fill=fill,
+                        part=part,
+                        source_perp_equity=source_perp_equity,
+                        reason=source_state_skip_reason,
+                        settings=resolved_settings,
+                    )
+                    skipped += fill_result.skipped_fills
+                    continue
+
                 fill_result = await apply_paper_fill_part(
                     session,
                     account=account,
                     allocation=allocation,
                     fill=fill,
                     part=part,
-                    source_perp_equity=source_account_state.perp_equity,
-                    source_leverages=source_account_state.leverage_by_coin,
+                    source_perp_equity=source_perp_equity,
+                    source_leverages=source_leverages,
                     market_prices=market_prices,
                     settings=resolved_settings,
                 )
@@ -1300,14 +1314,18 @@ async def apply_paper_fill_part(
     source_fill_id = str(fill.get("externalFillId") or "")
     if not source_fill_id:
         return PaperCopyBatchResult(skipped_fills=1)
-    if await paper_fill_exists(
+    existing_fill = await load_paper_copy_fill(
         session,
         account_key=account.key,
         source_wallet=allocation.source_wallet,
         source_fill_id=source_fill_id,
         sequence_index=part.sequence_index,
-    ):
-        return PaperCopyBatchResult()
+    )
+    if existing_fill is not None:
+        if not can_retry_existing_paper_fill(existing_fill, part):
+            return PaperCopyBatchResult()
+        await session.delete(existing_fill)
+        await session.flush()
 
     if part.action in {"open", "flip_open"}:
         return await apply_open_part(
@@ -1388,6 +1406,18 @@ async def apply_open_part(
             part=part,
             source_perp_equity=source_perp_equity,
             reason="opposite_paper_position",
+            settings=settings,
+            leverage=source_leverage,
+        )
+    if source_perp_equity <= ZERO:
+        return await record_skip(
+            session,
+            account=account,
+            allocation=allocation,
+            fill=fill,
+            part=part,
+            source_perp_equity=source_perp_equity,
+            reason="source_perp_equity_zero",
             settings=settings,
             leverage=source_leverage,
         )
@@ -1875,6 +1905,32 @@ async def paper_fill_exists(
     return existing is not None
 
 
+async def load_paper_copy_fill(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    source_wallet: str,
+    source_fill_id: str,
+    sequence_index: int,
+) -> PaperCopyFill | None:
+    return await session.scalar(
+        select(PaperCopyFill).where(
+            PaperCopyFill.account_key == account_key,
+            PaperCopyFill.source_wallet == source_wallet,
+            PaperCopyFill.source_fill_id == source_fill_id,
+            PaperCopyFill.sequence_index == sequence_index,
+        )
+    )
+
+
+def can_retry_existing_paper_fill(fill: PaperCopyFill, part: SourceFillPart) -> bool:
+    return (
+        fill.action == "skip"
+        and fill.skipped_reason in RETRIABLE_EXIT_SKIP_REASONS
+        and not part_requires_source_equity(part)
+    )
+
+
 async def open_margin_for_source(
     session: AsyncSession,
     *,
@@ -2030,6 +2086,32 @@ def close_ratio_from_start_position(
     if start_position is None or start_position.copy_abs() <= ZERO:
         return None
     return min(source_size / start_position.copy_abs(), Decimal("1"))
+
+
+def sorted_paper_source_fills(fills: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(fills, key=paper_source_fill_sort_key)
+
+
+def paper_source_fill_sort_key(fill: dict[str, Any]) -> tuple[int, str, int, Decimal, str]:
+    raw_json = raw_json_from_fill(fill)
+    direction = str(raw_json.get("dir") or "")
+    start_position = decimal_or_none(raw_json.get("startPosition"))
+    source_position = start_position.copy_abs() if start_position is not None else ZERO
+    direction_order = 0 if direction in SOURCE_CLOSE_DIRECTIONS else 1
+    source_position_order = (
+        -source_position if direction in SOURCE_CLOSE_DIRECTIONS else source_position
+    )
+    return (
+        int(fill.get("timestampMs") or 0),
+        str(fill.get("coin") or ""),
+        direction_order,
+        source_position_order,
+        str(fill.get("externalFillId") or ""),
+    )
+
+
+def part_requires_source_equity(part: SourceFillPart) -> bool:
+    return part.action in SOURCE_EQUITY_ACTIONS
 
 
 def is_preexisting_source_add(start_position: Decimal | None, *, side: str) -> bool:

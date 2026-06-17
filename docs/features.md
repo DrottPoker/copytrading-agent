@@ -425,6 +425,10 @@ What it does:
 - Converts new non-snapshot realtime source fills into simulated paper fills.
 - Sizes an open by `source fill notional / source perp equity`, scaled inside
   that wallet's paper allocation pocket.
+- Requires valid source perp equity for opens and adds, but not for exits. Close,
+  reduce, and flip-close parts are still processed against existing paper
+  positions if Hyperliquid reports zero or unavailable source equity after the
+  source position is already closed.
 - Stores the source perp equity snapshot for each paper fill in
   `paper_copy_fills.source_perp_equity_usd`.
 - Fetches source perp equity from Hyperliquid `clearinghouseState`, which is
@@ -462,11 +466,17 @@ What it does:
 - Uses source `startPosition` to reduce or close paper positions proportionally.
 - Splits source flip fills into a close part and an open part when the source
   payload provides enough information.
+- Orders paper-copy processing for same-timestamp fills with close and
+  flip-close fills first by descending source `startPosition`, so large source
+  exits split across many fills reduce paper positions in a stable order.
 - Persists paper accounts, positions, allocations, and copied fill IDs in
   Postgres so Docker restarts do not reset paper trading state.
 - Runs paper-copy recovery on worker start, WebSocket snapshots, and pool imports.
   Recovery replays fills after the latest copied source fill, with a small
   overlap, and relies on copied fill IDs to avoid duplicate paper fills.
+- Recovery can retry earlier exit skip rows caused by unavailable source state
+  or unavailable execution price, so a close is not permanently blocked by a
+  transient paper-copy data issue.
 - Retains allocation records for source wallets with open paper positions so
   add, reduce, close, and flip fills can continue after the source falls out of
   the current top 10.

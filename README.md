@@ -251,6 +251,9 @@ Sizing policy:
   dex. Spot balances are not used for paper copy sizing. For isolated HIP-3
   positions, Hyperliquid `accountValue` can be isolated position equity and can
   move together with margin used.
+- Source perp equity is required for opens and adds. It is not required for
+  reduce, close, or flip-close parts against existing paper positions, because
+  Hyperliquid can report zero source equity after the source has already exited.
 - Paper copy reads the source wallet's current per-coin leverage from
   Hyperliquid `clearinghouseState` and uses it for margin accounting. If leverage
   is unavailable for a coin, paper falls back to 1x.
@@ -263,6 +266,9 @@ Sizing policy:
   paper copy falls back to dex-specific `allMids`, then `metaAndAssetCtxs`.
 - Paper fills are skipped when live mid price drift from the source fill price
   is above the configured drift limit.
+- Same-timestamp source fills are processed with close and flip-close fills first
+  by descending source `startPosition`, so split source exits reduce paper
+  positions in a stable order.
 - Skip reasons distinguish minimum notional, source-wallet pocket cap, total
   account cap, missing matching positions, and price safety guards.
 - The paper trading dashboard polls the summary API and shows live mark prices,
@@ -274,6 +280,9 @@ Sizing policy:
 - Paper account state, copied positions, copied fills, and allocations are stored
   in Postgres. Worker restarts recover missed fills after the latest paper copy
   fill from WebSocket snapshots and pool imports.
+- Recovery can retry exit skip rows caused by unavailable source state or
+  unavailable execution price, so a copied close is not permanently blocked by a
+  transient data issue.
 
 Notes:
 

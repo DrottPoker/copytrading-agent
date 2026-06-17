@@ -418,6 +418,10 @@ sequenceDiagram
 Paper sizing uses `source fill notional / source perp equity` and applies that
 exposure inside each configured source-wallet pocket. Default pockets are 20% for
 each top 10 rank, with an 80% total open copied-margin cap per paper account.
+Valid source perp equity is required for opens and adds only. Reduce, close, and
+flip-close parts are processed against existing paper positions even when the
+current Hyperliquid source state reports zero or unavailable perp equity after
+the source has exited.
 When current drawdown scoring is enabled, paper allocation only selects top
 score wallets whose latest `wallet_scores.current_drawdown_status` is `ok`.
 The worker reads source per-coin leverage from Hyperliquid `clearinghouseState`
@@ -432,13 +436,18 @@ Opens below the configured minimum notional are skipped before any paper positio
 is created. Paper execution then waits the configured latency, prices from live
 mids when enabled, applies adverse slippage, and skips fills whose observed drift
 exceeds the configured max drift limit.
+When multiple source fills have the same timestamp, paper-copy processing orders
+close and flip-close fills first by descending source `startPosition` before
+falling back to the fill id. This keeps large split exits deterministic.
 
 Paper copy state is durable in Postgres. Worker restarts keep existing
 `paper_positions` and `paper_copy_fills`, retain source wallets with open paper
 positions in the copy allocation set, and run recovery after worker start,
 WebSocket snapshots, and pool imports. Recovery scans fills after the latest
 copied source fill with overlap, then the copied-fill uniqueness constraint
-prevents duplicate simulation.
+prevents duplicate simulation. Exit skip rows caused by unavailable source state
+or unavailable execution price are retriable during recovery so copied positions
+can still close after transient data issues.
 
 Paper copy fill rows store source wallet sizing context in
 `paper_copy_fills.source_perp_equity_usd`. The old
