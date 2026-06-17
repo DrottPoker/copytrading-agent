@@ -25,7 +25,7 @@
       "median_trade_roi": 0.15
     },
     "roi_score": {
-      "full_score_at": 0.05
+      "full_score_at": 0.03
     },
     "average_trade_roi": {
       "cap_min": -0.05,
@@ -120,7 +120,7 @@
       "full_score_at_or_below": 0.3
     },
     "unique_coins": {
-      "full_score_at": 4
+      "full_score_at": 2
     }
   },
   "recency": {
@@ -128,9 +128,9 @@
   },
   "penalties": {
     "no_closed_trades": 100,
-    "low_sample_max": 30,
-    "negative_pnl_max": 30,
-    "stale_recency": 20,
+    "low_sample_max": 20,
+    "negative_pnl_max": 20,
+    "stale_recency": 10,
     "ignored_fills_max": 35,
     "open_only": 10,
     "liquidation": {
@@ -139,7 +139,7 @@
       "max": 10
     },
     "confidence": {
-      "target_trades": 50,
+      "target_trades": 30,
       "max": 20
     }
   },
