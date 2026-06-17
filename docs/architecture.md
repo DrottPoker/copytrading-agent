@@ -6,11 +6,14 @@ events/cache.
 
 ```mermaid
 flowchart TD
-  HL["Hyperliquid API and WebSocket"] --> Worker["Python monitor worker"]
+  HL["Hyperliquid API and WebSocket"] --> TradingWorker["Trading worker"]
+  HL --> MaintenanceWorker["Maintenance worker"]
   HL --> Backend["FastAPI backend"]
 
-  Worker --> Postgres["Neon Postgres"]
-  Worker --> Redis["Redis runtime events"]
+  TradingWorker --> Postgres["Neon Postgres"]
+  TradingWorker --> Redis["Redis runtime events"]
+  MaintenanceWorker --> Postgres
+  MaintenanceWorker --> Redis
 
   Backend --> Postgres
   Backend --> Redis
@@ -87,18 +90,30 @@ Important folders:
 
 ## Worker
 
-The monitor worker loops can run inside the FastAPI process or as a separate
-process. Local development defaults to `worker_run_in_api_process: true`, so
-starting the backend also starts discovery, pool reimport, scoring, pruning, and
-realtime monitoring. A separate worker process should only be used when that flag
-is disabled to avoid duplicate jobs.
+The monitor worker supports explicit roles through `WORKER_ROLE`:
 
-Docker Compose uses the separate `worker` service and sets
-`WORKER_RUN_IN_API_PROCESS=false` on the backend container. Long-running jobs also
-take rows in `job_locks`, so manual API triggers, the API process, and the worker
-service do not run the same job concurrently.
+- `all`: starts both trading and maintenance loops in one process.
+- `trading`: starts realtime subscriptions and paper-copy recovery only.
+- `maintenance`: starts discovery, pool reimport, scoring, and pruning only.
 
-Current responsibilities:
+Docker Compose runs `trading-worker` and `maintenance-worker` as separate
+services and sets `WORKER_RUN_IN_API_PROCESS=false` on the backend container.
+Long-running jobs take rows in `job_locks`, so manual API triggers and worker
+services do not run the same long job concurrently.
+
+Trading worker responsibilities:
+
+- Select up to `max_realtime_wallets` wallets. Source wallets with open paper
+  positions are retained first, then remaining slots are filled by the highest
+  positive wallet scores.
+- Subscribe to Hyperliquid `userFills` over WebSocket.
+- Store snapshot and realtime fills in Postgres.
+- Simulate paper copies for non-snapshot fills from scored allocation wallets.
+- Run paper-copy recovery on startup, snapshots, and the configured periodic
+  recovery interval.
+- Publish system and fill events to Redis.
+
+Maintenance worker responsibilities:
 
 - Run configured discovery imports every 6 hours by default.
 - Import candidates from Hyperliquid leaderboard and Hyperdash discovery sources.
@@ -106,16 +121,9 @@ Current responsibilities:
 - Backfill approved discovery candidates before they enter the pool.
 - Insert candidates that pass backfill quality checks directly into the wallet pool.
 - Backfill or incrementally refresh all enabled pool wallets in batches.
-- Select up to `max_realtime_wallets` wallets. Source wallets with open paper
-  positions are retained first, then remaining slots are filled by the highest
-  positive wallet scores.
-- Subscribe to Hyperliquid `userFills` over WebSocket.
-- Store snapshot and realtime fills in Postgres.
-- Simulate paper copies for non-snapshot fills from scored allocation wallets.
-- Publish system and fill events to Redis.
-- Refresh subscriptions periodically.
+- Recalculate scores and run configured prune rules.
 
-The worker currently prioritizes wallets in this order:
+The trading worker currently prioritizes wallets in this order:
 
 1. Source wallets with open `paper_positions`
 2. Highest positive `wallet_scores.score`
@@ -258,11 +266,11 @@ sequenceDiagram
   API->>DB: manual trigger via POST /wallets/fills/import-pool?force=true
 ```
 
-The worker runs the pool maintenance cycle every 30 minutes by default. A cycle
-imports all due pool wallets across configured batches, recalculates wallet
-scores, and then runs sharp pruning when `wallet_prune_worker_dry_run` is
-`false`. Manual pool reimport forces a refresh regardless of `last_polled_at`
-and still deduplicates overlapping fills.
+The maintenance worker runs the pool maintenance cycle every 30 minutes by
+default. A cycle imports all due pool wallets across configured batches,
+recalculates wallet scores, and then runs sharp pruning when
+`wallet_prune_worker_dry_run` is `false`. Manual pool reimport forces a refresh
+regardless of `last_polled_at` and still deduplicates overlapping fills.
 
 ### Wallet Current State
 
@@ -461,7 +469,7 @@ current Hyperliquid source state reports zero or unavailable perp equity after
 the source has exited.
 When current drawdown scoring is enabled, paper allocation only selects top
 score wallets whose latest `wallet_scores.current_drawdown_status` is `ok`.
-The worker reads source per-coin leverage from Hyperliquid `clearinghouseState`
+The trading worker reads source per-coin leverage from Hyperliquid `clearinghouseState`
 and uses `notional / leverage` for margin accounting. If leverage is unavailable
 for a coin, paper falls back to 1x. When live mids are enabled, dex-specific
 `allMids` and then `metaAndAssetCtxs` are used as fallbacks for `dex:COIN`
@@ -477,14 +485,15 @@ When multiple source fills have the same timestamp, paper-copy processing orders
 close and flip-close fills first by descending source `startPosition` before
 falling back to the fill id. This keeps large split exits deterministic.
 
-Paper copy state is durable in Postgres. Worker restarts keep existing
+Paper copy state is durable in Postgres. Trading worker restarts keep existing
 `paper_positions` and `paper_copy_fills`, retain source wallets with open paper
 positions in the copy allocation set, and run recovery after worker start,
-WebSocket snapshots, and pool imports. When a source has open paper exposure,
-recovery scans fills from the oldest open paper position with overlap, then the
-copied-fill uniqueness constraint prevents duplicate simulation. Exit skip rows
-caused by unavailable source state or unavailable execution price are retriable
-during recovery so copied positions can still close after transient data issues.
+WebSocket snapshots, and the configured periodic recovery interval. When a
+source has open paper exposure, recovery scans fills from the oldest open paper
+position with overlap, then the copied-fill uniqueness constraint prevents
+duplicate simulation. Exit skip rows caused by unavailable source state or
+unavailable execution price are retriable during recovery so copied positions can
+still close after transient data issues.
 Allocation refresh also restores open paper-position sources into
 `watched_wallets` as `exit_only` if an earlier prune removed the pool row.
 Retained sources outside the current top 10 keep their allocation record only

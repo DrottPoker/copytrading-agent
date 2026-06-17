@@ -13,12 +13,26 @@ services:
       - redis
     restart: unless-stopped
 
-  worker:
+  trading-worker:
     build:
       context: ./backend
     command: python -m app.workers.monitor_worker
     env_file:
       - .env
+    environment:
+      WORKER_ROLE: "trading"
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  maintenance-worker:
+    build:
+      context: ./backend
+    command: python -m app.workers.monitor_worker
+    env_file:
+      - .env
+    environment:
+      WORKER_ROLE: "maintenance"
     depends_on:
       - redis
     restart: unless-stopped

@@ -13,13 +13,27 @@ services:
     depends_on:
       - redis
 
-  worker:
+  trading-worker:
     build:
       context: ./backend
     command: python -m app.workers.monitor_worker
     env_file:
       - path: .env
         required: false
+    environment:
+      WORKER_ROLE: "trading"
+    depends_on:
+      - redis
+
+  maintenance-worker:
+    build:
+      context: ./backend
+    command: python -m app.workers.monitor_worker
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      WORKER_ROLE: "maintenance"
     depends_on:
       - redis
 

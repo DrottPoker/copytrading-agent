@@ -275,6 +275,7 @@ class Settings(BaseSettings):
     app_env: str = "development"
     log_level: str = "info"
     worker_run_in_api_process: bool = True
+    worker_role: Literal["all", "trading", "maintenance"] = "all"
 
     database_url: str | None = None
     database_url_direct: str | None = None
@@ -318,6 +319,7 @@ class Settings(BaseSettings):
     paper_copy_latency_ms: int = Field(default=750, ge=0, le=60000)
     paper_copy_max_price_drift_bps: Decimal = Field(default=Decimal("20"), ge=0, le=10000)
     paper_copy_use_live_mid_price: bool = True
+    paper_copy_recovery_interval_seconds: int = Field(default=60, ge=10, le=3600)
 
     active_copy_wallets: int = Field(default=10, ge=1, le=10)
     max_realtime_wallets: int = Field(default=10, ge=1, le=10)

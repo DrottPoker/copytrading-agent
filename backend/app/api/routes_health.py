@@ -32,6 +32,7 @@ async def health(
         "paperTradingEnabled": settings.paper_trading_enabled,
         "liveTradingEnabled": settings.live_trading_enabled,
         "workerRunInApiProcess": settings.worker_run_in_api_process,
+        "workerRole": settings.worker_role,
         "hyperliquidNetwork": settings.hyperliquid_network,
         "activeCopyWallets": settings.active_copy_wallets,
         "maxRealtimeWallets": settings.max_realtime_wallets,

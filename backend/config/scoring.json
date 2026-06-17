@@ -135,7 +135,7 @@
     "open_only": 10,
     "liquidation": {
       "event_gap_seconds": 300,
-      "per_event": 2,
+      "per_event": 1,
       "max": 10
     },
     "confidence": {

@@ -136,7 +136,7 @@ What it does:
   enabled pool regardless of `last_polled_at`.
 - Worker pool maintenance runs every 30 minutes by default and uses the same
   batch settings as manual reimport.
-- After worker pool reimport, wallet scoring runs immediately, then configured
+- After maintenance worker pool reimport, wallet scoring runs immediately, then configured
   prune rules run automatically.
 - Fill imports stop early when the database is near its configured storage limit.
 - Pool import uses a database-backed job lock and row-level `SKIP LOCKED`
@@ -173,7 +173,7 @@ What it does:
 - Returns totals and per-rule results for review in the Database dashboard.
 - Reports current drawdown fetch errors separately. Those wallets are shown in
   the response but are not counted as delete candidates.
-- Uses a shared `wallet_prune` job lock, so manual pruning and scheduled worker
+- Uses a shared `wallet_prune` job lock, so manual pruning and scheduled maintenance worker
   pruning cannot run concurrently.
 
 Purpose:
@@ -343,8 +343,10 @@ Worker:
 
 - Runs automatically inside the backend when `worker_run_in_api_process` is `true`.
 - Can run as `python -m app.workers.monitor_worker` when the in-API worker is disabled.
-- Docker Compose runs a separate worker service and disables the in-API worker
-  through `WORKER_RUN_IN_API_PROCESS=false`.
+- Docker Compose runs separate `trading-worker` and `maintenance-worker`
+  services and disables the in-API worker through `WORKER_RUN_IN_API_PROCESS=false`.
+- `WORKER_ROLE=trading` starts realtime monitoring and paper-copy recovery only.
+- `WORKER_ROLE=maintenance` starts discovery, pool reimport, scoring, and pruning only.
 
 What it does:
 
@@ -435,10 +437,13 @@ What it does:
   exits split across many fills reduce paper positions in a stable order.
 - Persists paper accounts, positions, allocations, and copied fill IDs in
   Postgres so Docker restarts do not reset paper trading state.
-- Runs paper-copy recovery on worker start, WebSocket snapshots, and pool imports.
+- Runs paper-copy recovery on trading-worker start, WebSocket snapshots, and the
+  configured periodic recovery interval.
   Recovery replays fills from the oldest open paper position when a source still
   has copied exposure, with a small overlap, and relies on copied fill IDs to
   avoid duplicate paper fills.
+- Uses a `paper_copy_recovery` job lock so startup, snapshot, and periodic
+  recovery cannot run over each other.
 - Recovery can retry earlier exit skip rows caused by unavailable source state
   or unavailable execution price, so a close is not permanently blocked by a
   transient paper-copy data issue.
@@ -483,6 +488,7 @@ Config:
 - `paper_copy_latency_ms`
 - `paper_copy_max_price_drift_bps`
 - `paper_copy_use_live_mid_price`
+- `paper_copy_recovery_interval_seconds`
 
 Current limitations:
 
@@ -714,8 +720,8 @@ Phase A behavior:
   per liquidation event capped at 10 points.
 - Caps scores for wallets below the configured minimum trade count so tiny
   samples cannot rank high. The sample-cap max score is configurable.
-- Runs after each worker pool reimport when pool maintenance is enabled.
-- If pool maintenance is disabled, the standalone scoring worker uses
+- Runs after each maintenance worker pool reimport when pool maintenance is enabled.
+- If pool maintenance is disabled, the standalone scoring loop uses
   `scoring_interval_seconds`.
 - Can be triggered manually from the Wallet Pool page. Wallet detail pages expose
   a Detailed scoring modal beside the score header for inspecting how each score

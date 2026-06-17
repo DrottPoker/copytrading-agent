@@ -7,7 +7,8 @@ This guide runs the full paper trading stack on a Linux VPS with Docker Compose.
 `docker-compose.vps.yml` starts:
 
 - `backend`: FastAPI API on the internal Docker network.
-- `worker`: discovery, pool import, scoring, pruning, realtime monitoring, and paper copy.
+- `trading-worker`: realtime monitoring, paper copy, and paper-copy recovery.
+- `maintenance-worker`: discovery, pool import, scoring, and pruning.
 - `frontend`: Next.js dashboard on the internal Docker network.
 - `redis`: local Redis with append-only persistence.
 - `caddy`: public reverse proxy on ports 80 and 443.
@@ -84,7 +85,7 @@ docker compose -f docker-compose.vps.yml up -d
 Follow logs:
 
 ```bash
-docker compose -f docker-compose.vps.yml logs -f backend worker frontend caddy
+docker compose -f docker-compose.vps.yml logs -f backend trading-worker maintenance-worker frontend caddy
 ```
 
 Open:
@@ -101,13 +102,13 @@ Pull changes, rebuild, migrate, and restart:
 git pull
 docker compose -f docker-compose.vps.yml build
 docker compose -f docker-compose.vps.yml run --rm backend python -m alembic upgrade head
-docker compose -f docker-compose.vps.yml up -d
+docker compose -f docker-compose.vps.yml up -d --remove-orphans
 ```
 
-Paper trading state is stored in Postgres, not in the worker container. After the
-worker restarts it reloads open paper positions, replays recent source fills, and
-checks source live perp state so paper positions can close if the source exited
-while the stack was down.
+Paper trading state is stored in Postgres, not in the worker containers. After
+the trading worker restarts it reloads open paper positions, replays recent
+source fills, and checks source live perp state so paper positions can close if
+the source exited while the stack was down.
 
 ## Operational Commands
 
@@ -120,13 +121,13 @@ docker compose -f docker-compose.vps.yml ps
 Show recent logs:
 
 ```bash
-docker compose -f docker-compose.vps.yml logs --tail=200 backend worker
+docker compose -f docker-compose.vps.yml logs --tail=200 backend trading-worker maintenance-worker
 ```
 
-Restart the worker after config changes:
+Restart workers after config changes:
 
 ```bash
-docker compose -f docker-compose.vps.yml restart worker
+docker compose -f docker-compose.vps.yml restart trading-worker maintenance-worker
 ```
 
 Stop the stack:

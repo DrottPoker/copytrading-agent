@@ -24,5 +24,6 @@
   "paper_copy_slippage_bps": 5,
   "paper_copy_latency_ms": 750,
   "paper_copy_max_price_drift_bps": 20,
-  "paper_copy_use_live_mid_price": false
+  "paper_copy_use_live_mid_price": false,
+  "paper_copy_recovery_interval_seconds": 60
 }

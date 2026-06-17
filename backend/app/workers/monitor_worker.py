@@ -31,6 +31,8 @@ from app.services.wallet_cleanup_service import prune_all_wallets
 from app.services.wallet_score_service import recalculate_wallet_scores
 
 logger = logging.getLogger(__name__)
+TRADING_WORKER_ROLES = {"all", "trading"}
+MAINTENANCE_WORKER_ROLES = {"all", "maintenance"}
 
 
 async def run_worker() -> None:
@@ -49,9 +51,10 @@ async def run_worker() -> None:
             pass
 
     logger.info(
-        "monitor worker started env=%s mode=%s live_trading=%s",
+        "monitor worker started env=%s mode=%s role=%s live_trading=%s",
         settings.app_env,
         settings.system_mode,
+        settings.worker_role,
         settings.live_trading_enabled,
     )
     sessionmaker = get_sessionmaker(settings)
@@ -78,17 +81,22 @@ async def run_monitor_services(
     stop_event: asyncio.Event,
     settings: Any,
 ) -> None:
+    runs_trading = worker_runs_trading(settings)
+    runs_maintenance = worker_runs_maintenance(settings)
     await publish_event(
         redis,
         event_type="system",
         channel="events:system",
-        message="Realtime monitor started.",
+        message=f"Monitor worker started with role {settings.worker_role}.",
         payload={
+            "workerRole": settings.worker_role,
+            "tradingLoops": runs_trading,
+            "maintenanceLoops": runs_maintenance,
             "network": settings.hyperliquid_network,
             "maxRealtimeWallets": settings.max_realtime_wallets,
         },
     )
-    if settings.paper_trading_enabled and settings.paper_copy_enabled:
+    if runs_trading and settings.paper_trading_enabled and settings.paper_copy_enabled:
         await run_paper_copy_recovery_once(
             sessionmaker=sessionmaker,
             redis=redis,
@@ -97,7 +105,7 @@ async def run_monitor_services(
         )
 
     tasks: list[asyncio.Task[None]] = []
-    if settings.discovery_enabled:
+    if runs_maintenance and settings.discovery_enabled:
         tasks.append(
             asyncio.create_task(
                 run_discovery_import_loop(
@@ -111,7 +119,7 @@ async def run_monitor_services(
             )
         )
 
-    if settings.pool_fill_import_enabled:
+    if runs_maintenance and settings.pool_fill_import_enabled:
         tasks.append(
             asyncio.create_task(
                 run_pool_fill_import_loop(
@@ -123,7 +131,11 @@ async def run_monitor_services(
             )
         )
 
-    if settings.scoring_enabled and not settings.pool_fill_import_enabled:
+    if (
+        runs_maintenance
+        and settings.scoring_enabled
+        and not settings.pool_fill_import_enabled
+    ):
         tasks.append(
             asyncio.create_task(
                 run_scoring_loop(
@@ -135,16 +147,32 @@ async def run_monitor_services(
             )
         )
 
-    tasks.append(
-        asyncio.create_task(
-            run_realtime_monitor_loop(
-                sessionmaker=sessionmaker,
-                redis=redis,
-                stop_event=stop_event,
-                settings=settings,
+    if runs_trading and settings.paper_trading_enabled and settings.paper_copy_enabled:
+        tasks.append(
+            asyncio.create_task(
+                run_paper_copy_recovery_loop(
+                    sessionmaker=sessionmaker,
+                    redis=redis,
+                    stop_event=stop_event,
+                    settings=settings,
+                )
             )
         )
-    )
+
+    if runs_trading:
+        tasks.append(
+            asyncio.create_task(
+                run_realtime_monitor_loop(
+                    sessionmaker=sessionmaker,
+                    redis=redis,
+                    stop_event=stop_event,
+                    settings=settings,
+                )
+            )
+        )
+
+    if not tasks:
+        logger.warning("monitor worker role %s has no enabled loops", settings.worker_role)
 
     try:
         await stop_event.wait()
@@ -223,6 +251,14 @@ async def run_realtime_monitor_loop(
                 payload={"error": str(exc)},
             )
             await sleep_until_stop(stop_event, settings.realtime_reconnect_seconds)
+
+
+def worker_runs_trading(settings: Any) -> bool:
+    return settings.worker_role in TRADING_WORKER_ROLES
+
+
+def worker_runs_maintenance(settings: Any) -> bool:
+    return settings.worker_role in MAINTENANCE_WORKER_ROLES
 
 
 def main() -> None:
@@ -414,7 +450,11 @@ async def run_pool_fill_import_loop(
                     "limit": result.limit,
                 },
             )
-            if settings.paper_trading_enabled and settings.paper_copy_enabled:
+            if (
+                worker_runs_trading(settings)
+                and settings.paper_trading_enabled
+                and settings.paper_copy_enabled
+            ):
                 await run_paper_copy_recovery_once(
                     sessionmaker=sessionmaker,
                     redis=redis,
@@ -505,6 +545,25 @@ async def run_wallet_scoring_once(
         )
 
 
+async def run_paper_copy_recovery_loop(
+    *,
+    sessionmaker: Any,
+    redis: Any,
+    stop_event: asyncio.Event,
+    settings: Any,
+) -> None:
+    while not stop_event.is_set():
+        await sleep_until_stop(stop_event, settings.paper_copy_recovery_interval_seconds)
+        if stop_event.is_set():
+            return
+        await run_paper_copy_recovery_once(
+            sessionmaker=sessionmaker,
+            redis=redis,
+            settings=settings,
+            source_wallet=None,
+        )
+
+
 async def run_paper_copy_recovery_once(
     *,
     sessionmaker: Any,
@@ -514,11 +573,16 @@ async def run_paper_copy_recovery_once(
 ) -> PaperCopyBatchResult:
     try:
         async with sessionmaker() as session:
-            result = await process_paper_copy_recovery(
+            async with job_lock(
                 session,
-                source_wallet=source_wallet,
-                settings=settings,
-            )
+                key="paper_copy_recovery",
+                ttl_seconds=max(settings.paper_copy_recovery_interval_seconds * 3, 300),
+            ):
+                result = await process_paper_copy_recovery(
+                    session,
+                    source_wallet=source_wallet,
+                    settings=settings,
+                )
         if result.processed_fills > 0 or result.skipped_fills > 0:
             logger.info(
                 "paper copy recovery completed source_wallet=%s processed=%s skipped=%s",
@@ -544,6 +608,9 @@ async def run_paper_copy_recovery_once(
                 },
             )
         return result
+    except JobLockAlreadyHeldError as exc:
+        logger.info("paper copy recovery skipped: %s", exc)
+        return PaperCopyBatchResult()
     except Exception as exc:
         logger.exception("paper copy recovery failed source_wallet=%s", source_wallet or "all")
         await publish_event(

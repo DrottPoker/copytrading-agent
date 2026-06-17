@@ -14,7 +14,7 @@ This repository currently contains the foundation:
 - Redis and Neon/Postgres connection checks
 - Worker entrypoint placeholder
 - Next.js internal dashboard shell
-- Docker Compose for backend, worker, frontend, Redis, and Caddy
+- Docker Compose for backend, trading worker, maintenance worker, frontend, Redis, and Caddy
 - Paper-first config defaults with a live trading acknowledgement guard
 
 ## Phase 2
@@ -145,22 +145,25 @@ Notes:
 
 ## Phase 5
 
-Realtime fill monitoring is available through the worker, Redis, API events, and dashboard.
+Realtime fill monitoring is available through the trading worker, Redis, API events, and dashboard.
 
 Automated sourcing runs through Discovery. Hyperliquid leaderboard data is used
 as a discovery source, not as a separate direct-to-pool import flow.
 
 Worker loops:
 
-By default, `backend/config/app.json` has `worker_run_in_api_process: true`.
-That means starting the backend also starts discovery, pool reimport, wallet
-scoring, pruning, and realtime monitoring. Run `python -m app.workers.monitor_worker`
-separately only if you first set `worker_run_in_api_process` to `false`.
+By default, `worker_role` is `all`, which starts both trading and maintenance
+loops in one process. Run `python -m app.workers.monitor_worker` with
+`WORKER_ROLE=trading` to run only realtime and paper-copy recovery, or
+`WORKER_ROLE=maintenance` to run only discovery, pool reimport, scoring, and
+pruning.
 
-Docker Compose runs a dedicated `worker` service and overrides
-`WORKER_RUN_IN_API_PROCESS=false` for the backend service. That keeps one worker
-owner in compose while preserving the single-process default for local backend
-development.
+Docker Compose runs two dedicated worker services and overrides
+`WORKER_RUN_IN_API_PROCESS=false` for the backend service:
+
+- `trading-worker`: realtime top-wallet subscriptions, realtime fills, paper
+  copy, and paper-copy recovery.
+- `maintenance-worker`: discovery, pool reimport, scoring, and pruning.
 
 API:
 
@@ -177,7 +180,8 @@ Dashboard:
 
 Notes:
 
-- The worker subscribes to Hyperliquid `userFills` for up to `max_realtime_wallets`.
+- The trading worker subscribes to Hyperliquid `userFills` for up to
+  `max_realtime_wallets`.
 - Realtime subscriptions reserve slots for source wallets with open paper
   positions first, then fill remaining slots with the highest positive
   `wallet_scores.score` wallets and active, exit-only, candidate, or copy-enabled
@@ -214,14 +218,14 @@ Notes:
   `current_drawdown_status = "ok"` from its latest score.
 - Pool wallets are incrementally refreshed from their last poll time with a small overlap.
 - Manual pool reimport forces the enabled pool to refresh regardless of last poll time.
-- The worker runs pool maintenance every 30 minutes by default: pool reimport,
-  wallet scoring, then configured prune rules.
+- The maintenance worker runs pool maintenance every 30 minutes by default:
+  pool reimport, wallet scoring, then configured prune rules.
 - Worker pruning is intentionally sharp by default. `backend/config/prune.json`
   sets `wallet_prune_worker_dry_run` to `false`, so scheduled pruning deletes
   matching wallets and related rows after pool import.
-- Discovery import, pool import, scoring, and pruning use database-backed job
-  locks so the API process, worker service, and manual dashboard actions do not
-  run the same long job concurrently.
+- Discovery import, pool import, scoring, pruning, and paper-copy recovery use
+  database-backed job locks so worker services and manual dashboard actions do
+  not run the same long job concurrently.
 - The pool fill importer works through all due wallets in configured batches so older pool wallets are not left unpolled.
 - Snapshot messages are stored safely through the same dedupe key as historical imports.
 - Non-snapshot realtime fills are published to Redis and shown in the live feed.
@@ -308,6 +312,9 @@ Sizing policy:
 - Recovery also compares open paper positions against source live perp state. If
   the source no longer has the same coin and side, paper closes the position at
   the current simulated market price with normal fee and slippage.
+- In split-worker deployments, the trading worker runs paper-copy recovery every
+  `paper_copy_recovery_interval_seconds` so maintenance imports cannot block
+  trading state reconciliation.
 
 Notes:
 
