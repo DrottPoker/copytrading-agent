@@ -710,6 +710,7 @@ function formatSkipReason(reason: string | null) {
     opposite_paper_position: "Opposite paper position",
     preexisting_source_position: "Preexisting source position",
     price_drift_too_high: "Price drift too high",
+    retained_source_new_position_blocked: "Retained source new position blocked",
     source_account_margin_summary_missing: "Source account margin summary missing",
     source_account_state_fetch_failed: "Source account state fetch failed",
     source_account_state_missing: "Source account state missing",

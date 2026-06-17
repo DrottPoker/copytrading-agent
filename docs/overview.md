@@ -46,7 +46,8 @@ The current application runs in paper mode:
 - Paper copy simulation is enabled by default.
 - Live trading is disabled unless explicitly enabled and acknowledged in config.
 - Scheduled pruning is sharp by default and deletes matching non-active wallets
-  after pool import when configured prune rules match.
+  after pool import when configured prune rules match. Sources with open paper
+  positions are exempt until the copied exposure is closed.
 - Current scoring feeds paper allocation for the top 10 monitored wallets, but it
   is still a research ranking signal until paper results are validated over time.
 

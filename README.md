@@ -190,6 +190,9 @@ Notes:
 - Manual pruning runs through `POST /wallets/prune-all`, which applies orphan-fill,
   zero-fill, minimum closed-trades, realized drawdown, high-fill low-score,
   and current drawdown cleanup in one reviewed operation.
+- Pruning excludes source wallets that still have open paper positions. If a
+  source was pruned earlier while paper exposure remains open, paper allocation
+  refresh restores it as `exit_only`.
 - Wallet risk scoring can include current open perp drawdown from Hyperliquid.
   It also calculates open position stress from live unrealized loss, margin
   usage, and notional exposure. `backend/config/scoring.json` controls whether
@@ -219,6 +222,8 @@ Notes:
 - A source wallet that falls out of the top 10 stays monitored while any paper
   account still has an open position from that source. When those positions are
   closed, the slot is released to the next highest eligible wallet.
+- Sources with open paper positions are immune to pruning until every paper
+  position for that source is closed.
 
 ## Phase 6
 
@@ -246,6 +251,9 @@ Sizing policy:
 - The top 10 scored wallets are eligible for paper copy allocation.
 - Open paper-position sources have realtime priority until exit, so a newly
   promoted top 10 wallet may wait for a free subscription slot.
+- Retained sources outside the current top 10 can add to existing matching paper
+  positions and can reduce or close them, but cannot open completely new paper
+  positions.
 - All top 10 ranks receive a 20% account pocket.
 - Total open copied margin is capped at 80% of each paper account equity.
 - Paper order size is based on source fill notional divided by source perp

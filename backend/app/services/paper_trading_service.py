@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, literal, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1109,6 +1109,7 @@ async def refresh_paper_copy_allocations(
     *,
     settings: Settings,
 ) -> dict[str, PaperSourceAllocation]:
+    await ensure_open_paper_sources_watched(session)
     accounts = await sync_paper_trading_accounts(session, settings=settings)
     account_keys = [account.key for account in accounts]
     if account_keys:
@@ -1148,6 +1149,48 @@ async def refresh_paper_copy_allocations(
             )
 
     return {allocation.source_wallet.lower(): allocation for allocation in source_allocations}
+
+
+async def ensure_open_paper_sources_watched(session: AsyncSession) -> None:
+    open_source_query = (
+        select(PaperPosition.source_wallet)
+        .where(PaperPosition.source_wallet != "")
+        .distinct()
+    )
+    insert_stmt = insert(WatchedWallet).from_select(
+        [
+            "address",
+            "enabled",
+            "eligible",
+            "copy_enabled",
+            "polling_tier",
+            "notes",
+        ],
+        select(
+            PaperPosition.source_wallet,
+            literal(True),
+            literal(False),
+            literal(False),
+            literal("exit_only"),
+            literal("Restored automatically because paper positions are still open."),
+        )
+        .where(PaperPosition.source_wallet != "")
+        .where(
+            ~select(WatchedWallet.id)
+            .where(WatchedWallet.address == PaperPosition.source_wallet)
+            .exists()
+        )
+        .distinct(),
+    )
+    await session.execute(insert_stmt.on_conflict_do_nothing(index_elements=["address"]))
+    await session.execute(
+        update(WatchedWallet)
+        .where(
+            WatchedWallet.address.in_(open_source_query),
+            WatchedWallet.polling_tier.not_in(("active", "exit_only")),
+        )
+        .values(enabled=True, polling_tier="exit_only")
+    )
 
 
 async def sync_paper_trading_accounts(
@@ -1740,6 +1783,18 @@ async def apply_open_part(
             part=part,
             source_perp_equity=source_perp_equity,
             reason="opposite_paper_position",
+            settings=settings,
+            leverage=source_leverage,
+        )
+    if position is None and not allocation.active:
+        return await record_skip(
+            session,
+            account=account,
+            allocation=allocation,
+            fill=fill,
+            part=part,
+            source_perp_equity=source_perp_equity,
+            reason="retained_source_new_position_blocked",
             settings=settings,
             leverage=source_leverage,
         )

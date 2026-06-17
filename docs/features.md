@@ -198,8 +198,9 @@ What it does:
   the configured cutoff in `backend/config/prune.json`.
 - Current drawdown cleanup removes wallets whose live unrealized loss breaches
   the configured account-value threshold.
-- Excludes copy-enabled, active, and exit-only wallets from cleanup candidates
-  where the rule is wallet-pool based.
+- Excludes copy-enabled, active, exit-only, and open paper-position source
+  wallets from cleanup candidates. Orphan-fill cleanup also keeps fill history
+  for sources that still have open paper positions.
 - Runs as a dry run by default and supports `dry_run=false` for deletion.
 - Returns totals and per-rule results for review in the Database dashboard.
 - Reports current drawdown fetch errors separately. Those wallets are shown in
@@ -485,6 +486,13 @@ What it does:
 - Retains allocation records for source wallets with open paper positions so
   add, reduce, close, and flip fills can continue after the source falls out of
   the current top 10.
+- Retained sources outside the current top 10 can add to an existing matching
+  paper position and can reduce or close it, but cannot open a completely new
+  paper position. New entries are skipped with
+  `retained_source_new_position_blocked`.
+- Restores any source with open paper positions into `watched_wallets` as
+  `exit_only` if it was removed earlier, so pool imports and realtime slot
+  retention can continue until the paper exposure is closed.
 - Shows allocation pocket usage as current open paper margin divided by that
   account/source wallet pocket. Old inactive allocation rows without open paper
   positions are hidden from the dashboard.

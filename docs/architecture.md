@@ -376,6 +376,9 @@ sequenceDiagram
 - High-fill low-score pruning removes polled, scored wallets whose fill count is
   at least the configured minimum and whose final score matches the configured
   cutoff in `backend/config/prune.json`.
+- All pruning rules exclude source wallets with open `paper_positions`. Orphan
+  fill pruning also keeps fill rows for those sources even if their
+  `watched_wallets` row is missing.
 - Pruned wallets are also added to the leaderboard ignore list so scheduled imports
   do not immediately re-add the same address.
 
@@ -458,6 +461,12 @@ recovery scans fills from the oldest open paper position with overlap, then the
 copied-fill uniqueness constraint prevents duplicate simulation. Exit skip rows
 caused by unavailable source state or unavailable execution price are retriable
 during recovery so copied positions can still close after transient data issues.
+Allocation refresh also restores open paper-position sources into
+`watched_wallets` as `exit_only` if an earlier prune removed the pool row.
+Retained sources outside the current top 10 keep their allocation record only
+for managing existing exposure. They can add to matching open paper positions
+and can reduce or close them, but new entries are skipped with
+`retained_source_new_position_blocked`.
 After replay, recovery fetches the source wallet's live perp state. If an open
 paper position no longer has a matching source coin and side, paper closes it at
 the current simulated market price with normal fee and slippage. Coin matching
