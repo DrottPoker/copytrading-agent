@@ -45,7 +45,7 @@ class PaperSourceAllocation:
 @dataclass(frozen=True)
 class PaperSourceAccountState:
     dex: str
-    account_value: Decimal
+    perp_equity: Decimal
     leverage_by_coin: dict[str, Decimal]
     skip_reason: str | None = None
 
@@ -573,7 +573,7 @@ async def process_paper_copy_fills(
                     allocation=allocation,
                     fill=fill,
                     part=part,
-                    source_account_value=source_account_state.account_value,
+                    source_perp_equity=source_account_state.perp_equity,
                     source_leverages=source_account_state.leverage_by_coin,
                     market_prices=market_prices,
                     settings=resolved_settings,
@@ -988,7 +988,7 @@ async def load_source_account_state(
         )
         return PaperSourceAccountState(
             dex=dex,
-            account_value=ZERO,
+            perp_equity=ZERO,
             leverage_by_coin={},
             skip_reason="source_account_state_fetch_failed",
         )
@@ -997,30 +997,30 @@ async def load_source_account_state(
     if not isinstance(margin_summary_raw, dict):
         return PaperSourceAccountState(
             dex=dex,
-            account_value=ZERO,
+            perp_equity=ZERO,
             leverage_by_coin=parse_source_leverages(clearinghouse_state),
             skip_reason="source_account_margin_summary_missing",
         )
 
-    account_value = decimal_or_none(margin_summary_raw.get("accountValue"))
-    if account_value is None:
+    perp_equity = decimal_or_none(margin_summary_raw.get("accountValue"))
+    if perp_equity is None:
         return PaperSourceAccountState(
             dex=dex,
-            account_value=ZERO,
+            perp_equity=ZERO,
             leverage_by_coin=parse_source_leverages(clearinghouse_state),
-            skip_reason="source_account_value_missing",
+            skip_reason="source_perp_equity_missing",
         )
-    if account_value <= ZERO:
+    if perp_equity <= ZERO:
         return PaperSourceAccountState(
             dex=dex,
-            account_value=ZERO,
+            perp_equity=ZERO,
             leverage_by_coin=parse_source_leverages(clearinghouse_state),
-            skip_reason="source_account_value_zero",
+            skip_reason="source_perp_equity_zero",
         )
 
     return PaperSourceAccountState(
         dex=dex,
-        account_value=account_value,
+        perp_equity=perp_equity,
         leverage_by_coin=parse_source_leverages(clearinghouse_state),
     )
 
@@ -1288,7 +1288,7 @@ async def apply_paper_fill_part(
     allocation: PaperSourceAllocation,
     fill: dict[str, Any],
     part: SourceFillPart,
-    source_account_value: Decimal,
+    source_perp_equity: Decimal,
     source_leverages: dict[str, Decimal],
     market_prices: dict[str, Decimal],
     settings: Settings,
@@ -1312,7 +1312,7 @@ async def apply_paper_fill_part(
             allocation=allocation,
             fill=fill,
             part=part,
-            source_account_value=source_account_value,
+            source_perp_equity=source_perp_equity,
             source_leverages=source_leverages,
             market_prices=market_prices,
             settings=settings,
@@ -1323,7 +1323,7 @@ async def apply_paper_fill_part(
         allocation=allocation,
         fill=fill,
         part=part,
-        source_account_value=source_account_value,
+        source_perp_equity=source_perp_equity,
         source_leverages=source_leverages,
         market_prices=market_prices,
         settings=settings,
@@ -1337,7 +1337,7 @@ async def apply_open_part(
     allocation: PaperSourceAllocation,
     fill: dict[str, Any],
     part: SourceFillPart,
-    source_account_value: Decimal,
+    source_perp_equity: Decimal,
     source_leverages: dict[str, Decimal],
     market_prices: dict[str, Decimal],
     settings: Settings,
@@ -1351,7 +1351,7 @@ async def apply_open_part(
             allocation=allocation,
             fill=fill,
             part=part,
-            source_account_value=source_account_value,
+            source_perp_equity=source_perp_equity,
             reason="invalid_price",
             settings=settings,
             leverage=source_leverage,
@@ -1370,7 +1370,7 @@ async def apply_open_part(
             allocation=allocation,
             fill=fill,
             part=part,
-            source_account_value=source_account_value,
+            source_perp_equity=source_perp_equity,
             reason="preexisting_source_position",
             settings=settings,
             leverage=source_leverage,
@@ -1382,7 +1382,7 @@ async def apply_open_part(
             allocation=allocation,
             fill=fill,
             part=part,
-            source_account_value=source_account_value,
+            source_perp_equity=source_perp_equity,
             reason="opposite_paper_position",
             settings=settings,
             leverage=source_leverage,
@@ -1401,7 +1401,7 @@ async def apply_open_part(
             allocation=allocation,
             fill=fill,
             part=part,
-            source_account_value=source_account_value,
+            source_perp_equity=source_perp_equity,
             reason="execution_price_unavailable",
             settings=settings,
             leverage=source_leverage,
@@ -1413,7 +1413,7 @@ async def apply_open_part(
             allocation=allocation,
             fill=fill,
             part=part,
-            source_account_value=source_account_value,
+            source_perp_equity=source_perp_equity,
             reason="price_drift_too_high",
             settings=settings,
             execution_context=execution_context,
@@ -1422,7 +1422,7 @@ async def apply_open_part(
     price = execution_context.execution_price
 
     allocation_usd = max(account.equity_usd, ZERO) * allocation.allocation_pct
-    source_exposure_pct = part.source_notional_usd / source_account_value
+    source_exposure_pct = part.source_notional_usd / source_perp_equity
     target_notional = allocation_usd * source_exposure_pct
     target_margin = margin_from_notional(target_notional, source_leverage)
     source_remaining = max(
@@ -1454,7 +1454,7 @@ async def apply_open_part(
             allocation=allocation,
             fill=fill,
             part=part,
-            source_account_value=source_account_value,
+            source_perp_equity=source_perp_equity,
             reason=reason,
             settings=settings,
             leverage=source_leverage,
@@ -1509,7 +1509,7 @@ async def apply_open_part(
             margin_usd=margin_usd,
             fee_usd=fee,
             realized_pnl_usd=ZERO,
-            source_account_value=source_account_value,
+            source_perp_equity=source_perp_equity,
             allocation_usd=allocation_usd,
             settings=settings,
             execution_context=execution_context,
@@ -1525,7 +1525,7 @@ async def apply_close_part(
     allocation: PaperSourceAllocation,
     fill: dict[str, Any],
     part: SourceFillPart,
-    source_account_value: Decimal,
+    source_perp_equity: Decimal,
     source_leverages: dict[str, Decimal],
     market_prices: dict[str, Decimal],
     settings: Settings,
@@ -1538,7 +1538,7 @@ async def apply_close_part(
             allocation=allocation,
             fill=fill,
             part=part,
-            source_account_value=source_account_value,
+            source_perp_equity=source_perp_equity,
             reason="invalid_price",
             settings=settings,
         )
@@ -1556,7 +1556,7 @@ async def apply_close_part(
             allocation=allocation,
             fill=fill,
             part=part,
-            source_account_value=source_account_value,
+            source_perp_equity=source_perp_equity,
             reason="no_matching_paper_position",
             settings=settings,
             leverage=source_leverage,
@@ -1569,7 +1569,7 @@ async def apply_close_part(
             allocation=allocation,
             fill=fill,
             part=part,
-            source_account_value=source_account_value,
+            source_perp_equity=source_perp_equity,
             reason="missing_source_start_position",
             settings=settings,
             leverage=leverage,
@@ -1588,7 +1588,7 @@ async def apply_close_part(
             allocation=allocation,
             fill=fill,
             part=part,
-            source_account_value=source_account_value,
+            source_perp_equity=source_perp_equity,
             reason="execution_price_unavailable",
             settings=settings,
             leverage=leverage,
@@ -1600,7 +1600,7 @@ async def apply_close_part(
             allocation=allocation,
             fill=fill,
             part=part,
-            source_account_value=source_account_value,
+            source_perp_equity=source_perp_equity,
             reason="price_drift_too_high",
             settings=settings,
             execution_context=execution_context,
@@ -1617,7 +1617,7 @@ async def apply_close_part(
             allocation=allocation,
             fill=fill,
             part=part,
-            source_account_value=source_account_value,
+            source_perp_equity=source_perp_equity,
             reason="invalid_close_size",
             settings=settings,
             leverage=leverage,
@@ -1660,7 +1660,7 @@ async def apply_close_part(
             margin_usd=margin_usd,
             fee_usd=fee,
             realized_pnl_usd=realized_pnl,
-            source_account_value=source_account_value,
+            source_perp_equity=source_perp_equity,
             allocation_usd=allocation_usd,
             settings=settings,
             execution_context=execution_context,
@@ -1721,7 +1721,7 @@ async def record_skip_for_accounts(
             allocation=allocation,
             fill=fill,
             part=part,
-            source_account_value=ZERO,
+            source_perp_equity=ZERO,
             reason=reason,
             settings=settings,
         )
@@ -1736,7 +1736,7 @@ async def record_skip(
     allocation: PaperSourceAllocation,
     fill: dict[str, Any],
     part: SourceFillPart,
-    source_account_value: Decimal,
+    source_perp_equity: Decimal,
     reason: str,
     settings: Settings,
     execution_context: PaperExecutionContext | None = None,
@@ -1769,7 +1769,7 @@ async def record_skip(
             margin_usd=None,
             fee_usd=ZERO,
             realized_pnl_usd=ZERO,
-            source_account_value=source_account_value,
+            source_perp_equity=source_perp_equity,
             allocation_usd=allocation_usd,
             settings=settings,
             skipped_reason=reason,
@@ -1793,14 +1793,14 @@ def paper_copy_fill(
     margin_usd: Decimal | None,
     fee_usd: Decimal,
     realized_pnl_usd: Decimal,
-    source_account_value: Decimal,
+    source_perp_equity: Decimal,
     allocation_usd: Decimal,
     settings: Settings,
     skipped_reason: str | None = None,
     execution_context: PaperExecutionContext | None = None,
 ) -> PaperCopyFill:
     source_exposure_pct = (
-        part.source_notional_usd / source_account_value if source_account_value > ZERO else None
+        part.source_notional_usd / source_perp_equity if source_perp_equity > ZERO else None
     )
     return PaperCopyFill(
         account_key=account.key,
@@ -1820,7 +1820,7 @@ def paper_copy_fill(
         source_price=decimal_or_none(fill.get("price")),
         source_size=part.source_size,
         source_notional_usd=part.source_notional_usd,
-        source_account_value_usd=source_account_value if source_account_value > ZERO else None,
+        source_perp_equity_usd=source_perp_equity if source_perp_equity > ZERO else None,
         source_exposure_pct=source_exposure_pct,
         allocation_pct=allocation.allocation_pct,
         allocation_usd=allocation_usd,

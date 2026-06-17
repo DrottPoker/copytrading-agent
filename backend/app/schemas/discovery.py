@@ -25,9 +25,12 @@ class DiscoveryCandidateRead(CamelModel):
     source_rank: int | None
     source_label: str | None
     source_cohort: str | None
-    account_value: Decimal | None
-    source_pnl: Decimal | None
-    source_roi: Decimal | None
+    source_account_value_usd: Decimal | None = None
+    source_pnl_usd: Decimal | None = None
+    source_roi_pct: Decimal | None = None
+    account_value: Decimal | None = None
+    source_pnl: Decimal | None = None
+    source_roi: Decimal | None = None
     source_copy_score: Decimal | None
     account_role: str
     parent_address: str | None

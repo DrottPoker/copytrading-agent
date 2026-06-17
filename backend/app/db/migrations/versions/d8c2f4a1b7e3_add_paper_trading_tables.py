@@ -134,7 +134,7 @@ def upgrade() -> None:
         sa.Column("source_price", sa.Numeric(), nullable=True),
         sa.Column("source_size", sa.Numeric(), nullable=True),
         sa.Column("source_notional_usd", sa.Numeric(), nullable=True),
-        sa.Column("source_account_value_usd", sa.Numeric(), nullable=True),
+        sa.Column("source_perp_equity_usd", sa.Numeric(), nullable=True),
         sa.Column("source_exposure_pct", sa.Numeric(), nullable=True),
         sa.Column("allocation_pct", sa.Numeric(), nullable=True),
         sa.Column("allocation_usd", sa.Numeric(), nullable=True),

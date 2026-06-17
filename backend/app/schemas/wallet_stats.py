@@ -46,6 +46,7 @@ class WalletSpotBalanceStats(CamelModel):
 
 class WalletCurrentStateStats(CamelModel):
     state_time_ms: int | None
+    perp_equity_usd: Decimal
     account_value_usd: Decimal
     withdrawable_usd: Decimal
     total_position_notional_usd: Decimal

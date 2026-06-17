@@ -443,9 +443,18 @@ function CandidateRow({ candidate }: { candidate: DiscoveryCandidate }) {
       </td>
       <td className="px-4 py-3 align-top">
         <div className="grid gap-1">
-          <MetricLine label="PnL" value={formatCurrency(candidate.sourcePnl)} />
-          <MetricLine label="ROI" value={formatSourceRoi(candidate.sourceRoi)} />
-          <MetricLine label="Equity" value={formatCurrency(candidate.accountValue)} />
+          <MetricLine
+            label="PnL"
+            value={formatCurrency(candidate.sourcePnlUsd ?? candidate.sourcePnl)}
+          />
+          <MetricLine
+            label="ROI"
+            value={formatSourceRoi(candidate.sourceRoiPct ?? candidate.sourceRoi)}
+          />
+          <MetricLine
+            label="Equity"
+            value={formatCurrency(candidate.sourceAccountValueUsd ?? candidate.accountValue)}
+          />
           <MetricLine label="Copy score" value={formatScore(candidate.sourceCopyScore)} />
         </div>
       </td>

@@ -58,6 +58,7 @@ class CurrentDrawdownWalletCandidate(CamelModel):
     address: str
     label: str | None
     score: str | None = None
+    perp_equity_usd: str | None = None
     account_value_usd: str | None = None
     total_unrealized_pnl_usd: str | None = None
     unrealized_loss_ratio: str | None = None
@@ -150,6 +151,7 @@ class WalletPruneCandidate(CamelModel):
     max_drawdown_pct: str | None = None
     last_polled_at: str | None = None
     last_seen_fill_at: str | None = None
+    perp_equity_usd: str | None = None
     account_value_usd: str | None = None
     total_unrealized_pnl_usd: str | None = None
     detail: str | None = None

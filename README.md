@@ -25,7 +25,7 @@ Current schema includes:
 
 - `watched_wallets`
 - `wallet_fills`
-- `wallet_positions`
+- `wallet_positions`, current open perp positions with `position_value_usd`
 - `wallet_scores`
 - `wallet_score_snapshots`
 - `active_copy_wallets`
@@ -38,7 +38,7 @@ Current schema includes:
 - `paper_trading_accounts`
 - `paper_copy_allocations`
 - `paper_positions`
-- `paper_copy_fills`
+- `paper_copy_fills`, simulated paper fills with source perp equity snapshots
 - `audit_logs`
 
 Run migrations from the repository root:
@@ -230,10 +230,15 @@ Sizing policy:
   promoted top 10 wallet may wait for a free subscription slot.
 - All top 10 ranks receive a 20% account pocket.
 - Total open copied margin is capped at 80% of each paper account equity.
-- Paper order size is based on source fill notional divided by source account
-  value, scaled inside that source wallet's pocket.
-- Source account value is fetched from Hyperliquid `clearinghouseState` per perp
-  dex. Spot balances are not used for paper copy sizing.
+- Paper order size is based on source fill notional divided by source perp
+  equity, scaled inside that source wallet's pocket.
+- Paper fill rows store that source perp equity snapshot as
+  `paper_copy_fills.source_perp_equity_usd`. The legacy API alias
+  `sourceAccountValueUsd` remains for old dashboard clients.
+- Source perp equity is fetched from Hyperliquid `clearinghouseState` per perp
+  dex. Spot balances are not used for paper copy sizing. For isolated HIP-3
+  positions, Hyperliquid `accountValue` can be isolated position equity and can
+  move together with margin used.
 - Paper copy reads the source wallet's current per-coin leverage from
   Hyperliquid `clearinghouseState` and uses it for margin accounting. If leverage
   is unavailable for a coin, paper falls back to 1x.

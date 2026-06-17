@@ -82,6 +82,7 @@ class PaperCopyFillRead(CamelModel):
     source_price: Decimal | None
     source_size: Decimal | None
     source_notional_usd: Decimal | None
+    source_perp_equity_usd: Decimal | None
     source_account_value_usd: Decimal | None
     source_exposure_pct: Decimal | None
     allocation_pct: Decimal | None

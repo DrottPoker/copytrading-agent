@@ -69,7 +69,7 @@ class WalletScoreMetrics:
     liquidation_event_count: int
     max_coin_notional_usd: Decimal
     max_drawdown_usd: Decimal
-    current_account_value_usd: Decimal | None
+    current_perp_equity_usd: Decimal | None
     current_unrealized_pnl_usd: Decimal | None
     current_drawdown_pct: Decimal | None
     first_trade_time_ms: int | None
@@ -296,7 +296,8 @@ async def get_wallet_score_detail(
         recency_score=breakdown.recency_score,
         net_pnl_usd=wallet_metrics.net_pnl_usd,
         gross_profit_usd=wallet_metrics.gross_profit_usd,
-        current_account_value_usd=wallet_metrics.current_account_value_usd,
+        current_perp_equity_usd=wallet_metrics.current_perp_equity_usd,
+        current_account_value_usd=wallet_metrics.current_perp_equity_usd,
         current_unrealized_pnl_usd=wallet_metrics.current_unrealized_pnl_usd,
         current_drawdown_pct=breakdown.current_drawdown_pct,
         penalty_score=breakdown.penalty_score,
@@ -556,18 +557,19 @@ async def metric_with_current_drawdown(
         return metric
 
     perp_summary = summarize_perp_clearinghouse_states(perp_states)
+    perp_equity = perp_summary.account_value_usd
     current_drawdown_pct: Decimal | None = ZERO
-    if perp_summary.account_value_usd <= ZERO:
+    if perp_equity <= ZERO:
         current_drawdown_pct = None
     elif perp_summary.total_unrealized_pnl_usd < ZERO:
         current_drawdown_pct = (
             perp_summary.total_unrealized_pnl_usd.copy_abs()
-            / perp_summary.account_value_usd
+            / perp_equity
         ).quantize(RATIO_QUANT)
 
     return replace(
         metric,
-        current_account_value_usd=perp_summary.account_value_usd,
+        current_perp_equity_usd=perp_equity,
         current_unrealized_pnl_usd=perp_summary.total_unrealized_pnl_usd,
         current_drawdown_pct=current_drawdown_pct,
     )
@@ -1016,7 +1018,7 @@ def metrics_from_row(row: Any) -> WalletScoreMetrics:
         liquidation_event_count=int(row["liquidation_event_count"] or 0),
         max_coin_notional_usd=decimal_value(row["max_coin_notional_usd"]),
         max_drawdown_usd=decimal_value(row["max_drawdown_usd"]),
-        current_account_value_usd=None,
+        current_perp_equity_usd=None,
         current_unrealized_pnl_usd=None,
         current_drawdown_pct=None,
         first_trade_time_ms=(
@@ -1060,7 +1062,7 @@ def metrics_with_reconstructed_trades(
             liquidation_event_count=base_metrics.liquidation_event_count,
             max_coin_notional_usd=ZERO,
             max_drawdown_usd=ZERO,
-            current_account_value_usd=base_metrics.current_account_value_usd,
+            current_perp_equity_usd=base_metrics.current_perp_equity_usd,
             current_unrealized_pnl_usd=base_metrics.current_unrealized_pnl_usd,
             current_drawdown_pct=base_metrics.current_drawdown_pct,
             first_trade_time_ms=None,
@@ -1095,7 +1097,7 @@ def metrics_with_reconstructed_trades(
         liquidation_event_count=base_metrics.liquidation_event_count,
         max_coin_notional_usd=trades.max_coin_notional_usd,
         max_drawdown_usd=trades.max_drawdown_usd,
-        current_account_value_usd=base_metrics.current_account_value_usd,
+        current_perp_equity_usd=base_metrics.current_perp_equity_usd,
         current_unrealized_pnl_usd=base_metrics.current_unrealized_pnl_usd,
         current_drawdown_pct=base_metrics.current_drawdown_pct,
         first_trade_time_ms=trades.first_trade_time_ms,

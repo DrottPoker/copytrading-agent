@@ -115,7 +115,8 @@ What it does:
 - Skips wallet addresses that already exist in discovery candidates or in the
   wallet pool, so previously processed wallets are not reprocessed by new imports.
 - Tags every candidate with the source that found it, source rank, cohort/label,
-  account value, source PnL, ROI, copy score when available, and account role.
+  `source_account_value_usd`, `source_pnl_usd`, `source_roi_pct`, copy score
+  when available, and account role.
 - Stores discovery import runs so source quality can be measured over time.
 - Supports Hyperliquid 1D, 7D, 30D, and all-time leaderboard sources.
 - Defaults to Hyperliquid 7D and 30D leaderboard discovery.
@@ -230,8 +231,8 @@ What it does:
 - Fetches live Hyperliquid `clearinghouseState` for enabled pool wallets across
   default perp and known perp dex prefixes from stored fills.
 - Deletes wallets whose total open perp unrealized loss is at least the configured
-  share of account value. Default threshold is `0.40`, meaning unrealized PnL is
-  `<= -40%` of account value.
+  share of perp equity. Default threshold is `0.40`, meaning unrealized PnL is
+  `<= -40%` of perp equity.
 - Excludes copy-enabled, active, and exit-only wallets from cleanup candidates.
 - Runs as a dry run by default and supports `dry_run=false` for deletion.
 - Adds deleted addresses to the leaderboard ignore list so they are not imported
@@ -335,14 +336,18 @@ What it does:
 - Queries Hyperliquid `perpDexs`, then fetches `clearinghouseState` for default
   perp plus each known perp dex so wallets with HIP-3 positions are shown
   correctly.
-- Aggregates perp account value, margin, open positions, and unrealized PnL
-  across those venues. Spot balances are shown separately and are not counted as
-  perp account value.
+- Aggregates perp equity, margin, open positions, and unrealized PnL across
+  those venues. Spot balances are shown separately and are not counted as perp
+  equity.
 - Shows current unrealized drawdown as the current open perp loss divided by
-  perp account value. This is separate from historical score drawdown.
+  perp equity. This is separate from historical score drawdown.
+- For isolated HIP-3 positions, Hyperliquid `marginSummary.accountValue` can be
+  isolated position equity and move together with `totalMarginUsed`. It is not
+  a stable wallet cash balance.
 - Fetches `spotClearinghouseState` for spot token balances and entry notional exposure.
 - Syncs open perp positions into `wallet_positions` only when every requested
   perp state fetch succeeds.
+- Stores Hyperliquid open position value in `wallet_positions.position_value_usd`.
 - Keeps current state separate from historical realized PnL based on fills.
 
 ### Fill Browsing
@@ -416,13 +421,18 @@ What it does:
 - Gives all top 10 ranks a 20% account pocket each.
 - Caps total open copied margin at 80% of each paper account equity.
 - Converts new non-snapshot realtime source fills into simulated paper fills.
-- Sizes an open by `source fill notional / source account value`, scaled inside
+- Sizes an open by `source fill notional / source perp equity`, scaled inside
   that wallet's paper allocation pocket.
-- Fetches source account value from Hyperliquid `clearinghouseState`, which is
+- Stores the source perp equity snapshot for each paper fill in
+  `paper_copy_fills.source_perp_equity_usd`.
+- Fetches source perp equity from Hyperliquid `clearinghouseState`, which is
   perp account state. Spot balances are not used for paper copy sizing.
 - Fetches `clearinghouseState` per perp dex when fills use prefixed coins such
-  as `dex:COIN`, so account value, leverage, and open positions are read from
+  as `dex:COIN`, so perp equity, leverage, and open positions are read from
   the matching perp venue.
+- Isolated HIP-3 perp equity can equal isolated margin used. In that case an
+  all-in isolated source position can fill the whole paper pocket, and later
+  adds are skipped once the fixed paper pocket is full.
 - Reads source per-coin leverage from Hyperliquid `clearinghouseState` and uses
   it for paper margin accounting. If leverage is unavailable for a coin, paper
   falls back to 1x.
@@ -462,7 +472,7 @@ What it does:
   account/source wallet pocket. Old inactive allocation rows without open paper
   positions are hidden from the dashboard.
 - Records skip rows when a fill cannot be copied safely, such as no matching
-  paper position, missing source account value, preexisting source position,
+  paper position, missing source perp equity, preexisting source position,
   minimum notional, source allocation cap exhaustion, or total account cap
   exhaustion.
 - Publishes `paper_copy` events to the live feed when realtime fills are simulated.
@@ -655,7 +665,7 @@ Phase A behavior:
 - When `scoring_current_drawdown_enabled` is true, scoring fetches live perp state
   from Hyperliquid for default perp and any perp dexes already observed in stored
   wallet fills, then stores `current_drawdown_pct` on `wallet_scores`. Current
-  drawdown is open unrealized perp loss divided by perp account value.
+  drawdown is open unrealized perp loss divided by perp equity.
 - Current drawdown reduces the risk component. By default it scales up to a 35
   point risk penalty at 40 percent current drawdown.
 - If current perp state cannot be fetched completely, the wallet keeps a

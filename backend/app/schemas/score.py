@@ -67,6 +67,7 @@ class WalletScoreDetailResponse(CamelModel):
     recency_score: Decimal
     net_pnl_usd: Decimal
     gross_profit_usd: Decimal
+    current_perp_equity_usd: Decimal | None
     current_account_value_usd: Decimal | None
     current_unrealized_pnl_usd: Decimal | None
     current_drawdown_pct: Decimal | None

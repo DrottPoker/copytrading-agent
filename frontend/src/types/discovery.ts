@@ -18,6 +18,9 @@ export type DiscoveryCandidate = {
   sourceRank: number | null;
   sourceLabel: string | null;
   sourceCohort: string | null;
+  sourceAccountValueUsd: string | null;
+  sourcePnlUsd: string | null;
+  sourceRoiPct: string | null;
   accountValue: string | null;
   sourcePnl: string | null;
   sourceRoi: string | null;

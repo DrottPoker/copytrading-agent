@@ -294,12 +294,13 @@ def current_drawdown_rule_result(
         errored_wallets=result.errored_wallets,
         deleted_wallets=result.deleted_wallets,
         deleted_fills=result.deleted_fills,
-        rule=f"unrealized loss >= {result.threshold_ratio} of account value",
+        rule=f"unrealized loss >= {result.threshold_ratio} of perp equity",
         items=[
             WalletPruneCandidate(
                 address=item.address,
                 label=item.label,
                 score=item.score,
+                perp_equity_usd=item.perp_equity_usd,
                 account_value_usd=item.account_value_usd,
                 total_unrealized_pnl_usd=item.total_unrealized_pnl_usd,
                 detail=(
@@ -1233,13 +1234,13 @@ async def load_current_drawdown_candidate(
 
     perp_summary = summarize_perp_clearinghouse_states(perp_states)
     positions = perp_summary.positions
-    account_value = perp_summary.account_value_usd
+    perp_equity = perp_summary.account_value_usd
     unrealized_pnl = perp_summary.total_unrealized_pnl_usd
 
-    if account_value <= ZERO or unrealized_pnl >= ZERO:
+    if perp_equity <= ZERO or unrealized_pnl >= ZERO:
         return None
 
-    loss_ratio = unrealized_pnl.copy_abs() / account_value
+    loss_ratio = unrealized_pnl.copy_abs() / perp_equity
     if loss_ratio < threshold_ratio:
         return None
 
@@ -1248,7 +1249,8 @@ async def load_current_drawdown_candidate(
         address=address,
         label=label,
         score=str(score) if score is not None else None,
-        account_value_usd=str(account_value),
+        perp_equity_usd=str(perp_equity),
+        account_value_usd=str(perp_equity),
         total_unrealized_pnl_usd=str(unrealized_pnl),
         unrealized_loss_ratio=str(loss_ratio),
         open_position_count=len(positions),

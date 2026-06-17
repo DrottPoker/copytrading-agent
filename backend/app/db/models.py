@@ -111,13 +111,21 @@ class WalletPosition(Base):
     side: Mapped[str] = mapped_column(Text, nullable=False)
     size: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
     entry_price: Mapped[Decimal | None] = mapped_column(Numeric)
-    notional_usd: Mapped[Decimal | None] = mapped_column(Numeric)
+    position_value_usd: Mapped[Decimal | None] = mapped_column(Numeric)
     unrealized_pnl_usd: Mapped[Decimal | None] = mapped_column(Numeric)
     liquidation_price: Mapped[Decimal | None] = mapped_column(Numeric)
     raw_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+
+    @property
+    def notional_usd(self) -> Decimal | None:
+        return self.position_value_usd
+
+    @notional_usd.setter
+    def notional_usd(self, value: Decimal | None) -> None:
+        self.position_value_usd = value
 
 
 class WalletScore(Base):
@@ -387,9 +395,9 @@ class DiscoveryWalletCandidate(Base, TimestampMixin, UpdatedAtMixin):
     source_rank: Mapped[int | None] = mapped_column(Integer)
     source_label: Mapped[str | None] = mapped_column(Text)
     source_cohort: Mapped[str | None] = mapped_column(Text)
-    account_value: Mapped[Decimal | None] = mapped_column(Numeric)
-    source_pnl: Mapped[Decimal | None] = mapped_column(Numeric)
-    source_roi: Mapped[Decimal | None] = mapped_column(Numeric)
+    source_account_value_usd: Mapped[Decimal | None] = mapped_column(Numeric)
+    source_pnl_usd: Mapped[Decimal | None] = mapped_column(Numeric)
+    source_roi_pct: Mapped[Decimal | None] = mapped_column(Numeric)
     source_copy_score: Mapped[Decimal | None] = mapped_column(Numeric)
     account_role: Mapped[str] = mapped_column(
         Text, nullable=False, server_default=text("'unknown'")
@@ -434,6 +442,30 @@ class DiscoveryWalletCandidate(Base, TimestampMixin, UpdatedAtMixin):
     last_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+    @property
+    def account_value(self) -> Decimal | None:
+        return self.source_account_value_usd
+
+    @account_value.setter
+    def account_value(self, value: Decimal | None) -> None:
+        self.source_account_value_usd = value
+
+    @property
+    def source_pnl(self) -> Decimal | None:
+        return self.source_pnl_usd
+
+    @source_pnl.setter
+    def source_pnl(self, value: Decimal | None) -> None:
+        self.source_pnl_usd = value
+
+    @property
+    def source_roi(self) -> Decimal | None:
+        return self.source_roi_pct
+
+    @source_roi.setter
+    def source_roi(self, value: Decimal | None) -> None:
+        self.source_roi_pct = value
 
 
 class Setting(Base):
@@ -574,13 +606,21 @@ class PaperCopyFill(Base, TimestampMixin):
     source_price: Mapped[Decimal | None] = mapped_column(Numeric)
     source_size: Mapped[Decimal | None] = mapped_column(Numeric)
     source_notional_usd: Mapped[Decimal | None] = mapped_column(Numeric)
-    source_account_value_usd: Mapped[Decimal | None] = mapped_column(Numeric)
+    source_perp_equity_usd: Mapped[Decimal | None] = mapped_column(Numeric)
     source_exposure_pct: Mapped[Decimal | None] = mapped_column(Numeric)
     allocation_pct: Mapped[Decimal | None] = mapped_column(Numeric)
     allocation_usd: Mapped[Decimal | None] = mapped_column(Numeric)
     skipped_reason: Mapped[str | None] = mapped_column(Text)
     filled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     raw_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+
+    @property
+    def source_account_value_usd(self) -> Decimal | None:
+        return self.source_perp_equity_usd
+
+    @source_account_value_usd.setter
+    def source_account_value_usd(self, value: Decimal | None) -> None:
+        self.source_perp_equity_usd = value
 
 
 class AuditLog(Base, TimestampMixin):

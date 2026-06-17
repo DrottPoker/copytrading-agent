@@ -345,7 +345,7 @@ def upgrade() -> None:
         sa.Column("side", sa.Text(), nullable=False),
         sa.Column("size", sa.Numeric(), nullable=False),
         sa.Column("entry_price", sa.Numeric(), nullable=True),
-        sa.Column("notional_usd", sa.Numeric(), nullable=True),
+        sa.Column("position_value_usd", sa.Numeric(), nullable=True),
         sa.Column("unrealized_pnl_usd", sa.Numeric(), nullable=True),
         sa.Column("liquidation_price", sa.Numeric(), nullable=True),
         sa.Column("raw_json", postgresql.JSONB(astext_type=sa.Text()), nullable=True),

@@ -75,6 +75,7 @@ export type PaperCopyFill = {
   sourcePrice: string | null;
   sourceSize: string | null;
   sourceNotionalUsd: string | null;
+  sourcePerpEquityUsd: string | null;
   sourceAccountValueUsd: string | null;
   sourceExposurePct: string | null;
   allocationPct: string | null;

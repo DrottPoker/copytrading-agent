@@ -97,6 +97,7 @@ async def get_wallet_current_state(
 
     return WalletCurrentStateStats(
         state_time_ms=perp_summary.state_time_ms,
+        perp_equity_usd=perp_summary.account_value_usd,
         account_value_usd=perp_summary.account_value_usd,
         withdrawable_usd=perp_summary.withdrawable_usd,
         total_position_notional_usd=perp_summary.total_position_notional_usd,
@@ -232,7 +233,7 @@ async def fetch_wallet_perp_clearinghouse_state(
 def summarize_perp_clearinghouse_states(
     states: list[WalletPerpClearinghouseState],
 ) -> WalletPerpStateSummary:
-    account_value = ZERO
+    perp_equity = ZERO
     withdrawable = ZERO
     total_position_notional = ZERO
     total_margin_used = ZERO
@@ -242,7 +243,7 @@ def summarize_perp_clearinghouse_states(
     for state in states:
         payload = state.payload
         margin_summary = object_or_empty(payload.get("marginSummary"))
-        account_value += decimal_value(margin_summary.get("accountValue"))
+        perp_equity += decimal_value(margin_summary.get("accountValue"))
         withdrawable += decimal_value(payload.get("withdrawable"))
         total_position_notional += decimal_value(margin_summary.get("totalNtlPos"))
         total_margin_used += decimal_value(margin_summary.get("totalMarginUsed"))
@@ -265,7 +266,7 @@ def summarize_perp_clearinghouse_states(
 
     return WalletPerpStateSummary(
         state_time_ms=state_time_ms,
-        account_value_usd=account_value,
+        account_value_usd=perp_equity,
         withdrawable_usd=withdrawable,
         total_position_notional_usd=total_position_notional,
         total_margin_used_usd=total_margin_used,
@@ -449,7 +450,7 @@ async def sync_wallet_positions(
             "side": position.side,
             "size": position.size,
             "entry_price": position.entry_price,
-            "notional_usd": position.position_value_usd,
+            "position_value_usd": position.position_value_usd,
             "unrealized_pnl_usd": position.unrealized_pnl_usd,
             "liquidation_price": position.liquidation_price,
             "raw_json": raw_position_for_coin(raw_positions, position.coin),
@@ -465,7 +466,7 @@ async def sync_wallet_positions(
                 "side",
                 "size",
                 "entry_price",
-                "notional_usd",
+                "position_value_usd",
                 "unrealized_pnl_usd",
                 "liquidation_price",
                 "raw_json",
@@ -517,6 +518,7 @@ def dex_from_coin(value: Any) -> str:
 def empty_current_state(*, error: str | None = None) -> WalletCurrentStateStats:
     return WalletCurrentStateStats(
         state_time_ms=None,
+        perp_equity_usd=ZERO,
         account_value_usd=ZERO,
         withdrawable_usd=ZERO,
         total_position_notional_usd=ZERO,

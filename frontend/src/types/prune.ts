@@ -46,6 +46,7 @@ export type WalletPruneCandidate = {
   maxDrawdownPct: string | null;
   lastPolledAt: string | null;
   lastSeenFillAt: string | null;
+  perpEquityUsd?: string | null;
   accountValueUsd: string | null;
   totalUnrealizedPnlUsd: string | null;
   detail: string | null;

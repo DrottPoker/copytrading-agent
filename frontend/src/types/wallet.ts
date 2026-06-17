@@ -60,6 +60,7 @@ export type WalletScoreDetail = {
   recencyScore: string;
   netPnlUsd: string;
   grossProfitUsd: string;
+  currentPerpEquityUsd?: string | null;
   currentAccountValueUsd: string | null;
   currentUnrealizedPnlUsd: string | null;
   currentDrawdownPct: string | null;
@@ -211,6 +212,7 @@ export type WalletSpotBalanceStats = {
 
 export type WalletCurrentStateStats = {
   stateTimeMs: number | null;
+  perpEquityUsd?: string;
   accountValueUsd: string;
   withdrawableUsd: string;
   totalPositionNotionalUsd: string;

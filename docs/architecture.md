@@ -267,7 +267,7 @@ sequenceDiagram
   API->>HL: clearinghouseState default plus known perp dexes
   API->>HL: spotClearinghouseState
   HL-->>API: perp positions by venue and spot balances
-  API->>API: aggregate perp account value and positions
+  API->>API: aggregate perp equity and positions
   API->>DB: upsert positions if all perp state fetches succeeded
   API-->>UI: fills stats plus current state
 ```
@@ -353,7 +353,7 @@ sequenceDiagram
   threshold.
 - Current drawdown pruning checks live Hyperliquid `clearinghouseState` and removes
   non-active, non-copy wallets whose total unrealized perp loss is at least the
-  configured share of account value.
+  configured share of perp equity.
 - Current drawdown fetch errors are reported separately and are never included in
   the delete list.
 - High-fill low-score pruning removes polled, scored wallets whose fill count is
@@ -395,7 +395,7 @@ sequenceDiagram
   Worker->>HL: subscribe userFills for selected wallets
   HL-->>Worker: non-snapshot source fill
   Worker->>DB: insert wallet fill with dedupe
-  Worker->>HL: clearinghouseState for source account value
+  Worker->>HL: clearinghouseState for source perp equity
   Worker->>HL: allMids after configured latency
   Worker->>DB: size paper fill and apply slippage or drift skip
   Worker->>DB: update paper account, position, and fill rows
@@ -408,7 +408,7 @@ sequenceDiagram
   API-->>UI: accounts, allocations, positions, wallet PnL, recent fills
 ```
 
-Paper sizing uses `source fill notional / source account value` and applies that
+Paper sizing uses `source fill notional / source perp equity` and applies that
 exposure inside each configured source-wallet pocket. Default pockets are 20% for
 each top 10 rank, with an 80% total open copied-margin cap per paper account.
 The worker reads source per-coin leverage from Hyperliquid `clearinghouseState`
@@ -416,6 +416,9 @@ and uses `notional / leverage` for margin accounting. If leverage is unavailable
 for a coin, paper falls back to 1x. When live mids are enabled, dex-specific
 `allMids` and then `metaAndAssetCtxs` are used as fallbacks for `dex:COIN`
 markets missing from default `allMids`.
+For isolated HIP-3 positions, Hyperliquid `marginSummary.accountValue` can equal
+isolated position equity and move with `totalMarginUsed`, so it should not be
+read as a stable wallet cash balance.
 Opens below the configured minimum notional are skipped before any paper position
 is created. Paper execution then waits the configured latency, prices from live
 mids when enabled, applies adverse slippage, and skips fills whose observed drift
@@ -427,6 +430,17 @@ positions in the copy allocation set, and run recovery after worker start,
 WebSocket snapshots, and pool imports. Recovery scans fills after the latest
 copied source fill with overlap, then the copied-fill uniqueness constraint
 prevents duplicate simulation.
+
+Paper copy fill rows store source wallet sizing context in
+`paper_copy_fills.source_perp_equity_usd`. The old
+`sourceAccountValueUsd` API field is kept as a read alias only. Current wallet
+position snapshots store Hyperliquid `positionValue` in
+`wallet_positions.position_value_usd`, while historical fill notional remains in
+`wallet_fills.notional_usd`.
+
+Discovery candidate source metrics use explicit unit-bearing database columns:
+`source_account_value_usd`, `source_pnl_usd`, and `source_roi_pct`. The previous
+API names remain as read aliases for compatibility.
 
 The paper trading page is a client dashboard that polls the summary API for live
 mark prices and unrealized PnL. The API also aggregates source-wallet PnL from

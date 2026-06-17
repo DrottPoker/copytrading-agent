@@ -457,7 +457,7 @@ function CurrentStateSection({ state }: { state: WalletCurrentStateStats }) {
         ) : (
           <>
             <div className="grid gap-0 divide-y divide-line sm:grid-cols-2 sm:divide-x sm:divide-y-0 lg:grid-cols-3">
-              <StateMetric label="Account value" value={formatCurrency(state.accountValueUsd)} />
+              <StateMetric label="Perp equity" value={formatCurrency(perpEquityUsd(state))} />
               <StateMetric label="Withdrawable" value={formatCurrency(state.withdrawableUsd)} />
               <StateMetric
                 label="Unrealized PnL"
@@ -1115,14 +1115,18 @@ function scoreTone(value: string | null | undefined): "positive" | "warning" | "
 }
 
 function currentUnrealizedDrawdownPct(state: WalletCurrentStateStats) {
-  const accountValueUsd = numberValue(state.accountValueUsd);
+  const perpEquity = numberValue(perpEquityUsd(state));
   const unrealizedPnlUsd = numberValue(state.totalUnrealizedPnlUsd);
 
-  if (accountValueUsd <= 0 || unrealizedPnlUsd >= 0) {
+  if (perpEquity <= 0 || unrealizedPnlUsd >= 0) {
     return 0;
   }
 
-  return Math.abs(unrealizedPnlUsd) / accountValueUsd;
+  return Math.abs(unrealizedPnlUsd) / perpEquity;
+}
+
+function perpEquityUsd(state: WalletCurrentStateStats) {
+  return state.perpEquityUsd ?? state.accountValueUsd;
 }
 
 function numberValue(value: string | number) {
