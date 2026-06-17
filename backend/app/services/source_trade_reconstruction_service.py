@@ -15,6 +15,7 @@ from app.schemas.wallet import normalize_wallet_address
 ZERO = Decimal("0")
 ONE = Decimal("1")
 POSITION_EPSILON = Decimal("0.00000001")
+SOURCE_TRADE_INSERT_BATCH_SIZE = 1000
 
 
 @dataclass(frozen=True)
@@ -510,11 +511,9 @@ async def refresh_materialized_source_trades_for_wallet(
         )
     )
     records = [source_trade_record(item) for item in wallet_trades.items]
-    if records:
-        await session.execute(insert(SourceTrade).values(records))
+    await insert_source_trade_records(session, records=records)
     ignored_records = [ignored_fill_record(item) for item in wallet_trades.ignored_fills]
-    if ignored_records:
-        await session.execute(insert(SourceTradeIgnoredFill).values(ignored_records))
+    await insert_source_trade_ignored_fill_records(session, records=ignored_records)
 
     stmt = insert(SourceTradeSyncState).values(
         wallet_address=wallet_address,
@@ -535,6 +534,34 @@ async def refresh_materialized_source_trades_for_wallet(
             },
         )
     )
+
+
+async def insert_source_trade_records(
+    session: AsyncSession,
+    *,
+    records: list[dict[str, Any]],
+) -> None:
+    for batch in record_batches(records, batch_size=SOURCE_TRADE_INSERT_BATCH_SIZE):
+        await session.execute(insert(SourceTrade).values(batch))
+
+
+async def insert_source_trade_ignored_fill_records(
+    session: AsyncSession,
+    *,
+    records: list[dict[str, Any]],
+) -> None:
+    for batch in record_batches(records, batch_size=SOURCE_TRADE_INSERT_BATCH_SIZE):
+        await session.execute(insert(SourceTradeIgnoredFill).values(batch))
+
+
+def record_batches(
+    records: list[dict[str, Any]],
+    *,
+    batch_size: int,
+) -> list[list[dict[str, Any]]]:
+    if batch_size <= 0:
+        batch_size = SOURCE_TRADE_INSERT_BATCH_SIZE
+    return [records[start : start + batch_size] for start in range(0, len(records), batch_size)]
 
 
 def source_trade_record(item: ReconstructedSourceTrade) -> dict[str, Any]:
