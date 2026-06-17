@@ -192,8 +192,8 @@ What it does:
 - Zero-fill cleanup removes polled wallets with exactly zero stored fills.
 - Minimum closed-trades cleanup removes polled, scored wallets below the configured
   reconstructed closed-trade threshold.
-- Historical max drawdown cleanup removes polled, scored wallets whose stored
-  reconstructed max drawdown is at or above the configured threshold.
+- Realized drawdown cleanup removes polled, scored wallets whose reconstructed
+  closed-trade drawdown is at or above the configured threshold.
 - High-fill low-score cleanup removes polled wallets whose final score matches
   the configured cutoff in `backend/config/prune.json`.
 - Current drawdown cleanup removes wallets whose live unrealized loss breaches
@@ -251,15 +251,16 @@ Purpose:
 - Avoid promoting leaderboard accounts whose recent ranking is driven by realized
   history while their live account state is currently distressed.
 
-### Historical Max Drawdown Cleanup
+### Realized Drawdown Cleanup
 
 Normal manual pruning runs this through `POST /wallets/prune-all`.
 
 What it does:
 
 - Uses stored `wallet_scores.max_drawdown_pct` from reconstructed closed perp
-  trades; it does not fetch live account state.
-- Deletes polled, scored wallets whose historical max drawdown is at least the
+  trades. The UI labels this as realized drawdown because it does not include
+  intratrade open-position drawdown.
+- Deletes polled, scored wallets whose realized drawdown is at least the
   configured threshold. Default is `0.60`, meaning `>= 60%`.
 - Excludes copy-enabled, active, exit-only, never-polled, and unscored wallets.
 - Runs as a dry run by default and supports `dry_run=false` for deletion.
@@ -340,7 +341,7 @@ What it does:
   those venues. Spot balances are shown separately and are not counted as perp
   equity.
 - Shows current unrealized drawdown as the current open perp loss divided by
-  perp equity. This is separate from historical score drawdown.
+  perp equity. This is separate from realized score drawdown.
 - For isolated HIP-3 positions, Hyperliquid `marginSummary.accountValue` can be
   isolated position equity and move together with `totalMarginUsed`. It is not
   a stable wallet cash balance.
@@ -680,22 +681,34 @@ Phase A behavior:
   scoring window.
 - Counts only trades where the opening fill was observed before the close.
 - Ignores close-only PnL from positions opened before the imported window.
-- Uses reconstructed trade PnL, fees, notional, active days, recency, historical
-  drawdown, current drawdown, loss ratio, losing trade rate, profit distribution,
-  and coin concentration.
+- Uses reconstructed trade PnL, fees, notional, active days, recency, realized
+  drawdown, current drawdown, open-position stress, loss ratio, losing trade
+  rate, profit distribution, and coin concentration.
 - Consistency score includes profit distribution across winning closed trades.
   It calculates effective winning trades as `1 / sum(profit_share^2)` and scores
   it against `scoring_target_profit_winners`, so wallets where most profit comes
   from one or two trades score lower than wallets with repeated independent wins.
-- The stored `max_drawdown_pct` is a historical realized drawdown metric from
-  reconstructed closed trades. It does not include current open unrealized PnL.
+- The stored `max_drawdown_pct` is exposed to the UI as realized drawdown. It is
+  based on reconstructed closed trades and does not include intratrade open
+  unrealized PnL.
 - When `scoring_current_drawdown_enabled` is true, scoring fetches live perp state
   from Hyperliquid for default perp and any perp dexes already observed in stored
   wallet fills, then stores `current_drawdown_pct` and
   `current_drawdown_status` on `wallet_scores`. Current drawdown is open
   unrealized perp loss divided by perp equity.
-- Current drawdown reduces the risk component. By default it scales up to a 35
-  point risk penalty at 40 percent current drawdown.
+- It also stores `open_position_stress_pct`, a normalized live stress metric
+  from unrealized loss, margin usage, and notional exposure. By default, notional
+  exposure reaches full stress at 10x perp equity.
+- Current drawdown and open-position stress reduce the risk component. Current
+  drawdown can scale up to a 35 point risk penalty at 40 percent drawdown.
+  Open-position stress can scale up to a 25 point risk penalty at full stress.
+  The larger of those two live-state penalties is used so the same open loss is
+  not double-counted.
+- `GET /scores/{address}/detail` returns component-level explanations for the
+  wallet detail scoring modal. The response includes gross score, penalty,
+  final score before sample cap, any sample cap, component weights, weighted
+  scores, and the input-level subscores used inside PnL, consistency, risk,
+  copyability, recency, and penalty calculations.
 - If current perp state cannot be fetched completely or perp equity is zero, the
   wallet keeps a history-only risk component and receives the configured
   `scoring_current_drawdown_missing_penalty`.
@@ -709,7 +722,9 @@ Phase A behavior:
 - Runs after each worker pool reimport when pool maintenance is enabled.
 - If pool maintenance is disabled, the standalone scoring worker uses
   `scoring_interval_seconds`.
-- Can be triggered manually from the Wallet Pool page.
+- Can be triggered manually from the Wallet Pool page. Wallet detail pages expose
+  a Detailed scoring modal beside the score header for inspecting how each score
+  component was calculated.
 
 Important limitation:
 

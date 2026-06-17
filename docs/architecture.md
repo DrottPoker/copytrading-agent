@@ -273,8 +273,8 @@ sequenceDiagram
 ```
 
 Wallet detail pages show current unrealized drawdown from live perp state.
-Score max drawdown remains a historical realized metric from reconstructed
-closed trades and does not include current open unrealized PnL.
+Score realized drawdown comes from reconstructed closed trades and does not
+include intratrade open unrealized PnL.
 
 ### Wallet Scoring
 
@@ -296,12 +296,16 @@ sequenceDiagram
   API-->>UI: score run summary
   UI->>API: GET /wallets
   API-->>UI: wallets ordered by score
+  UI->>API: GET /scores/{address}/detail
+  API-->>UI: detailed component explanations for wallet scoring modal
 ```
 
-Risk score combines historical reconstructed-trade risk with current open perp
-drawdown when `scoring_current_drawdown_enabled` is true. Current drawdown is
-stored as `wallet_scores.current_drawdown_pct` with
-`wallet_scores.current_drawdown_status`. If live perp state is incomplete or
+Risk score combines realized reconstructed-trade risk with current open perp
+drawdown and open-position stress when `scoring_current_drawdown_enabled` is
+true. Current drawdown is stored as `wallet_scores.current_drawdown_pct` with
+`wallet_scores.current_drawdown_status`. Open-position stress is stored as
+`wallet_scores.open_position_stress_pct` and is calculated from live unrealized
+loss, margin usage, and notional exposure. If live perp state is incomplete or
 perp equity is zero, the scoring run keeps the history-only risk component and
 applies the configured missing-state penalty. Scoring only checks default perp
 plus dexes already observed in stored fills, so full HIP-3 discovery remains
@@ -310,6 +314,12 @@ Consistency score uses win rate, profit factor, active days, and profit
 distribution. Profit distribution is calculated from winning closed trades as
 effective winning trades, `1 / sum(profit_share^2)`, then scored against
 `scoring_target_profit_winners`.
+Wallet detail pages use `GET /scores/{address}/detail` for the Detailed scoring
+modal. The endpoint recalculates the current wallet score from the same
+materialized trade metrics, then returns gross score, penalty, final score
+before sample cap, sample cap, component weights, weighted scores, and
+input-level explanations for each scoring part. The modal is explanatory only
+and does not write scoring data.
 The scoring job lock uses a 30 minute TTL so a killed scoring process does not
 block future runs for the longer maintenance lock window.
 
@@ -355,8 +365,8 @@ sequenceDiagram
   present in `watched_wallets`.
 - Zero-fill pruning removes polled wallets that have no stored fill rows at all;
   this replaces the older non-perp cleanup in normal UI workflows.
-- Historical max drawdown pruning uses stored reconstructed trade scores and
-  removes non-active, non-copy wallets at or above the configured max drawdown
+- Realized drawdown pruning uses stored reconstructed closed-trade scores and
+  removes non-active, non-copy wallets at or above the configured drawdown
   threshold.
 - Current drawdown pruning checks live Hyperliquid `clearinghouseState` and removes
   non-active, non-copy wallets whose total unrealized perp loss is at least the

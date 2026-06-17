@@ -198,6 +198,16 @@ class Settings(BaseSettings):
         ge=0,
         le=100,
     )
+    scoring_open_position_stress_notional_full_ratio: Decimal = Field(
+        default=Decimal("10"),
+        gt=0,
+        le=100,
+    )
+    scoring_open_position_stress_penalty_max: Decimal = Field(
+        default=Decimal("25"),
+        ge=0,
+        le=100,
+    )
     scoring_weight_pnl: Decimal = Field(default=Decimal("0.30"), ge=0, le=1)
     scoring_weight_consistency: Decimal = Field(default=Decimal("0.20"), ge=0, le=1)
     scoring_weight_risk: Decimal = Field(default=Decimal("0.20"), ge=0, le=1)

@@ -165,6 +165,7 @@ class WalletScore(Base):
     profit_factor: Mapped[Decimal | None] = mapped_column(Numeric)
     max_drawdown_pct: Mapped[Decimal | None] = mapped_column(Numeric)
     current_drawdown_pct: Mapped[Decimal | None] = mapped_column(Numeric)
+    open_position_stress_pct: Mapped[Decimal | None] = mapped_column(Numeric)
     current_drawdown_status: Mapped[str] = mapped_column(
         Text, nullable=False, server_default=text("'disabled'")
     )
@@ -175,6 +176,14 @@ class WalletScore(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+
+    @property
+    def realized_drawdown_pct(self) -> Decimal | None:
+        return self.max_drawdown_pct
+
+    @realized_drawdown_pct.setter
+    def realized_drawdown_pct(self, value: Decimal | None) -> None:
+        self.max_drawdown_pct = value
 
 
 class WalletScoreSnapshot(Base, TimestampMixin):

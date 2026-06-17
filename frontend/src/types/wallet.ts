@@ -29,7 +29,9 @@ export type WalletScore = {
   winRate: string | null;
   profitFactor: string | null;
   maxDrawdownPct: string | null;
+  realizedDrawdownPct: string | null;
   currentDrawdownPct: string | null;
+  openPositionStressPct: string | null;
   currentDrawdownStatus: string;
   tradeCount: number;
   last24hScore: string | null;
@@ -45,6 +47,28 @@ export type WalletScorePenaltyItem = {
   maxValue: string;
   active: boolean;
   detail: string;
+};
+
+export type WalletScoreDetailItem = {
+  key: string;
+  label: string;
+  value: string | null;
+  valueKind: "currency" | "days" | "integer" | "number" | "penalty" | "percent" | string;
+  score: string | null;
+  weight: string | null;
+  contribution: string | null;
+  effect: "add" | "subtract" | string;
+  detail: string;
+};
+
+export type WalletScoreComponentDetail = {
+  key: string;
+  label: string;
+  score: string;
+  weight: string | null;
+  weightedScore: string | null;
+  detail: string;
+  items: WalletScoreDetailItem[];
 };
 
 export type WalletScoreDetail = {
@@ -64,10 +88,18 @@ export type WalletScoreDetail = {
   currentPerpEquityUsd?: string | null;
   currentAccountValueUsd: string | null;
   currentUnrealizedPnlUsd: string | null;
+  currentMarginUsagePct: string | null;
+  currentNotionalExposurePct: string | null;
+  realizedDrawdownPct: string | null;
   currentDrawdownPct: string | null;
+  openPositionStressPct: string | null;
   currentDrawdownStatus: string;
+  grossScore: string;
+  finalScoreBeforeCap: string;
+  sampleCap: string | null;
   penaltyScore: string;
   penaltyItems: WalletScorePenaltyItem[];
+  componentDetails: WalletScoreComponentDetail[];
 };
 
 export type WalletScoreRunResponse = {

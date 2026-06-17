@@ -13,6 +13,8 @@ from app.core.config import Settings, get_settings
 from app.db.models import WalletScore, WatchedWallet
 from app.integrations.hyperliquid_client import HyperliquidClient
 from app.schemas.score import (
+    WalletScoreComponentDetail,
+    WalletScoreDetailItem,
     WalletScoreDetailResponse,
     WalletScoreListResponse,
     WalletScorePenaltyItem,
@@ -74,6 +76,9 @@ class WalletScoreMetrics:
     current_perp_equity_usd: Decimal | None
     current_unrealized_pnl_usd: Decimal | None
     current_drawdown_pct: Decimal | None
+    current_margin_usage_pct: Decimal | None
+    current_notional_exposure_pct: Decimal | None
+    open_position_stress_pct: Decimal | None
     current_drawdown_status: str
     first_trade_time_ms: int | None
     last_trade_time_ms: int | None
@@ -102,12 +107,22 @@ class WalletScoreBreakdown:
     win_rate: Decimal | None
     profit_factor: Decimal | None
     max_drawdown_pct: Decimal | None
+    realized_drawdown_pct: Decimal | None
     current_drawdown_pct: Decimal | None
+    open_position_stress_pct: Decimal | None
     current_drawdown_status: str
     trade_count: int
     last_24h_score: Decimal | None
     last_7d_score: Decimal | None
     last_30d_score: Decimal | None
+
+
+@dataclass(frozen=True)
+class WalletScoreExplanation:
+    gross_score: Decimal
+    final_score_before_cap: Decimal
+    sample_cap: Decimal | None
+    component_details: list[WalletScoreComponentDetail]
 
 
 async def recalculate_wallet_scores(
@@ -196,6 +211,7 @@ async def _recalculate_wallet_scores(
                 "profit_factor": breakdown.profit_factor,
                 "max_drawdown_pct": breakdown.max_drawdown_pct,
                 "current_drawdown_pct": breakdown.current_drawdown_pct,
+                "open_position_stress_pct": breakdown.open_position_stress_pct,
                 "current_drawdown_status": breakdown.current_drawdown_status,
                 "trade_count": breakdown.trade_count,
                 "last_24h_score": breakdown.last_24h_score,
@@ -303,6 +319,13 @@ async def get_wallet_score_detail(
             resolved_settings.scoring_current_drawdown_missing_penalty
         ),
     )
+    explanation = calculate_score_explanation(
+        metrics=wallet_metrics,
+        breakdown=breakdown,
+        settings=resolved_settings,
+        now=now,
+        penalty_items=penalty_items,
+    )
 
     return WalletScoreDetailResponse(
         wallet_address=wallet_metrics.wallet_address,
@@ -321,10 +344,18 @@ async def get_wallet_score_detail(
         current_perp_equity_usd=wallet_metrics.current_perp_equity_usd,
         current_account_value_usd=wallet_metrics.current_perp_equity_usd,
         current_unrealized_pnl_usd=wallet_metrics.current_unrealized_pnl_usd,
+        current_margin_usage_pct=wallet_metrics.current_margin_usage_pct,
+        current_notional_exposure_pct=wallet_metrics.current_notional_exposure_pct,
+        realized_drawdown_pct=breakdown.realized_drawdown_pct,
         current_drawdown_pct=breakdown.current_drawdown_pct,
+        open_position_stress_pct=breakdown.open_position_stress_pct,
         current_drawdown_status=breakdown.current_drawdown_status,
+        gross_score=explanation.gross_score,
+        final_score_before_cap=explanation.final_score_before_cap,
+        sample_cap=explanation.sample_cap,
         penalty_score=breakdown.penalty_score,
         penalty_items=penalty_items,
+        component_details=explanation.component_details,
     )
 
 
@@ -560,6 +591,7 @@ async def metrics_with_current_drawdowns(
                     metric,
                     client=client,
                     known_dexes=known_dexes_by_address.get(metric.wallet_address.lower(), ()),
+                    settings=settings,
                 )
 
         return list(await asyncio.gather(*(load_metric(metric) for metric in metrics)))
@@ -570,6 +602,7 @@ async def metric_with_current_drawdown(
     *,
     client: HyperliquidClient,
     known_dexes: tuple[str, ...],
+    settings: Settings,
 ) -> WalletScoreMetrics:
     perp_states, errors = await load_wallet_perp_clearinghouse_states(
         client=client,
@@ -588,21 +621,43 @@ async def metric_with_current_drawdown(
     perp_summary = summarize_perp_clearinghouse_states(perp_states)
     perp_equity = perp_summary.account_value_usd
     current_drawdown_pct: Decimal | None = ZERO
+    current_margin_usage_pct: Decimal | None = ZERO
+    current_notional_exposure_pct: Decimal | None = ZERO
+    open_position_stress_pct: Decimal | None = ZERO
     current_drawdown_status = "ok"
     if perp_equity <= ZERO:
         current_drawdown_pct = None
+        current_margin_usage_pct = None
+        current_notional_exposure_pct = None
+        open_position_stress_pct = None
         current_drawdown_status = "zero_equity"
-    elif perp_summary.total_unrealized_pnl_usd < ZERO:
-        current_drawdown_pct = (
-            perp_summary.total_unrealized_pnl_usd.copy_abs()
-            / perp_equity
+    else:
+        if perp_summary.total_unrealized_pnl_usd < ZERO:
+            current_drawdown_pct = (
+                perp_summary.total_unrealized_pnl_usd.copy_abs()
+                / perp_equity
+            ).quantize(RATIO_QUANT)
+        current_margin_usage_pct = (
+            perp_summary.total_margin_used_usd / perp_equity
         ).quantize(RATIO_QUANT)
+        current_notional_exposure_pct = (
+            perp_summary.total_position_notional_usd / perp_equity
+        ).quantize(RATIO_QUANT)
+        open_position_stress_pct = calculate_open_position_stress_pct(
+            current_drawdown_pct=current_drawdown_pct,
+            current_margin_usage_pct=current_margin_usage_pct,
+            current_notional_exposure_pct=current_notional_exposure_pct,
+            notional_full_ratio=settings.scoring_open_position_stress_notional_full_ratio,
+        )
 
     return replace(
         metric,
         current_perp_equity_usd=perp_equity,
         current_unrealized_pnl_usd=perp_summary.total_unrealized_pnl_usd,
         current_drawdown_pct=current_drawdown_pct,
+        current_margin_usage_pct=current_margin_usage_pct,
+        current_notional_exposure_pct=current_notional_exposure_pct,
+        open_position_stress_pct=open_position_stress_pct,
         current_drawdown_status=current_drawdown_status,
     )
 
@@ -626,7 +681,9 @@ def calculate_wallet_score(
             win_rate=None,
             profit_factor=None,
             max_drawdown_pct=None,
+            realized_drawdown_pct=None,
             current_drawdown_pct=metrics.current_drawdown_pct,
+            open_position_stress_pct=metrics.open_position_stress_pct,
             current_drawdown_status=metrics.current_drawdown_status,
             trade_count=0,
             last_24h_score=ZERO,
@@ -661,6 +718,9 @@ def calculate_wallet_score(
             settings.scoring_current_drawdown_full_penalty_ratio
         ),
         current_drawdown_penalty_max=settings.scoring_current_drawdown_penalty_max,
+        open_position_stress_penalty_max=(
+            settings.scoring_open_position_stress_penalty_max
+        ),
     )
     copyability_score = calculate_copyability_score(
         metrics=metrics,
@@ -721,7 +781,9 @@ def calculate_wallet_score(
         win_rate=win_rate.quantize(RATIO_QUANT) if win_rate is not None else None,
         profit_factor=profit_factor.quantize(SCORE_QUANT) if profit_factor is not None else None,
         max_drawdown_pct=max_drawdown_pct,
+        realized_drawdown_pct=max_drawdown_pct,
         current_drawdown_pct=metrics.current_drawdown_pct,
+        open_position_stress_pct=metrics.open_position_stress_pct,
         current_drawdown_status=metrics.current_drawdown_status,
         trade_count=metrics.trade_count,
         last_24h_score=calculate_window_score(
@@ -740,6 +802,494 @@ def calculate_wallet_score(
             notional_usd=metrics.total_notional_usd,
         ),
     )
+
+
+def calculate_score_explanation(
+    *,
+    metrics: WalletScoreMetrics,
+    breakdown: WalletScoreBreakdown,
+    settings: Settings,
+    now: datetime,
+    penalty_items: list[WalletScorePenaltyItem],
+) -> WalletScoreExplanation:
+    weight_sum = score_weight_sum(settings)
+    weighted_components = [
+        score_component_detail(
+            key="pnl",
+            label="PnL",
+            score=breakdown.pnl_score,
+            weight=settings.scoring_weight_pnl,
+            weight_sum=weight_sum,
+            detail="Net realized PnL is scored from ROI and absolute net PnL.",
+            items=pnl_score_items(metrics),
+        ),
+        score_component_detail(
+            key="consistency",
+            label="Consistency",
+            score=breakdown.consistency_score,
+            weight=settings.scoring_weight_consistency,
+            weight_sum=weight_sum,
+            detail=(
+                "Consistency combines win rate, profit factor, profit distribution, "
+                "and activity."
+            ),
+            items=consistency_score_items(metrics, settings=settings),
+        ),
+        score_component_detail(
+            key="risk",
+            label="Risk",
+            score=breakdown.risk_score,
+            weight=settings.scoring_weight_risk,
+            weight_sum=weight_sum,
+            detail="Risk starts at 100 and subtracts realized and live-state risk penalties.",
+            items=risk_score_items(metrics, settings=settings),
+        ),
+        score_component_detail(
+            key="copyability",
+            label="Copyability",
+            score=breakdown.copyability_score,
+            weight=settings.scoring_weight_copyability,
+            weight_sum=weight_sum,
+            detail="Copyability scores whether the trade set is practical to follow.",
+            items=copyability_score_items(metrics, settings=settings),
+        ),
+        score_component_detail(
+            key="recency",
+            label="Recency",
+            score=breakdown.recency_score,
+            weight=settings.scoring_weight_recency,
+            weight_sum=weight_sum,
+            detail="Recency decays as the latest reconstructed source trade gets older.",
+            items=recency_score_items(metrics, now=now, settings=settings),
+        ),
+    ]
+    gross_component_score = sum(
+        ((component.weighted_score or ZERO) for component in weighted_components),
+        ZERO,
+    )
+    gross_score = score_value(gross_component_score)
+    final_score_before_cap = score_value(gross_score - breakdown.penalty_score)
+    sample_cap = score_sample_cap(metrics.trade_count, settings.scoring_min_trades)
+    components = [
+        *weighted_components,
+        WalletScoreComponentDetail(
+            key="penalty",
+            label="Penalty",
+            score=breakdown.penalty_score,
+            weight=None,
+            weighted_score=None,
+            detail="Penalty is subtracted from the weighted component score.",
+            items=[
+                WalletScoreDetailItem(
+                    key=item.key,
+                    label=item.label,
+                    value=item.value,
+                    value_kind="penalty",
+                    score=None,
+                    weight=None,
+                    contribution=item.value,
+                    effect="subtract",
+                    detail=item.detail,
+                )
+                for item in penalty_items
+            ],
+        ),
+    ]
+    return WalletScoreExplanation(
+        gross_score=gross_score,
+        final_score_before_cap=final_score_before_cap,
+        sample_cap=sample_cap,
+        component_details=components,
+    )
+
+
+def pnl_score_items(metrics: WalletScoreMetrics) -> list[WalletScoreDetailItem]:
+    roi = (
+        metrics.net_pnl_usd / metrics.total_notional_usd
+        if metrics.total_notional_usd > ZERO
+        else ZERO
+    )
+    roi_score = range_score(roi, Decimal("-0.03"), Decimal("0.10"))
+    net_score = signed_log_score(
+        metrics.net_pnl_usd,
+        scale=Decimal("1000"),
+        max_value=Decimal("100000"),
+    )
+    return [
+        detail_item(
+            key="roi",
+            label="ROI",
+            value=roi,
+            value_kind="percent",
+            score=roi_score,
+            weight=Decimal("0.70"),
+            detail="Net realized PnL divided by reconstructed entry notional.",
+        ),
+        detail_item(
+            key="net_pnl",
+            label="Net PnL",
+            value=metrics.net_pnl_usd,
+            value_kind="currency",
+            score=net_score,
+            weight=Decimal("0.30"),
+            detail="Signed log score for absolute net realized PnL.",
+        ),
+    ]
+
+
+def consistency_score_items(
+    metrics: WalletScoreMetrics,
+    *,
+    settings: Settings,
+) -> list[WalletScoreDetailItem]:
+    closed_trade_count = metrics.profitable_trade_count + metrics.losing_trade_count
+    win_rate = (
+        Decimal(metrics.profitable_trade_count) / Decimal(closed_trade_count)
+        if closed_trade_count > 0
+        else None
+    )
+    profit_factor = calculate_profit_factor(metrics.gross_profit_usd, metrics.gross_loss_usd)
+    win_score = (
+        Decimal("50")
+        if win_rate is None
+        else range_score(win_rate, Decimal("0.35"), Decimal("0.65"))
+    )
+    pf_score = Decimal("50") if profit_factor is None else profit_factor_score(profit_factor)
+    distribution_score = calculate_profit_distribution_score(
+        effective_winning_trade_count=metrics.effective_winning_trade_count,
+        target_profit_winners=settings.scoring_target_profit_winners,
+    )
+    target_day_count = max(settings.scoring_target_active_days, 1)
+    activity_score = score_value(
+        Decimal(metrics.active_days) / Decimal(target_day_count) * HUNDRED
+    )
+    return [
+        detail_item(
+            key="win_rate",
+            label="Win rate",
+            value=win_rate,
+            value_kind="percent",
+            score=win_score,
+            weight=Decimal("0.30"),
+            detail=(
+                f"{metrics.profitable_trade_count} profitable closed trades "
+                f"of {closed_trade_count}."
+            ),
+        ),
+        detail_item(
+            key="profit_factor",
+            label="Profit factor",
+            value=profit_factor,
+            value_kind="number",
+            score=pf_score,
+            weight=Decimal("0.25"),
+            detail="Gross profit divided by gross loss.",
+        ),
+        detail_item(
+            key="profit_distribution",
+            label="Profit distribution",
+            value=metrics.effective_winning_trade_count,
+            value_kind="number",
+            score=distribution_score,
+            weight=Decimal("0.30"),
+            detail=(
+                "Effective winning trades scored against target "
+                f"{settings.scoring_target_profit_winners}."
+            ),
+        ),
+        detail_item(
+            key="active_days",
+            label="Active days",
+            value=Decimal(metrics.active_days),
+            value_kind="integer",
+            score=activity_score,
+            weight=Decimal("0.15"),
+            detail=(
+                "Active trading days scored against target "
+                f"{settings.scoring_target_active_days}."
+            ),
+        ),
+    ]
+
+
+def risk_score_items(
+    metrics: WalletScoreMetrics,
+    *,
+    settings: Settings,
+) -> list[WalletScoreDetailItem]:
+    closed_trade_count = metrics.profitable_trade_count + metrics.losing_trade_count
+    drawdown_base = max_decimal(metrics.gross_profit_usd, abs(metrics.net_pnl_usd), ONE)
+    loss_ratio = metrics.gross_loss_usd / max_decimal(metrics.gross_profit_usd, ONE)
+    realized_drawdown = metrics.max_drawdown_usd / drawdown_base
+    current_drawdown = metrics.current_drawdown_pct or ZERO
+    current_drawdown_penalty = ZERO
+    if settings.scoring_current_drawdown_full_penalty_ratio > ZERO:
+        current_drawdown_penalty = min_decimal(
+            current_drawdown
+            / settings.scoring_current_drawdown_full_penalty_ratio
+            * settings.scoring_current_drawdown_penalty_max,
+            settings.scoring_current_drawdown_penalty_max,
+        )
+    open_stress_penalty = min_decimal(
+        (metrics.open_position_stress_pct or ZERO)
+        * settings.scoring_open_position_stress_penalty_max,
+        settings.scoring_open_position_stress_penalty_max,
+    )
+    live_penalty = max_decimal(current_drawdown_penalty, open_stress_penalty)
+    losing_rate = (
+        Decimal(metrics.losing_trade_count) / Decimal(closed_trade_count)
+        if closed_trade_count > 0
+        else ZERO
+    )
+    return [
+        penalty_detail_item(
+            key="loss_ratio",
+            label="Loss ratio",
+            value=loss_ratio,
+            value_kind="percent",
+            penalty=min_decimal(loss_ratio * Decimal("40"), Decimal("40")),
+            detail="Gross loss divided by gross profit, capped at 40 penalty points.",
+        ),
+        penalty_detail_item(
+            key="realized_drawdown",
+            label="Realized drawdown",
+            value=realized_drawdown,
+            value_kind="percent",
+            penalty=min_decimal(realized_drawdown * Decimal("35"), Decimal("35")),
+            detail="Closed-trade drawdown divided by realized drawdown base.",
+        ),
+        reference_detail_item(
+            key="current_drawdown_candidate",
+            label="Current drawdown candidate",
+            value=metrics.current_drawdown_pct,
+            value_kind="percent",
+            detail=(
+                "Candidate live penalty before comparing with open-position stress: "
+                f"{score_value(current_drawdown_penalty)} points."
+            ),
+        ),
+        reference_detail_item(
+            key="open_position_stress_candidate",
+            label="Open-position stress candidate",
+            value=metrics.open_position_stress_pct,
+            value_kind="percent",
+            detail=(
+                "Candidate live penalty before comparing with current drawdown: "
+                f"{score_value(open_stress_penalty)} points."
+            ),
+        ),
+        penalty_detail_item(
+            key="live_risk_penalty",
+            label="Live risk penalty",
+            value=live_penalty,
+            value_kind="penalty",
+            penalty=live_penalty,
+            detail=(
+                "Actual live-state risk penalty, using the larger candidate so the "
+                "same open risk is not double-counted."
+            ),
+        ),
+        penalty_detail_item(
+            key="losing_rate",
+            label="Losing trade rate",
+            value=losing_rate,
+            value_kind="percent",
+            penalty=losing_rate * Decimal("15"),
+            detail="Losing closed trades divided by all closed trades.",
+        ),
+    ]
+
+
+def copyability_score_items(
+    metrics: WalletScoreMetrics,
+    *,
+    settings: Settings,
+) -> list[WalletScoreDetailItem]:
+    target_trade_count = max(settings.scoring_target_trades, 1)
+    trade_score = score_value(
+        Decimal(metrics.trade_count) / Decimal(target_trade_count) * HUNDRED
+    )
+    avg_notional_score = calculate_average_notional_score(metrics.average_trade_notional_usd)
+    concentration = (
+        metrics.max_coin_notional_usd / metrics.total_notional_usd
+        if metrics.total_notional_usd > ZERO
+        else ONE
+    )
+    concentration_score = score_value((ONE - concentration) / Decimal("0.70") * HUNDRED)
+    unique_coin_score = score_value(
+        Decimal(min(metrics.unique_coin_count, 4)) / Decimal("4") * HUNDRED
+    )
+    return [
+        detail_item(
+            key="trade_count",
+            label="Trade count",
+            value=Decimal(metrics.trade_count),
+            value_kind="integer",
+            score=trade_score,
+            weight=Decimal("0.35"),
+            detail=f"Closed trades scored against target {settings.scoring_target_trades}.",
+        ),
+        detail_item(
+            key="average_notional",
+            label="Average notional",
+            value=metrics.average_trade_notional_usd,
+            value_kind="currency",
+            score=avg_notional_score,
+            weight=Decimal("0.25"),
+            detail="Average reconstructed entry notional per closed trade.",
+        ),
+        detail_item(
+            key="coin_concentration",
+            label="Coin concentration",
+            value=concentration,
+            value_kind="percent",
+            score=concentration_score,
+            weight=Decimal("0.20"),
+            detail="Largest coin notional share is penalized when too concentrated.",
+        ),
+        detail_item(
+            key="unique_coins",
+            label="Unique coins",
+            value=Decimal(metrics.unique_coin_count),
+            value_kind="integer",
+            score=unique_coin_score,
+            weight=Decimal("0.20"),
+            detail="Unique traded coins, capped at four coins.",
+        ),
+    ]
+
+
+def recency_score_items(
+    metrics: WalletScoreMetrics,
+    *,
+    now: datetime,
+    settings: Settings,
+) -> list[WalletScoreDetailItem]:
+    age_days: Decimal | None = None
+    if metrics.last_trade_time_ms is not None:
+        age_ms = max(0, timestamp_ms(now) - int(metrics.last_trade_time_ms))
+        age_days = Decimal(age_ms) / Decimal(86_400_000)
+    return [
+        detail_item(
+            key="latest_trade_age",
+            label="Latest trade age",
+            value=age_days,
+            value_kind="days",
+            score=calculate_recency_score(
+                metrics.last_trade_time_ms,
+                now=now,
+                stale_days=settings.scoring_stale_days,
+            ),
+            weight=ONE,
+            detail=f"Decays to zero after {settings.scoring_stale_days} days without a trade.",
+        )
+    ]
+
+
+def score_component_detail(
+    *,
+    key: str,
+    label: str,
+    score: Decimal,
+    weight: Decimal,
+    weight_sum: Decimal,
+    detail: str,
+    items: list[WalletScoreDetailItem],
+) -> WalletScoreComponentDetail:
+    effective_weight = weight / weight_sum if weight_sum > ZERO else ZERO
+    return WalletScoreComponentDetail(
+        key=key,
+        label=label,
+        score=score_value(score),
+        weight=effective_weight,
+        weighted_score=score_value(score * effective_weight),
+        detail=detail,
+        items=items,
+    )
+
+
+def detail_item(
+    *,
+    key: str,
+    label: str,
+    value: Decimal | None,
+    value_kind: str,
+    score: Decimal,
+    weight: Decimal,
+    detail: str,
+) -> WalletScoreDetailItem:
+    return WalletScoreDetailItem(
+        key=key,
+        label=label,
+        value=value,
+        value_kind=value_kind,
+        score=score_value(score),
+        weight=weight,
+        contribution=score_value(score * weight),
+        effect="add",
+        detail=detail,
+    )
+
+
+def penalty_detail_item(
+    *,
+    key: str,
+    label: str,
+    value: Decimal | None,
+    value_kind: str,
+    penalty: Decimal,
+    detail: str,
+) -> WalletScoreDetailItem:
+    return WalletScoreDetailItem(
+        key=key,
+        label=label,
+        value=value,
+        value_kind=value_kind,
+        score=None,
+        weight=None,
+        contribution=score_value(penalty),
+        effect="subtract",
+        detail=detail,
+    )
+
+
+def reference_detail_item(
+    *,
+    key: str,
+    label: str,
+    value: Decimal | None,
+    value_kind: str,
+    detail: str,
+) -> WalletScoreDetailItem:
+    return WalletScoreDetailItem(
+        key=key,
+        label=label,
+        value=value,
+        value_kind=value_kind,
+        score=None,
+        weight=None,
+        contribution=None,
+        effect="reference",
+        detail=detail,
+    )
+
+
+def score_weight_sum(settings: Settings) -> Decimal:
+    weight_sum = (
+        settings.scoring_weight_pnl
+        + settings.scoring_weight_consistency
+        + settings.scoring_weight_risk
+        + settings.scoring_weight_copyability
+        + settings.scoring_weight_recency
+    )
+    return weight_sum if weight_sum > ZERO else ONE
+
+
+def score_sample_cap(trade_count: int, min_trades: int) -> Decimal | None:
+    if trade_count >= min_trades:
+        return None
+    min_trade_count = max(min_trades, 1)
+    return score_value(Decimal(trade_count) / Decimal(min_trade_count) * Decimal("45"))
 
 
 def calculate_pnl_score(net_pnl_usd: Decimal, notional_usd: Decimal) -> Decimal:
@@ -798,6 +1348,25 @@ def calculate_profit_distribution_score(
     return score_value(effective_ratio.sqrt() * HUNDRED)
 
 
+def calculate_open_position_stress_pct(
+    *,
+    current_drawdown_pct: Decimal | None,
+    current_margin_usage_pct: Decimal | None,
+    current_notional_exposure_pct: Decimal | None,
+    notional_full_ratio: Decimal,
+) -> Decimal:
+    notional_stress = ZERO
+    if notional_full_ratio > ZERO and current_notional_exposure_pct is not None:
+        notional_stress = current_notional_exposure_pct / notional_full_ratio
+
+    stress = max_decimal(
+        current_drawdown_pct or ZERO,
+        current_margin_usage_pct or ZERO,
+        notional_stress,
+    )
+    return min_decimal(stress, ONE).quantize(RATIO_QUANT)
+
+
 def calculate_risk_score(
     *,
     metrics: WalletScoreMetrics,
@@ -805,6 +1374,7 @@ def calculate_risk_score(
     drawdown_base: Decimal,
     current_drawdown_full_penalty_ratio: Decimal,
     current_drawdown_penalty_max: Decimal,
+    open_position_stress_penalty_max: Decimal,
 ) -> Decimal:
     loss_ratio = metrics.gross_loss_usd / max_decimal(metrics.gross_profit_usd, ONE)
     drawdown_ratio = metrics.max_drawdown_usd / drawdown_base
@@ -817,6 +1387,10 @@ def calculate_risk_score(
             * current_drawdown_penalty_max,
             current_drawdown_penalty_max,
         )
+    open_position_stress_penalty = min_decimal(
+        (metrics.open_position_stress_pct or ZERO) * open_position_stress_penalty_max,
+        open_position_stress_penalty_max,
+    )
     losing_rate = (
         Decimal(metrics.losing_trade_count) / Decimal(closed_trade_count)
         if closed_trade_count > 0
@@ -825,7 +1399,7 @@ def calculate_risk_score(
     penalty = (
         min_decimal(loss_ratio * Decimal("40"), Decimal("40"))
         + min_decimal(drawdown_ratio * Decimal("35"), Decimal("35"))
-        + current_drawdown_penalty
+        + max_decimal(current_drawdown_penalty, open_position_stress_penalty)
         + losing_rate * Decimal("15")
     )
     return score_value(HUNDRED - penalty)
@@ -1131,6 +1705,9 @@ def metrics_from_row(row: Any) -> WalletScoreMetrics:
         current_perp_equity_usd=None,
         current_unrealized_pnl_usd=None,
         current_drawdown_pct=None,
+        current_margin_usage_pct=None,
+        current_notional_exposure_pct=None,
+        open_position_stress_pct=None,
         current_drawdown_status="disabled",
         first_trade_time_ms=(
             int(row["first_fill_time_ms"]) if row["first_fill_time_ms"] is not None else None
@@ -1177,6 +1754,9 @@ def metrics_with_reconstructed_trades(
             current_perp_equity_usd=base_metrics.current_perp_equity_usd,
             current_unrealized_pnl_usd=base_metrics.current_unrealized_pnl_usd,
             current_drawdown_pct=base_metrics.current_drawdown_pct,
+            current_margin_usage_pct=base_metrics.current_margin_usage_pct,
+            current_notional_exposure_pct=base_metrics.current_notional_exposure_pct,
+            open_position_stress_pct=base_metrics.open_position_stress_pct,
             current_drawdown_status=base_metrics.current_drawdown_status,
             first_trade_time_ms=None,
             last_trade_time_ms=None,
@@ -1214,6 +1794,9 @@ def metrics_with_reconstructed_trades(
         current_perp_equity_usd=base_metrics.current_perp_equity_usd,
         current_unrealized_pnl_usd=base_metrics.current_unrealized_pnl_usd,
         current_drawdown_pct=base_metrics.current_drawdown_pct,
+        current_margin_usage_pct=base_metrics.current_margin_usage_pct,
+        current_notional_exposure_pct=base_metrics.current_notional_exposure_pct,
+        open_position_stress_pct=base_metrics.open_position_stress_pct,
         current_drawdown_status=base_metrics.current_drawdown_status,
         first_trade_time_ms=trades.first_trade_time_ms,
         last_trade_time_ms=trades.last_trade_time_ms,

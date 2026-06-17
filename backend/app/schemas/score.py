@@ -19,7 +19,9 @@ class WalletScoreRead(CamelModel):
     win_rate: Decimal | None
     profit_factor: Decimal | None
     max_drawdown_pct: Decimal | None
+    realized_drawdown_pct: Decimal | None
     current_drawdown_pct: Decimal | None
+    open_position_stress_pct: Decimal | None
     current_drawdown_status: str
     trade_count: int
     last_24h_score: Decimal | None
@@ -54,6 +56,28 @@ class WalletScorePenaltyItem(CamelModel):
     detail: str
 
 
+class WalletScoreDetailItem(CamelModel):
+    key: str
+    label: str
+    value: Decimal | None
+    value_kind: str
+    score: Decimal | None
+    weight: Decimal | None
+    contribution: Decimal | None
+    effect: str
+    detail: str
+
+
+class WalletScoreComponentDetail(CamelModel):
+    key: str
+    label: str
+    score: Decimal
+    weight: Decimal | None
+    weighted_score: Decimal | None
+    detail: str
+    items: list[WalletScoreDetailItem]
+
+
 class WalletScoreDetailResponse(CamelModel):
     wallet_address: str
     window_days: int
@@ -71,7 +95,15 @@ class WalletScoreDetailResponse(CamelModel):
     current_perp_equity_usd: Decimal | None
     current_account_value_usd: Decimal | None
     current_unrealized_pnl_usd: Decimal | None
+    current_margin_usage_pct: Decimal | None
+    current_notional_exposure_pct: Decimal | None
+    realized_drawdown_pct: Decimal | None
     current_drawdown_pct: Decimal | None
+    open_position_stress_pct: Decimal | None
     current_drawdown_status: str
+    gross_score: Decimal
+    final_score_before_cap: Decimal
+    sample_cap: Decimal | None
     penalty_score: Decimal
     penalty_items: list[WalletScorePenaltyItem]
+    component_details: list[WalletScoreComponentDetail]

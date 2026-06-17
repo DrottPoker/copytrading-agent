@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { ImportFillsButton } from "@/components/ImportFillsButton";
+import { ScoreDetailsModal } from "@/components/ScoreDetailsModal";
 import { StatusPill } from "@/components/StatusPill";
 import {
   getWallet,
@@ -236,7 +237,11 @@ function ScoreBreakdownSection({
   const penaltyItems = scoreDetail?.penaltyItems ?? [];
   const penalty = numberValue(scoreDetail?.penaltyScore ?? score.penaltyScore);
   const liquidationEvents = scoreDetail?.liquidationEventCount ?? scoreDetail?.liquidationCount ?? 0;
+  const realizedDrawdownPct =
+    scoreDetail?.realizedDrawdownPct ?? score.realizedDrawdownPct ?? score.maxDrawdownPct;
   const currentDrawdownPct = scoreDetail?.currentDrawdownPct ?? score.currentDrawdownPct;
+  const openPositionStressPct =
+    scoreDetail?.openPositionStressPct ?? score.openPositionStressPct;
   const currentDrawdownStatus =
     scoreDetail?.currentDrawdownStatus ?? score.currentDrawdownStatus;
 
@@ -262,6 +267,13 @@ function ScoreBreakdownSection({
               tone={liquidationEvents >= 2 ? "danger" : "warning"}
             />
           ) : null}
+          {openPositionStressPct ? (
+            <StatusPill
+              label={`open stress ${formatPercent(openPositionStressPct)}`}
+              tone={openStressTone(openPositionStressPct)}
+            />
+          ) : null}
+          <ScoreDetailsModal score={score} scoreDetail={scoreDetail} />
         </div>
       </div>
 
@@ -278,11 +290,12 @@ function ScoreBreakdownSection({
               <p>Copyable PnL {formatCurrency(score.copyablePnlUsd)}</p>
               <p>Win rate {formatPercent(score.winRate)}</p>
               <p>Profit factor {formatNullableNumber(score.profitFactor)}</p>
-              <p>Historical max drawdown {formatPercent(score.maxDrawdownPct)}</p>
+              <p>Realized drawdown {formatPercent(realizedDrawdownPct)}</p>
               <p>
                 Current drawdown {formatPercent(currentDrawdownPct)}
                 {formatCurrentDrawdownStatus(currentDrawdownStatus)}
               </p>
+              <p>Open position stress {formatPercent(openPositionStressPct)}</p>
             </div>
           </div>
 
@@ -945,7 +958,7 @@ function scoreComponents(score: WalletScore): ScoreComponent[] {
       value: numberValue(score.consistencyScore),
     },
     {
-      detail: "Loss ratio, historical drawdown, current drawdown, and losing trade rate.",
+      detail: "Loss ratio, realized drawdown, open-position stress, and losing trade rate.",
       key: "risk",
       label: "Risk",
       value: numberValue(score.riskScore),
@@ -1129,6 +1142,22 @@ function scoreTone(value: string | null | undefined): "positive" | "warning" | "
     return "warning";
   }
   return "danger";
+}
+
+function openStressTone(
+  value: string | null | undefined,
+): "positive" | "warning" | "danger" | "neutral" {
+  if (!value) {
+    return "neutral";
+  }
+  const stress = numberValue(value);
+  if (stress >= 0.75) {
+    return "danger";
+  }
+  if (stress >= 0.35) {
+    return "warning";
+  }
+  return stress > 0 ? "positive" : "neutral";
 }
 
 function currentUnrealizedDrawdownPct(state: WalletCurrentStateStats) {

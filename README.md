@@ -188,11 +188,17 @@ Notes:
 - Discovery retries Hyperliquid 429 responses with backoff and stops the current
   backfill batch cleanly if rate limits persist.
 - Manual pruning runs through `POST /wallets/prune-all`, which applies orphan-fill,
-  zero-fill, minimum closed-trades, historical max drawdown, high-fill low-score,
+  zero-fill, minimum closed-trades, realized drawdown, high-fill low-score,
   and current drawdown cleanup in one reviewed operation.
 - Wallet risk scoring can include current open perp drawdown from Hyperliquid.
-  `backend/config/scoring.json` controls whether it is enabled, fetch concurrency,
-  missing-state penalty, and the max risk penalty.
+  It also calculates open position stress from live unrealized loss, margin
+  usage, and notional exposure. `backend/config/scoring.json` controls whether
+  live state is enabled, fetch concurrency, missing-state penalty, and max risk
+  penalties.
+- Wallet detail pages include a Detailed scoring modal next to the score header.
+  It shows gross score, penalty, final score before sample cap, component
+  weights, weighted scores, and the input-level subscores behind PnL,
+  consistency, risk, copyability, recency, and penalty scoring.
 - Paper allocation only selects positive-score enabled wallets. When current
   drawdown scoring is enabled, the source wallet must also have
   `current_drawdown_status = "ok"` from its latest score.

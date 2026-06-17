@@ -20,6 +20,8 @@
   "scoring_current_drawdown_missing_penalty": 18,
   "scoring_current_drawdown_full_penalty_ratio": 0.4,
   "scoring_current_drawdown_penalty_max": 35,
+  "scoring_open_position_stress_notional_full_ratio": 10,
+  "scoring_open_position_stress_penalty_max": 25,
   "scoring_weight_pnl": 0.3,
   "scoring_weight_consistency": 0.2,
   "scoring_weight_risk": 0.2,

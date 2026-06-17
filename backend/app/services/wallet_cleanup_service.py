@@ -255,13 +255,13 @@ def max_drawdown_rule_result(
 ) -> WalletPruneRuleResult:
     return WalletPruneRuleResult(
         key="max_drawdown",
-        label="Max drawdown",
+        label="Realized drawdown",
         dry_run=result.dry_run,
         scanned_wallets=result.scanned_wallets,
         candidate_wallets=result.candidate_wallets,
         deleted_wallets=result.deleted_wallets,
         deleted_fills=result.deleted_fills,
-        rule=f"historical max drawdown >= {result.threshold_pct}",
+        rule=f"realized drawdown >= {result.threshold_pct}",
         items=[
             WalletPruneCandidate(
                 address=item.address,
