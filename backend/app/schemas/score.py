@@ -19,6 +19,7 @@ class WalletScoreRead(CamelModel):
     win_rate: Decimal | None
     profit_factor: Decimal | None
     max_drawdown_pct: Decimal | None
+    current_drawdown_pct: Decimal | None
     trade_count: int
     last_24h_score: Decimal | None
     last_7d_score: Decimal | None
@@ -66,5 +67,8 @@ class WalletScoreDetailResponse(CamelModel):
     recency_score: Decimal
     net_pnl_usd: Decimal
     gross_profit_usd: Decimal
+    current_account_value_usd: Decimal | None
+    current_unrealized_pnl_usd: Decimal | None
+    current_drawdown_pct: Decimal | None
     penalty_score: Decimal
     penalty_items: list[WalletScorePenaltyItem]

@@ -272,6 +272,10 @@ sequenceDiagram
   API-->>UI: fills stats plus current state
 ```
 
+Wallet detail pages show current unrealized drawdown from live perp state.
+Score max drawdown remains a historical realized metric from reconstructed
+closed trades and does not include current open unrealized PnL.
+
 ### Wallet Scoring
 
 ```mermaid
@@ -279,17 +283,24 @@ sequenceDiagram
   participant Worker as Monitor Worker
   participant UI as Dashboard
   participant API as FastAPI
+  participant HL as Hyperliquid Info API
   participant DB as Postgres
 
   Worker->>API: periodic scoring service call
   UI->>API: POST /scores/recalculate
   API->>DB: aggregate wallet_fills over scoring window
   API->>DB: reconstruct observed source trades from fill directions
+  API->>HL: fetch live perp state when current drawdown scoring is enabled
   API->>DB: upsert wallet_scores
   API-->>UI: score run summary
   UI->>API: GET /wallets
   API-->>UI: wallets ordered by score
 ```
+
+Risk score combines historical reconstructed-trade risk with current open perp
+drawdown when `scoring_current_drawdown_enabled` is true. Current drawdown is
+stored as `wallet_scores.current_drawdown_pct`; if live perp state is incomplete,
+the scoring run keeps the history-only risk score for that wallet.
 
 ### Source Trade Detail
 

@@ -152,6 +152,7 @@ class WalletScore(Base):
     win_rate: Mapped[Decimal | None] = mapped_column(Numeric)
     profit_factor: Mapped[Decimal | None] = mapped_column(Numeric)
     max_drawdown_pct: Mapped[Decimal | None] = mapped_column(Numeric)
+    current_drawdown_pct: Mapped[Decimal | None] = mapped_column(Numeric)
     trade_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     last_24h_score: Mapped[Decimal | None] = mapped_column(Numeric)
     last_7d_score: Mapped[Decimal | None] = mapped_column(Numeric)

@@ -29,6 +29,7 @@ export type WalletScore = {
   winRate: string | null;
   profitFactor: string | null;
   maxDrawdownPct: string | null;
+  currentDrawdownPct: string | null;
   tradeCount: number;
   last24hScore: string | null;
   last7dScore: string | null;
@@ -59,6 +60,9 @@ export type WalletScoreDetail = {
   recencyScore: string;
   netPnlUsd: string;
   grossProfitUsd: string;
+  currentAccountValueUsd: string | null;
+  currentUnrealizedPnlUsd: string | null;
+  currentDrawdownPct: string | null;
   penaltyScore: string;
   penaltyItems: WalletScorePenaltyItem[];
 };

@@ -338,6 +338,8 @@ What it does:
 - Aggregates perp account value, margin, open positions, and unrealized PnL
   across those venues. Spot balances are shown separately and are not counted as
   perp account value.
+- Shows current unrealized drawdown as the current open perp loss divided by
+  perp account value. This is separate from historical score drawdown.
 - Fetches `spotClearinghouseState` for spot token balances and entry notional exposure.
 - Syncs open perp positions into `wallet_positions` only when every requested
   perp state fetch succeeds.
@@ -646,8 +648,17 @@ Phase A behavior:
 - Reconstructs source perp trades from `raw_json.dir`.
 - Counts only trades where the opening fill was observed before the close.
 - Ignores close-only PnL from positions opened before the imported window.
-- Uses reconstructed trade PnL, fees, notional, active days, recency, rough drawdown,
-  loss ratio, losing trade rate, and coin concentration.
+- Uses reconstructed trade PnL, fees, notional, active days, recency, historical
+  drawdown, current drawdown, loss ratio, losing trade rate, and coin concentration.
+- The stored `max_drawdown_pct` is a historical realized drawdown metric from
+  reconstructed closed trades. It does not include current open unrealized PnL.
+- When `scoring_current_drawdown_enabled` is true, scoring fetches live perp state
+  from Hyperliquid and stores `current_drawdown_pct` on `wallet_scores`. Current
+  drawdown is open unrealized perp loss divided by perp account value.
+- Current drawdown reduces the risk component. By default it scales up to a 35
+  point risk penalty at 40 percent current drawdown.
+- If current perp state cannot be fetched completely, the wallet keeps a
+  history-only risk score for that scoring run instead of using partial live data.
 - Groups liquidation fills into account-level liquidation events and keeps them as a
   separate final-score penalty instead of mixing them into the risk component.
 - Applies liquidation penalties from `backend/config/scoring.json`, default 2 points

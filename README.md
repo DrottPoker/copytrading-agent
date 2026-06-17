@@ -109,7 +109,8 @@ Dashboard:
 
 - Use `Import fills` in the Wallet Pool row.
 - Open a wallet detail page from the address link to inspect recent fills.
-- Wallet detail pages also show current perp state, unrealized PnL, and spot balances.
+- Wallet detail pages also show current perp state, unrealized PnL, current
+  unrealized drawdown, and spot balances.
 
 Notes:
 
@@ -180,6 +181,9 @@ Notes:
 - Manual pruning runs through `POST /wallets/prune-all`, which applies orphan-fill,
   zero-fill, minimum closed-trades, historical max drawdown, high-fill low-score,
   and current drawdown cleanup in one reviewed operation.
+- Wallet risk scoring can include current open perp drawdown from Hyperliquid.
+  `backend/config/scoring.json` controls whether it is enabled, fetch concurrency,
+  and the max risk penalty.
 - Pool wallets are incrementally refreshed from their last poll time with a small overlap.
 - Manual pool reimport forces the enabled pool to refresh regardless of last poll time.
 - The worker runs pool maintenance every 30 minutes by default: pool reimport,

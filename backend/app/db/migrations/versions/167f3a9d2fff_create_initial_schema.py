@@ -402,6 +402,7 @@ def upgrade() -> None:
         sa.Column("win_rate", sa.Numeric(), nullable=True),
         sa.Column("profit_factor", sa.Numeric(), nullable=True),
         sa.Column("max_drawdown_pct", sa.Numeric(), nullable=True),
+        sa.Column("current_drawdown_pct", sa.Numeric(), nullable=True),
         sa.Column("trade_count", sa.Integer(), server_default=sa.text("0"), nullable=False),
         sa.Column("last_24h_score", sa.Numeric(), nullable=True),
         sa.Column("last_7d_score", sa.Numeric(), nullable=True),

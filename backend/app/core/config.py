@@ -178,6 +178,18 @@ class Settings(BaseSettings):
     scoring_liquidation_event_gap_seconds: int = Field(default=300, ge=1)
     scoring_liquidation_penalty_per_event: Decimal = Field(default=Decimal("2"), ge=0, le=100)
     scoring_liquidation_penalty_max: Decimal = Field(default=Decimal("10"), ge=0, le=100)
+    scoring_current_drawdown_enabled: bool = True
+    scoring_current_drawdown_concurrency: int = Field(default=8, ge=1, le=25)
+    scoring_current_drawdown_full_penalty_ratio: Decimal = Field(
+        default=Decimal("0.40"),
+        gt=0,
+        le=1,
+    )
+    scoring_current_drawdown_penalty_max: Decimal = Field(
+        default=Decimal("35"),
+        ge=0,
+        le=100,
+    )
     scoring_weight_pnl: Decimal = Field(default=Decimal("0.30"), ge=0, le=1)
     scoring_weight_consistency: Decimal = Field(default=Decimal("0.20"), ge=0, le=1)
     scoring_weight_risk: Decimal = Field(default=Decimal("0.20"), ge=0, le=1)

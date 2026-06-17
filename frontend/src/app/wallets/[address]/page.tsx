@@ -236,6 +236,7 @@ function ScoreBreakdownSection({
   const penaltyItems = scoreDetail?.penaltyItems ?? [];
   const penalty = numberValue(scoreDetail?.penaltyScore ?? score.penaltyScore);
   const liquidationEvents = scoreDetail?.liquidationEventCount ?? scoreDetail?.liquidationCount ?? 0;
+  const currentDrawdownPct = scoreDetail?.currentDrawdownPct ?? score.currentDrawdownPct;
 
   return (
     <section className="overflow-hidden rounded-lg border border-line bg-panel">
@@ -275,7 +276,8 @@ function ScoreBreakdownSection({
               <p>Copyable PnL {formatCurrency(score.copyablePnlUsd)}</p>
               <p>Win rate {formatPercent(score.winRate)}</p>
               <p>Profit factor {formatNullableNumber(score.profitFactor)}</p>
-              <p>Max drawdown {formatPercent(score.maxDrawdownPct)}</p>
+              <p>Historical max drawdown {formatPercent(score.maxDrawdownPct)}</p>
+              <p>Current drawdown {formatPercent(currentDrawdownPct)}</p>
             </div>
           </div>
 
@@ -438,6 +440,8 @@ function PenaltyItemRow({ item }: { item: WalletScorePenaltyItem }) {
 }
 
 function CurrentStateSection({ state }: { state: WalletCurrentStateStats }) {
+  const currentDrawdownPct = currentUnrealizedDrawdownPct(state);
+
   return (
     <section className="grid gap-5 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
       <div className="min-w-0 rounded-lg border border-line bg-panel shadow-sm">
@@ -452,12 +456,18 @@ function CurrentStateSection({ state }: { state: WalletCurrentStateStats }) {
           <div className="px-4 py-6 text-sm text-danger">{state.error}</div>
         ) : (
           <>
-            <div className="grid gap-0 divide-y divide-line sm:grid-cols-2 sm:divide-x sm:divide-y-0">
+            <div className="grid gap-0 divide-y divide-line sm:grid-cols-2 sm:divide-x sm:divide-y-0 lg:grid-cols-3">
               <StateMetric label="Account value" value={formatCurrency(state.accountValueUsd)} />
+              <StateMetric label="Withdrawable" value={formatCurrency(state.withdrawableUsd)} />
               <StateMetric
                 label="Unrealized PnL"
                 value={formatCurrency(state.totalUnrealizedPnlUsd)}
                 tone={numberValue(state.totalUnrealizedPnlUsd) >= 0 ? "positive" : "danger"}
+              />
+              <StateMetric
+                label="Current drawdown"
+                value={formatPercent(currentDrawdownPct)}
+                tone={currentDrawdownPct > 0 ? "danger" : "neutral"}
               />
               <StateMetric
                 label="Position notional"
@@ -930,7 +940,7 @@ function scoreComponents(score: WalletScore): ScoreComponent[] {
       value: numberValue(score.consistencyScore),
     },
     {
-      detail: "Loss ratio, drawdown, and losing trade rate.",
+      detail: "Loss ratio, historical drawdown, current drawdown, and losing trade rate.",
       key: "risk",
       label: "Risk",
       value: numberValue(score.riskScore),
@@ -1065,7 +1075,7 @@ function formatDuration(value: number | null) {
   return restHours > 0 ? `${days}d ${restHours}h` : `${days}d`;
 }
 
-function formatPercent(value: string | null) {
+function formatPercent(value: string | number | null) {
   if (value === null) {
     return "-";
   }
@@ -1102,6 +1112,17 @@ function scoreTone(value: string | null | undefined): "positive" | "warning" | "
     return "warning";
   }
   return "danger";
+}
+
+function currentUnrealizedDrawdownPct(state: WalletCurrentStateStats) {
+  const accountValueUsd = numberValue(state.accountValueUsd);
+  const unrealizedPnlUsd = numberValue(state.totalUnrealizedPnlUsd);
+
+  if (accountValueUsd <= 0 || unrealizedPnlUsd >= 0) {
+    return 0;
+  }
+
+  return Math.abs(unrealizedPnlUsd) / accountValueUsd;
 }
 
 function numberValue(value: string | number) {

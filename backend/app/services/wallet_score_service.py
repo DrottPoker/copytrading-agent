@@ -1,4 +1,6 @@
-from dataclasses import dataclass
+import asyncio
+import logging
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -9,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.db.models import WalletScore
+from app.integrations.hyperliquid_client import HyperliquidClient
 from app.schemas.score import (
     WalletScoreDetailResponse,
     WalletScoreListResponse,
@@ -26,12 +29,19 @@ from app.services.source_trade_reconstruction_service import (
     ReconstructedWalletTrades,
     reconstruct_wallet_trades,
 )
+from app.services.wallet_current_state_service import (
+    load_all_perp_dex_names,
+    load_known_wallet_perp_dexes_for_addresses,
+    load_wallet_perp_clearinghouse_states,
+    summarize_perp_clearinghouse_states,
+)
 
 ZERO = Decimal("0")
 ONE = Decimal("1")
 HUNDRED = Decimal("100")
 SCORE_QUANT = Decimal("0.01")
 RATIO_QUANT = Decimal("0.0001")
+logger = logging.getLogger(__name__)
 
 
 class WalletScoreDetailNotFoundError(Exception):
@@ -60,6 +70,9 @@ class WalletScoreMetrics:
     liquidation_event_count: int
     max_coin_notional_usd: Decimal
     max_drawdown_usd: Decimal
+    current_account_value_usd: Decimal | None
+    current_unrealized_pnl_usd: Decimal | None
+    current_drawdown_pct: Decimal | None
     first_trade_time_ms: int | None
     last_trade_time_ms: int | None
     trades_24h: int
@@ -87,6 +100,7 @@ class WalletScoreBreakdown:
     win_rate: Decimal | None
     profit_factor: Decimal | None
     max_drawdown_pct: Decimal | None
+    current_drawdown_pct: Decimal | None
     trade_count: int
     last_24h_score: Decimal | None
     last_7d_score: Decimal | None
@@ -178,6 +192,7 @@ async def _recalculate_wallet_scores(
                 "win_rate": breakdown.win_rate,
                 "profit_factor": breakdown.profit_factor,
                 "max_drawdown_pct": breakdown.max_drawdown_pct,
+                "current_drawdown_pct": breakdown.current_drawdown_pct,
                 "trade_count": breakdown.trade_count,
                 "last_24h_score": breakdown.last_24h_score,
                 "last_7d_score": breakdown.last_7d_score,
@@ -282,6 +297,9 @@ async def get_wallet_score_detail(
         recency_score=breakdown.recency_score,
         net_pnl_usd=wallet_metrics.net_pnl_usd,
         gross_profit_usd=wallet_metrics.gross_profit_usd,
+        current_account_value_usd=wallet_metrics.current_account_value_usd,
+        current_unrealized_pnl_usd=wallet_metrics.current_unrealized_pnl_usd,
+        current_drawdown_pct=breakdown.current_drawdown_pct,
         penalty_score=breakdown.penalty_score,
         penalty_items=penalty_items,
     )
@@ -470,13 +488,109 @@ async def load_wallet_score_metrics(
         include_disabled=include_disabled,
         wallet_address=wallet_address,
     )
-    return [
+    reconstructed_metrics = [
         metrics_with_reconstructed_trades(
             metrics,
             reconstructed_trades.get(metrics.wallet_address),
         )
         for metrics in base_metrics
     ]
+    if not settings.scoring_current_drawdown_enabled:
+        return reconstructed_metrics
+
+    return await metrics_with_current_drawdowns(
+        session,
+        metrics=reconstructed_metrics,
+        settings=settings,
+    )
+
+
+async def metrics_with_current_drawdowns(
+    session: AsyncSession,
+    *,
+    metrics: list[WalletScoreMetrics],
+    settings: Settings,
+) -> list[WalletScoreMetrics]:
+    scorable_metrics = [metric for metric in metrics if metric.trade_count > 0]
+    if not scorable_metrics:
+        return metrics
+
+    client = HyperliquidClient()
+    addresses = [metric.wallet_address for metric in scorable_metrics]
+    known_dexes_by_address = await load_known_wallet_perp_dexes_for_addresses(
+        session,
+        addresses=addresses,
+    )
+    all_dexes, dex_list_error = await load_all_perp_dex_names(client=client)
+    semaphore = asyncio.Semaphore(settings.scoring_current_drawdown_concurrency)
+
+    async def load_metric(metric: WalletScoreMetrics) -> WalletScoreMetrics:
+        if metric.trade_count <= 0:
+            return metric
+        async with semaphore:
+            return await metric_with_current_drawdown(
+                metric,
+                client=client,
+                known_dexes=known_dexes_by_address.get(metric.wallet_address.lower(), ()),
+                all_dexes=all_dexes,
+                dex_list_error=dex_list_error,
+            )
+
+    return list(await asyncio.gather(*(load_metric(metric) for metric in metrics)))
+
+
+async def metric_with_current_drawdown(
+    metric: WalletScoreMetrics,
+    *,
+    client: HyperliquidClient,
+    known_dexes: tuple[str, ...],
+    all_dexes: tuple[str, ...],
+    dex_list_error: str | None,
+) -> WalletScoreMetrics:
+    perp_states, errors = await load_wallet_perp_clearinghouse_states(
+        client=client,
+        address=metric.wallet_address,
+        dexes=known_dexes,
+    )
+    if dex_list_error is not None:
+        errors.append(dex_list_error)
+
+    known_dex_set = set(known_dexes)
+    missing_dexes = tuple(dex for dex in all_dexes if dex not in known_dex_set)
+    if missing_dexes:
+        fallback_states, fallback_errors = await load_wallet_perp_clearinghouse_states(
+            client=client,
+            address=metric.wallet_address,
+            dexes=missing_dexes,
+            include_default=False,
+        )
+        perp_states.extend(fallback_states)
+        errors.extend(fallback_errors)
+
+    if errors or not perp_states:
+        logger.debug(
+            "wallet current drawdown scoring skipped wallet=%s errors=%s",
+            metric.wallet_address,
+            "; ".join(errors) or "Perp state unavailable.",
+        )
+        return metric
+
+    perp_summary = summarize_perp_clearinghouse_states(perp_states)
+    current_drawdown_pct: Decimal | None = ZERO
+    if perp_summary.account_value_usd <= ZERO:
+        current_drawdown_pct = None
+    elif perp_summary.total_unrealized_pnl_usd < ZERO:
+        current_drawdown_pct = (
+            perp_summary.total_unrealized_pnl_usd.copy_abs()
+            / perp_summary.account_value_usd
+        ).quantize(RATIO_QUANT)
+
+    return replace(
+        metric,
+        current_account_value_usd=perp_summary.account_value_usd,
+        current_unrealized_pnl_usd=perp_summary.total_unrealized_pnl_usd,
+        current_drawdown_pct=current_drawdown_pct,
+    )
 
 
 def calculate_wallet_score(
@@ -498,6 +612,7 @@ def calculate_wallet_score(
             win_rate=None,
             profit_factor=None,
             max_drawdown_pct=None,
+            current_drawdown_pct=metrics.current_drawdown_pct,
             trade_count=0,
             last_24h_score=ZERO,
             last_7d_score=ZERO,
@@ -525,6 +640,10 @@ def calculate_wallet_score(
         metrics=metrics,
         closed_trade_count=closed_trade_count,
         drawdown_base=drawdown_base,
+        current_drawdown_full_penalty_ratio=(
+            settings.scoring_current_drawdown_full_penalty_ratio
+        ),
+        current_drawdown_penalty_max=settings.scoring_current_drawdown_penalty_max,
     )
     copyability_score = calculate_copyability_score(
         metrics=metrics,
@@ -581,6 +700,7 @@ def calculate_wallet_score(
         win_rate=win_rate.quantize(RATIO_QUANT) if win_rate is not None else None,
         profit_factor=profit_factor.quantize(SCORE_QUANT) if profit_factor is not None else None,
         max_drawdown_pct=max_drawdown_pct,
+        current_drawdown_pct=metrics.current_drawdown_pct,
         trade_count=metrics.trade_count,
         last_24h_score=calculate_window_score(
             trades=metrics.trades_24h,
@@ -637,9 +757,18 @@ def calculate_risk_score(
     metrics: WalletScoreMetrics,
     closed_trade_count: int,
     drawdown_base: Decimal,
+    current_drawdown_full_penalty_ratio: Decimal,
+    current_drawdown_penalty_max: Decimal,
 ) -> Decimal:
     loss_ratio = metrics.gross_loss_usd / max_decimal(metrics.gross_profit_usd, ONE)
     drawdown_ratio = metrics.max_drawdown_usd / drawdown_base
+    current_drawdown_ratio = metrics.current_drawdown_pct or ZERO
+    current_drawdown_penalty = min_decimal(
+        current_drawdown_ratio
+        / current_drawdown_full_penalty_ratio
+        * current_drawdown_penalty_max,
+        current_drawdown_penalty_max,
+    )
     losing_rate = (
         Decimal(metrics.losing_trade_count) / Decimal(closed_trade_count)
         if closed_trade_count > 0
@@ -648,6 +777,7 @@ def calculate_risk_score(
     penalty = (
         min_decimal(loss_ratio * Decimal("40"), Decimal("40"))
         + min_decimal(drawdown_ratio * Decimal("35"), Decimal("35"))
+        + current_drawdown_penalty
         + losing_rate * Decimal("15")
     )
     return score_value(HUNDRED - penalty)
@@ -906,6 +1036,9 @@ def metrics_from_row(row: Any) -> WalletScoreMetrics:
         liquidation_event_count=int(row["liquidation_event_count"] or 0),
         max_coin_notional_usd=decimal_value(row["max_coin_notional_usd"]),
         max_drawdown_usd=decimal_value(row["max_drawdown_usd"]),
+        current_account_value_usd=None,
+        current_unrealized_pnl_usd=None,
+        current_drawdown_pct=None,
         first_trade_time_ms=(
             int(row["first_fill_time_ms"]) if row["first_fill_time_ms"] is not None else None
         ),
@@ -947,6 +1080,9 @@ def metrics_with_reconstructed_trades(
             liquidation_event_count=base_metrics.liquidation_event_count,
             max_coin_notional_usd=ZERO,
             max_drawdown_usd=ZERO,
+            current_account_value_usd=base_metrics.current_account_value_usd,
+            current_unrealized_pnl_usd=base_metrics.current_unrealized_pnl_usd,
+            current_drawdown_pct=base_metrics.current_drawdown_pct,
             first_trade_time_ms=None,
             last_trade_time_ms=None,
             trades_24h=0,
@@ -979,6 +1115,9 @@ def metrics_with_reconstructed_trades(
         liquidation_event_count=base_metrics.liquidation_event_count,
         max_coin_notional_usd=trades.max_coin_notional_usd,
         max_drawdown_usd=trades.max_drawdown_usd,
+        current_account_value_usd=base_metrics.current_account_value_usd,
+        current_unrealized_pnl_usd=base_metrics.current_unrealized_pnl_usd,
+        current_drawdown_pct=base_metrics.current_drawdown_pct,
         first_trade_time_ms=trades.first_trade_time_ms,
         last_trade_time_ms=trades.last_trade_time_ms,
         trades_24h=trades.trades_24h,
