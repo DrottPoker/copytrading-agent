@@ -307,6 +307,9 @@ Sizing policy:
   status is `monitored` when the source has a realtime slot and `waiting` when
   it does not. Substatus is `trading`, `retained`, `waiting for trades`, or
   `waiting for slot`.
+- Source row substatus is aggregated across all paper accounts. A source is
+  `trading` if any enabled paper account can still open or manage that source
+  and the source has open paper exposure.
 - Closed trade history comes from paper `close` and `flip_close` executions.
   Raw fills and skip rows remain available in the API for diagnostics, but they
   are not shown as trade history.

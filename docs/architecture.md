@@ -511,6 +511,9 @@ and can reduce or close them, but new entries are skipped with
 The paper summary reports slot state separately from trade state. `monitorStatus`
 is `monitored` or `waiting`; `sourceStatus` is `trading`, `retained`,
 `waiting_for_trades`, or `waiting_for_slot`.
+The dashboard aggregates allocation status across paper accounts when rendering
+source rows, so a source is shown as `trading` when at least one account can
+open or manage that source and the source has open paper exposure.
 After replay, recovery fetches the source wallet's live perp state. If an open
 paper position no longer has a matching source coin and side, paper closes it at
 the current simulated market price with normal fee and slippage. Coin matching

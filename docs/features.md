@@ -485,6 +485,9 @@ What it does:
   status is `monitored` when the source has a realtime slot and `waiting` when
   it does not. Substatus is `trading`, `retained`, `waiting for trades`, or
   `waiting for slot`.
+- Source row substatus is aggregated across all paper accounts. A source is
+  `trading` if any enabled paper account can still open or manage that source
+  and the source has open paper exposure.
 - The dashboard separates total, realized, and unrealized PnL and uses compact
   responsive list rows instead of wide tables or large cards.
 

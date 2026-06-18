@@ -712,10 +712,6 @@ function resolveSourceStatus(
   allocations: PaperCopyAllocation[],
   openPositionCount: number,
 ): MonitoredSource["sourceStatus"] {
-  const sourceStatus = allocations.find((allocation) => allocation.sourceStatus)?.sourceStatus;
-  if (sourceStatus) {
-    return sourceStatus;
-  }
   const hasRealtimeSlot = allocations.some((allocation) => allocation.hasRealtimeSlot);
   const canOpenNewPositions = allocations.some((allocation) => allocation.canOpenNewPositions);
   if (!hasRealtimeSlot) {
