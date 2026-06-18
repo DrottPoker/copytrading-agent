@@ -328,6 +328,7 @@ function emptyPaperTradingSummary(): PaperTradingSummaryResponse {
     allocations: [],
     positions: [],
     walletPerformance: [],
+    closedTrades: [],
     recentFills: [],
     updatedAt: new Date(0).toISOString(),
     marketDataStatus: "unavailable",

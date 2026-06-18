@@ -430,6 +430,8 @@ What it does:
   available.
 - Aggregates paper PnL by source wallet so the dashboard can show which copied
   wallets made or lost money across accounts.
+- Returns a closed trade history built from paper `close` and `flip_close`
+  executions, separate from the raw recent fill and skip log.
 - Supports manual paper-position closes from the dashboard. Manual closes price
   from the current simulated market price, apply configured adverse slippage and
   fee, update the paper account, delete the open paper position, and record a
@@ -475,9 +477,9 @@ What it does:
 - Publishes `paper_copy` events to the live feed when realtime fills are simulated.
 - The paper trading dashboard polls the summary API and shows account PnL,
   monitored sources, currently trading sources, open position PnL, wallet PnL
-  history, and trade history without a full page refresh.
+  history, and closed trade history without a full page refresh.
 - The dashboard separates total, realized, and unrealized PnL and uses compact
-  responsive panels instead of horizontally scrolling tables.
+  responsive list rows instead of wide tables or large cards.
 
 Config:
 

@@ -126,6 +126,7 @@ async def get_paper_trading_summary(
     *,
     settings: Settings | None = None,
     recent_fill_limit: int = 100,
+    closed_trade_limit: int = 100,
     client: HyperliquidClient | None = None,
 ) -> PaperTradingSummaryResponse:
     resolved_settings = settings or get_settings()
@@ -164,6 +165,12 @@ async def get_paper_trading_summary(
         .order_by(PaperCopyFill.filled_at.desc(), PaperCopyFill.created_at.desc())
         .limit(recent_fill_limit)
     )
+    closed_trades_result = await session.execute(
+        select(PaperCopyFill)
+        .where(PaperCopyFill.action.in_(("close", "flip_close")))
+        .order_by(PaperCopyFill.filled_at.desc(), PaperCopyFill.created_at.desc())
+        .limit(closed_trade_limit)
+    )
     fill_performance_result = await session.execute(
         select(
             PaperCopyFill.source_wallet,
@@ -185,6 +192,7 @@ async def get_paper_trading_summary(
     allocations = list(allocations_result.scalars().all())
     positions = list(positions_result.scalars().all())
     recent_fills = list(fills_result.scalars().all())
+    closed_trades = list(closed_trades_result.scalars().all())
     fill_performance_rows = list(fill_performance_result.mappings().all())
 
     if client is None:
@@ -193,6 +201,7 @@ async def get_paper_trading_summary(
                 session,
                 settings=resolved_settings,
                 recent_fill_limit=recent_fill_limit,
+                closed_trade_limit=closed_trade_limit,
                 client=hyperliquid_client,
             )
 
@@ -219,6 +228,7 @@ async def get_paper_trading_summary(
             positions=position_rows,
             fill_performance_rows=fill_performance_rows,
         ),
+        closed_trades=paper_closed_trade_reads(closed_trades),
         recent_fills=recent_fills,
         updated_at=updated_at,
         market_data_status=market_data_status(
@@ -680,6 +690,31 @@ def paper_wallet_performance_reads(
             -row["total_pnl_usd"],
         ),
     )
+
+
+def paper_closed_trade_reads(fills: list[PaperCopyFill]) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": fill.id,
+            "account_key": fill.account_key,
+            "source_wallet": fill.source_wallet,
+            "source_fill_id": fill.source_fill_id,
+            "coin": fill.coin,
+            "close_type": fill.action,
+            "side": fill.side,
+            "exit_price": fill.price,
+            "size": fill.size,
+            "notional_usd": fill.notional_usd,
+            "leverage": fill.leverage,
+            "margin_usd": fill.margin_usd,
+            "fee_usd": fill.fee_usd,
+            "realized_pnl_usd": fill.realized_pnl_usd,
+            "net_pnl_usd": fill.realized_pnl_usd - fill.fee_usd,
+            "closed_at": fill.filled_at,
+            "created_at": fill.created_at,
+        }
+        for fill in fills
+    ]
 
 
 def first_decimal(values: Any) -> Decimal | None:

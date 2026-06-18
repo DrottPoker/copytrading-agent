@@ -301,8 +301,11 @@ Sizing policy:
 - The paper trading dashboard polls the summary API and separates total,
   realized, and unrealized PnL at the top of the page.
 - The dashboard shows paper accounts, monitored sources, currently trading
-  sources, open positions, wallet PnL history, and trade history in compact
-  responsive panels without horizontal scrolling.
+  sources, open positions, wallet PnL history, and closed trade history as
+  compact lists without horizontal scrolling.
+- Closed trade history comes from paper `close` and `flip_close` executions.
+  Raw fills and skip rows remain available in the API for diagnostics, but they
+  are not shown as trade history.
 - Open position rows include a manual close action. Manual closes use the same
   live mark, adverse slippage, and fee model as automated paper closes, then
   record a normal `close` row in `paper_copy_fills`.

@@ -457,7 +457,7 @@ sequenceDiagram
   API->>DB: sync configured accounts and load paper state
   API->>HL: current market prices for open paper positions
   API->>API: compute unrealized PnL and source-wallet PnL
-  API-->>UI: accounts, allocations, positions, wallet PnL, recent fills
+  API-->>UI: accounts, allocations, positions, wallet PnL, closed trades
   UI->>API: POST /paper-trading/positions/{position_id}/close
   API->>HL: current market price for that paper position
   API->>DB: apply slippage, fee, realized PnL, and close fill
@@ -520,6 +520,9 @@ Paper copy fill rows store source wallet sizing context in
 position snapshots store Hyperliquid `positionValue` in
 `wallet_positions.position_value_usd`, while historical fill notional remains in
 `wallet_fills.notional_usd`.
+The paper summary exposes closed trade history separately from raw recent fills.
+Closed trade rows are derived from paper `close` and `flip_close` executions,
+so dashboard trade history is not a skip or fill activity log.
 
 Discovery candidate source metrics use explicit unit-bearing database columns:
 `source_account_value_usd`, `source_pnl_usd`, and `source_roi_pct`.

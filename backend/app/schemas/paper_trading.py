@@ -126,12 +126,33 @@ class PaperWalletPerformanceRead(CamelModel):
     last_fill_at: datetime | None = None
 
 
+class PaperClosedTradeRead(CamelModel):
+    id: UUID
+    account_key: str
+    source_wallet: str
+    source_fill_id: str
+    coin: str
+    close_type: str
+    side: str | None
+    exit_price: Decimal | None
+    size: Decimal | None
+    notional_usd: Decimal | None
+    leverage: Decimal | None
+    margin_usd: Decimal | None
+    fee_usd: Decimal
+    realized_pnl_usd: Decimal
+    net_pnl_usd: Decimal
+    closed_at: datetime
+    created_at: datetime
+
+
 class PaperTradingSummaryResponse(CamelModel):
     policy: PaperTradingPolicyRead
     accounts: list[PaperTradingAccountRead]
     allocations: list[PaperCopyAllocationRead]
     positions: list[PaperPositionRead]
     wallet_performance: list[PaperWalletPerformanceRead]
+    closed_trades: list[PaperClosedTradeRead]
     recent_fills: list[PaperCopyFillRead]
     updated_at: datetime
     market_data_status: str

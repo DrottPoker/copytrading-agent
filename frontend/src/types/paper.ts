@@ -119,12 +119,33 @@ export type PaperWalletPerformance = {
   lastFillAt: string | null;
 };
 
+export type PaperClosedTrade = {
+  id: string;
+  accountKey: string;
+  sourceWallet: string;
+  sourceFillId: string;
+  coin: string;
+  closeType: "close" | "flip_close";
+  side: "long" | "short" | null;
+  exitPrice: string | null;
+  size: string | null;
+  notionalUsd: string | null;
+  leverage: string | null;
+  marginUsd: string | null;
+  feeUsd: string;
+  realizedPnlUsd: string;
+  netPnlUsd: string;
+  closedAt: string;
+  createdAt: string;
+};
+
 export type PaperTradingSummaryResponse = {
   policy: PaperTradingPolicy;
   accounts: PaperTradingAccount[];
   allocations: PaperCopyAllocation[];
   positions: PaperPosition[];
   walletPerformance: PaperWalletPerformance[];
+  closedTrades: PaperClosedTrade[];
   recentFills: PaperCopyFill[];
   updatedAt: string;
   marketDataStatus: "live" | "partial" | "unavailable" | "no_open_positions";
