@@ -25,7 +25,7 @@
     }
   },
   "import": {
-    "limit": 150,
+    "limit": 100,
     "interval_seconds": 21600,
     "run_on_worker_start": true,
     "subaccounts": {
