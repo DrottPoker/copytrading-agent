@@ -490,8 +490,8 @@ What it does:
   and the source has open paper exposure.
 - Source rows display `pool #` from the wallet score pool rank, not the realtime
   monitor slot or retained-source order. Retained rows also show the blocking
-  reason, such as outside copy top 10, drawdown blocked, cooldown, or missing
-  score.
+  reason, such as outside copy top 10, drawdown blocked, paper account disabled,
+  cooldown, or missing score.
 - The dashboard separates total, realized, and unrealized PnL and uses compact
   responsive list rows instead of wide tables or large cards.
 

@@ -312,8 +312,8 @@ Sizing policy:
   and the source has open paper exposure.
 - Source rows display `pool #` from the wallet score pool rank, not the realtime
   monitor slot or retained-source order. Retained rows also show the blocking
-  reason, such as outside copy top 10, drawdown blocked, cooldown, or missing
-  score.
+  reason, such as outside copy top 10, drawdown blocked, paper account disabled,
+  cooldown, or missing score.
 - Closed trade history comes from paper `close` and `flip_close` executions.
   Raw fills and skip rows remain available in the API for diagnostics, but they
   are not shown as trade history.

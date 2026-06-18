@@ -626,6 +626,11 @@ def paper_allocation_reads(
             else "copy_candidate"
         )
         open_position_count = open_position_count_by_source.get(source_wallet, 0)
+        source_status = paper_source_status(
+            has_realtime_slot=has_realtime_slot,
+            can_open_new_positions=allocation.active,
+            open_position_count=open_position_count,
+        )
         remaining = max(allocation.allocation_usd - open_margin, ZERO)
         rows.append(
             {
@@ -649,12 +654,13 @@ def paper_allocation_reads(
                 "has_realtime_slot": has_realtime_slot,
                 "can_open_new_positions": allocation.active,
                 "monitor_status": "monitored" if has_realtime_slot else "waiting",
-                "source_status": paper_source_status(
-                    has_realtime_slot=has_realtime_slot,
+                "source_status": source_status,
+                "source_status_reason": paper_allocation_status_reason(
+                    source_status=source_status,
+                    source_status_reason=source_status_reason,
+                    source_allocation=source_allocation,
                     can_open_new_positions=allocation.active,
-                    open_position_count=open_position_count,
                 ),
-                "source_status_reason": source_status_reason,
                 "updated_at": allocation.updated_at,
             }
         )
@@ -674,6 +680,27 @@ def paper_source_status(
     if open_position_count > 0:
         return "retained"
     return "waiting_for_trades"
+
+
+def paper_allocation_status_reason(
+    *,
+    source_status: str,
+    source_status_reason: str,
+    source_allocation: PaperSourceAllocation | None,
+    can_open_new_positions: bool,
+) -> str:
+    if source_status in {"trading", "waiting_for_trades"}:
+        return "active_copy_source"
+    if source_status == "retained":
+        if (
+            source_allocation is not None
+            and source_allocation.active
+            and not can_open_new_positions
+        ):
+            return "paper_account_disabled"
+        if source_status_reason == "copy_candidate":
+            return "existing_exposure_only"
+    return source_status_reason
 
 
 def paper_wallet_performance_reads(

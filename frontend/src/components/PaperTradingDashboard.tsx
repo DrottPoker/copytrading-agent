@@ -791,7 +791,16 @@ function formatSourceStatusReason(reason: string | null) {
     return "waiting for realtime slot";
   }
   if (reason === "copy_candidate") {
-    return "copy candidate";
+    return "active copy source";
+  }
+  if (reason === "active_copy_source") {
+    return "active copy source";
+  }
+  if (reason === "paper_account_disabled") {
+    return "paper account disabled";
+  }
+  if (reason === "existing_exposure_only") {
+    return "existing exposure";
   }
   if (reason === "allocation_missing") {
     return "allocation missing";
