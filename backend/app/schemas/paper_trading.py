@@ -29,6 +29,7 @@ class PaperCopyAllocationRead(CamelModel):
     account_key: str
     source_wallet: str
     rank: int
+    pool_rank: int | None = None
     score: Decimal | None
     allocation_pct: Decimal
     allocation_usd: Decimal
@@ -41,6 +42,7 @@ class PaperCopyAllocationRead(CamelModel):
     can_open_new_positions: bool = False
     monitor_status: str = "waiting"
     source_status: str = "waiting_for_slot"
+    source_status_reason: str = "unknown"
     updated_at: datetime
 
 
@@ -114,6 +116,7 @@ class PaperTradingPolicyRead(CamelModel):
 class PaperWalletPerformanceRead(CamelModel):
     source_wallet: str
     rank: int | None = None
+    pool_rank: int | None = None
     score: Decimal | None = None
     allocation_pct: Decimal | None = None
     active: bool

@@ -69,10 +69,12 @@ class PaperPositionCloseUnavailableError(PaperPositionCloseError):
 class PaperSourceAllocation:
     source_wallet: str
     rank: int
+    pool_rank: int | None
     score: Decimal | None
     allocation_pct: Decimal
     active: bool
     has_realtime_slot: bool
+    status_reason: str
 
 
 @dataclass(frozen=True)
@@ -236,6 +238,7 @@ async def get_paper_trading_summary(
             allocations=allocations,
             positions=position_rows,
             fill_performance_rows=fill_performance_rows,
+            source_allocations=source_allocations,
         ),
         closed_trades=paper_closed_trade_reads(closed_trades),
         recent_fills=recent_fills,
@@ -435,18 +438,22 @@ async def load_paper_allocation_for_position(
         return PaperSourceAllocation(
             source_wallet=position.source_wallet,
             rank=0,
+            pool_rank=None,
             score=None,
             allocation_pct=ZERO,
             active=False,
             has_realtime_slot=False,
+            status_reason="allocation_missing",
         )
     return PaperSourceAllocation(
         source_wallet=allocation.source_wallet,
         rank=allocation.rank,
+        pool_rank=allocation.rank,
         score=allocation.score,
         allocation_pct=allocation.allocation_pct,
         active=allocation.active,
         has_realtime_slot=allocation.active,
+        status_reason="copy_candidate" if allocation.active else "existing_exposure_only",
     )
 
 
@@ -608,6 +615,16 @@ def paper_allocation_reads(
             if source_allocation is not None
             else allocation.active
         )
+        pool_rank = (
+            source_allocation.pool_rank
+            if source_allocation is not None
+            else allocation.rank
+        )
+        source_status_reason = (
+            source_allocation.status_reason
+            if source_allocation is not None
+            else "copy_candidate"
+        )
         open_position_count = open_position_count_by_source.get(source_wallet, 0)
         remaining = max(allocation.allocation_usd - open_margin, ZERO)
         rows.append(
@@ -616,6 +633,7 @@ def paper_allocation_reads(
                 "account_key": allocation.account_key,
                 "source_wallet": allocation.source_wallet,
                 "rank": allocation.rank,
+                "pool_rank": pool_rank,
                 "score": allocation.score,
                 "allocation_pct": allocation.allocation_pct,
                 "allocation_usd": allocation.allocation_usd,
@@ -636,6 +654,7 @@ def paper_allocation_reads(
                     can_open_new_positions=allocation.active,
                     open_position_count=open_position_count,
                 ),
+                "source_status_reason": source_status_reason,
                 "updated_at": allocation.updated_at,
             }
         )
@@ -662,6 +681,7 @@ def paper_wallet_performance_reads(
     allocations: list[PaperCopyAllocation],
     positions: list[dict[str, Any]],
     fill_performance_rows: list[dict[str, Any]],
+    source_allocations: dict[str, PaperSourceAllocation],
 ) -> list[dict[str, Any]]:
     sources = {
         allocation.source_wallet.lower()
@@ -693,24 +713,30 @@ def paper_wallet_performance_reads(
 
     rows: list[dict[str, Any]] = []
     for source in sources:
-        source_allocations = allocations_by_source.get(source, [])
+        allocation_rows = allocations_by_source.get(source, [])
         source_positions = positions_by_source.get(source, [])
         fill_row = fills_by_source.get(source, {})
+        source_allocation = source_allocations.get(source)
         unrealized_pnl = sum_decimal(
             position["unrealized_pnl_usd"] for position in source_positions
         )
         realized_pnl = decimal_or_zero(fill_row.get("realized_pnl_usd"))
         allocation_pct = first_decimal(
-            allocation.allocation_pct for allocation in source_allocations
+            allocation.allocation_pct for allocation in allocation_rows
         )
         rows.append(
             {
                 "source_wallet": source,
-                "rank": min((allocation.rank for allocation in source_allocations), default=None),
-                "score": first_decimal(allocation.score for allocation in source_allocations),
+                "rank": min((allocation.rank for allocation in allocation_rows), default=None),
+                "pool_rank": (
+                    source_allocation.pool_rank
+                    if source_allocation is not None
+                    else min((allocation.rank for allocation in allocation_rows), default=None)
+                ),
+                "score": first_decimal(allocation.score for allocation in allocation_rows),
                 "allocation_pct": allocation_pct,
-                "active": any(allocation.active for allocation in source_allocations),
-                "account_count": len({allocation.account_key for allocation in source_allocations}),
+                "active": any(allocation.active for allocation in allocation_rows),
+                "account_count": len({allocation.account_key for allocation in allocation_rows}),
                 "open_position_count": len(source_positions),
                 "copied_fill_count": int(fill_row.get("copied_fill_count") or 0),
                 "skipped_fill_count": int(fill_row.get("skipped_fill_count") or 0),
@@ -732,7 +758,7 @@ def paper_wallet_performance_reads(
         rows,
         key=lambda row: (
             -row["open_position_count"],
-            row["rank"] or 9999,
+            row["pool_rank"] or 9999,
             -row["total_pnl_usd"],
         ),
     )
@@ -1232,10 +1258,12 @@ async def load_paper_copy_allocations_for_source(
         rows[allocation.account_key] = PaperSourceAllocation(
             source_wallet=allocation.source_wallet,
             rank=allocation.rank,
+            pool_rank=allocation.rank,
             score=allocation.score,
             allocation_pct=allocation.allocation_pct,
             active=allocation.active,
             has_realtime_slot=allocation.active,
+            status_reason="copy_candidate" if allocation.active else "existing_exposure_only",
         )
     return rows
 
@@ -1522,37 +1550,72 @@ async def load_paper_source_allocations(
     *,
     settings: Settings,
 ) -> list[PaperSourceAllocation]:
-    score_filters = [
-        WatchedWallet.enabled.is_(True),
-        WatchedWallet.polling_tier != "cooldown",
-        WalletScore.score > ZERO,
-    ]
-    if settings.scoring_current_drawdown_enabled:
-        score_filters.append(WalletScore.current_drawdown_status == "ok")
-
-    candidate_result = await session.execute(
-        select(WatchedWallet.address, WalletScore.score)
+    ranked_pool = (
+        select(
+            WatchedWallet.address.label("address"),
+            WalletScore.score.label("score"),
+            WalletScore.current_drawdown_status.label("current_drawdown_status"),
+            func.row_number()
+            .over(
+                order_by=(
+                    WalletScore.score.desc(),
+                    WalletScore.updated_at.desc(),
+                    WatchedWallet.address.asc(),
+                )
+            )
+            .label("pool_rank"),
+        )
         .join(WalletScore, WalletScore.wallet_address == WatchedWallet.address)
-        .where(*score_filters)
-        .order_by(WalletScore.score.desc(), WalletScore.updated_at.desc())
+        .where(
+            WatchedWallet.enabled.is_(True),
+            WatchedWallet.polling_tier != "cooldown",
+            WalletScore.score > ZERO,
+        )
+        .cte("paper_ranked_pool")
+    )
+    candidate_filters = []
+    if settings.scoring_current_drawdown_enabled:
+        candidate_filters.append(ranked_pool.c.current_drawdown_status == "ok")
+    candidate_result = await session.execute(
+        select(
+            ranked_pool.c.address,
+            ranked_pool.c.score,
+            ranked_pool.c.pool_rank,
+        )
+        .where(*candidate_filters)
+        .order_by(ranked_pool.c.pool_rank.asc())
         .limit(settings.paper_copy_top_wallet_count)
     )
     candidate_rows = list(candidate_result.mappings().all())
     open_source_result = await session.execute(
         select(
             PaperPosition.source_wallet,
-            func.max(WalletScore.score).label("score"),
+            WalletScore.score.label("score"),
+            WalletScore.current_drawdown_status.label("current_drawdown_status"),
+            WatchedWallet.enabled.label("wallet_enabled"),
+            WatchedWallet.polling_tier.label("polling_tier"),
+            ranked_pool.c.pool_rank.label("pool_rank"),
             func.max(PaperCopyAllocation.allocation_pct).label("allocation_pct"),
         )
+        .outerjoin(WatchedWallet, WatchedWallet.address == PaperPosition.source_wallet)
         .outerjoin(WalletScore, WalletScore.wallet_address == PaperPosition.source_wallet)
+        .outerjoin(ranked_pool, ranked_pool.c.address == PaperPosition.source_wallet)
         .outerjoin(
             PaperCopyAllocation,
             PaperCopyAllocation.source_wallet == PaperPosition.source_wallet,
         )
         .where(PaperPosition.source_wallet != "")
-        .group_by(PaperPosition.source_wallet)
+        .group_by(
+            PaperPosition.source_wallet,
+            WalletScore.score,
+            WalletScore.current_drawdown_status,
+            WatchedWallet.enabled,
+            WatchedWallet.polling_tier,
+            ranked_pool.c.pool_rank,
+        )
         .order_by(
-            func.max(WalletScore.score).desc().nulls_last(),
+            ranked_pool.c.pool_rank.asc().nulls_last(),
+            WalletScore.score.desc().nulls_last(),
             PaperPosition.source_wallet.asc(),
         )
     )
@@ -1575,22 +1638,29 @@ async def load_paper_source_allocations(
 
     slot_source_set = set(slot_sources)
     allocations: list[PaperSourceAllocation] = []
-    for index, row in enumerate(candidate_rows, start=1):
+    for copy_rank, row in enumerate(candidate_rows, start=1):
         source_wallet = str(row["address"]).lower()
         allocation_pct = (
             settings.paper_copy_top_tier_allocation_pct
-            if index <= settings.paper_copy_top_tier_wallet_count
+            if copy_rank <= settings.paper_copy_top_tier_wallet_count
             else settings.paper_copy_standard_allocation_pct
         )
+        pool_rank = int(row["pool_rank"])
         has_realtime_slot = source_wallet in slot_source_set
         allocations.append(
             PaperSourceAllocation(
                 source_wallet=source_wallet,
-                rank=index,
+                rank=pool_rank,
+                pool_rank=pool_rank,
                 score=row["score"],
                 allocation_pct=allocation_pct,
                 active=has_realtime_slot,
                 has_realtime_slot=has_realtime_slot,
+                status_reason=(
+                    "copy_candidate"
+                    if has_realtime_slot
+                    else "waiting_for_realtime_slot"
+                ),
             )
         )
     allocation_sources = {allocation.source_wallet for allocation in allocations}
@@ -1600,11 +1670,13 @@ async def load_paper_source_allocations(
         if not source_wallet or source_wallet in allocation_sources:
             continue
         allocation_pct = decimal_or_none(row["allocation_pct"])
+        pool_rank = int_or_none(row["pool_rank"])
         has_realtime_slot = source_wallet in slot_source_set
         allocations.append(
             PaperSourceAllocation(
                 source_wallet=source_wallet,
-                rank=retained_rank,
+                rank=pool_rank or retained_rank,
+                pool_rank=pool_rank,
                 score=row["score"],
                 allocation_pct=(
                     allocation_pct
@@ -1613,11 +1685,44 @@ async def load_paper_source_allocations(
                 ),
                 active=False,
                 has_realtime_slot=has_realtime_slot,
+                status_reason=paper_retained_status_reason(
+                    row,
+                    settings=settings,
+                    has_realtime_slot=has_realtime_slot,
+                ),
             )
         )
         retained_rank += 1
         allocation_sources.add(source_wallet)
     return allocations
+
+
+def paper_retained_status_reason(
+    row: Any,
+    *,
+    settings: Settings,
+    has_realtime_slot: bool,
+) -> str:
+    score = decimal_or_none(row["score"])
+    pool_rank = int_or_none(row["pool_rank"])
+    if row["wallet_enabled"] is not True:
+        return "wallet_disabled_or_missing"
+    if row["polling_tier"] == "cooldown":
+        return "wallet_cooldown"
+    if score is None:
+        return "score_unavailable"
+    if score <= ZERO:
+        return "score_not_positive"
+    if (
+        settings.scoring_current_drawdown_enabled
+        and row["current_drawdown_status"] != "ok"
+    ):
+        return "current_drawdown_blocked"
+    if pool_rank is not None and pool_rank > settings.paper_copy_top_wallet_count:
+        return "outside_copy_top_wallet_count"
+    if not has_realtime_slot:
+        return "waiting_for_realtime_slot"
+    return "existing_exposure_only"
 
 
 async def load_enabled_paper_accounts(session: AsyncSession) -> list[PaperTradingAccount]:
@@ -3032,6 +3137,15 @@ def decimal_or_none(value: Any) -> Decimal | None:
 
 def decimal_or_zero(value: Any) -> Decimal:
     return decimal_or_none(value) or ZERO
+
+
+def int_or_none(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def sum_decimal(values: Any) -> Decimal:

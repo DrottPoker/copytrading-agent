@@ -488,6 +488,10 @@ What it does:
 - Source row substatus is aggregated across all paper accounts. A source is
   `trading` if any enabled paper account can still open or manage that source
   and the source has open paper exposure.
+- Source rows display `pool #` from the wallet score pool rank, not the realtime
+  monitor slot or retained-source order. Retained rows also show the blocking
+  reason, such as outside copy top 10, drawdown blocked, cooldown, or missing
+  score.
 - The dashboard separates total, realized, and unrealized PnL and uses compact
   responsive list rows instead of wide tables or large cards.
 

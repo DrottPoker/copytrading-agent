@@ -22,6 +22,7 @@ export type PaperCopyAllocation = {
   accountKey: string;
   sourceWallet: string;
   rank: number;
+  poolRank: number | null;
   score: string | null;
   allocationPct: string;
   allocationUsd: string;
@@ -34,6 +35,7 @@ export type PaperCopyAllocation = {
   canOpenNewPositions: boolean;
   monitorStatus: "monitored" | "waiting";
   sourceStatus: "trading" | "retained" | "waiting_for_trades" | "waiting_for_slot";
+  sourceStatusReason: string;
   updatedAt: string;
 };
 
@@ -107,6 +109,7 @@ export type PaperTradingPolicy = {
 export type PaperWalletPerformance = {
   sourceWallet: string;
   rank: number | null;
+  poolRank: number | null;
   score: string | null;
   allocationPct: string | null;
   active: boolean;

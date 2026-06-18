@@ -44,9 +44,11 @@ type Tone = "positive" | "warning" | "danger" | "neutral";
 type MonitoredSource = {
   sourceWallet: string;
   rank: number | null;
+  poolRank: number | null;
   score: string | null;
   monitorStatus: "monitored" | "waiting";
   sourceStatus: "trading" | "retained" | "waiting_for_trades" | "waiting_for_slot";
+  sourceStatusReason: string | null;
   hasRealtimeSlot: boolean;
   canOpenNewPositions: boolean;
   accountCount: number;
@@ -406,7 +408,7 @@ function SourceRow({ source }: { source: MonitoredSource }) {
             <StatusPill label={formatSourceStatus(source.sourceStatus)} tone={sourceTone} />
           </div>
           <p className="mt-1 text-xs text-[#5b6770]">
-            {source.rank ? `#${source.rank}` : "unranked"}, {formatScore(source.score)} score, {formatInteger(source.accountCount)} accounts, {sourceStatusDetail(source.sourceStatus)}
+            {formatPoolRank(source.poolRank)}, {formatScore(source.score)} score, {formatInteger(source.accountCount)} accounts, {sourceStatusDetail(source)}
           </p>
         </div>
         <RowStat label="PnL" value={formatCurrency(source.totalPnlUsd)} tone={numberValue(source.totalPnlUsd) >= 0 ? "positive" : "danger"} />
@@ -501,7 +503,7 @@ function WalletHistoryRow({ wallet }: { wallet: PaperWalletPerformance }) {
             />
           </div>
           <p className="mt-1 text-xs text-[#5b6770]">
-            {wallet.rank ? `#${wallet.rank}` : "unranked"}, {formatScore(wallet.score)} score
+            {formatPoolRank(wallet.poolRank)}, {formatScore(wallet.score)} score
           </p>
         </div>
         <RowStat label="Total" value={formatCurrency(wallet.totalPnlUsd)} tone={totalPnl >= 0 ? "positive" : "danger"} />
@@ -644,9 +646,11 @@ function buildMonitoredSources(summary: PaperTradingSummaryResponse): MonitoredS
       return {
         sourceWallet: source,
         rank: minNumber(allocations.map((allocation) => allocation.rank)),
+        poolRank: minNumber(allocations.map((allocation) => allocation.poolRank)),
         score: firstString(allocations.map((allocation) => allocation.score)) ?? wallet?.score ?? null,
         monitorStatus,
         sourceStatus,
+        sourceStatusReason: resolveSourceStatusReason(allocations),
         hasRealtimeSlot,
         canOpenNewPositions,
         accountCount: new Set(allocations.map((allocation) => allocation.accountKey)).size,
@@ -665,7 +669,7 @@ function buildMonitoredSources(summary: PaperTradingSummaryResponse): MonitoredS
       if (left.sourceStatus !== right.sourceStatus) {
         return statusOrder(left.sourceStatus) - statusOrder(right.sourceStatus);
       }
-      return (left.rank ?? 9999) - (right.rank ?? 9999);
+      return (left.poolRank ?? left.rank ?? 9999) - (right.poolRank ?? right.rank ?? 9999);
     });
 }
 
@@ -681,6 +685,9 @@ function buildWalletHistory(wallets: PaperWalletPerformance[]) {
     .sort((left, right) => {
       if (left.openPositionCount !== right.openPositionCount) {
         return right.openPositionCount - left.openPositionCount;
+      }
+      if (left.poolRank !== right.poolRank) {
+        return (left.poolRank ?? 9999) - (right.poolRank ?? 9999);
       }
       return numberValue(right.totalPnlUsd) - numberValue(left.totalPnlUsd);
     });
@@ -726,6 +733,18 @@ function resolveSourceStatus(
   return "waiting_for_trades";
 }
 
+function resolveSourceStatusReason(allocations: PaperCopyAllocation[]) {
+  const activeReason = allocations.find((allocation) => allocation.canOpenNewPositions)?.sourceStatusReason;
+  if (activeReason) {
+    return activeReason;
+  }
+  const slotReason = allocations.find((allocation) => allocation.hasRealtimeSlot)?.sourceStatusReason;
+  if (slotReason) {
+    return slotReason;
+  }
+  return allocations.find((allocation) => allocation.sourceStatusReason)?.sourceStatusReason ?? null;
+}
+
 function formatSourceStatus(status: MonitoredSource["sourceStatus"]) {
   if (status === "waiting_for_slot") {
     return "waiting for slot";
@@ -736,17 +755,52 @@ function formatSourceStatus(status: MonitoredSource["sourceStatus"]) {
   return status;
 }
 
-function sourceStatusDetail(status: MonitoredSource["sourceStatus"]) {
-  if (status === "trading") {
+function sourceStatusDetail(source: MonitoredSource) {
+  if (source.sourceStatus === "trading") {
     return "active slot";
   }
-  if (status === "retained") {
-    return "existing exposure only";
+  if (source.sourceStatus === "retained") {
+    return `${formatSourceStatusReason(source.sourceStatusReason)}, existing exposure only`;
   }
-  if (status === "waiting_for_trades") {
+  if (source.sourceStatus === "waiting_for_trades") {
     return "ready for new entries";
   }
-  return "waiting for slot";
+  return formatSourceStatusReason(source.sourceStatusReason);
+}
+
+function formatSourceStatusReason(reason: string | null) {
+  if (reason === "outside_copy_top_wallet_count") {
+    return "outside copy top 10";
+  }
+  if (reason === "current_drawdown_blocked") {
+    return "drawdown blocked";
+  }
+  if (reason === "wallet_disabled_or_missing") {
+    return "wallet disabled or missing";
+  }
+  if (reason === "wallet_cooldown") {
+    return "wallet in cooldown";
+  }
+  if (reason === "score_unavailable") {
+    return "score unavailable";
+  }
+  if (reason === "score_not_positive") {
+    return "score not positive";
+  }
+  if (reason === "waiting_for_realtime_slot") {
+    return "waiting for realtime slot";
+  }
+  if (reason === "copy_candidate") {
+    return "copy candidate";
+  }
+  if (reason === "allocation_missing") {
+    return "allocation missing";
+  }
+  return "existing exposure";
+}
+
+function formatPoolRank(rank: number | null | undefined) {
+  return rank ? `pool #${formatInteger(rank)}` : "pool unranked";
 }
 
 function sumNumbers(values: Array<string | number | null | undefined>): number {

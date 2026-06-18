@@ -514,6 +514,10 @@ is `monitored` or `waiting`; `sourceStatus` is `trading`, `retained`,
 The dashboard aggregates allocation status across paper accounts when rendering
 source rows, so a source is shown as `trading` when at least one account can
 open or manage that source and the source has open paper exposure.
+The summary also exposes `poolRank` and `sourceStatusReason`. `poolRank` is the
+source wallet's score rank in the wallet pool, while `sourceStatusReason`
+explains why a source is retained or waiting without relying on monitor-slot
+ordering.
 After replay, recovery fetches the source wallet's live perp state. If an open
 paper position no longer has a matching source coin and side, paper closes it at
 the current simulated market price with normal fee and slippage. Coin matching
