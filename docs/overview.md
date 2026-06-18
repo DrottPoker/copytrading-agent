@@ -26,6 +26,13 @@ edge in monitor and paper mode before any live execution is added.
 - Shows paper accounts, allocations, positions, and recent paper fills.
 - Protects backend routes with dashboard Basic Auth by default.
 - Coordinates long-running jobs with database-backed locks.
+- Discovers new candidates from Hyperliquid leaderboards, leaderboard
+  subaccounts, Hyperliquid vault leaders, vault addresses, and configured
+  Hyperdash cohorts before backfill and scoring decide pool admission.
+- Treats Hyperliquid vault addresses and vault leader addresses as separate
+  candidates, because a vault can trade independently from the leader wallet.
+- Skips vault candidates below the discovery `min_account_value_usd` threshold,
+  then ranks remaining vaults by 30D ROI first and TVL second.
 
 ## Core Idea
 

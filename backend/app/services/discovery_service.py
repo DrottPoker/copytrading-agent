@@ -59,6 +59,7 @@ HYPERLIQUID_LEADERBOARD_SOURCES = {
     "hyperliquid_leaderboard_month": "month",
     "hyperliquid_leaderboard_all_time": "allTime",
 }
+HYPERLIQUID_VAULT_SOURCE = "hyperliquid_vault_leaders"
 
 HYPERDASH_URL_SETTINGS = {
     "hyperdash_copytrading": "discovery_hyperdash_copytrading_url",
@@ -159,6 +160,7 @@ SOURCE_LABELS = {
     "hyperliquid_leaderboard_week": "Hyperliquid 7D leaderboard",
     "hyperliquid_leaderboard_month": "Hyperliquid 30D leaderboard",
     "hyperliquid_leaderboard_all_time": "Hyperliquid all-time leaderboard",
+    "hyperliquid_vault_leaders": "Hyperliquid vault leaders",
     "hyperdash_copytrading": "Hyperdash copytrading",
     "hyperdash_cohorts": "Hyperdash cohorts",
     "hyperdash_tagged": "Hyperdash tagged traders",
@@ -238,9 +240,15 @@ async def list_discovery_sources(
     items: list[DiscoverySourceRead] = []
 
     for source in KNOWN_DISCOVERY_SOURCES:
-        provider = "hyperliquid" if source in HYPERLIQUID_LEADERBOARD_SOURCES else "hyperdash"
-        configured = source in HYPERLIQUID_LEADERBOARD_SOURCES or bool(
-            hyperdash_url_for_source(source, resolved_settings)
+        provider = (
+            "hyperliquid"
+            if source in HYPERLIQUID_LEADERBOARD_SOURCES or source == HYPERLIQUID_VAULT_SOURCE
+            else "hyperdash"
+        )
+        configured = (
+            source in HYPERLIQUID_LEADERBOARD_SOURCES
+            or source == HYPERLIQUID_VAULT_SOURCE
+            or bool(hyperdash_url_for_source(source, resolved_settings))
         )
         notes = None
         if source in HYPERDASH_URL_SETTINGS and not configured:
@@ -910,6 +918,8 @@ async def fetch_discovery_source(
 ) -> DiscoverySourceResult:
     if source in HYPERLIQUID_LEADERBOARD_SOURCES:
         return await fetch_hyperliquid_leaderboard_source(source, limit=limit, settings=settings)
+    if source == HYPERLIQUID_VAULT_SOURCE:
+        return await fetch_hyperliquid_vault_leaders_source(limit=limit, settings=settings)
     if source in HYPERDASH_URL_SETTINGS:
         return await fetch_hyperdash_source(source, limit=limit, settings=settings)
     raise UnknownDiscoverySourceError(f"Unknown discovery source: {source}")
@@ -1021,6 +1031,142 @@ async def fetch_hyperliquid_leaderboard_source(
             "subaccountsEnabled": settings.discovery_import_subaccounts_enabled,
         },
     )
+
+
+async def fetch_hyperliquid_vault_leaders_source(
+    *,
+    limit: int,
+    settings: Settings,
+) -> DiscoverySourceResult:
+    rows = await fetch_hyperliquid_vault_rows(settings)
+    ranked_rows = sorted(
+        [row for row in rows if isinstance(row, dict)],
+        key=vault_sort_value,
+        reverse=True,
+    )
+
+    candidates: list[DiscoveryCandidate] = []
+    skipped = 0
+    skip_reasons: dict[str, int] = {}
+    fetched = 0
+    usable_rank = 0
+    for row in ranked_rows:
+        if usable_rank >= limit:
+            break
+        fetched += 1
+        summary = row.get("summary")
+        if not isinstance(summary, dict):
+            skipped += 1
+            add_count(skip_reasons, "missing_summary")
+            continue
+        if summary.get("isClosed") is True:
+            skipped += 1
+            add_count(skip_reasons, "closed_vault")
+            continue
+        if vault_relationship_type(summary) != "normal":
+            skipped += 1
+            add_count(skip_reasons, "non_normal_vault")
+            continue
+
+        vault_address = normalized_address_or_none(summary.get("vaultAddress"))
+        leader_address = normalized_address_or_none(summary.get("leader"))
+        if vault_address is None and leader_address is None:
+            skipped += 1
+            add_count(skip_reasons, "missing_or_invalid_address")
+            continue
+
+        tvl = vault_tvl(row)
+        if tvl is None:
+            skipped += 1
+            add_count(skip_reasons, "missing_tvl")
+            continue
+        if vault_tvl_below_minimum(tvl, settings=settings):
+            skipped += 1
+            add_count(skip_reasons, "vault_tvl_below_min")
+            continue
+
+        usable_rank += 1
+        rank = usable_rank
+        vault_name = string_or_none(summary.get("name")) or f"Hyperliquid vault #{rank}"
+        source_pnl = vault_pnl(row, window="month")
+        if source_pnl is None:
+            source_pnl = vault_pnl(row, window="allTime")
+        source_roi = vault_roi(row, window="month")
+        if source_roi is None:
+            source_roi = estimate_roi_percent(source_pnl, tvl)
+        compact_payload = compact_vault_payload(row, rank=rank)
+
+        if vault_address is not None:
+            candidates.append(
+                DiscoveryCandidate(
+                    wallet_address=vault_address,
+                    source=HYPERLIQUID_VAULT_SOURCE,
+                    source_rank=rank,
+                    source_label=f"{vault_name} vault",
+                    source_cohort="vault",
+                    account_value=tvl,
+                    source_pnl=source_pnl,
+                    source_roi=source_roi,
+                    source_copy_score=decimal_or_none(row.get("apr")),
+                    account_role="vault",
+                    parent_address=leader_address,
+                    subaccount_name=vault_name,
+                    raw_payload=compact_payload,
+                )
+            )
+
+        if leader_address is not None:
+            candidates.append(
+                DiscoveryCandidate(
+                    wallet_address=leader_address,
+                    source=HYPERLIQUID_VAULT_SOURCE,
+                    source_rank=rank,
+                    source_label=f"{vault_name} leader",
+                    source_cohort="vault_leader",
+                    account_value=tvl,
+                    source_pnl=source_pnl,
+                    source_roi=source_roi,
+                    source_copy_score=decimal_or_none(row.get("apr")),
+                    account_role="vault_leader",
+                    parent_address=vault_address,
+                    subaccount_name=vault_name,
+                    raw_payload=compact_payload,
+                )
+            )
+
+    return DiscoverySourceResult(
+        fetched=fetched,
+        skipped=skipped,
+        skip_reasons=skip_reasons,
+        candidates=candidates,
+        metadata={
+            "provider": "hyperliquid",
+            "source": "vaults",
+            "url": hyperliquid_vaults_url(settings),
+        },
+    )
+
+
+async def fetch_hyperliquid_vault_rows(settings: Settings) -> list[Any]:
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(hyperliquid_vaults_url(settings))
+    if response.status_code >= 400:
+        raise DiscoverySourceUnavailableError(
+            f"{HYPERLIQUID_VAULT_SOURCE} request failed with status {response.status_code}."
+        )
+    payload = response.json()
+    if not isinstance(payload, list):
+        raise DiscoverySourceUnavailableError(
+            f"{HYPERLIQUID_VAULT_SOURCE} returned an unexpected shape."
+        )
+    return payload
+
+
+def hyperliquid_vaults_url(settings: Settings) -> str:
+    if settings.discovery_hyperliquid_vaults_url:
+        return settings.discovery_hyperliquid_vaults_url
+    network = "Testnet" if settings.hyperliquid_network == "testnet" else "Mainnet"
+    return f"https://stats-data.hyperliquid.xyz/{network}/vaults"
 
 
 async def fetch_hyperdash_source(
@@ -1332,7 +1478,10 @@ async def upsert_discovery_candidates(
     run_id: UUID,
     candidates: list[DiscoveryCandidate],
 ) -> DiscoveryUpsertResult:
-    deduped = {candidate.wallet_address: candidate for candidate in candidates}
+    deduped: dict[str, DiscoveryCandidate] = {}
+    for candidate in candidates:
+        if candidate.wallet_address not in deduped:
+            deduped[candidate.wallet_address] = candidate
     duplicate_candidate_count = len(candidates) - len(deduped)
     skip_reasons: dict[str, int] = {}
     add_count(skip_reasons, "duplicate_in_source", duplicate_candidate_count)
@@ -1970,8 +2119,17 @@ def wallet_notes_from_candidate(candidate: DiscoveryWalletCandidate) -> str:
         parts.append(f"Source cohort: {candidate.source_cohort}.")
     if candidate.account_role == "subaccount" and candidate.parent_address:
         parts.append(f"Parent master wallet: {candidate.parent_address}.")
+    if candidate.account_role == "vault" and candidate.parent_address:
+        parts.append(f"Vault leader wallet: {candidate.parent_address}.")
+    if candidate.account_role == "vault_leader" and candidate.parent_address:
+        parts.append(f"Managed vault wallet: {candidate.parent_address}.")
     if candidate.subaccount_name:
-        parts.append(f"Subaccount name: {candidate.subaccount_name}.")
+        label = (
+            "Vault name"
+            if candidate.account_role in {"vault", "vault_leader"}
+            else "Subaccount name"
+        )
+        parts.append(f"{label}: {candidate.subaccount_name}.")
     if candidate.source_pnl is not None:
         parts.append(f"Source PnL: {candidate.source_pnl}.")
     if candidate.source_roi is not None:
@@ -2513,6 +2671,85 @@ def compact_leaderboard_payload(row: dict[str, Any], *, window: str) -> dict[str
     }
 
 
+def vault_sort_value(row: dict[str, Any]) -> tuple[Decimal, Decimal]:
+    return (
+        vault_roi(row, window="month") or Decimal("-1000000000000"),
+        vault_tvl(row) or Decimal("0"),
+    )
+
+
+def vault_tvl(row: dict[str, Any]) -> Decimal | None:
+    summary = row.get("summary")
+    if not isinstance(summary, dict):
+        return None
+    return decimal_or_none(summary.get("tvl"))
+
+
+def vault_roi(row: dict[str, Any], *, window: str) -> Decimal | None:
+    return estimate_roi_percent(vault_pnl(row, window=window), vault_tvl(row))
+
+
+def vault_tvl_below_minimum(tvl: Decimal, *, settings: Settings) -> bool:
+    minimum = settings.discovery_prefilter_min_account_value_usd
+    return minimum is not None and tvl < minimum
+
+
+def vault_pnl(row: dict[str, Any], *, window: str) -> Decimal | None:
+    pnls = row.get("pnls")
+    if not isinstance(pnls, list):
+        return None
+    for item in pnls:
+        if (
+            isinstance(item, list)
+            and len(item) == 2
+            and item[0] == window
+            and isinstance(item[1], list)
+        ):
+            return latest_decimal(item[1])
+    return None
+
+
+def latest_decimal(values: list[Any]) -> Decimal | None:
+    for value in reversed(values):
+        parsed = decimal_or_none(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def decimal_string(value: Decimal | None) -> str:
+    return "" if value is None else str(value)
+
+
+def compact_vault_payload(row: dict[str, Any], *, rank: int) -> dict[str, Any]:
+    summary = row.get("summary") if isinstance(row.get("summary"), dict) else {}
+    return {
+        "name": summary.get("name"),
+        "vaultAddress": summary.get("vaultAddress"),
+        "leader": summary.get("leader"),
+        "tvl": summary.get("tvl"),
+        "isClosed": summary.get("isClosed"),
+        "relationship": summary.get("relationship"),
+        "createTimeMillis": summary.get("createTimeMillis"),
+        "apr": row.get("apr"),
+        "dayPnl": decimal_string(vault_pnl(row, window="day")),
+        "weekPnl": decimal_string(vault_pnl(row, window="week")),
+        "monthPnl": decimal_string(vault_pnl(row, window="month")),
+        "allTimePnl": decimal_string(vault_pnl(row, window="allTime")),
+        "monthRoi": decimal_string(vault_roi(row, window="month")),
+        "sortMetric": "month_roi_then_tvl",
+        "sourceRank": rank,
+    }
+
+
+def vault_relationship_type(summary: dict[str, Any]) -> str | None:
+    relationship = summary.get("relationship")
+    if not isinstance(relationship, dict):
+        return None
+    relationship_type = relationship.get("type")
+    return relationship_type if isinstance(relationship_type, str) else None
+
+
 def extract_hyperdash_rows(payload: Any) -> list[Any]:
     if isinstance(payload, list):
         return payload
@@ -2636,11 +2873,19 @@ def extract_address(row: dict[str, Any]) -> str | None:
         value = row.get(key)
         if not isinstance(value, str):
             continue
-        try:
-            return normalize_wallet_address(value)
-        except ValueError:
-            continue
+        address = normalized_address_or_none(value)
+        if address is not None:
+            return address
     return None
+
+
+def normalized_address_or_none(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return normalize_wallet_address(value)
+    except ValueError:
+        return None
 
 
 def hyperdash_url_for_source(source: str, settings: Settings) -> str | None:

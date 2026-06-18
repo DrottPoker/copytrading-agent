@@ -470,7 +470,7 @@ class DiscoveryWalletCandidate(Base, TimestampMixin, UpdatedAtMixin):
             name="ck_discovery_wallet_candidates_status",
         ),
         CheckConstraint(
-            "account_role in ('master', 'subaccount', 'unknown')",
+            "account_role in ('master', 'subaccount', 'vault', 'vault_leader', 'unknown')",
             name="ck_discovery_wallet_candidates_account_role",
         ),
         CheckConstraint(

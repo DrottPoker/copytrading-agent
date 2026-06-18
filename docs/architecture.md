@@ -382,7 +382,7 @@ sequenceDiagram
   participant DB as Postgres
   participant Redis as Redis
 
-  Worker->>Stats: Fetch configured discovery sources
+  Worker->>Stats: Fetch leaderboard, vault, and Hyperdash discovery sources
   Stats-->>Worker: source candidates
   Worker->>DB: upsert discovery candidates with dedupe
   Worker->>DB: run source-metric prefilter

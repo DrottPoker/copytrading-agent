@@ -2,15 +2,19 @@
   "enabled": true,
   "sources": {
     "default": [
+      "hyperliquid_leaderboard_day",
       "hyperliquid_leaderboard_week",
       "hyperliquid_leaderboard_month",
+      "hyperliquid_leaderboard_all_time",
+      "hyperliquid_vault_leaders",
       "hyperdash_tagged",
       "hyperdash_cohorts",
       "hyperdash_copytrading"
     ],
     "hyperliquid": {
       "sort_metric": "pnl",
-      "url": null
+      "url": null,
+      "vaults_url": null
     },
     "hyperdash": {
       "urls": {
@@ -25,7 +29,7 @@
     "interval_seconds": 21600,
     "run_on_worker_start": true,
     "subaccounts": {
-      "enabled": false,
+      "enabled": true,
       "max_per_wallet": 10
     }
   },

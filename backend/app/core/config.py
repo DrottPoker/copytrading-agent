@@ -20,6 +20,7 @@ DISCOVERY_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("sources", "default"): "discovery_default_sources",
     ("sources", "hyperliquid", "sort_metric"): "discovery_hyperliquid_sort_metric",
     ("sources", "hyperliquid", "url"): "discovery_hyperliquid_leaderboard_url",
+    ("sources", "hyperliquid", "vaults_url"): "discovery_hyperliquid_vaults_url",
     ("sources", "hyperdash", "urls", "copytrading"): (
         "discovery_hyperdash_copytrading_url"
     ),
@@ -328,8 +329,11 @@ class Settings(BaseSettings):
     discovery_enabled: bool = True
     discovery_default_sources: list[str] = Field(
         default_factory=lambda: [
+            "hyperliquid_leaderboard_day",
             "hyperliquid_leaderboard_week",
             "hyperliquid_leaderboard_month",
+            "hyperliquid_leaderboard_all_time",
+            "hyperliquid_vault_leaders",
         ],
         max_length=16,
     )
@@ -338,7 +342,8 @@ class Settings(BaseSettings):
     discovery_import_on_worker_start: bool = True
     discovery_hyperliquid_sort_metric: Literal["pnl", "roi"] = "pnl"
     discovery_hyperliquid_leaderboard_url: str | None = None
-    discovery_import_subaccounts_enabled: bool = False
+    discovery_hyperliquid_vaults_url: str | None = None
+    discovery_import_subaccounts_enabled: bool = True
     discovery_import_max_subaccounts_per_wallet: int = Field(default=10, ge=0, le=50)
     discovery_hyperdash_copytrading_url: str | None = None
     discovery_hyperdash_cohorts_url: str | None = None

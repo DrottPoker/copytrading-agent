@@ -86,8 +86,19 @@ What it does:
   when available, and account role.
 - Stores discovery import runs so source quality can be measured over time.
 - Supports Hyperliquid 1D, 7D, 30D, and all-time leaderboard sources.
-- Defaults to Hyperliquid 7D and 30D leaderboard discovery.
-- Can optionally include leaderboard subaccounts as candidates.
+- Defaults to Hyperliquid 1D, 7D, 30D, all-time leaderboard discovery,
+  Hyperliquid vault leaders, leaderboard subaccounts, and configured Hyperdash
+  sources.
+- Imports leaderboard subaccounts as candidates by default.
+- Imports Hyperliquid vault discovery candidates as both the vault address
+  (`account_role = vault`) and the vault leader address
+  (`account_role = vault_leader`), so vault trading and manager trading can be
+  backfilled and scored separately.
+- Filters vault discovery to open `normal` vaults, excluding HLP parent/child
+  protocol vaults from copy candidate intake.
+- Skips vaults below the discovery `min_account_value_usd` threshold before the
+  source limit is filled, then ranks remaining vaults by 30D ROI first and TVL
+  second.
 - Includes configurable Hyperdash source adapters, but they require stable
   `discovery_hyperdash_*_url` config values before use.
 - Runs a configurable source-metadata prefilter after import by default.

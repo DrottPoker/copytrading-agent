@@ -188,7 +188,14 @@ Notes:
   `wallet_scores.score` wallets and active, candidate, or copy-enabled fallback
   wallets.
 - Automated sourcing runs through Discovery using `backend/config/discovery.json`.
-- Discovery defaults to the configured Hyperliquid leaderboard and Hyperdash sources.
+- Discovery defaults to Hyperliquid 1D, 7D, 30D, all-time leaderboard sources,
+  Hyperliquid vault leaders, leaderboard subaccounts, and configured Hyperdash
+  sources.
+- Vault discovery imports open normal vault addresses and their leader wallets as
+  separate candidates, while skipping HLP protocol parent/child vaults. Vaults
+  below the discovery `min_account_value_usd` threshold are skipped before the
+  source limit is filled. Remaining vaults are ranked by 30D ROI first, then TVL
+  as the stability tie-breaker.
 - Discovery auto-import runs every 6 hours by default.
 - Discovery config is organized into discovery sources, import scheduling,
   prefiltering, candidate backfill, quality checks, and promotion.
