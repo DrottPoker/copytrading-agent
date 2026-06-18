@@ -38,7 +38,7 @@ class WatchedWallet(Base, TimestampMixin, UpdatedAtMixin):
     __tablename__ = "watched_wallets"
     __table_args__ = (
         CheckConstraint(
-            "polling_tier in ('pool', 'candidate', 'active', 'exit_only', 'cooldown')",
+            "polling_tier in ('pool', 'candidate', 'active', 'cooldown')",
             name="ck_watched_wallets_polling_tier",
         ),
         Index("ix_watched_wallets_enabled_eligible", "enabled", "eligible"),

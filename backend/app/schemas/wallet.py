@@ -8,7 +8,7 @@ from app.schemas.base import CamelModel
 from app.schemas.score import WalletScoreRead
 
 WALLET_ADDRESS_PATTERN = re.compile(r"^0x[a-fA-F0-9]{40}$")
-POLLING_TIERS = {"pool", "candidate", "active", "exit_only", "cooldown"}
+POLLING_TIERS = {"pool", "candidate", "active", "cooldown"}
 
 
 def normalize_wallet_address(address: str) -> str:

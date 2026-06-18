@@ -550,7 +550,7 @@ async def load_min_closed_trades_wallet_candidates(
             left join wallet_fills wf on wf.wallet_address = ww.address
             where ww.last_polled_at is not null
               and ww.copy_enabled is false
-              and ww.polling_tier not in ('active', 'exit_only')
+              and ww.polling_tier <> 'active'
               and not exists (
                 select 1
                 from paper_positions pp
@@ -597,7 +597,7 @@ async def count_min_closed_trades_scan_wallets(session: AsyncSession) -> int:
                 join wallet_scores ws on ws.wallet_address = ww.address
                 where ww.last_polled_at is not null
                   and ww.copy_enabled is false
-                  and ww.polling_tier not in ('active', 'exit_only')
+                  and ww.polling_tier <> 'active'
                   and not exists (
                     select 1
                     from paper_positions pp
@@ -684,7 +684,7 @@ async def load_max_drawdown_wallet_candidates(
             left join wallet_fills wf on wf.wallet_address = ww.address
             where ww.last_polled_at is not null
               and ww.copy_enabled is false
-              and ww.polling_tier not in ('active', 'exit_only')
+              and ww.polling_tier <> 'active'
               and not exists (
                 select 1
                 from paper_positions pp
@@ -734,7 +734,7 @@ async def count_max_drawdown_scan_wallets(session: AsyncSession) -> int:
                 join wallet_scores ws on ws.wallet_address = ww.address
                 where ww.last_polled_at is not null
                   and ww.copy_enabled is false
-                  and ww.polling_tier not in ('active', 'exit_only')
+                  and ww.polling_tier <> 'active'
                   and not exists (
                     select 1
                     from paper_positions pp
@@ -767,7 +767,7 @@ async def load_zero_fill_wallet_candidates(
             left join wallet_scores ws on ws.wallet_address = ww.address
             where ww.last_polled_at is not null
               and ww.copy_enabled is false
-              and ww.polling_tier not in ('active', 'exit_only')
+              and ww.polling_tier <> 'active'
               and not exists (
                 select 1
                 from paper_positions pp
@@ -806,7 +806,7 @@ async def count_zero_fill_scan_wallets(session: AsyncSession) -> int:
                 from watched_wallets ww
                 where ww.last_polled_at is not null
                   and ww.copy_enabled is false
-                  and ww.polling_tier not in ('active', 'exit_only')
+                  and ww.polling_tier <> 'active'
                   and not exists (
                     select 1
                     from paper_positions pp
@@ -1180,7 +1180,7 @@ async def load_current_drawdown_scan_wallets(
         .where(
             WatchedWallet.enabled.is_(True),
             WatchedWallet.copy_enabled.is_(False),
-            WatchedWallet.polling_tier.not_in(("active", "exit_only")),
+            WatchedWallet.polling_tier != "active",
             ~select(PaperPosition.id)
             .where(PaperPosition.source_wallet == WatchedWallet.address)
             .exists(),
@@ -1232,7 +1232,7 @@ def high_fill_low_score_statement(sql: str, *, score_operator: str):
           join wallet_scores ws on ws.wallet_address = ww.address
           left join wallet_fills wf on wf.wallet_address = ww.address
           where ww.copy_enabled is false
-            and ww.polling_tier not in ('active', 'exit_only')
+            and ww.polling_tier <> 'active'
             and ww.last_polled_at is not null
             and not exists (
               select 1

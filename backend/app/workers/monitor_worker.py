@@ -271,9 +271,8 @@ async def load_realtime_wallets(*, sessionmaker: Any, max_wallets: int) -> list[
 
     tier_priority = case(
         (WatchedWallet.polling_tier == "active", 0),
-        (WatchedWallet.polling_tier == "exit_only", 1),
-        (WatchedWallet.copy_enabled.is_(True), 2),
-        (WatchedWallet.polling_tier == "candidate", 3),
+        (WatchedWallet.copy_enabled.is_(True), 1),
+        (WatchedWallet.polling_tier == "candidate", 2),
         else_=4,
     )
     async with sessionmaker() as session:
@@ -305,7 +304,7 @@ async def load_realtime_wallets(*, sessionmaker: Any, max_wallets: int) -> list[
                 WatchedWallet.polling_tier != "cooldown",
                 (
                     (WalletScore.score > 0)
-                    | WatchedWallet.polling_tier.in_(["active", "exit_only", "candidate"])
+                    | WatchedWallet.polling_tier.in_(["active", "candidate"])
                     | WatchedWallet.copy_enabled.is_(True)
                 ),
             )

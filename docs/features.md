@@ -468,9 +468,10 @@ What it does:
   paper position and can reduce or close it, but cannot open a completely new
   paper position. New entries are skipped with
   `retained_source_new_position_blocked`.
-- Restores any source with open paper positions into `watched_wallets` as
-  `exit_only` if it was removed earlier, so pool imports and realtime slot
-  retention can continue until the paper exposure is closed.
+- Restores any source with open paper positions into `watched_wallets` as a
+  neutral `pool` row if it was removed earlier, so pool imports and realtime
+  slot retention can continue until the paper exposure is closed without
+  changing the wallet's pool tier to exit-only.
 - Shows allocation pocket usage as current open paper margin divided by that
   account/source wallet pocket.
 - Records skip rows when a fill cannot be copied safely, such as no matching

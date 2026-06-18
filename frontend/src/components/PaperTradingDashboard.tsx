@@ -799,6 +799,9 @@ function formatSourceStatusReason(reason: string | null) {
   if (reason === "paper_account_disabled") {
     return "paper account disabled";
   }
+  if (reason === "allocation_inactive") {
+    return "allocation inactive";
+  }
   if (reason === "existing_exposure_only") {
     return "existing exposure";
   }

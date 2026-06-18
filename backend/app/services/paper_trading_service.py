@@ -229,6 +229,7 @@ async def get_paper_trading_summary(
         policy=paper_trading_policy(resolved_settings),
         accounts=paper_account_reads(accounts=accounts, positions=position_rows),
         allocations=paper_allocation_reads(
+            accounts=accounts,
             allocations=allocations,
             positions=position_rows,
             source_allocations=source_allocations,
@@ -587,10 +588,12 @@ def paper_account_reads(
 
 def paper_allocation_reads(
     *,
+    accounts: list[PaperTradingAccount],
     allocations: list[PaperCopyAllocation],
     positions: list[dict[str, Any]],
     source_allocations: dict[str, PaperSourceAllocation],
 ) -> list[dict[str, Any]]:
+    account_enabled_by_key = {account.key: account.enabled for account in accounts}
     open_margin_by_allocation: dict[tuple[str, str], Decimal] = {}
     open_position_count_by_source: dict[str, int] = {}
     for position in positions:
@@ -626,9 +629,16 @@ def paper_allocation_reads(
             else "copy_candidate"
         )
         open_position_count = open_position_count_by_source.get(source_wallet, 0)
+        account_enabled = account_enabled_by_key.get(allocation.account_key)
+        source_can_open_new_positions = (
+            source_allocation.active
+            if source_allocation is not None
+            else allocation.active
+        )
+        can_open_new_positions = account_enabled is not False and source_can_open_new_positions
         source_status = paper_source_status(
             has_realtime_slot=has_realtime_slot,
-            can_open_new_positions=allocation.active,
+            can_open_new_positions=can_open_new_positions,
             open_position_count=open_position_count,
         )
         remaining = max(allocation.allocation_usd - open_margin, ZERO)
@@ -652,14 +662,15 @@ def paper_allocation_reads(
                 "max_total_allocation_pct": allocation.max_total_allocation_pct,
                 "active": allocation.active,
                 "has_realtime_slot": has_realtime_slot,
-                "can_open_new_positions": allocation.active,
+                "can_open_new_positions": can_open_new_positions,
                 "monitor_status": "monitored" if has_realtime_slot else "waiting",
                 "source_status": source_status,
                 "source_status_reason": paper_allocation_status_reason(
                     source_status=source_status,
                     source_status_reason=source_status_reason,
                     source_allocation=source_allocation,
-                    can_open_new_positions=allocation.active,
+                    can_open_new_positions=can_open_new_positions,
+                    account_enabled=account_enabled,
                 ),
                 "updated_at": allocation.updated_at,
             }
@@ -688,6 +699,7 @@ def paper_allocation_status_reason(
     source_status_reason: str,
     source_allocation: PaperSourceAllocation | None,
     can_open_new_positions: bool,
+    account_enabled: bool | None,
 ) -> str:
     if source_status in {"trading", "waiting_for_trades"}:
         return "active_copy_source"
@@ -697,7 +709,7 @@ def paper_allocation_status_reason(
             and source_allocation.active
             and not can_open_new_positions
         ):
-            return "paper_account_disabled"
+            return "paper_account_disabled" if account_enabled is False else "allocation_inactive"
         if source_status_reason == "copy_candidate":
             return "existing_exposure_only"
     return source_status_reason
@@ -1515,7 +1527,7 @@ async def ensure_open_paper_sources_watched(session: AsyncSession) -> None:
             literal(True),
             literal(False),
             literal(False),
-            literal("exit_only"),
+            literal("pool"),
             literal("Restored automatically because paper positions are still open."),
         )
         .where(PaperPosition.source_wallet != "")
@@ -1531,9 +1543,9 @@ async def ensure_open_paper_sources_watched(session: AsyncSession) -> None:
         update(WatchedWallet)
         .where(
             WatchedWallet.address.in_(open_source_query),
-            WatchedWallet.polling_tier.not_in(("active", "exit_only")),
+            WatchedWallet.polling_tier == "exit_only",
         )
-        .values(enabled=True, polling_tier="exit_only")
+        .values(enabled=True, polling_tier="pool")
     )
 
 

@@ -185,8 +185,8 @@ Notes:
   `max_realtime_wallets`.
 - Realtime subscriptions reserve slots for source wallets with open paper
   positions first, then fill remaining slots with the highest positive
-  `wallet_scores.score` wallets and active, exit-only, candidate, or copy-enabled
-  fallback wallets.
+  `wallet_scores.score` wallets and active, candidate, or copy-enabled fallback
+  wallets.
 - Automated sourcing runs through Discovery using `backend/config/discovery.json`.
 - Discovery defaults to the configured Hyperliquid leaderboard and Hyperdash sources.
 - Discovery auto-import runs every 6 hours by default.
@@ -204,7 +204,7 @@ Notes:
   and current drawdown cleanup in one reviewed operation.
 - Pruning excludes source wallets that still have open paper positions. If a
   source was pruned earlier while paper exposure remains open, paper allocation
-  refresh restores it as `exit_only`.
+  refresh restores it as a neutral `pool` row.
 - Wallet risk scoring can include current open perp drawdown from Hyperliquid.
   It also calculates open position stress from live unrealized loss, margin
   usage, and notional exposure. `backend/config/scoring.json` controls whether

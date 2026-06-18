@@ -5,7 +5,7 @@ export type Wallet = {
   enabled: boolean;
   eligible: boolean;
   copyEnabled: boolean;
-  pollingTier: "pool" | "candidate" | "active" | "exit_only" | "cooldown";
+  pollingTier: "pool" | "candidate" | "active" | "cooldown";
   cooldownUntil: string | null;
   lastPolledAt: string | null;
   lastSeenFillAt: string | null;

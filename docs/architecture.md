@@ -132,9 +132,8 @@ The trading worker currently prioritizes wallets in this order:
 1. Source wallets with open `paper_positions`
 2. Highest positive `wallet_scores.score`
 3. `active`
-4. `exit_only`
-5. `copy_enabled`
-6. `candidate`
+4. `copy_enabled`
+5. `candidate`
 
 Plain `pool` wallets can be selected for realtime monitoring when they have a
 positive score. This is required for paper-copying the top scored wallets before
@@ -503,7 +502,8 @@ duplicate simulation. Exit skip rows caused by unavailable source state or
 unavailable execution price are retriable during recovery so copied positions can
 still close after transient data issues.
 Allocation refresh also restores open paper-position sources into
-`watched_wallets` as `exit_only` if an earlier prune removed the pool row.
+`watched_wallets` as neutral `pool` rows if an earlier prune removed the pool
+row.
 Retained sources outside the current top 10 keep their allocation record only
 for managing existing exposure. They can add to matching open paper positions
 and can reduce or close them, but new entries are skipped with
@@ -517,9 +517,9 @@ open or manage that source and the source has open paper exposure.
 The summary also exposes `poolRank` and `sourceStatusReason`. `poolRank` is the
 source wallet's score rank in the wallet pool, while `sourceStatusReason`
 explains why a source is retained or waiting without relying on monitor-slot
-ordering. If a source is a valid copy candidate but a specific paper account is
-inactive, retained allocation rows report `paper_account_disabled` instead of
-the broader candidate state.
+ordering. If a source is a valid copy candidate but a specific paper allocation
+is inactive, retained allocation rows report `paper_account_disabled` only when
+the paper account is disabled. Otherwise they report `allocation_inactive`.
 After replay, recovery fetches the source wallet's live perp state. If an open
 paper position no longer has a matching source coin and side, paper closes it at
 the current simulated market price with normal fee and slippage. Coin matching
