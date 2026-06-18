@@ -172,6 +172,7 @@ API:
 - `GET /events/recent`
 - `GET /events` Server-Sent Events stream
 - `GET /paper-trading`
+- `POST /paper-trading/positions/{position_id}/close`
 
 Dashboard:
 
@@ -243,6 +244,7 @@ Paper copy simulation is available as the first execution layer.
 API:
 
 - `GET /paper-trading`
+- `POST /paper-trading/positions/{position_id}/close`
 
 Dashboard:
 
@@ -296,12 +298,17 @@ Sizing policy:
   positions in a stable order.
 - Skip reasons distinguish minimum notional, source-wallet pocket cap, total
   account cap, missing matching positions, and price safety guards.
-- The paper trading dashboard polls the summary API and shows live mark prices,
-  unrealized PnL, account PnL, open positions, source-wallet PnL, allocations,
-  and recent paper fills.
-- Allocation rows show current pocket usage from open paper margin. The dashboard
-  hides old inactive allocation rows unless that source still has open paper
-  positions.
+- The paper trading dashboard polls the summary API and separates total,
+  realized, and unrealized PnL at the top of the page.
+- The dashboard shows paper accounts, monitored sources, currently trading
+  sources, open positions, wallet PnL history, and trade history in compact
+  responsive panels without horizontal scrolling.
+- Open position rows include a manual close action. Manual closes use the same
+  live mark, adverse slippage, and fee model as automated paper closes, then
+  record a normal `close` row in `paper_copy_fills`.
+- Allocation source rows show current pocket usage from open paper margin. The
+  dashboard hides old inactive allocation rows unless that source still has open
+  paper positions.
 - Paper account state, copied positions, copied fills, and allocations are stored
   in Postgres. Worker restarts recover missed fills from the oldest open paper
   position when a source still has copied exposure, and rely on copied fill IDs

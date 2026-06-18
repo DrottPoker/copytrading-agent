@@ -458,6 +458,10 @@ sequenceDiagram
   API->>HL: current market prices for open paper positions
   API->>API: compute unrealized PnL and source-wallet PnL
   API-->>UI: accounts, allocations, positions, wallet PnL, recent fills
+  UI->>API: POST /paper-trading/positions/{position_id}/close
+  API->>HL: current market price for that paper position
+  API->>DB: apply slippage, fee, realized PnL, and close fill
+  API-->>UI: refreshed paper trading summary
 ```
 
 Paper sizing uses `source fill notional / source perp equity` and applies that
@@ -505,6 +509,10 @@ paper position no longer has a matching source coin and side, paper closes it at
 the current simulated market price with normal fee and slippage. Coin matching
 uses the same `dex:COIN` alias handling as market data, so HIP-3 prefixed fills
 can match unprefixed live position keys.
+The dashboard can also manually close an open paper position. Manual closes use
+the same simulated current market price, adverse slippage, and fee model, then
+persist a normal `close` fill in `paper_copy_fills` so account PnL and source
+wallet history remain durable across restarts.
 
 Paper copy fill rows store source wallet sizing context in
 `paper_copy_fills.source_perp_equity_usd`. The API also exposes

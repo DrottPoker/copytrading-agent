@@ -370,6 +370,7 @@ Purpose:
 Endpoint:
 
 - `GET /paper-trading`
+- `POST /paper-trading/positions/{position_id}/close`
 
 Dashboard page:
 
@@ -429,6 +430,10 @@ What it does:
   available.
 - Aggregates paper PnL by source wallet so the dashboard can show which copied
   wallets made or lost money across accounts.
+- Supports manual paper-position closes from the dashboard. Manual closes price
+  from the current simulated market price, apply configured adverse slippage and
+  fee, update the paper account, delete the open paper position, and record a
+  normal `close` row in `paper_copy_fills`.
 - Uses source `startPosition` to reduce or close paper positions proportionally.
 - Splits source flip fills into a close part and an open part when the source
   payload provides enough information.
@@ -468,9 +473,11 @@ What it does:
   minimum notional, source allocation cap exhaustion, or total account cap
   exhaustion.
 - Publishes `paper_copy` events to the live feed when realtime fills are simulated.
-- The paper trading dashboard polls the summary API and shows account PnL, open
-  position PnL, source-wallet PnL, allocations, and recent fills without a full
-  page refresh.
+- The paper trading dashboard polls the summary API and shows account PnL,
+  monitored sources, currently trading sources, open position PnL, wallet PnL
+  history, and trade history without a full page refresh.
+- The dashboard separates total, realized, and unrealized PnL and uses compact
+  responsive panels instead of horizontally scrolling tables.
 
 Config:
 

@@ -4,15 +4,18 @@ import {
   Activity,
   BarChart3,
   Clock,
+  Loader2,
+  RadioTower,
   RefreshCw,
-  ShieldCheck,
   TrendingDown,
   TrendingUp,
   WalletCards,
+  XCircle,
   type LucideIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 
 import { getPublicApiBaseUrl } from "@/lib/config";
 import {
@@ -27,6 +30,7 @@ import type {
   PaperCopyAllocation,
   PaperCopyFill,
   PaperPosition,
+  PaperTradingAccount,
   PaperTradingSummaryResponse,
   PaperWalletPerformance,
 } from "@/types/paper";
@@ -37,6 +41,24 @@ const PAPER_REFRESH_MS = 4000;
 
 type Tone = "positive" | "warning" | "danger" | "neutral";
 
+type MonitoredSource = {
+  sourceWallet: string;
+  rank: number | null;
+  score: string | null;
+  active: boolean;
+  status: "currently trading" | "monitored" | "exit only";
+  accountCount: number;
+  openPositionCount: number;
+  allocationPct: number | null;
+  allocationUsd: number;
+  openMarginUsd: number;
+  remainingAllocationUsd: number;
+  pocketUsedPct: number | null;
+  realizedPnlUsd: string;
+  unrealizedPnlUsd: string;
+  totalPnlUsd: string;
+};
+
 export function PaperTradingDashboard({
   initialSummary,
 }: {
@@ -45,6 +67,8 @@ export function PaperTradingDashboard({
   const [summary, setSummary] = useState(initialSummary);
   const [connectionState, setConnectionState] = useState<"live" | "refreshing" | "offline">("live");
   const [lastRefreshAt, setLastRefreshAt] = useState<Date | null>(new Date());
+  const [closingPositionId, setClosingPositionId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setConnectionState("refreshing");
@@ -72,11 +96,47 @@ export function PaperTradingDashboard({
     return () => window.clearInterval(intervalId);
   }, [refresh]);
 
+  const handleManualClose = useCallback(
+    async (position: PaperPosition) => {
+      if (closingPositionId) {
+        return;
+      }
+      const confirmed = window.confirm(
+        `Close ${position.coin} ${position.side} paper position for ${position.accountKey}?`,
+      );
+      if (!confirmed) {
+        return;
+      }
+
+      setClosingPositionId(position.id);
+      setActionError(null);
+      try {
+        const response = await fetch(
+          `${getPublicApiBaseUrl()}/paper-trading/positions/${position.id}/close`,
+          { cache: "no-store", method: "POST" },
+        );
+        if (!response.ok) {
+          setActionError(await responseError(response));
+          return;
+        }
+        const payload = (await response.json()) as PaperTradingSummaryResponse;
+        setSummary(payload);
+        setLastRefreshAt(new Date());
+        setConnectionState("live");
+      } catch {
+        setConnectionState("offline");
+        setActionError("Manual close failed.");
+      } finally {
+        setClosingPositionId(null);
+      }
+    },
+    [closingPositionId],
+  );
+
   const metrics = useMemo(() => buildMetrics(summary), [summary]);
-  const topWallet = summary.walletPerformance[0] ?? null;
-  const worstWallet = summary.walletPerformance
-    .filter((wallet) => numberValue(wallet.totalPnlUsd) < 0)
-    .sort((left, right) => numberValue(left.totalPnlUsd) - numberValue(right.totalPnlUsd))[0] ?? null;
+  const monitoredSources = useMemo(() => buildMonitoredSources(summary), [summary]);
+  const walletHistory = useMemo(() => buildWalletHistory(summary.walletPerformance), [summary.walletPerformance]);
+  const tradingSourceCount = countSourcesWithOpenPositions(summary.positions);
 
   return (
     <>
@@ -107,211 +167,143 @@ export function PaperTradingDashboard({
         </div>
       </header>
 
-      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      {actionError ? (
+        <div className="rounded-lg border border-[#f2aaa5] bg-[#fff2f0] px-4 py-3 text-sm font-medium text-danger">
+          {actionError}
+        </div>
+      ) : null}
+
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
         <HeroMetric
           icon={WalletCards}
           label="Net equity"
           value={formatCurrency(metrics.netEquity)}
-          detail={`${formatCurrency(metrics.cashEquity)} cash, ${formatCurrency(metrics.unrealizedPnl)} unrealized`}
+          detail={`${formatCurrency(metrics.cashEquity)} cash`}
           tone={metrics.totalPnl >= 0 ? "positive" : "danger"}
-        />
-        <HeroMetric
-          icon={Activity}
-          label="Open risk"
-          value={formatCurrency(metrics.openMargin)}
-          detail={`${formatCurrency(metrics.openNotional)} notional across ${formatInteger(summary.positions.length)} positions`}
         />
         <HeroMetric
           icon={metrics.totalPnl >= 0 ? TrendingUp : TrendingDown}
           label="Total PnL"
           value={formatCurrency(metrics.totalPnl)}
-          detail={`${formatCurrency(metrics.realizedPnl)} realized, ${formatCurrency(metrics.fees)} fees`}
+          detail={`${formatCurrency(metrics.realizedPnl)} realized, ${formatCurrency(metrics.unrealizedPnl)} unrealized`}
           tone={metrics.totalPnl >= 0 ? "positive" : "danger"}
         />
         <HeroMetric
-          icon={ShieldCheck}
+          icon={TrendingUp}
+          label="Realized PnL"
+          value={formatCurrency(metrics.realizedPnl)}
+          detail={`${formatCurrency(metrics.fees)} total fees`}
+          tone={metrics.realizedPnl >= 0 ? "positive" : "danger"}
+        />
+        <HeroMetric
+          icon={TrendingDown}
+          label="Unrealized PnL"
+          value={formatCurrency(metrics.unrealizedPnl)}
+          detail={`${formatInteger(summary.positions.length)} open positions`}
+          tone={metrics.unrealizedPnl >= 0 ? "positive" : "danger"}
+        />
+        <HeroMetric
+          icon={Activity}
+          label="Open margin"
+          value={formatCurrency(metrics.openMargin)}
+          detail={`${formatCurrency(metrics.openNotional)} notional`}
+        />
+        <HeroMetric
+          icon={RadioTower}
           label="Sources"
-          value={formatInteger(summary.walletPerformance.length)}
-          detail={`${topWallet ? shortAddress(topWallet.sourceWallet) : "-"} best, ${worstWallet ? shortAddress(worstWallet.sourceWallet) : "-"} worst`}
+          value={`${formatInteger(monitoredSources.length)} monitored`}
+          detail={`${formatInteger(tradingSourceCount)} currently trading`}
         />
       </section>
 
-      <section className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
-        <Panel
-          title="Accounts"
-          meta={`${formatInteger(summary.accounts.length)} accounts`}
-        >
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[920px] border-collapse text-left text-sm">
-              <TableHead
-                columns={[
-                  "Account",
-                  "Net equity",
-                  "Total PnL",
-                  "Realized",
-                  "Unrealized",
-                  "Open margin",
-                  "Positions",
-                  "State",
-                ]}
-              />
-              <tbody>
-                {summary.accounts.length === 0 ? (
-                  <EmptyRow colSpan={8} text="No paper accounts synced." />
-                ) : (
-                  summary.accounts.map((account) => (
-                    <tr key={account.key} className="border-b border-line last:border-b-0">
-                      <td className="px-4 py-3">
-                        <p className="font-semibold text-ink">{account.label}</p>
-                        <p className="mt-1 font-mono text-xs text-[#5b6770]">{account.key}</p>
-                      </td>
-                      <td className="px-4 py-3 font-mono">{formatCurrency(accountNetEquity(account))}</td>
-                      <td className={pnlCellClass(account.totalPnlUsd)}>{formatCurrency(account.totalPnlUsd)}</td>
-                      <td className={pnlCellClass(account.realizedPnlUsd)}>{formatCurrency(account.realizedPnlUsd)}</td>
-                      <td className={pnlCellClass(account.unrealizedPnlUsd)}>{formatCurrency(account.unrealizedPnlUsd)}</td>
-                      <td className="px-4 py-3 font-mono">{formatCurrency(account.openMarginUsd)}</td>
-                      <td className="px-4 py-3 font-mono">{formatInteger(account.openPositionCount)}</td>
-                      <td className="px-4 py-3">
-                        <StatusPill label={account.enabled ? "enabled" : "disabled"} tone={account.enabled ? "positive" : "warning"} />
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+      <section className="grid gap-4 xl:grid-cols-[1.25fr_0.75fr]">
+        <Panel title="Accounts" meta={`${formatInteger(summary.accounts.length)} accounts`}>
+          <div className="grid gap-3 md:grid-cols-2">
+            {summary.accounts.length === 0 ? (
+              <EmptyState text="No paper accounts synced." />
+            ) : (
+              summary.accounts.map((account) => <AccountCard key={account.key} account={account} />)
+            )}
           </div>
         </Panel>
 
         <Panel title="Execution Policy" meta={`Updated ${formatDate(summary.updatedAt)}`}>
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
             <DataPoint label="Wallets" value={formatInteger(summary.policy.topWalletCount)} detail="Top ranked sources" />
             <DataPoint label="Pocket" value={formatPercent(summary.policy.standardAllocationPct)} detail="Per source wallet" />
             <DataPoint label="Total cap" value={formatPercent(summary.policy.maxTotalAllocationPct)} detail="Max open margin" />
             <DataPoint label="Min order" value={formatCurrency(summary.policy.minOrderNotionalUsd)} />
             <DataPoint label="Fee" value={formatPercent(summary.policy.feeRate)} />
             <DataPoint label="Slippage" value={formatBps(summary.policy.slippageBps)} />
-            <DataPoint label="Latency" value={`${formatInteger(summary.policy.latencyMs)} ms`} />
-            <DataPoint label="Max drift" value={formatBps(summary.policy.maxPriceDriftBps)} />
           </div>
           <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-line pt-4 text-sm text-[#5b6770]">
             <Clock className="h-4 w-4" aria-hidden="true" />
-            <span>Last browser refresh {lastRefreshAt ? formatDate(lastRefreshAt.toISOString()) : "-"}</span>
+            <span>Last refresh {lastRefreshAt ? formatDate(lastRefreshAt.toISOString()) : "-"}</span>
             <span className="font-mono">{formatInteger(PAPER_REFRESH_MS)} ms polling</span>
           </div>
         </Panel>
       </section>
 
-      <Panel title="Source Wallet PnL" meta={`${formatInteger(summary.walletPerformance.length)} sources`}>
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[1120px] border-collapse text-left text-sm">
-            <TableHead
-              columns={[
-                "Source wallet",
-                "Rank",
-                "Allocation",
-                "Total PnL",
-                "Realized",
-                "Unrealized",
-                "Open margin",
-                "Fills",
-                "Last fill",
-              ]}
-            />
-            <tbody>
-              {summary.walletPerformance.length === 0 ? (
-                <EmptyRow colSpan={9} text="No source wallet performance yet." />
-              ) : (
-                summary.walletPerformance.map((wallet) => (
-                  <WalletPerformanceRow key={wallet.sourceWallet} wallet={wallet} />
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </Panel>
-
-      <Panel title="Open Positions" meta={`${formatInteger(summary.positions.length)} live paper positions`}>
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[1280px] border-collapse text-left text-sm">
-            <TableHead
-              columns={[
-                "Account",
-                "Source",
-                "Market",
-                "Side",
-                "Size",
-                "Entry",
-                "Mark",
-                "Unrealized PnL",
-                "ROE",
-                "Margin",
-                "Notional",
-                "Updated",
-              ]}
-            />
-            <tbody>
-              {summary.positions.length === 0 ? (
-                <EmptyRow colSpan={12} text="No open paper positions." />
-              ) : (
-                summary.positions.map((position) => (
-                  <PositionRow key={position.id} position={position} />
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </Panel>
-
-      <section className="grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
+      <section className="grid gap-4 2xl:grid-cols-[0.95fr_1.05fr]">
         <Panel
-          title="Allocations"
-          meta={`${formatInteger(activeAllocationSourceCount(summary.allocations))} active sources, ${formatInteger(retainedAllocationSourceCount(summary.allocations))} retained`}
+          title="Monitored Sources"
+          meta={`${formatInteger(tradingSourceCount)} trading, ${formatInteger(retainedAllocationSourceCount(summary.allocations))} exit only`}
         >
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[980px] border-collapse text-left text-sm">
-              <TableHead columns={["Account", "Source", "Rank", "Score", "Pocket", "Used", "State"]} />
-              <tbody>
-                {summary.allocations.length === 0 ? (
-                  <EmptyRow colSpan={7} text="No active allocation sources." />
-                ) : (
-                  summary.allocations.map((allocation) => (
-                    <AllocationRow key={allocation.id} allocation={allocation} />
-                  ))
-                )}
-              </tbody>
-            </table>
+          <div className="grid gap-3">
+            {monitoredSources.length === 0 ? (
+              <EmptyState text="No monitored sources." />
+            ) : (
+              monitoredSources.map((source) => (
+                <MonitoredSourceCard key={source.sourceWallet} source={source} />
+              ))
+            )}
           </div>
         </Panel>
 
-        <Panel title="Recent Paper Fills" meta={`${formatInteger(summary.recentFills.length)} latest rows`}>
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[1060px] border-collapse text-left text-sm">
-              <TableHead
-                columns={[
-                  "Time",
-                  "Account",
-                  "Source",
-                  "Action",
-                  "Market",
-                  "Notional",
-                  "PnL",
-                  "Skip reason",
-                ]}
-              />
-              <tbody>
-                {summary.recentFills.length === 0 ? (
-                  <EmptyRow colSpan={8} text="No paper fills recorded." />
-                ) : (
-                  summary.recentFills.map((fill) => (
-                    <FillRow
-                      key={fill.id}
-                      fill={fill}
-                      minOrderNotionalUsd={summary.policy.minOrderNotionalUsd}
-                    />
-                  ))
-                )}
-              </tbody>
-            </table>
+        <Panel title="Open Positions" meta={`${formatInteger(summary.positions.length)} live paper positions`}>
+          <div className="grid gap-3">
+            {summary.positions.length === 0 ? (
+              <EmptyState text="No open paper positions." />
+            ) : (
+              summary.positions.map((position) => (
+                <PositionCard
+                  key={position.id}
+                  isClosing={closingPositionId === position.id}
+                  onClose={handleManualClose}
+                  position={position}
+                />
+              ))
+            )}
+          </div>
+        </Panel>
+      </section>
+
+      <section className="grid gap-4 2xl:grid-cols-[0.95fr_1.05fr]">
+        <Panel title="Wallet PnL History" meta={`${formatInteger(walletHistory.length)} traded sources`}>
+          <div className="grid gap-3">
+            {walletHistory.length === 0 ? (
+              <EmptyState text="No wallet trading history yet." />
+            ) : (
+              walletHistory.map((wallet) => (
+                <WalletHistoryCard key={wallet.sourceWallet} wallet={wallet} />
+              ))
+            )}
+          </div>
+        </Panel>
+
+        <Panel title="Trade History" meta={`${formatInteger(summary.recentFills.length)} latest rows`}>
+          <div className="grid gap-3">
+            {summary.recentFills.length === 0 ? (
+              <EmptyState text="No paper fills recorded." />
+            ) : (
+              summary.recentFills.map((fill) => (
+                <FillCard
+                  key={fill.id}
+                  fill={fill}
+                  minOrderNotionalUsd={summary.policy.minOrderNotionalUsd}
+                />
+              ))
+            )}
           </div>
         </Panel>
       </section>
@@ -344,7 +336,7 @@ function HeroMetric({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-xs font-medium uppercase text-[#5b6770]">{label}</p>
-          <p className="mt-2 truncate text-2xl font-semibold text-ink">{value}</p>
+          <p className="mt-2 truncate text-xl font-semibold text-ink">{value}</p>
         </div>
         <Icon className="h-5 w-5 shrink-0 text-[#5b6770]" aria-hidden="true" />
       </div>
@@ -358,7 +350,7 @@ function Panel({
   meta,
   title,
 }: {
-  children: React.ReactNode;
+  children: ReactNode;
   meta?: string;
   title: string;
 }) {
@@ -370,6 +362,196 @@ function Panel({
       </div>
       <div className="p-4">{children}</div>
     </section>
+  );
+}
+
+function AccountCard({ account }: { account: PaperTradingAccount }) {
+  const totalPnl = numberValue(account.totalPnlUsd);
+  return (
+    <article className="rounded-md border border-line bg-[#f8fafb] p-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="font-semibold text-ink">{account.label}</p>
+          <p className="mt-1 break-all font-mono text-xs text-[#5b6770]">{account.key}</p>
+        </div>
+        <StatusPill label={account.enabled ? "enabled" : "disabled"} tone={account.enabled ? "positive" : "warning"} />
+      </div>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        <MiniStat label="Net equity" value={formatCurrency(accountNetEquity(account))} />
+        <MiniStat label="Total PnL" value={formatCurrency(account.totalPnlUsd)} tone={totalPnl >= 0 ? "positive" : "danger"} />
+        <MiniStat label="Realized" value={formatCurrency(account.realizedPnlUsd)} tone={numberValue(account.realizedPnlUsd) >= 0 ? "positive" : "danger"} />
+        <MiniStat label="Unrealized" value={formatCurrency(account.unrealizedPnlUsd)} tone={numberValue(account.unrealizedPnlUsd) >= 0 ? "positive" : "danger"} />
+        <MiniStat label="Open margin" value={formatCurrency(account.openMarginUsd)} />
+        <MiniStat label="Positions" value={formatInteger(account.openPositionCount)} />
+      </div>
+    </article>
+  );
+}
+
+function MonitoredSourceCard({ source }: { source: MonitoredSource }) {
+  const usedPct = clampPercent(numberValue(source.pocketUsedPct ?? 0));
+  const statusTone = source.status === "currently trading" ? "positive" : source.status === "exit only" ? "warning" : "neutral";
+  return (
+    <article className="rounded-md border border-line bg-white p-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <Link
+            href={`/wallets/${source.sourceWallet}`}
+            className="break-all font-mono text-xs font-semibold text-ink hover:text-[#297c73]"
+          >
+            {shortAddress(source.sourceWallet)}
+          </Link>
+          <p className="mt-1 text-xs text-[#5b6770]">
+            {source.rank ? `#${source.rank}` : "unranked"} slot, {formatScore(source.score)} score
+          </p>
+        </div>
+        <StatusPill label={source.status} tone={statusTone} />
+      </div>
+      <div className="mt-3 grid gap-3 sm:grid-cols-3">
+        <MiniStat label="Pocket" value={formatCurrency(source.allocationUsd)} detail={formatPercent(source.allocationPct)} />
+        <MiniStat label="Used" value={formatCurrency(source.openMarginUsd)} detail={`${formatPercent(source.pocketUsedPct)} used`} />
+        <MiniStat label="PnL" value={formatCurrency(source.totalPnlUsd)} tone={numberValue(source.totalPnlUsd) >= 0 ? "positive" : "danger"} />
+      </div>
+      <div className="mt-3 h-2 overflow-hidden rounded-full bg-[#e8edf2]">
+        <div
+          className={`h-full ${usedPct >= 0.9 ? "bg-danger" : usedPct >= 0.7 ? "bg-warning" : "bg-positive"}`}
+          style={{ width: `${Math.min(usedPct * 100, 100)}%` }}
+        />
+      </div>
+      <p className="mt-2 text-xs text-[#5b6770]">
+        {formatCurrency(source.remainingAllocationUsd)} free, {formatInteger(source.openPositionCount)} open positions
+      </p>
+    </article>
+  );
+}
+
+function PositionCard({
+  isClosing,
+  onClose,
+  position,
+}: {
+  isClosing: boolean;
+  onClose: (position: PaperPosition) => void;
+  position: PaperPosition;
+}) {
+  const canClose = position.markPrice !== null;
+  const unrealizedPnl = numberValue(position.unrealizedPnlUsd ?? 0);
+  return (
+    <article className="rounded-md border border-line bg-white p-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="font-semibold text-ink">{position.coin}</p>
+            <StatusPill label={position.side} tone={position.side === "long" ? "positive" : "warning"} />
+            <span className="font-mono text-xs text-[#5b6770]">{formatLeverage(position.leverage)}</span>
+          </div>
+          <Link
+            href={`/wallets/${position.sourceWallet}`}
+            className="mt-2 block break-all font-mono text-xs text-ink hover:text-[#297c73]"
+          >
+            {shortAddress(position.sourceWallet)}
+          </Link>
+          <p className="mt-1 font-mono text-xs text-[#5b6770]">{position.accountKey}</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => onClose(position)}
+          disabled={!canClose || isClosing}
+          title={canClose ? "Close paper position" : "Execution price unavailable"}
+          className="inline-flex h-9 items-center gap-2 rounded-md border border-[#f2aaa5] bg-[#fff2f0] px-3 text-sm font-semibold text-danger shadow-sm hover:bg-[#ffe6e2] disabled:cursor-not-allowed disabled:border-line disabled:bg-[#f7f9fb] disabled:text-[#98a2b3]"
+        >
+          {isClosing ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <XCircle className="h-4 w-4" aria-hidden="true" />}
+          Close
+        </button>
+      </div>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <MiniStat label="Unrealized" value={formatCurrency(position.unrealizedPnlUsd)} detail={formatPercent(position.unrealizedPnlPct)} tone={unrealizedPnl >= 0 ? "positive" : "danger"} />
+        <MiniStat label="Margin" value={formatCurrency(position.marginUsd)} detail={`${formatCurrency(position.currentNotionalUsd ?? position.notionalUsd)} notional`} />
+        <MiniStat label="Entry" value={formatPrice(position.entryPrice)} detail={`size ${formatSize(position.size)}`} />
+        <MiniStat label="Mark" value={formatPrice(position.markPrice)} detail={formatDate(position.priceUpdatedAt)} />
+      </div>
+    </article>
+  );
+}
+
+function WalletHistoryCard({ wallet }: { wallet: PaperWalletPerformance }) {
+  const totalPnl = numberValue(wallet.totalPnlUsd);
+  return (
+    <article className="rounded-md border border-line bg-white p-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <Link
+            href={`/wallets/${wallet.sourceWallet}`}
+            className="break-all font-mono text-xs font-semibold text-ink hover:text-[#297c73]"
+          >
+            {shortAddress(wallet.sourceWallet)}
+          </Link>
+          <p className="mt-1 text-xs text-[#5b6770]">
+            {wallet.rank ? `#${wallet.rank}` : "unranked"}, {formatScore(wallet.score)} score
+          </p>
+        </div>
+        <StatusPill
+          label={wallet.openPositionCount > 0 ? "currently trading" : wallet.active ? "monitored" : "history"}
+          tone={wallet.openPositionCount > 0 ? "positive" : wallet.active ? "neutral" : "warning"}
+        />
+      </div>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <MiniStat label="Total PnL" value={formatCurrency(wallet.totalPnlUsd)} tone={totalPnl >= 0 ? "positive" : "danger"} />
+        <MiniStat label="Realized" value={formatCurrency(wallet.realizedPnlUsd)} tone={numberValue(wallet.realizedPnlUsd) >= 0 ? "positive" : "danger"} />
+        <MiniStat label="Unrealized" value={formatCurrency(wallet.unrealizedPnlUsd)} tone={numberValue(wallet.unrealizedPnlUsd) >= 0 ? "positive" : "danger"} />
+        <MiniStat label="Open margin" value={formatCurrency(wallet.openMarginUsd)} detail={`${formatCurrency(wallet.openNotionalUsd)} notional`} />
+        <MiniStat label="Copied" value={formatInteger(wallet.copiedFillCount)} detail={`${formatInteger(wallet.skippedFillCount)} skipped`} />
+        <MiniStat label="Fees" value={formatCurrency(wallet.feeUsd)} />
+        <MiniStat label="Accounts" value={formatInteger(wallet.accountCount)} />
+        <MiniStat label="Last fill" value={formatDate(wallet.lastFillAt)} />
+      </div>
+    </article>
+  );
+}
+
+function FillCard({
+  fill,
+  minOrderNotionalUsd,
+}: {
+  fill: PaperCopyFill;
+  minOrderNotionalUsd: string;
+}) {
+  const targetNotional = targetPaperNotional(fill);
+  const skipDetail = skipReasonDetail(fill.skippedReason, targetNotional, minOrderNotionalUsd);
+  const isSkip = fill.action === "skip";
+  return (
+    <article className="rounded-md border border-line bg-white p-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <StatusPill label={fill.action} tone={isSkip ? "warning" : "positive"} />
+            <p className="font-semibold text-ink">{fill.coin}</p>
+            <span className="text-sm text-[#5b6770]">{fill.side ?? "-"}</span>
+          </div>
+          <Link
+            href={`/wallets/${fill.sourceWallet}`}
+            className="mt-2 block break-all font-mono text-xs text-ink hover:text-[#297c73]"
+          >
+            {shortAddress(fill.sourceWallet)}
+          </Link>
+          <p className="mt-1 font-mono text-xs text-[#5b6770]">{fill.accountKey}</p>
+        </div>
+        <p className="text-sm text-[#5b6770]">{formatDate(fill.filledAt)}</p>
+      </div>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <MiniStat
+          label="Notional"
+          value={formatCurrency(fill.notionalUsd)}
+          detail={`${formatCurrency(fill.marginUsd)} margin, ${formatLeverage(fill.leverage)}`}
+        />
+        <MiniStat label="Realized PnL" value={formatCurrency(fill.realizedPnlUsd)} tone={numberValue(fill.realizedPnlUsd) >= 0 ? "positive" : "danger"} />
+        <MiniStat label="Fee" value={formatCurrency(fill.feeUsd)} />
+        <MiniStat label="Skip reason" value={formatSkipReason(fill.skippedReason)} detail={skipDetail ?? undefined} />
+      </div>
+      {isSkip && targetNotional !== null ? (
+        <p className="mt-3 text-xs text-[#5b6770]">Target {formatCurrency(targetNotional)}</p>
+      ) : null}
+    </article>
   );
 }
 
@@ -391,190 +573,33 @@ function DataPoint({
   );
 }
 
-function TableHead({ columns }: { columns: string[] }) {
-  return (
-    <thead className="border-b border-line bg-[#f8fafb] text-xs uppercase text-[#5b6770]">
-      <tr>
-        {columns.map((column) => (
-          <th key={column} className="px-4 py-3 font-semibold">
-            {column}
-          </th>
-        ))}
-      </tr>
-    </thead>
-  );
-}
-
-function WalletPerformanceRow({ wallet }: { wallet: PaperWalletPerformance }) {
-  return (
-    <tr className="border-b border-line last:border-b-0">
-      <td className="px-4 py-3">
-        <Link
-          href={`/wallets/${wallet.sourceWallet}`}
-          className="font-mono text-xs text-ink hover:text-[#297c73]"
-        >
-          {shortAddress(wallet.sourceWallet)}
-        </Link>
-        <p className="mt-1 text-xs text-[#5b6770]">
-          {formatInteger(wallet.openPositionCount)} open positions
-        </p>
-      </td>
-      <td className="px-4 py-3 font-mono">{wallet.rank ? `#${wallet.rank}` : "-"}</td>
-      <td className="px-4 py-3">
-        <p className="font-mono">{formatPercent(wallet.allocationPct)}</p>
-        <p className="mt-1 text-xs text-[#5b6770]">{formatScore(wallet.score)} score</p>
-      </td>
-      <td className={pnlCellClass(wallet.totalPnlUsd)}>{formatCurrency(wallet.totalPnlUsd)}</td>
-      <td className={pnlCellClass(wallet.realizedPnlUsd)}>{formatCurrency(wallet.realizedPnlUsd)}</td>
-      <td className={pnlCellClass(wallet.unrealizedPnlUsd)}>{formatCurrency(wallet.unrealizedPnlUsd)}</td>
-      <td className="px-4 py-3">
-        <p className="font-mono">{formatCurrency(wallet.openMarginUsd)}</p>
-        <p className="mt-1 text-xs text-[#5b6770]">{formatCurrency(wallet.openNotionalUsd)} notional</p>
-      </td>
-      <td className="px-4 py-3">
-        <p className="font-mono">{formatInteger(wallet.copiedFillCount)} copied</p>
-        <p className="mt-1 text-xs text-[#5b6770]">{formatInteger(wallet.skippedFillCount)} skipped</p>
-      </td>
-      <td className="px-4 py-3 text-[#5b6770]">{formatDate(wallet.lastFillAt)}</td>
-    </tr>
-  );
-}
-
-function PositionRow({ position }: { position: PaperPosition }) {
-  return (
-    <tr className="border-b border-line last:border-b-0">
-      <td className="px-4 py-3 font-mono text-xs">{position.accountKey}</td>
-      <td className="px-4 py-3">
-        <Link
-          href={`/wallets/${position.sourceWallet}`}
-          className="font-mono text-xs text-ink hover:text-[#297c73]"
-        >
-          {shortAddress(position.sourceWallet)}
-        </Link>
-      </td>
-      <td className="px-4 py-3 font-semibold text-ink">{position.coin}</td>
-      <td className="px-4 py-3">
-        <StatusPill label={position.side} tone={position.side === "long" ? "positive" : "warning"} />
-      </td>
-      <td className="px-4 py-3 font-mono">{formatSize(position.size)}</td>
-      <td className="px-4 py-3 font-mono">{formatPrice(position.entryPrice)}</td>
-      <td className="px-4 py-3 font-mono">{formatPrice(position.markPrice)}</td>
-      <td className={pnlCellClass(position.unrealizedPnlUsd)}>
-        {formatCurrency(position.unrealizedPnlUsd)}
-      </td>
-      <td className={pnlCellClass(position.unrealizedPnlPct)}>
-        {formatPercent(position.unrealizedPnlPct)}
-      </td>
-      <td className="px-4 py-3 font-mono">{formatCurrency(position.marginUsd)}</td>
-      <td className="px-4 py-3">
-        <p className="font-mono">{formatCurrency(position.currentNotionalUsd ?? position.notionalUsd)}</p>
-        <p className="mt-1 text-xs text-[#5b6770]">{formatLeverage(position.leverage)}</p>
-      </td>
-      <td className="px-4 py-3 text-[#5b6770]">{formatDate(position.priceUpdatedAt)}</td>
-    </tr>
-  );
-}
-
-function AllocationRow({ allocation }: { allocation: PaperCopyAllocation }) {
-  const usedPct = clampPercent(numberValue(allocation.pocketUsedPct ?? 0));
-
-  return (
-    <tr className="border-b border-line last:border-b-0">
-      <td className="px-4 py-3 font-mono text-xs">{allocation.accountKey}</td>
-      <td className="px-4 py-3">
-        <Link
-          href={`/wallets/${allocation.sourceWallet}`}
-          className="font-mono text-xs text-ink hover:text-[#297c73]"
-        >
-          {shortAddress(allocation.sourceWallet)}
-        </Link>
-      </td>
-      <td className="px-4 py-3">
-        <p className="font-mono">{allocation.active ? `#${allocation.rank}` : "retained"}</p>
-        {!allocation.active ? (
-          <p className="mt-1 text-xs text-[#5b6770]">slot #{allocation.rank}</p>
-        ) : null}
-      </td>
-      <td className="px-4 py-3 font-mono">{formatScore(allocation.score)}</td>
-      <td className="px-4 py-3">
-        <p className="font-mono">{formatCurrency(allocation.allocationUsd)}</p>
-        <p className="mt-1 text-xs text-[#5b6770]">{formatPercent(allocation.allocationPct)}</p>
-      </td>
-      <td className="px-4 py-3">
-        <div className="h-2 w-full min-w-28 overflow-hidden rounded-full bg-[#e8edf2]">
-          <div
-            className={`h-full ${usedPct >= 0.9 ? "bg-danger" : usedPct >= 0.7 ? "bg-warning" : "bg-positive"}`}
-            style={{ width: `${Math.min(usedPct * 100, 100)}%` }}
-          />
-        </div>
-        <p className="mt-2 font-mono text-xs">
-          {formatCurrency(allocation.openMarginUsd)} used
-        </p>
-        <p className="mt-1 text-xs text-[#5b6770]">
-          {formatPercent(allocation.pocketUsedPct)} used, {formatCurrency(allocation.remainingAllocationUsd)} free
-        </p>
-      </td>
-      <td className="px-4 py-3">
-        <StatusPill label={allocation.active ? "active" : "retained"} tone={allocation.active ? "positive" : "warning"} />
-      </td>
-    </tr>
-  );
-}
-
-function FillRow({
-  fill,
-  minOrderNotionalUsd,
+function MiniStat({
+  detail,
+  label,
+  tone = "neutral",
+  value,
 }: {
-  fill: PaperCopyFill;
-  minOrderNotionalUsd: string;
+  detail?: string;
+  label: string;
+  tone?: Tone;
+  value: string;
 }) {
-  const targetNotional = targetPaperNotional(fill);
-  const skipDetail = skipReasonDetail(fill.skippedReason, targetNotional, minOrderNotionalUsd);
-
+  const valueClass =
+    tone === "positive" ? "text-positive" : tone === "danger" ? "text-danger" : "text-ink";
   return (
-    <tr className="border-b border-line last:border-b-0">
-      <td className="px-4 py-3 text-[#5b6770]">{formatDate(fill.filledAt)}</td>
-      <td className="px-4 py-3 font-mono text-xs">{fill.accountKey}</td>
-      <td className="px-4 py-3">
-        <Link
-          href={`/wallets/${fill.sourceWallet}`}
-          className="font-mono text-xs text-ink hover:text-[#297c73]"
-        >
-          {shortAddress(fill.sourceWallet)}
-        </Link>
-      </td>
-      <td className="px-4 py-3">
-        <StatusPill label={fill.action} tone={fill.action === "skip" ? "warning" : "positive"} />
-      </td>
-      <td className="px-4 py-3">
-        <p className="font-semibold text-ink">{fill.coin}</p>
-        <p className="mt-1 text-xs text-[#5b6770]">{fill.side ?? "-"}</p>
-      </td>
-      <td className="px-4 py-3">
-        <p className="font-mono">{formatCurrency(fill.notionalUsd)}</p>
-        <p className="mt-1 text-xs text-[#5b6770]">
-          {formatCurrency(fill.marginUsd)} margin, {formatLeverage(fill.leverage)}
-        </p>
-        {fill.action === "skip" && targetNotional !== null ? (
-          <p className="mt-1 text-xs text-[#5b6770]">target {formatCurrency(targetNotional)}</p>
-        ) : null}
-      </td>
-      <td className={pnlCellClass(fill.realizedPnlUsd)}>{formatCurrency(fill.realizedPnlUsd)}</td>
-      <td className="px-4 py-3 text-[#5b6770]">
-        <p>{formatSkipReason(fill.skippedReason)}</p>
-        {skipDetail ? <p className="mt-1 text-xs">{skipDetail}</p> : null}
-      </td>
-    </tr>
+    <div className="min-w-0">
+      <p className="text-xs font-medium uppercase text-[#5b6770]">{label}</p>
+      <p className={`mt-1 truncate font-mono text-sm font-semibold ${valueClass}`}>{value}</p>
+      {detail ? <p className="mt-1 truncate text-xs text-[#5b6770]">{detail}</p> : null}
+    </div>
   );
 }
 
-function EmptyRow({ colSpan, text }: { colSpan: number; text: string }) {
+function EmptyState({ text }: { text: string }) {
   return (
-    <tr>
-      <td colSpan={colSpan} className="px-4 py-10 text-center text-[#5b6770]">
-        {text}
-      </td>
-    </tr>
+    <div className="rounded-md border border-dashed border-line bg-[#f8fafb] px-4 py-8 text-center text-sm text-[#5b6770]">
+      {text}
+    </div>
   );
 }
 
@@ -612,12 +637,82 @@ function buildMetrics(summary: PaperTradingSummaryResponse) {
   };
 }
 
-function accountNetEquity(account: { equityUsd: string; unrealizedPnlUsd: string }) {
-  return numberValue(account.equityUsd) + numberValue(account.unrealizedPnlUsd);
+function buildMonitoredSources(summary: PaperTradingSummaryResponse): MonitoredSource[] {
+  const walletPerformanceBySource = new Map(
+    summary.walletPerformance.map((wallet) => [wallet.sourceWallet.toLowerCase(), wallet]),
+  );
+  const allocationsBySource = new Map<string, PaperCopyAllocation[]>();
+  for (const allocation of summary.allocations) {
+    const source = allocation.sourceWallet.toLowerCase();
+    allocationsBySource.set(source, [...(allocationsBySource.get(source) ?? []), allocation]);
+  }
+  const positionsBySource = new Map<string, PaperPosition[]>();
+  for (const position of summary.positions) {
+    const source = position.sourceWallet.toLowerCase();
+    positionsBySource.set(source, [...(positionsBySource.get(source) ?? []), position]);
+  }
+
+  const sources = new Set([...allocationsBySource.keys(), ...positionsBySource.keys()]);
+  return Array.from(sources)
+    .map((source) => {
+      const allocations = allocationsBySource.get(source) ?? [];
+      const wallet = walletPerformanceBySource.get(source);
+      const openPositions = positionsBySource.get(source) ?? [];
+      const allocationUsd = sumNumbers(allocations.map((allocation) => allocation.allocationUsd));
+      const openMarginUsd = sumNumbers(allocations.map((allocation) => allocation.openMarginUsd));
+      const remainingAllocationUsd = sumNumbers(allocations.map((allocation) => allocation.remainingAllocationUsd));
+      const active = allocations.some((allocation) => allocation.active);
+      const status: MonitoredSource["status"] =
+        openPositions.length > 0 ? "currently trading" : active ? "monitored" : "exit only";
+      return {
+        sourceWallet: source,
+        rank: minNumber(allocations.map((allocation) => allocation.rank)),
+        score: firstString(allocations.map((allocation) => allocation.score)) ?? wallet?.score ?? null,
+        active,
+        status,
+        accountCount: new Set(allocations.map((allocation) => allocation.accountKey)).size,
+        openPositionCount: openPositions.length,
+        allocationPct: firstNumber(allocations.map((allocation) => allocation.allocationPct)),
+        allocationUsd,
+        openMarginUsd,
+        remainingAllocationUsd,
+        pocketUsedPct: allocationUsd > 0 ? openMarginUsd / allocationUsd : null,
+        realizedPnlUsd: wallet?.realizedPnlUsd ?? "0",
+        unrealizedPnlUsd: wallet?.unrealizedPnlUsd ?? "0",
+        totalPnlUsd: wallet?.totalPnlUsd ?? "0",
+      };
+    })
+    .sort((left, right) => {
+      if (left.status !== right.status) {
+        return statusOrder(left.status) - statusOrder(right.status);
+      }
+      return (left.rank ?? 9999) - (right.rank ?? 9999);
+    });
 }
 
-function activeAllocationSourceCount(allocations: PaperCopyAllocation[]) {
-  return uniqueAllocationSources(allocations.filter((allocation) => allocation.active)).length;
+function buildWalletHistory(wallets: PaperWalletPerformance[]) {
+  return wallets
+    .filter(
+      (wallet) =>
+        wallet.openPositionCount > 0 ||
+        wallet.copiedFillCount > 0 ||
+        wallet.skippedFillCount > 0 ||
+        numberValue(wallet.totalPnlUsd) !== 0,
+    )
+    .sort((left, right) => {
+      if (left.openPositionCount !== right.openPositionCount) {
+        return right.openPositionCount - left.openPositionCount;
+      }
+      return numberValue(right.totalPnlUsd) - numberValue(left.totalPnlUsd);
+    });
+}
+
+function countSourcesWithOpenPositions(positions: PaperPosition[]) {
+  return new Set(positions.map((position) => position.sourceWallet.toLowerCase())).size;
+}
+
+function accountNetEquity(account: { equityUsd: string; unrealizedPnlUsd: string }) {
+  return numberValue(account.equityUsd) + numberValue(account.unrealizedPnlUsd);
 }
 
 function retainedAllocationSourceCount(allocations: PaperCopyAllocation[]) {
@@ -628,16 +723,56 @@ function uniqueAllocationSources(allocations: PaperCopyAllocation[]) {
   return Array.from(new Set(allocations.map((allocation) => allocation.sourceWallet)));
 }
 
+function sumNumbers(values: Array<string | number | null | undefined>): number {
+  return values.reduce<number>(
+    (total, value) => total + (value === null || value === undefined ? 0 : numberValue(value)),
+    0,
+  );
+}
+
+function firstNumber(values: Array<string | number | null | undefined>): number | null {
+  for (const value of values) {
+    if (value !== null && value !== undefined) {
+      return numberValue(value);
+    }
+  }
+  return null;
+}
+
+function firstString(values: Array<string | number | null | undefined>) {
+  for (const value of values) {
+    if (value !== null && value !== undefined) {
+      return String(value);
+    }
+  }
+  return null;
+}
+
+function minNumber(values: Array<string | number | null | undefined>): number | null {
+  const numbers = values
+    .filter((value): value is string | number => value !== null && value !== undefined)
+    .map((value) => numberValue(value));
+  if (numbers.length === 0) {
+    return null;
+  }
+  return Math.min(...numbers);
+}
+
+function statusOrder(status: MonitoredSource["status"]) {
+  if (status === "currently trading") {
+    return 0;
+  }
+  if (status === "monitored") {
+    return 1;
+  }
+  return 2;
+}
+
 function clampPercent(value: number) {
   if (!Number.isFinite(value)) {
     return 0;
   }
   return Math.max(0, Math.min(value, 1));
-}
-
-function pnlCellClass(value: string | number | null | undefined) {
-  const numericValue = value === null || value === undefined ? 0 : numberValue(value);
-  return `px-4 py-3 font-mono ${numericValue >= 0 ? "text-positive" : "text-danger"}`;
 }
 
 function formatSize(value: string | number | null | undefined) {
@@ -716,10 +851,10 @@ function formatSkipReason(reason: string | null) {
     source_account_state_missing: "Source account state missing",
     source_account_value_missing: "Source perp equity missing",
     source_account_value_zero: "Source perp equity zero",
-    source_perp_equity_missing: "Source perp equity missing",
-    source_perp_equity_zero: "Source perp equity zero",
     source_allocation_cap_reached: "Source allocation cap reached",
     source_and_total_allocation_caps_reached: "Source and total allocation caps reached",
+    source_perp_equity_missing: "Source perp equity missing",
+    source_perp_equity_zero: "Source perp equity zero",
     total_allocation_cap_reached: "Total allocation cap reached",
     unsupported_source_fill_direction: "Unsupported source fill direction",
   };
@@ -755,6 +890,18 @@ function targetPaperNotional(fill: PaperCopyFill) {
   }
   const value = numberValue(fill.allocationUsd) * numberValue(fill.sourceExposurePct);
   return Number.isFinite(value) ? value : null;
+}
+
+async function responseError(response: Response) {
+  try {
+    const payload = (await response.json()) as { detail?: unknown };
+    if (typeof payload.detail === "string") {
+      return payload.detail;
+    }
+  } catch {
+    return `Manual close failed with HTTP ${response.status}.`;
+  }
+  return `Manual close failed with HTTP ${response.status}.`;
 }
 
 function shortAddress(address: string) {

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import func, literal, select, update
 from sqlalchemy.dialects.postgresql import insert
@@ -46,6 +47,22 @@ RETRIABLE_EXIT_SKIP_REASONS = frozenset(
         "execution_price_unavailable",
     }
 )
+
+
+class PaperPositionCloseError(Exception):
+    status_code = 400
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
+
+
+class PaperPositionNotFoundError(PaperPositionCloseError):
+    status_code = 404
+
+
+class PaperPositionCloseUnavailableError(PaperPositionCloseError):
+    status_code = 409
 
 
 @dataclass(frozen=True)
@@ -248,6 +265,196 @@ async def load_open_position_market_prices(
             if price is not None and price > ZERO:
                 market_prices[coin] = price
     return market_prices
+
+
+async def close_paper_position_manually(
+    session: AsyncSession,
+    *,
+    position_id: UUID,
+    settings: Settings | None = None,
+    client: HyperliquidClient | None = None,
+) -> PaperCopyBatchResult:
+    resolved_settings = settings or get_settings()
+    if client is None:
+        async with HyperliquidClient(resolved_settings) as hyperliquid_client:
+            return await close_paper_position_manually(
+                session,
+                position_id=position_id,
+                settings=resolved_settings,
+                client=hyperliquid_client,
+            )
+
+    position_snapshot = await session.scalar(
+        select(PaperPosition).where(PaperPosition.id == position_id)
+    )
+    if position_snapshot is None:
+        raise PaperPositionNotFoundError("Paper position was not found or is already closed.")
+
+    market_prices = await load_open_position_market_prices(
+        client=client,
+        positions=[position_snapshot],
+    )
+    mark_price = resolve_coin_decimal(market_prices, position_snapshot.coin)
+    if mark_price is None or mark_price <= ZERO:
+        raise PaperPositionCloseUnavailableError("Execution price is unavailable.")
+
+    position = await session.scalar(
+        select(PaperPosition)
+        .where(PaperPosition.id == position_id)
+        .with_for_update()
+    )
+    if position is None:
+        raise PaperPositionNotFoundError("Paper position was not found or is already closed.")
+
+    account = await session.scalar(
+        select(PaperTradingAccount)
+        .where(PaperTradingAccount.key == position.account_key)
+        .with_for_update()
+    )
+    if account is None:
+        raise PaperPositionCloseUnavailableError("Paper account is unavailable.")
+
+    allocation = await load_paper_allocation_for_position(session, position=position)
+    source_fill_id = f"manual-close:{position.id}"
+    if await paper_fill_exists(
+        session,
+        account_key=account.key,
+        source_wallet=allocation.source_wallet,
+        source_fill_id=source_fill_id,
+        sequence_index=0,
+    ):
+        raise PaperPositionCloseUnavailableError("Manual close has already been recorded.")
+
+    leverage = safe_leverage(position.leverage)
+    execution_price = apply_adverse_slippage(
+        price=mark_price,
+        side=position.side,
+        action="close",
+        slippage_bps=resolved_settings.paper_copy_slippage_bps,
+    )
+    if execution_price <= ZERO or position.size <= POSITION_EPSILON:
+        raise PaperPositionCloseUnavailableError("Paper position cannot be closed safely.")
+
+    close_size = position.size
+    notional_usd = close_size * execution_price
+    margin_usd = margin_from_notional(notional_usd, leverage)
+    realized_pnl = realized_pnl_for_close(
+        side=position.side,
+        entry_price=position.entry_price,
+        exit_price=execution_price,
+        size=close_size,
+    )
+    fee = notional_usd * resolved_settings.paper_copy_fee_rate
+    allocation_usd = max(account.equity_usd, ZERO) * allocation.allocation_pct
+    filled_at = datetime.now(UTC)
+    fill = manual_close_fill_payload(
+        source_fill_id=source_fill_id,
+        position=position,
+        price=mark_price,
+        timestamp_ms=timestamp_ms(filled_at),
+    )
+    part = SourceFillPart(
+        action="close",
+        side=position.side,
+        source_size=close_size,
+        source_notional_usd=notional_usd,
+        sequence_index=0,
+        close_ratio=ONE,
+    )
+    execution_context = PaperExecutionContext(
+        source_price=mark_price,
+        observed_price=mark_price,
+        execution_price=execution_price,
+        price_drift_bps=ZERO,
+        slippage_bps=resolved_settings.paper_copy_slippage_bps,
+        latency_ms=resolved_settings.paper_copy_latency_ms,
+        price_source="manual_live_mid",
+    )
+
+    apply_account_realized_result(account, pnl_usd=realized_pnl, fee_usd=fee)
+    await session.delete(position)
+    session.add(
+        paper_copy_fill(
+            account=account,
+            allocation=allocation,
+            fill=fill,
+            part=part,
+            action="close",
+            price=execution_price,
+            size=close_size,
+            notional_usd=notional_usd,
+            leverage=leverage,
+            margin_usd=margin_usd,
+            fee_usd=fee,
+            realized_pnl_usd=realized_pnl,
+            source_perp_equity=ZERO,
+            allocation_usd=allocation_usd,
+            settings=resolved_settings,
+            execution_context=execution_context,
+        )
+    )
+    return PaperCopyBatchResult(
+        processed_fills=1,
+        accounts_updated=1,
+        realized_pnl_usd=realized_pnl,
+        fee_usd=fee,
+    )
+
+
+async def load_paper_allocation_for_position(
+    session: AsyncSession,
+    *,
+    position: PaperPosition,
+) -> PaperSourceAllocation:
+    allocation = await session.scalar(
+        select(PaperCopyAllocation).where(
+            PaperCopyAllocation.account_key == position.account_key,
+            PaperCopyAllocation.source_wallet == position.source_wallet,
+        )
+    )
+    if allocation is None:
+        return PaperSourceAllocation(
+            source_wallet=position.source_wallet,
+            rank=0,
+            score=None,
+            allocation_pct=ZERO,
+            active=False,
+        )
+    return PaperSourceAllocation(
+        source_wallet=allocation.source_wallet,
+        rank=allocation.rank,
+        score=allocation.score,
+        allocation_pct=allocation.allocation_pct,
+        active=allocation.active,
+    )
+
+
+def manual_close_fill_payload(
+    *,
+    source_fill_id: str,
+    position: PaperPosition,
+    price: Decimal,
+    timestamp_ms: int,
+) -> dict[str, Any]:
+    direction = "Close Long" if position.side == "long" else "Close Short"
+    return {
+        "externalFillId": source_fill_id,
+        "coin": position.coin,
+        "side": position.side,
+        "price": str(price),
+        "size": str(position.size),
+        "notionalUsd": str(position.size * price),
+        "feeUsd": "0",
+        "pnlUsd": None,
+        "timestampMs": timestamp_ms,
+        "sourceTimestampMs": None,
+        "ingestLatencyMs": None,
+        "rawJson": {
+            "dir": direction,
+            "manual": True,
+            "reason": "dashboard_manual_close",
+        },
+    }
 
 
 def paper_position_read(
