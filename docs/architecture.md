@@ -461,6 +461,9 @@ sequenceDiagram
   API->>HL: current market prices for open paper positions
   API->>API: compute unrealized PnL and source-wallet PnL
   API-->>UI: accounts, allocations, positions, wallet PnL, closed trades
+  UI->>API: POST /paper-trading/accounts/{account_key}/reset
+  API->>DB: reset configured account balance counters only
+  API-->>UI: refreshed paper trading summary
   UI->>API: POST /paper-trading/positions/{position_id}/close
   API->>HL: current market price for that paper position
   API->>DB: apply slippage, fee, realized PnL, and close fill
@@ -546,6 +549,9 @@ Discovery candidate source metrics use explicit unit-bearing database columns:
 The paper trading page is a client dashboard that polls the summary API for live
 mark prices and unrealized PnL. The API also aggregates source-wallet PnL from
 all copied fills, not just the most recent fill rows shown in the UI.
+Account reset actions restore the configured starting capital and clear
+account-level realized PnL and fee counters, but they do not delete open paper
+positions, copied fills, or closed trade history.
 
 ## Important Constraint
 

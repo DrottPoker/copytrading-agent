@@ -72,6 +72,7 @@ export function PaperTradingDashboard({
   const [connectionState, setConnectionState] = useState<"live" | "refreshing" | "offline">("live");
   const [lastRefreshAt, setLastRefreshAt] = useState<Date | null>(new Date());
   const [closingPositionId, setClosingPositionId] = useState<string | null>(null);
+  const [resettingAccountKey, setResettingAccountKey] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -120,7 +121,7 @@ export function PaperTradingDashboard({
           { cache: "no-store", method: "POST" },
         );
         if (!response.ok) {
-          setActionError(await responseError(response));
+          setActionError(await responseError(response, "Manual close failed"));
           return;
         }
         const payload = (await response.json()) as PaperTradingSummaryResponse;
@@ -135,6 +136,43 @@ export function PaperTradingDashboard({
       }
     },
     [closingPositionId],
+  );
+
+  const handleResetAccount = useCallback(
+    async (account: PaperTradingAccount) => {
+      if (resettingAccountKey) {
+        return;
+      }
+      const confirmed = window.confirm(
+        `Reset ${account.label} balance to ${formatCurrency(account.startingBalanceUsd)}? Open positions and fill history will stay.`,
+      );
+      if (!confirmed) {
+        return;
+      }
+
+      setResettingAccountKey(account.key);
+      setActionError(null);
+      try {
+        const response = await fetch(
+          `${getPublicApiBaseUrl()}/paper-trading/accounts/${encodeURIComponent(account.key)}/reset`,
+          { cache: "no-store", method: "POST" },
+        );
+        if (!response.ok) {
+          setActionError(await responseError(response, "Account reset failed"));
+          return;
+        }
+        const payload = (await response.json()) as PaperTradingSummaryResponse;
+        setSummary(payload);
+        setLastRefreshAt(new Date());
+        setConnectionState("live");
+      } catch {
+        setConnectionState("offline");
+        setActionError("Account reset failed.");
+      } finally {
+        setResettingAccountKey(null);
+      }
+    },
+    [resettingAccountKey],
   );
 
   const metrics = useMemo(() => buildMetrics(summary), [summary]);
@@ -227,7 +265,14 @@ export function PaperTradingDashboard({
           {summary.accounts.length === 0 ? (
             <EmptyState text="No paper accounts synced." />
           ) : (
-            summary.accounts.map((account) => <AccountRow key={account.key} account={account} />)
+            summary.accounts.map((account) => (
+              <AccountRow
+                key={account.key}
+                account={account}
+                isResetting={resettingAccountKey === account.key}
+                onReset={handleResetAccount}
+              />
+            ))
           )}
         </ListPanel>
 
@@ -337,10 +382,18 @@ function ListPanel({
   );
 }
 
-function AccountRow({ account }: { account: PaperTradingAccount }) {
+function AccountRow({
+  account,
+  isResetting,
+  onReset,
+}: {
+  account: PaperTradingAccount;
+  isResetting: boolean;
+  onReset: (account: PaperTradingAccount) => void;
+}) {
   return (
     <ListRow>
-      <div className="grid gap-2 sm:grid-cols-[1.2fr_repeat(5,minmax(0,1fr))] sm:items-center">
+      <div className="grid gap-2 sm:grid-cols-[1.2fr_repeat(5,minmax(0,1fr))_auto] sm:items-center">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <p className="truncate text-sm font-semibold text-ink">{account.label}</p>
@@ -353,6 +406,20 @@ function AccountRow({ account }: { account: PaperTradingAccount }) {
         <RowStat label="Realized" value={formatCurrency(account.realizedPnlUsd)} tone={numberValue(account.realizedPnlUsd) >= 0 ? "positive" : "danger"} />
         <RowStat label="Unrealized" value={formatCurrency(account.unrealizedPnlUsd)} tone={numberValue(account.unrealizedPnlUsd) >= 0 ? "positive" : "danger"} />
         <RowStat label="Open" value={`${formatCurrency(account.openMarginUsd)} / ${formatInteger(account.openPositionCount)}`} />
+        <button
+          type="button"
+          onClick={() => onReset(account)}
+          disabled={isResetting}
+          title={`Reset ${account.label} balance`}
+          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-line bg-white text-[#344054] hover:bg-[#f7f9fb] disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {isResetting ? (
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+          ) : (
+            <RefreshCw className="h-4 w-4" aria-hidden="true" />
+          )}
+          <span className="sr-only">Reset account balance</span>
+        </button>
       </div>
     </ListRow>
   );
@@ -932,16 +999,16 @@ function marketStatusTone(status: PaperTradingSummaryResponse["marketDataStatus"
   return "danger";
 }
 
-async function responseError(response: Response) {
+async function responseError(response: Response, fallback: string) {
   try {
     const payload = (await response.json()) as { detail?: unknown };
     if (typeof payload.detail === "string") {
       return payload.detail;
     }
   } catch {
-    return `Manual close failed with HTTP ${response.status}.`;
+    return `${fallback} with HTTP ${response.status}.`;
   }
-  return `Manual close failed with HTTP ${response.status}.`;
+  return `${fallback} with HTTP ${response.status}.`;
 }
 
 function shortAddress(address: string) {

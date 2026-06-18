@@ -253,6 +253,7 @@ Paper copy simulation is available as the first execution layer.
 API:
 
 - `GET /paper-trading`
+- `POST /paper-trading/accounts/{account_key}/reset`
 - `POST /paper-trading/positions/{position_id}/close`
 
 Dashboard:
@@ -312,6 +313,9 @@ Sizing policy:
 - The dashboard shows paper accounts, monitored sources, currently trading
   sources, open positions, wallet PnL history, and closed trade history as
   compact lists without horizontal scrolling.
+- Account rows include a reset action that restores that account's configured
+  starting balance, cash balance, equity, realized PnL, and fee counters while
+  leaving open positions, copied fills, and closed trade history intact.
 - Source rows show a primary monitor status and a source substatus. Primary
   status is `monitored` when the source has a realtime slot and `waiting` when
   it does not. Substatus is `trading`, `retained`, `waiting for trades`, or
@@ -351,7 +355,8 @@ Notes:
   replays fills after a source wallet already has paper copy history or open
   paper positions.
 - Existing paper account balances are not reset when `starting_balance_usd` is
-  edited. A reset workflow should be added before serious experiments.
+  edited. Use the dashboard account reset action to apply configured starting
+  capital to an existing paper account.
 
 ## Local Development
 

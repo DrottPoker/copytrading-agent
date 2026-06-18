@@ -65,6 +65,18 @@ class PaperPositionCloseUnavailableError(PaperPositionCloseError):
     status_code = 409
 
 
+class PaperAccountResetError(Exception):
+    status_code = 400
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
+
+
+class PaperAccountResetNotFoundError(PaperAccountResetError):
+    status_code = 404
+
+
 @dataclass(frozen=True)
 class PaperSourceAllocation:
     source_wallet: str
@@ -1582,6 +1594,40 @@ async def sync_paper_trading_accounts(
         )
     )
     return list(result.scalars().all())
+
+
+async def reset_paper_trading_account_balance(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    settings: Settings,
+) -> PaperTradingAccount:
+    account_config = next(
+        (account for account in settings.paper_copy_accounts if account.key == account_key),
+        None,
+    )
+    if account_config is None:
+        raise PaperAccountResetNotFoundError("Paper account is not configured.")
+
+    await sync_paper_trading_accounts(session, settings=settings)
+    account = await session.scalar(
+        select(PaperTradingAccount)
+        .where(PaperTradingAccount.key == account_key)
+        .with_for_update()
+    )
+    if account is None:
+        raise PaperAccountResetNotFoundError("Paper account was not found.")
+
+    config_payload = account_config.model_dump(mode="json")
+    account.label = account_config.label
+    account.starting_balance_usd = account_config.starting_balance_usd
+    account.cash_balance_usd = account_config.starting_balance_usd
+    account.equity_usd = account_config.starting_balance_usd
+    account.realized_pnl_usd = ZERO
+    account.fee_usd = ZERO
+    account.enabled = account_config.enabled
+    account.config_payload = config_payload
+    return account
 
 
 async def load_paper_source_allocations(

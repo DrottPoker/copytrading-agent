@@ -382,6 +382,7 @@ Purpose:
 Endpoint:
 
 - `GET /paper-trading`
+- `POST /paper-trading/accounts/{account_key}/reset`
 - `POST /paper-trading/positions/{position_id}/close`
 
 Dashboard page:
@@ -494,6 +495,9 @@ What it does:
 - The paper trading dashboard polls the summary API and shows account PnL,
   monitored sources, currently trading sources, open position PnL, wallet PnL
   history, and closed trade history without a full page refresh.
+- Account rows include a reset action that restores the account to its
+  configured starting balance and clears account-level realized PnL and fees
+  without deleting open paper positions, copied fills, or closed trade history.
 - Source rows show a primary monitor status and a source substatus. Primary
   status is `monitored` when the source has a realtime slot and `waiting` when
   it does not. Substatus is `trading`, `retained`, `waiting for trades`, or
@@ -534,8 +538,9 @@ Current limitations:
   simulate order book depth or partial fills yet.
 - Paper accounts are not backfilled from historical fills. They start recording
   only from new non-snapshot realtime fills after the migration is applied.
-- Editing `starting_balance_usd` does not reset existing account state. A reset
-  workflow should be added before serious experiment runs.
+- Editing `starting_balance_usd` does not reset existing account state by
+  itself. Use the account reset action in the paper trading dashboard to apply
+  configured starting capital to an existing paper account.
 
 ### Live Feed
 
