@@ -46,7 +46,7 @@ type MonitoredSource = {
   rank: number | null;
   score: string | null;
   active: boolean;
-  status: "trading" | "monitored" | "exit only";
+  status: "trading" | "retained" | "monitored" | "waiting";
   accountCount: number;
   openPositionCount: number;
   allocationPct: number | null;
@@ -137,6 +137,7 @@ export function PaperTradingDashboard({
   const monitoredSources = useMemo(() => buildMonitoredSources(summary), [summary]);
   const walletHistory = useMemo(() => buildWalletHistory(summary.walletPerformance), [summary.walletPerformance]);
   const tradingSourceCount = countSourcesWithOpenPositions(summary.positions);
+  const waitingSourceCount = countSourcesByStatus(monitoredSources, "waiting");
 
   return (
     <>
@@ -212,7 +213,7 @@ export function PaperTradingDashboard({
           icon={RadioTower}
           label="Sources"
           value={`${formatInteger(tradingSourceCount)} trading`}
-          detail={`${formatInteger(monitoredSources.length)} monitored`}
+          detail={`${formatInteger(monitoredSources.length)} listed, ${formatInteger(waitingSourceCount)} waiting`}
         />
       </section>
 
@@ -233,7 +234,7 @@ export function PaperTradingDashboard({
       <section className="grid gap-3 2xl:grid-cols-[0.95fr_1.05fr]">
         <ListPanel
           title="Monitored Sources"
-          meta={`${formatInteger(tradingSourceCount)} trading, ${formatInteger(retainedAllocationSourceCount(summary.allocations))} exit only`}
+          meta={`${formatInteger(tradingSourceCount)} trading, ${formatInteger(waitingSourceCount)} waiting`}
         >
           {monitoredSources.length === 0 ? (
             <EmptyState text="No monitored sources." />
@@ -380,7 +381,12 @@ function PolicyRow({
 
 function SourceRow({ source }: { source: MonitoredSource }) {
   const usedPct = clampPercent(numberValue(source.pocketUsedPct ?? 0));
-  const statusTone = source.status === "trading" ? "positive" : source.status === "exit only" ? "warning" : "neutral";
+  const statusTone =
+    source.status === "trading"
+      ? "positive"
+      : source.status === "retained"
+        ? "warning"
+        : "neutral";
   return (
     <ListRow>
       <div className="grid gap-2 lg:grid-cols-[1.05fr_0.8fr_1.15fr_0.9fr] lg:items-center">
@@ -395,7 +401,7 @@ function SourceRow({ source }: { source: MonitoredSource }) {
             <StatusPill label={source.status} tone={statusTone} />
           </div>
           <p className="mt-1 text-xs text-[#5b6770]">
-            {source.rank ? `#${source.rank}` : "unranked"}, {formatScore(source.score)} score, {formatInteger(source.accountCount)} accounts
+            {source.rank ? `#${source.rank}` : "unranked"}, {formatScore(source.score)} score, {formatInteger(source.accountCount)} accounts, {sourceStatusDetail(source.status)}
           </p>
         </div>
         <RowStat label="PnL" value={formatCurrency(source.totalPnlUsd)} tone={numberValue(source.totalPnlUsd) >= 0 ? "positive" : "danger"} />
@@ -626,7 +632,13 @@ function buildMonitoredSources(summary: PaperTradingSummaryResponse): MonitoredS
       const remainingAllocationUsd = sumNumbers(allocations.map((allocation) => allocation.remainingAllocationUsd));
       const active = allocations.some((allocation) => allocation.active);
       const status: MonitoredSource["status"] =
-        openPositions.length > 0 ? "trading" : active ? "monitored" : "exit only";
+        openPositions.length > 0 && active
+          ? "trading"
+          : openPositions.length > 0
+            ? "retained"
+            : active
+              ? "monitored"
+              : "waiting";
       return {
         sourceWallet: source,
         rank: minNumber(allocations.map((allocation) => allocation.rank)),
@@ -678,12 +690,21 @@ function accountNetEquity(account: { equityUsd: string; unrealizedPnlUsd: string
   return numberValue(account.equityUsd) + numberValue(account.unrealizedPnlUsd);
 }
 
-function retainedAllocationSourceCount(allocations: PaperCopyAllocation[]) {
-  return uniqueAllocationSources(allocations.filter((allocation) => !allocation.active)).length;
+function countSourcesByStatus(sources: MonitoredSource[], status: MonitoredSource["status"]) {
+  return sources.filter((source) => source.status === status).length;
 }
 
-function uniqueAllocationSources(allocations: PaperCopyAllocation[]) {
-  return Array.from(new Set(allocations.map((allocation) => allocation.sourceWallet)));
+function sourceStatusDetail(status: MonitoredSource["status"]) {
+  if (status === "trading") {
+    return "active slot";
+  }
+  if (status === "retained") {
+    return "existing exposure only";
+  }
+  if (status === "monitored") {
+    return "ready for new entries";
+  }
+  return "waiting for slot";
 }
 
 function sumNumbers(values: Array<string | number | null | undefined>): number {
@@ -725,10 +746,13 @@ function statusOrder(status: MonitoredSource["status"]) {
   if (status === "trading") {
     return 0;
   }
-  if (status === "monitored") {
+  if (status === "retained") {
     return 1;
   }
-  return 2;
+  if (status === "monitored") {
+    return 2;
+  }
+  return 3;
 }
 
 function clampPercent(value: number) {

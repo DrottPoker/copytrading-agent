@@ -468,8 +468,7 @@ What it does:
   `exit_only` if it was removed earlier, so pool imports and realtime slot
   retention can continue until the paper exposure is closed.
 - Shows allocation pocket usage as current open paper margin divided by that
-  account/source wallet pocket. Old inactive allocation rows without open paper
-  positions are hidden from the dashboard.
+  account/source wallet pocket.
 - Records skip rows when a fill cannot be copied safely, such as no matching
   paper position, missing source perp equity, preexisting source position,
   minimum notional, source allocation cap exhaustion, or total account cap
@@ -478,6 +477,9 @@ What it does:
 - The paper trading dashboard polls the summary API and shows account PnL,
   monitored sources, currently trading sources, open position PnL, wallet PnL
   history, and closed trade history without a full page refresh.
+- Source rows distinguish `trading`, `retained`, `monitored`, and `waiting`.
+  `waiting` means the source has no active copy slot yet. `retained` means an
+  existing paper exposure is still being managed without allowing new entries.
 - The dashboard separates total, realized, and unrealized PnL and uses compact
   responsive list rows instead of wide tables or large cards.
 

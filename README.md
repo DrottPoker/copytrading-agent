@@ -303,15 +303,16 @@ Sizing policy:
 - The dashboard shows paper accounts, monitored sources, currently trading
   sources, open positions, wallet PnL history, and closed trade history as
   compact lists without horizontal scrolling.
+- Source rows distinguish `trading`, `retained`, `monitored`, and `waiting`.
+  `waiting` means the source has no active copy slot yet. `retained` means an
+  existing paper exposure is still being managed without allowing new entries.
 - Closed trade history comes from paper `close` and `flip_close` executions.
   Raw fills and skip rows remain available in the API for diagnostics, but they
   are not shown as trade history.
 - Open position rows include a manual close action. Manual closes use the same
   live mark, adverse slippage, and fee model as automated paper closes, then
   record a normal `close` row in `paper_copy_fills`.
-- Allocation source rows show current pocket usage from open paper margin. The
-  dashboard hides old inactive allocation rows unless that source still has open
-  paper positions.
+- Allocation source rows show current pocket usage from open paper margin.
 - Paper account state, copied positions, copied fills, and allocations are stored
   in Postgres. Worker restarts recover missed fills from the oldest open paper
   position when a source still has copied exposure, and rely on copied fill IDs
