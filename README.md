@@ -188,9 +188,11 @@ Notes:
   `wallet_scores.score` wallets and active, candidate, or copy-enabled fallback
   wallets.
 - Automated sourcing runs through Discovery using `backend/config/discovery.json`.
-- Discovery defaults to Hyperliquid 1D, 7D, 30D, all-time leaderboard sources,
+- Discovery defaults to Hyperliquid 1D, 7D, and 30D leaderboard sources,
   Hyperliquid vault leaders, leaderboard subaccounts, and configured Hyperdash
-  sources.
+  sources. All-time leaderboard discovery is available as a manual source, but
+  it is not enabled by default because it is less useful for current copy
+  trading candidates.
 - Vault discovery imports open normal vault addresses and their leader wallets as
   separate candidates, while skipping HLP protocol parent/child vaults. Vaults
   below the discovery `min_account_value_usd` threshold are skipped before the

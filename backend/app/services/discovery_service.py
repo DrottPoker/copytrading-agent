@@ -626,6 +626,7 @@ async def _run_discovery_import(
                 **source_result.metadata,
                 "skipReasons": run_skip_reasons,
             }
+            await session.commit()
             runs.append(run)
             await update_discovery_operation_progress(
                 session,
@@ -651,18 +652,26 @@ async def _run_discovery_import(
                 },
             )
         except Exception as exc:
-            await session.flush()
-            run.status = "failed"
-            run.error = str(exc) or exc.__class__.__name__
-            run.finished_at = datetime.now(UTC)
-            run.run_metadata = {"source": source}
-            runs.append(run)
+            error_message = str(exc) or exc.__class__.__name__
+            await session.rollback()
+            failed_run = DiscoveryImportRun(
+                id=run.id,
+                source=source,
+                status="failed",
+                requested_limit=limit,
+                error=error_message,
+                finished_at=datetime.now(UTC),
+                run_metadata={"source": source},
+            )
+            session.add(failed_run)
+            await session.commit()
+            runs.append(failed_run)
             await update_discovery_operation_progress(
                 session,
                 operation_payload,
                 stage="source_import",
                 stage_label="Importing candidates",
-                stage_detail=f"Source {source} failed: {str(exc) or exc.__class__.__name__}.",
+                stage_detail=f"Source {source} failed: {error_message}.",
                 progress_percent=progress_between(
                     start=0,
                     end=25,

@@ -72,7 +72,7 @@ async def mark_operation_started(
     key: str,
     payload: dict[str, Any] | None = None,
 ) -> None:
-    existing = await load_operation_value(session, key)
+    existing = await load_operation_value_for_update(session, key)
     now = now_iso()
     value = {
         **existing,
@@ -95,7 +95,7 @@ async def mark_operation_succeeded(
     key: str,
     payload: dict[str, Any] | None = None,
 ) -> None:
-    existing = await load_operation_value(session, key)
+    existing = await load_operation_value_for_update(session, key)
     now = now_iso()
     started_at = string_or_none(existing.get("startedAt")) or now
     value = {
@@ -120,7 +120,7 @@ async def mark_operation_progress(
     key: str,
     payload: dict[str, Any] | None = None,
 ) -> None:
-    existing = await load_operation_value(session, key)
+    existing = await load_operation_value_for_update(session, key)
     now = now_iso()
     value = {
         **existing,
@@ -141,7 +141,7 @@ async def mark_operation_failed(
     error: str,
     payload: dict[str, Any] | None = None,
 ) -> None:
-    existing = await load_operation_value(session, key)
+    existing = await load_operation_value_for_update(session, key)
     now = now_iso()
     started_at = string_or_none(existing.get("startedAt")) or now
     value = {
@@ -164,6 +164,14 @@ async def load_operation_value(session: AsyncSession, key: str) -> dict[str, Any
     if setting is None or not isinstance(setting.value, dict):
         return {}
     return dict(setting.value)
+
+
+async def load_operation_value_for_update(session: AsyncSession, key: str) -> dict[str, Any]:
+    sessionmaker = get_sessionmaker()
+    if sessionmaker is not None:
+        async with sessionmaker() as status_session:
+            return await load_operation_value(status_session, key)
+    return await load_operation_value(session, key)
 
 
 async def save_operation_value(
