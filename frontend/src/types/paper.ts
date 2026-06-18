@@ -21,6 +21,7 @@ export type PaperCopyAllocation = {
   id: string;
   accountKey: string;
   sourceWallet: string;
+  sourceLabel: string | null;
   rank: number;
   poolRank: number | null;
   score: string | null;
@@ -43,6 +44,7 @@ export type PaperPosition = {
   id: string;
   accountKey: string;
   sourceWallet: string;
+  sourceLabel: string | null;
   coin: string;
   side: "long" | "short";
   size: string;
@@ -66,6 +68,7 @@ export type PaperCopyFill = {
   id: string;
   accountKey: string;
   sourceWallet: string;
+  sourceLabel: string | null;
   sourceFillId: string;
   sequenceIndex: number;
   coin: string;
@@ -108,11 +111,13 @@ export type PaperTradingPolicy = {
 
 export type PaperWalletPerformance = {
   sourceWallet: string;
+  sourceLabel: string | null;
   rank: number | null;
   poolRank: number | null;
   score: string | null;
   allocationPct: string | null;
   active: boolean;
+  monitorStatus: "monitored" | "history";
   accountCount: number;
   openPositionCount: number;
   copiedFillCount: number;
@@ -130,6 +135,7 @@ export type PaperClosedTrade = {
   id: string;
   accountKey: string;
   sourceWallet: string;
+  sourceLabel: string | null;
   sourceFillId: string;
   coin: string;
   closeType: "close" | "flip_close";

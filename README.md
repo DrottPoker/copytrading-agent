@@ -130,6 +130,8 @@ Notes:
   10k stored perp fills, not 10k raw spot/perp fills.
 - Fill rows store only compact configured raw payload fields to keep database growth under control.
 - Wallet scores can be recalculated with `POST /scores/recalculate` and are shown in the wallet pool.
+- Wallet pool list and wallet detail responses include `poolRank`, which is the
+  current rank among wallets with a stored score.
 - Scoring reconstructs source perp trades and ignores close-only PnL from positions that opened before the observed import window.
 - Reconstructed source trades are materialized in `source_trades` and refreshed
   only when a wallet's fill count or latest fill timestamp changes.
@@ -311,8 +313,16 @@ Sizing policy:
 - The paper trading dashboard polls the summary API and separates total,
   realized, and unrealized PnL at the top of the page.
 - The dashboard shows paper accounts, monitored sources, currently trading
-  sources, open positions, wallet PnL history, and closed trade history as
-  compact lists without horizontal scrolling.
+  sources, open positions, wallet PnL history, closed trade history, and recent
+  fills as compact lists without horizontal scrolling.
+- Source, position, wallet-history, closed-trade, and fill rows show the wallet
+  label when available and fall back to the short address.
+- Source rows split source PnL into realized and unrealized values, with total
+  PnL shown as supporting context.
+- Wallet PnL history rows use `monitored` when the source has a realtime slot
+  and `history` otherwise.
+- Wallet PnL history, closed trade history, and recent fills show 10 rows per
+  page with pagination controls.
 - Account rows include a reset action that restores that account's configured
   starting balance, cash balance, equity, realized PnL, and fee counters while
   leaving open positions, copied fills, and closed trade history intact.

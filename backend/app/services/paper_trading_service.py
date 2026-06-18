@@ -80,6 +80,7 @@ class PaperAccountResetNotFoundError(PaperAccountResetError):
 @dataclass(frozen=True)
 class PaperSourceAllocation:
     source_wallet: str
+    source_label: str | None
     rank: int
     pool_rank: int | None
     score: Decimal | None
@@ -213,6 +214,17 @@ async def get_paper_trading_summary(
     recent_fills = list(fills_result.scalars().all())
     closed_trades = list(closed_trades_result.scalars().all())
     fill_performance_rows = list(fill_performance_result.mappings().all())
+    source_labels = await load_paper_source_labels(
+        session,
+        source_wallets=[
+            *(allocation.source_wallet for allocation in allocations),
+            *(position.source_wallet for position in positions),
+            *(fill.source_wallet for fill in recent_fills),
+            *(fill.source_wallet for fill in closed_trades),
+            *(row["source_wallet"] for row in fill_performance_rows if row["source_wallet"]),
+            *(allocation.source_wallet for allocation in source_allocations.values()),
+        ],
+    )
 
     if client is None:
         async with HyperliquidClient(resolved_settings) as hyperliquid_client:
@@ -234,6 +246,7 @@ async def get_paper_trading_summary(
             position,
             mark_price=resolve_coin_decimal(market_prices, position.coin),
             price_updated_at=updated_at if position.coin in market_prices else None,
+            source_label=source_labels.get(position.source_wallet.lower()),
         )
         for position in positions
     ]
@@ -245,6 +258,7 @@ async def get_paper_trading_summary(
             allocations=allocations,
             positions=position_rows,
             source_allocations=source_allocations,
+            source_labels=source_labels,
         ),
         positions=position_rows,
         wallet_performance=paper_wallet_performance_reads(
@@ -252,9 +266,10 @@ async def get_paper_trading_summary(
             positions=position_rows,
             fill_performance_rows=fill_performance_rows,
             source_allocations=source_allocations,
+            source_labels=source_labels,
         ),
-        closed_trades=paper_closed_trade_reads(closed_trades),
-        recent_fills=recent_fills,
+        closed_trades=paper_closed_trade_reads(closed_trades, source_labels=source_labels),
+        recent_fills=paper_copy_fill_reads(recent_fills, source_labels=source_labels),
         updated_at=updated_at,
         market_data_status=market_data_status(
             open_position_count=len(positions),
@@ -448,8 +463,10 @@ async def load_paper_allocation_for_position(
         )
     )
     if allocation is None:
+        source_label = await load_paper_source_label(session, position.source_wallet)
         return PaperSourceAllocation(
             source_wallet=position.source_wallet,
+            source_label=source_label,
             rank=0,
             pool_rank=None,
             score=None,
@@ -460,6 +477,7 @@ async def load_paper_allocation_for_position(
         )
     return PaperSourceAllocation(
         source_wallet=allocation.source_wallet,
+        source_label=await load_paper_source_label(session, allocation.source_wallet),
         rank=allocation.rank,
         pool_rank=allocation.rank,
         score=allocation.score,
@@ -503,6 +521,7 @@ def paper_position_read(
     *,
     mark_price: Decimal | None,
     price_updated_at: datetime | None,
+    source_label: str | None,
 ) -> dict[str, Any]:
     current_notional = (
         abs(position.size) * mark_price
@@ -514,6 +533,7 @@ def paper_position_read(
         "id": position.id,
         "account_key": position.account_key,
         "source_wallet": position.source_wallet,
+        "source_label": source_label,
         "coin": position.coin,
         "side": position.side,
         "size": position.size,
@@ -604,6 +624,7 @@ def paper_allocation_reads(
     allocations: list[PaperCopyAllocation],
     positions: list[dict[str, Any]],
     source_allocations: dict[str, PaperSourceAllocation],
+    source_labels: dict[str, str],
 ) -> list[dict[str, Any]]:
     account_enabled_by_key = {account.key: account.enabled for account in accounts}
     open_margin_by_allocation: dict[tuple[str, str], Decimal] = {}
@@ -659,6 +680,7 @@ def paper_allocation_reads(
                 "id": allocation.id,
                 "account_key": allocation.account_key,
                 "source_wallet": allocation.source_wallet,
+                "source_label": source_labels.get(source_wallet),
                 "rank": allocation.rank,
                 "pool_rank": pool_rank,
                 "score": allocation.score,
@@ -733,6 +755,7 @@ def paper_wallet_performance_reads(
     positions: list[dict[str, Any]],
     fill_performance_rows: list[dict[str, Any]],
     source_allocations: dict[str, PaperSourceAllocation],
+    source_labels: dict[str, str],
 ) -> list[dict[str, Any]]:
     sources = {
         allocation.source_wallet.lower()
@@ -768,6 +791,11 @@ def paper_wallet_performance_reads(
         source_positions = positions_by_source.get(source, [])
         fill_row = fills_by_source.get(source, {})
         source_allocation = source_allocations.get(source)
+        has_realtime_slot = (
+            source_allocation.has_realtime_slot
+            if source_allocation is not None
+            else any(allocation.active for allocation in allocation_rows)
+        )
         unrealized_pnl = sum_decimal(
             position["unrealized_pnl_usd"] for position in source_positions
         )
@@ -778,6 +806,7 @@ def paper_wallet_performance_reads(
         rows.append(
             {
                 "source_wallet": source,
+                "source_label": source_labels.get(source),
                 "rank": min((allocation.rank for allocation in allocation_rows), default=None),
                 "pool_rank": (
                     source_allocation.pool_rank
@@ -787,6 +816,7 @@ def paper_wallet_performance_reads(
                 "score": first_decimal(allocation.score for allocation in allocation_rows),
                 "allocation_pct": allocation_pct,
                 "active": any(allocation.active for allocation in allocation_rows),
+                "monitor_status": "monitored" if has_realtime_slot else "history",
                 "account_count": len({allocation.account_key for allocation in allocation_rows}),
                 "open_position_count": len(source_positions),
                 "copied_fill_count": int(fill_row.get("copied_fill_count") or 0),
@@ -815,12 +845,17 @@ def paper_wallet_performance_reads(
     )
 
 
-def paper_closed_trade_reads(fills: list[PaperCopyFill]) -> list[dict[str, Any]]:
+def paper_closed_trade_reads(
+    fills: list[PaperCopyFill],
+    *,
+    source_labels: dict[str, str],
+) -> list[dict[str, Any]]:
     return [
         {
             "id": fill.id,
             "account_key": fill.account_key,
             "source_wallet": fill.source_wallet,
+            "source_label": source_labels.get(fill.source_wallet.lower()),
             "source_fill_id": fill.source_fill_id,
             "coin": fill.coin,
             "close_type": fill.action,
@@ -834,6 +869,45 @@ def paper_closed_trade_reads(fills: list[PaperCopyFill]) -> list[dict[str, Any]]
             "realized_pnl_usd": fill.realized_pnl_usd,
             "net_pnl_usd": fill.realized_pnl_usd - fill.fee_usd,
             "closed_at": fill.filled_at,
+            "created_at": fill.created_at,
+        }
+        for fill in fills
+    ]
+
+
+def paper_copy_fill_reads(
+    fills: list[PaperCopyFill],
+    *,
+    source_labels: dict[str, str],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": fill.id,
+            "account_key": fill.account_key,
+            "source_wallet": fill.source_wallet,
+            "source_label": source_labels.get(fill.source_wallet.lower()),
+            "source_fill_id": fill.source_fill_id,
+            "sequence_index": fill.sequence_index,
+            "coin": fill.coin,
+            "action": fill.action,
+            "side": fill.side,
+            "price": fill.price,
+            "size": fill.size,
+            "notional_usd": fill.notional_usd,
+            "leverage": fill.leverage,
+            "margin_usd": fill.margin_usd,
+            "fee_usd": fill.fee_usd,
+            "realized_pnl_usd": fill.realized_pnl_usd,
+            "source_price": fill.source_price,
+            "source_size": fill.source_size,
+            "source_notional_usd": fill.source_notional_usd,
+            "source_perp_equity_usd": fill.source_perp_equity_usd,
+            "source_account_value_usd": fill.source_perp_equity_usd,
+            "source_exposure_pct": fill.source_exposure_pct,
+            "allocation_pct": fill.allocation_pct,
+            "allocation_usd": fill.allocation_usd,
+            "skipped_reason": fill.skipped_reason,
+            "filled_at": fill.filled_at,
             "created_at": fill.created_at,
         }
         for fill in fills
@@ -1302,12 +1376,15 @@ async def load_paper_copy_allocations_for_source(
     source_wallet: str,
 ) -> dict[str, PaperSourceAllocation]:
     result = await session.execute(
-        select(PaperCopyAllocation).where(PaperCopyAllocation.source_wallet == source_wallet)
+        select(PaperCopyAllocation, WatchedWallet.label)
+        .outerjoin(WatchedWallet, WatchedWallet.address == PaperCopyAllocation.source_wallet)
+        .where(PaperCopyAllocation.source_wallet == source_wallet)
     )
     rows: dict[str, PaperSourceAllocation] = {}
-    for allocation in result.scalars().all():
+    for allocation, source_label in result.all():
         rows[allocation.account_key] = PaperSourceAllocation(
             source_wallet=allocation.source_wallet,
+            source_label=str(source_label) if source_label else None,
             rank=allocation.rank,
             pool_rank=allocation.rank,
             score=allocation.score,
@@ -1596,6 +1673,32 @@ async def sync_paper_trading_accounts(
     return list(result.scalars().all())
 
 
+async def load_paper_source_label(session: AsyncSession, source_wallet: str) -> str | None:
+    labels = await load_paper_source_labels(session, source_wallets=[source_wallet])
+    return labels.get(source_wallet.lower())
+
+
+async def load_paper_source_labels(
+    session: AsyncSession,
+    *,
+    source_wallets: list[str],
+) -> dict[str, str]:
+    normalized = sorted({wallet.lower() for wallet in source_wallets if wallet})
+    if not normalized:
+        return {}
+
+    result = await session.execute(
+        select(WatchedWallet.address, WatchedWallet.label).where(
+            WatchedWallet.address.in_(normalized)
+        )
+    )
+    return {
+        str(address).lower(): str(label)
+        for address, label in result.all()
+        if address and label
+    }
+
+
 async def reset_paper_trading_account_balance(
     session: AsyncSession,
     *,
@@ -1666,7 +1769,9 @@ async def load_paper_source_allocations(
             ranked_pool.c.address,
             ranked_pool.c.score,
             ranked_pool.c.pool_rank,
+            WatchedWallet.label.label("source_label"),
         )
+        .join(WatchedWallet, WatchedWallet.address == ranked_pool.c.address)
         .where(*candidate_filters)
         .order_by(ranked_pool.c.pool_rank.asc())
         .limit(settings.paper_copy_top_wallet_count)
@@ -1675,6 +1780,7 @@ async def load_paper_source_allocations(
     open_source_result = await session.execute(
         select(
             PaperPosition.source_wallet,
+            WatchedWallet.label.label("source_label"),
             WalletScore.score.label("score"),
             WalletScore.current_drawdown_status.label("current_drawdown_status"),
             WatchedWallet.enabled.label("wallet_enabled"),
@@ -1692,6 +1798,7 @@ async def load_paper_source_allocations(
         .where(PaperPosition.source_wallet != "")
         .group_by(
             PaperPosition.source_wallet,
+            WatchedWallet.label,
             WalletScore.score,
             WalletScore.current_drawdown_status,
             WatchedWallet.enabled,
@@ -1735,6 +1842,7 @@ async def load_paper_source_allocations(
         allocations.append(
             PaperSourceAllocation(
                 source_wallet=source_wallet,
+                source_label=str(row["source_label"]) if row["source_label"] else None,
                 rank=pool_rank,
                 pool_rank=pool_rank,
                 score=row["score"],
@@ -1760,6 +1868,7 @@ async def load_paper_source_allocations(
         allocations.append(
             PaperSourceAllocation(
                 source_wallet=source_wallet,
+                source_label=str(row["source_label"]) if row["source_label"] else None,
                 rank=pool_rank or retained_rank,
                 pool_rank=pool_rank,
                 score=row["score"],

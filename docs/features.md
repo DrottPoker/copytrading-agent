@@ -61,6 +61,8 @@ What it does:
 - Forces cooldown state.
 - Stores labels and notes.
 - Shows last seen fill time.
+- Shows each wallet's current `poolRank`, based on the latest score ordering.
+- Wallet detail pages also show that wallet's current pool rank.
 - Deleting a wallet removes its fills, scores, positions, copy rows, and source
   links so removed pool wallets do not leave orphan fill data behind.
 
@@ -341,6 +343,7 @@ Dashboard page:
 What it does:
 
 - Shows wallet-level statistics.
+- Shows the wallet's current rank in the scored wallet pool.
 - Shows total fills, notional, PnL, fees, win rate, latency, and realtime/snapshot split.
 - Shows 24h, 7d, and 30d windows with PnL, net ROI, notional, fees, and fills.
 - Shows top traded coins.
@@ -494,7 +497,10 @@ What it does:
 - Publishes `paper_copy` events to the live feed when realtime fills are simulated.
 - The paper trading dashboard polls the summary API and shows account PnL,
   monitored sources, currently trading sources, open position PnL, wallet PnL
-  history, and closed trade history without a full page refresh.
+  history, closed trade history, and recent fills without a full page refresh.
+- The summary API attaches wallet labels to paper allocation, position,
+  wallet-history, closed-trade, and recent-fill rows. The UI shows the label
+  when available and falls back to the short address.
 - Account rows include a reset action that restores the account to its
   configured starting balance and clears account-level realized PnL and fees
   without deleting open paper positions, copied fills, or closed trade history.
@@ -509,8 +515,14 @@ What it does:
   monitor slot or retained-source order. Retained rows also show the blocking
   reason, such as outside copy top 10, drawdown blocked, paper account disabled,
   cooldown, or missing score.
+- Source rows split source PnL into realized and unrealized values, with total
+  PnL shown as supporting context.
 - The dashboard separates total, realized, and unrealized PnL and uses compact
   responsive list rows instead of wide tables or large cards.
+- Wallet PnL history rows show `monitored` when the source has a realtime slot
+  and `history` otherwise.
+- Wallet PnL history, closed trade history, and recent fills are paginated at
+  10 rows per page.
 
 Config:
 

@@ -28,6 +28,7 @@ class PaperCopyAllocationRead(CamelModel):
     id: UUID
     account_key: str
     source_wallet: str
+    source_label: str | None = None
     rank: int
     pool_rank: int | None = None
     score: Decimal | None
@@ -50,6 +51,7 @@ class PaperPositionRead(CamelModel):
     id: UUID
     account_key: str
     source_wallet: str
+    source_label: str | None = None
     coin: str
     side: str
     size: Decimal
@@ -73,6 +75,7 @@ class PaperCopyFillRead(CamelModel):
     id: UUID
     account_key: str
     source_wallet: str
+    source_label: str | None = None
     source_fill_id: str
     sequence_index: int
     coin: str
@@ -115,11 +118,13 @@ class PaperTradingPolicyRead(CamelModel):
 
 class PaperWalletPerformanceRead(CamelModel):
     source_wallet: str
+    source_label: str | None = None
     rank: int | None = None
     pool_rank: int | None = None
     score: Decimal | None = None
     allocation_pct: Decimal | None = None
     active: bool
+    monitor_status: str = "history"
     account_count: int
     open_position_count: int
     copied_fill_count: int
@@ -137,6 +142,7 @@ class PaperClosedTradeRead(CamelModel):
     id: UUID
     account_key: str
     source_wallet: str
+    source_label: str | None = None
     source_fill_id: str
     coin: str
     close_type: str

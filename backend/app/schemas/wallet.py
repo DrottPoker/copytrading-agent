@@ -51,6 +51,7 @@ class WalletRead(CamelModel):
     id: UUID
     address: str
     label: str | None
+    pool_rank: int | None = None
     enabled: bool
     eligible: bool
     copy_enabled: bool

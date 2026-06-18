@@ -14,7 +14,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 
 import { getPublicApiBaseUrl } from "@/lib/config";
@@ -29,6 +29,7 @@ import {
 import type {
   PaperClosedTrade,
   PaperCopyAllocation,
+  PaperCopyFill,
   PaperPosition,
   PaperTradingAccount,
   PaperTradingSummaryResponse,
@@ -38,11 +39,13 @@ import type {
 import { StatusPill } from "./StatusPill";
 
 const PAPER_REFRESH_MS = 4000;
+const HISTORY_PAGE_SIZE = 10;
 
 type Tone = "positive" | "warning" | "danger" | "neutral";
 
 type MonitoredSource = {
   sourceWallet: string;
+  sourceLabel: string | null;
   rank: number | null;
   poolRank: number | null;
   score: string | null;
@@ -310,21 +313,34 @@ export function PaperTradingDashboard({
       </section>
 
       <section className="grid gap-3 2xl:grid-cols-[0.95fr_1.05fr]">
-        <ListPanel title="Wallet PnL History" meta={`${formatInteger(walletHistory.length)} traded sources`}>
-          {walletHistory.length === 0 ? (
-            <EmptyState text="No wallet trading history yet." />
-          ) : (
-            walletHistory.map((wallet) => <WalletHistoryRow key={wallet.sourceWallet} wallet={wallet} />)
-          )}
-        </ListPanel>
+        <PaginatedListPanel
+          emptyText="No wallet trading history yet."
+          getKey={(wallet) => wallet.sourceWallet}
+          items={walletHistory}
+          meta={`${formatInteger(walletHistory.length)} traded sources`}
+          renderItem={(wallet) => <WalletHistoryRow wallet={wallet} />}
+          title="Wallet PnL History"
+        />
 
-        <ListPanel title="Closed Trade History" meta={`${formatInteger(summary.closedTrades.length)} closed trades`}>
-          {summary.closedTrades.length === 0 ? (
-            <EmptyState text="No closed paper trades yet." />
-          ) : (
-            summary.closedTrades.map((trade) => <ClosedTradeRow key={trade.id} trade={trade} />)
-          )}
-        </ListPanel>
+        <PaginatedListPanel
+          emptyText="No closed paper trades yet."
+          getKey={(trade) => trade.id}
+          items={summary.closedTrades}
+          meta={`${formatInteger(summary.closedTrades.length)} closed trades`}
+          renderItem={(trade) => <ClosedTradeRow trade={trade} />}
+          title="Closed Trade History"
+        />
+      </section>
+
+      <section>
+        <PaginatedListPanel
+          emptyText="No paper fills recorded yet."
+          getKey={(fill) => fill.id}
+          items={summary.recentFills}
+          meta={`${formatInteger(summary.recentFills.length)} recent fills`}
+          renderItem={(fill) => <PaperFillRow fill={fill} />}
+          title="Recent Fills"
+        />
       </section>
     </>
   );
@@ -379,6 +395,97 @@ function ListPanel({
       </div>
       <div>{children}</div>
     </section>
+  );
+}
+
+function PaginatedListPanel<T>({
+  emptyText,
+  getKey,
+  items,
+  meta,
+  renderItem,
+  title,
+}: {
+  emptyText: string;
+  getKey: (item: T) => string;
+  items: T[];
+  meta: string;
+  renderItem: (item: T) => ReactNode;
+  title: string;
+}) {
+  const [page, setPage] = useState(0);
+  const pageCount = Math.max(1, Math.ceil(items.length / HISTORY_PAGE_SIZE));
+  const safePage = Math.min(page, pageCount - 1);
+
+  useEffect(() => {
+    if (page !== safePage) {
+      setPage(safePage);
+    }
+  }, [page, safePage]);
+
+  const visibleItems = items.slice(
+    safePage * HISTORY_PAGE_SIZE,
+    safePage * HISTORY_PAGE_SIZE + HISTORY_PAGE_SIZE,
+  );
+
+  return (
+    <ListPanel title={title} meta={meta}>
+      {items.length === 0 ? (
+        <EmptyState text={emptyText} />
+      ) : (
+        <>
+          {visibleItems.map((item) => (
+            <Fragment key={getKey(item)}>{renderItem(item)}</Fragment>
+          ))}
+          <PaginationControls
+            page={safePage}
+            pageCount={pageCount}
+            onNext={() => setPage((current) => Math.min(current + 1, pageCount - 1))}
+            onPrevious={() => setPage((current) => Math.max(current - 1, 0))}
+          />
+        </>
+      )}
+    </ListPanel>
+  );
+}
+
+function PaginationControls({
+  onNext,
+  onPrevious,
+  page,
+  pageCount,
+}: {
+  onNext: () => void;
+  onPrevious: () => void;
+  page: number;
+  pageCount: number;
+}) {
+  if (pageCount <= 1) {
+    return null;
+  }
+
+  return (
+    <div className="flex items-center justify-between gap-3 border-t border-line px-3 py-2">
+      <button
+        type="button"
+        onClick={onPrevious}
+        disabled={page === 0}
+        className="inline-flex h-8 items-center rounded-md border border-line bg-white px-3 text-xs font-semibold text-ink hover:bg-[#f7f9fb] disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        Previous
+      </button>
+      <p className="text-xs text-[#5b6770]">
+        Page {formatInteger(page + 1)} of {formatInteger(pageCount)}
+      </p>
+      <button
+        type="button"
+        onClick={onNext}
+        disabled={page >= pageCount - 1}
+        className="inline-flex h-8 items-center rounded-md border border-line bg-white px-3 text-xs font-semibold text-ink hover:bg-[#f7f9fb] disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        Next
+      </button>
+    </div>
   );
 }
 
@@ -462,23 +569,27 @@ function SourceRow({ source }: { source: MonitoredSource }) {
         : "neutral";
   return (
     <ListRow>
-      <div className="grid gap-2 lg:grid-cols-[1.05fr_0.8fr_1.15fr_0.9fr] lg:items-center">
+      <div className="grid gap-2 lg:grid-cols-[1.05fr_0.75fr_0.75fr_1.1fr_0.9fr] lg:items-center">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <Link
               href={`/wallets/${source.sourceWallet}`}
-              className="truncate font-mono text-xs font-semibold text-ink hover:text-[#297c73]"
+              className="truncate text-sm font-semibold text-ink hover:text-[#297c73]"
             >
-              {shortAddress(source.sourceWallet)}
+              {sourceDisplayName(source.sourceLabel, source.sourceWallet)}
             </Link>
             <StatusPill label={source.monitorStatus} tone={monitorTone} />
             <StatusPill label={formatSourceStatus(source.sourceStatus)} tone={sourceTone} />
           </div>
+          <p className="mt-1 truncate font-mono text-xs text-[#5b6770]">
+            {shortAddress(source.sourceWallet)}
+          </p>
           <p className="mt-1 text-xs text-[#5b6770]">
             {formatPoolRank(source.poolRank)}, {formatScore(source.score)} score, {formatInteger(source.accountCount)} accounts, {sourceStatusDetail(source)}
           </p>
         </div>
-        <RowStat label="PnL" value={formatCurrency(source.totalPnlUsd)} tone={numberValue(source.totalPnlUsd) >= 0 ? "positive" : "danger"} />
+        <RowStat label="Realized" value={formatCurrency(source.realizedPnlUsd)} tone={numberValue(source.realizedPnlUsd) >= 0 ? "positive" : "danger"} />
+        <RowStat label="Unrealized" value={formatCurrency(source.unrealizedPnlUsd)} detail={`Total ${formatCurrency(source.totalPnlUsd)}`} tone={numberValue(source.unrealizedPnlUsd) >= 0 ? "positive" : "danger"} />
         <div className="min-w-0">
           <div className="flex items-center justify-between gap-2 text-xs">
             <span className="font-medium uppercase text-[#5b6770]">Pocket</span>
@@ -526,11 +637,13 @@ function PositionRow({
           </div>
           <Link
             href={`/wallets/${position.sourceWallet}`}
-            className="mt-1 block truncate font-mono text-xs text-ink hover:text-[#297c73]"
+            className="mt-1 block truncate text-xs font-semibold text-ink hover:text-[#297c73]"
           >
-            {shortAddress(position.sourceWallet)}
+            {sourceDisplayName(position.sourceLabel, position.sourceWallet)}
           </Link>
-          <p className="mt-1 truncate font-mono text-xs text-[#5b6770]">{position.accountKey}</p>
+          <p className="mt-1 truncate font-mono text-xs text-[#5b6770]">
+            {shortAddress(position.sourceWallet)} | {position.accountKey}
+          </p>
         </div>
         <RowStat label="Unrealized" value={formatCurrency(position.unrealizedPnlUsd)} detail={formatPercent(position.unrealizedPnlPct)} tone={unrealizedPnl >= 0 ? "positive" : "danger"} />
         <RowStat label="Margin" value={formatCurrency(position.marginUsd)} detail={`${formatCurrency(position.currentNotionalUsd ?? position.notionalUsd)} notional`} />
@@ -553,6 +666,7 @@ function PositionRow({
 
 function WalletHistoryRow({ wallet }: { wallet: PaperWalletPerformance }) {
   const totalPnl = numberValue(wallet.totalPnlUsd);
+  const isMonitored = wallet.monitorStatus === "monitored";
   return (
     <ListRow>
       <div className="grid gap-2 xl:grid-cols-[1.05fr_repeat(5,minmax(0,0.75fr))] xl:items-center">
@@ -560,15 +674,18 @@ function WalletHistoryRow({ wallet }: { wallet: PaperWalletPerformance }) {
           <div className="flex flex-wrap items-center gap-2">
             <Link
               href={`/wallets/${wallet.sourceWallet}`}
-              className="truncate font-mono text-xs font-semibold text-ink hover:text-[#297c73]"
+              className="truncate text-sm font-semibold text-ink hover:text-[#297c73]"
             >
-              {shortAddress(wallet.sourceWallet)}
+              {sourceDisplayName(wallet.sourceLabel, wallet.sourceWallet)}
             </Link>
             <StatusPill
-              label={wallet.openPositionCount > 0 ? "trading" : wallet.active ? "monitored" : "history"}
-              tone={wallet.openPositionCount > 0 ? "positive" : wallet.active ? "neutral" : "warning"}
+              label={isMonitored ? "monitored" : "history"}
+              tone={isMonitored ? "positive" : "neutral"}
             />
           </div>
+          <p className="mt-1 truncate font-mono text-xs text-[#5b6770]">
+            {shortAddress(wallet.sourceWallet)}
+          </p>
           <p className="mt-1 text-xs text-[#5b6770]">
             {formatPoolRank(wallet.poolRank)}, {formatScore(wallet.score)} score
           </p>
@@ -596,17 +713,58 @@ function ClosedTradeRow({ trade }: { trade: PaperClosedTrade }) {
           </div>
           <Link
             href={`/wallets/${trade.sourceWallet}`}
-            className="mt-1 block truncate font-mono text-xs text-ink hover:text-[#297c73]"
+            className="mt-1 block truncate text-xs font-semibold text-ink hover:text-[#297c73]"
           >
-            {shortAddress(trade.sourceWallet)}
+            {sourceDisplayName(trade.sourceLabel, trade.sourceWallet)}
           </Link>
-          <p className="mt-1 truncate font-mono text-xs text-[#5b6770]">{trade.accountKey}</p>
+          <p className="mt-1 truncate font-mono text-xs text-[#5b6770]">
+            {shortAddress(trade.sourceWallet)} | {trade.accountKey}
+          </p>
         </div>
         <RowStat label="Net PnL" value={formatCurrency(trade.netPnlUsd)} detail={`${formatCurrency(trade.realizedPnlUsd)} realized`} tone={netPnl >= 0 ? "positive" : "danger"} />
         <RowStat label="Closed" value={formatDate(trade.closedAt)} />
         <RowStat label="Exit" value={formatPrice(trade.exitPrice)} detail={`size ${formatSize(trade.size)}`} />
         <RowStat label="Notional" value={formatCurrency(trade.notionalUsd)} detail={`${formatCurrency(trade.marginUsd)} margin`} />
         <RowStat label="Fee" value={formatCurrency(trade.feeUsd)} detail={formatLeverage(trade.leverage)} />
+      </div>
+    </ListRow>
+  );
+}
+
+function PaperFillRow({ fill }: { fill: PaperCopyFill }) {
+  const realizedPnl = numberValue(fill.realizedPnlUsd);
+  const actionTone: Tone =
+    fill.action === "skip" ? "warning" : fill.action.includes("close") ? "neutral" : "positive";
+
+  return (
+    <ListRow>
+      <div className="grid gap-2 xl:grid-cols-[1.05fr_0.7fr_0.85fr_0.85fr_0.85fr_0.9fr] xl:items-center">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <Link
+              href={`/wallets/${fill.sourceWallet}`}
+              className="truncate text-sm font-semibold text-ink hover:text-[#297c73]"
+            >
+              {sourceDisplayName(fill.sourceLabel, fill.sourceWallet)}
+            </Link>
+            <StatusPill label={fill.action} tone={actionTone} />
+            {fill.side ? (
+              <StatusPill label={fill.side} tone={fill.side === "long" ? "positive" : "warning"} />
+            ) : null}
+          </div>
+          <p className="mt-1 truncate font-mono text-xs text-[#5b6770]">
+            {shortAddress(fill.sourceWallet)} | {fill.accountKey}
+          </p>
+        </div>
+        <RowStat label="Market" value={fill.coin} detail={formatDate(fill.filledAt)} />
+        <RowStat label="Notional" value={formatCurrency(fill.notionalUsd)} detail={`${formatCurrency(fill.marginUsd)} margin`} />
+        <RowStat label="Realized" value={formatCurrency(fill.realizedPnlUsd)} tone={realizedPnl >= 0 ? "positive" : "danger"} />
+        <RowStat label="Price" value={formatPrice(fill.price)} detail={`size ${formatSize(fill.size)}`} />
+        <RowStat
+          label={fill.skippedReason ? "Skip reason" : "Fee"}
+          value={fill.skippedReason ? reasonLabel(fill.skippedReason) : formatCurrency(fill.feeUsd)}
+          detail={formatLeverage(fill.leverage)}
+        />
       </div>
     </ListRow>
   );
@@ -712,6 +870,11 @@ function buildMonitoredSources(summary: PaperTradingSummaryResponse): MonitoredS
       const sourceStatus = resolveSourceStatus(allocations, openPositions.length);
       return {
         sourceWallet: source,
+        sourceLabel:
+          firstString(allocations.map((allocation) => allocation.sourceLabel)) ??
+          wallet?.sourceLabel ??
+          firstString(openPositions.map((position) => position.sourceLabel)) ??
+          null,
         rank: minNumber(allocations.map((allocation) => allocation.rank)),
         poolRank: minNumber(allocations.map((allocation) => allocation.poolRank)),
         score: firstString(allocations.map((allocation) => allocation.score)) ?? wallet?.score ?? null,
@@ -977,6 +1140,15 @@ function formatCloseType(value: string) {
     return "flip close";
   }
   return value;
+}
+
+function reasonLabel(value: string) {
+  return value.replaceAll("_", " ");
+}
+
+function sourceDisplayName(label: string | null | undefined, address: string) {
+  const trimmed = label?.trim();
+  return trimmed || shortAddress(address);
 }
 
 function marketStatusLabel(status: PaperTradingSummaryResponse["marketDataStatus"]) {

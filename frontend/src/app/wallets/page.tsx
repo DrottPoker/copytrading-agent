@@ -162,6 +162,7 @@ export default async function WalletsPage({ searchParams }: WalletsPageProps) {
             <thead className="border-b border-line bg-[#f8fafb] text-xs uppercase text-[#5b6770]">
               <tr>
                 <th className="px-4 py-3 font-semibold">Wallet</th>
+                <th className="px-4 py-3 font-semibold">Pool rank</th>
                 <th className="px-4 py-3 font-semibold">Final score</th>
                 <th className="px-4 py-3 font-semibold">PnL / risk</th>
                 <th className="px-4 py-3 font-semibold">Copyability</th>
@@ -173,7 +174,7 @@ export default async function WalletsPage({ searchParams }: WalletsPageProps) {
             <tbody>
               {sortedWallets.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-10 text-center text-[#5b6770]">
+                  <td colSpan={8} className="px-4 py-10 text-center text-[#5b6770]">
                     {isSearching ? "No wallets match this search." : "No wallets added yet."}
                   </td>
                 </tr>
@@ -237,6 +238,11 @@ function WalletRow({ wallet }: { wallet: Wallet }) {
             <p className="mt-1 max-w-[260px] truncate text-xs text-[#5b6770]">{wallet.notes}</p>
           ) : null}
         </div>
+      </td>
+      <td className="px-4 py-3 align-top">
+        <span className="font-mono text-sm font-semibold">
+          {wallet.poolRank ? `#${formatInteger(wallet.poolRank)}` : "Unranked"}
+        </span>
       </td>
       <td className="px-4 py-3 align-top">
         <ScoreCell wallet={wallet} />

@@ -30,9 +30,14 @@ async def list_wallets(
             )
         )
 
-    base_query = select(WatchedWallet, WalletScore).outerjoin(
-        WalletScore,
-        WalletScore.wallet_address == WatchedWallet.address,
+    ranked_scores = wallet_pool_rank_cte()
+    base_query = (
+        select(WatchedWallet, WalletScore, ranked_scores.c.pool_rank)
+        .outerjoin(
+            WalletScore,
+            WalletScore.wallet_address == WatchedWallet.address,
+        )
+        .outerjoin(ranked_scores, ranked_scores.c.wallet_address == WatchedWallet.address)
     )
     count_query = select(func.count()).select_from(WatchedWallet)
     for condition in filters:
@@ -49,17 +54,20 @@ async def list_wallets(
     )
     total = await session.scalar(count_query)
     wallets: list[WatchedWallet] = []
-    for wallet, score in result.all():
+    for wallet, score, pool_rank in result.all():
         wallet.score = score
+        wallet.pool_rank = int(pool_rank) if pool_rank is not None else None
         wallets.append(wallet)
     return wallets, int(total or 0)
 
 
 async def get_wallet(session: AsyncSession, address: str) -> WatchedWallet:
     normalized_address = normalize_wallet_address(address)
+    ranked_scores = wallet_pool_rank_cte()
     result = await session.execute(
-        select(WatchedWallet, WalletScore)
+        select(WatchedWallet, WalletScore, ranked_scores.c.pool_rank)
         .outerjoin(WalletScore, WalletScore.wallet_address == WatchedWallet.address)
+        .outerjoin(ranked_scores, ranked_scores.c.wallet_address == WatchedWallet.address)
         .where(WatchedWallet.address == normalized_address)
     )
     row = result.one_or_none()
@@ -67,7 +75,27 @@ async def get_wallet(session: AsyncSession, address: str) -> WatchedWallet:
     if wallet is None:
         raise WalletNotFoundError(normalized_address)
     wallet.score = row[1]
+    wallet.pool_rank = int(row[2]) if row[2] is not None else None
     return wallet
+
+
+def wallet_pool_rank_cte():
+    return (
+        select(
+            WalletScore.wallet_address,
+            func.row_number()
+            .over(
+                order_by=(
+                    WalletScore.score.desc(),
+                    WalletScore.updated_at.desc(),
+                    WalletScore.wallet_address.asc(),
+                )
+            )
+            .label("pool_rank"),
+        )
+        .where(WalletScore.score.is_not(None))
+        .cte("wallet_pool_rank")
+    )
 
 
 async def create_wallet(session: AsyncSession, payload: WalletCreate) -> WatchedWallet:

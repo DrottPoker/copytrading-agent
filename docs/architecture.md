@@ -355,6 +355,9 @@ materialized trade metrics, then returns gross score, penalty, final score
 before sample cap, sample cap, component weights, weighted scores, and
 input-level explanations for each scoring part. The modal is explanatory only
 and does not write scoring data.
+Wallet list and wallet detail responses expose `poolRank`, which is calculated
+from the latest stored wallet score ordering and is independent of realtime
+monitor slots.
 The scoring job lock uses a 30 minute TTL so a killed scoring process does not
 block future runs for the longer maintenance lock window.
 
@@ -460,7 +463,7 @@ sequenceDiagram
   API->>DB: sync configured accounts and load paper state
   API->>HL: current market prices for open paper positions
   API->>API: compute unrealized PnL and source-wallet PnL
-  API-->>UI: accounts, allocations, positions, wallet PnL, closed trades
+  API-->>UI: accounts, allocations, positions, wallet PnL, closed trades, recent fills
   UI->>API: POST /paper-trading/accounts/{account_key}/reset
   API->>DB: reset configured account balance counters only
   API-->>UI: refreshed paper trading summary
@@ -511,9 +514,10 @@ Retained sources outside the current top 10 keep their allocation record only
 for managing existing exposure. They can add to matching open paper positions
 and can reduce or close them, but new entries are skipped with
 `retained_source_new_position_blocked`.
-The paper summary reports slot state separately from trade state. `monitorStatus`
-is `monitored` or `waiting`; `sourceStatus` is `trading`, `retained`,
-`waiting_for_trades`, or `waiting_for_slot`.
+The paper summary reports slot state separately from trade state. Allocation rows
+use `monitorStatus` as `monitored` or `waiting`. Wallet PnL history rows use
+`monitorStatus` as `monitored` or `history`. `sourceStatus` is `trading`,
+`retained`, `waiting_for_trades`, or `waiting_for_slot`.
 The dashboard aggregates allocation status across paper accounts when rendering
 source rows, so a source is shown as `trading` when at least one account can
 open or manage that source and the source has open paper exposure.
@@ -542,6 +546,9 @@ position snapshots store Hyperliquid `positionValue` in
 The paper summary exposes closed trade history separately from raw recent fills.
 Closed trade rows are derived from paper `close` and `flip_close` executions,
 so dashboard trade history is not a skip or fill activity log.
+Recent fills remain available in the summary as the diagnostic fill and skip
+activity log, and the paper trading page renders them in a separate paginated
+list at the bottom of the page.
 
 Discovery candidate source metrics use explicit unit-bearing database columns:
 `source_account_value_usd`, `source_pnl_usd`, and `source_roi_pct`.
@@ -549,6 +556,13 @@ Discovery candidate source metrics use explicit unit-bearing database columns:
 The paper trading page is a client dashboard that polls the summary API for live
 mark prices and unrealized PnL. The API also aggregates source-wallet PnL from
 all copied fills, not just the most recent fill rows shown in the UI.
+The summary attaches wallet labels to allocation, position, wallet-history,
+closed-trade, and recent-fill rows. The UI uses labels as the primary source
+name and falls back to the short wallet address. Source rows split realized and
+unrealized source PnL, while account-level totals remain split into total,
+realized, and unrealized PnL.
+Wallet PnL history, closed trade history, and recent fills are shown 10 rows per
+page with pagination controls.
 Account reset actions restore the configured starting capital and clear
 account-level realized PnL and fee counters, but they do not delete open paper
 positions, copied fills, or closed trade history.

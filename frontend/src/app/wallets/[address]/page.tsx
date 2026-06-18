@@ -70,7 +70,11 @@ export default async function WalletDetailPage({
             </div>
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-3 xl:min-w-[520px]">
+          <div className="grid gap-3 sm:grid-cols-4 xl:min-w-[660px]">
+            <HeaderMetric
+              label="Pool rank"
+              value={wallet.poolRank ? `#${formatInteger(wallet.poolRank)}` : "Unranked"}
+            />
             <HeaderMetric
               label="Final score"
               value={wallet.score ? formatScore(wallet.score.score) : "-"}

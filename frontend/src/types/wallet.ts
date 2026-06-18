@@ -2,6 +2,7 @@ export type Wallet = {
   id: string;
   address: string;
   label: string | null;
+  poolRank: number | null;
   enabled: boolean;
   eligible: boolean;
   copyEnabled: boolean;
