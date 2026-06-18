@@ -9,6 +9,7 @@ from app.schemas.database import (
     DatabaseConnectionStats,
     DatabaseCopyTradeStats,
     DatabaseFillStats,
+    DatabaseIndexStats,
     DatabaseOperationalStats,
     DatabaseScoreStats,
     DatabaseSignalStats,
@@ -94,7 +95,46 @@ async def get_database_stats(session: AsyncSession) -> DatabaseStatsResponse:
         signals=await get_signal_stats(session),
         operational=await get_operational_stats(session),
         tables=[table_stats(row) for row in table_rows],
+        indexes=await get_index_stats(session),
     )
+
+
+async def get_index_stats(session: AsyncSession) -> list[DatabaseIndexStats]:
+    rows = await all_mappings(
+        session,
+        """
+        select
+          table_class.relname as table_name,
+          index_class.relname as index_name,
+          pg_relation_size(index_class.oid) as index_size_bytes,
+          coalesce(stat.idx_scan, 0) as index_scan_count,
+          coalesce(stat.idx_tup_read, 0) as tuples_read,
+          coalesce(stat.idx_tup_fetch, 0) as tuples_fetched,
+          pg_index.indisunique as is_unique,
+          pg_index.indisprimary as is_primary
+        from pg_class table_class
+        join pg_namespace namespace on namespace.oid = table_class.relnamespace
+        join pg_index on pg_index.indrelid = table_class.oid
+        join pg_class index_class on index_class.oid = pg_index.indexrelid
+        left join pg_stat_user_indexes stat on stat.indexrelid = index_class.oid
+        where namespace.nspname = 'public'
+          and table_class.relkind in ('r', 'p')
+        order by pg_relation_size(index_class.oid) desc, index_class.relname asc
+        """,
+    )
+    return [
+        DatabaseIndexStats(
+            table_name=str(row["table_name"]),
+            index_name=str(row["index_name"]),
+            index_size_bytes=int_value(row["index_size_bytes"]),
+            index_scan_count=int_value(row["index_scan_count"]),
+            tuples_read=int_value(row["tuples_read"]),
+            tuples_fetched=int_value(row["tuples_fetched"]),
+            is_unique=bool(row["is_unique"]),
+            is_primary=bool(row["is_primary"]),
+        )
+        for row in rows
+    ]
 
 
 async def get_connection_stats(session: AsyncSession) -> DatabaseConnectionStats:

@@ -28,6 +28,17 @@ class DatabaseTableStats(CamelModel):
     last_autoanalyze_at: datetime | None
 
 
+class DatabaseIndexStats(CamelModel):
+    table_name: str
+    index_name: str
+    index_size_bytes: int
+    index_scan_count: int
+    tuples_read: int
+    tuples_fetched: int
+    is_unique: bool
+    is_primary: bool
+
+
 class DatabaseWalletStats(CamelModel):
     total: int
     enabled: int
@@ -110,6 +121,7 @@ class DatabaseStatsResponse(CamelModel):
     signals: DatabaseSignalStats
     operational: DatabaseOperationalStats
     tables: list[DatabaseTableStats]
+    indexes: list[DatabaseIndexStats]
 
 
 class FillRawJsonCompactResponse(CamelModel):
@@ -123,4 +135,24 @@ class FillRawJsonCompactResponse(CamelModel):
     kept_fields: list[str]
     batch_size: int
     max_rows: int
+    note: str
+
+
+class FillRetentionCleanupResponse(CamelModel):
+    dry_run: bool
+    retention_days: int
+    cutoff_time_ms: int
+    protected_wallets: int
+    candidate_fills: int
+    candidate_wallets: int
+    candidate_source_trades: int
+    candidate_ignored_fills: int
+    deleted_fills: int
+    deleted_source_trades: int
+    deleted_ignored_fills: int
+    affected_wallets: int
+    remaining_candidate_fills: int | None
+    batch_size: int
+    max_rows: int
+    protect_top_score_wallets: int
     note: str

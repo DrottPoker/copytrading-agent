@@ -160,6 +160,39 @@ Config:
 
 - `backend/config/pool_fill_import.json`
 
+### Database Maintenance
+
+Endpoints:
+
+- `GET /database/stats`
+- `POST /database/fills/compact-raw-json`
+- `POST /database/fills/retention-cleanup`
+
+Dashboard page:
+
+- `/database`
+
+What it does:
+
+- Shows table storage and per-index storage, scan counts, tuples read, tuples
+  fetched, and primary or unique flags.
+- Compacts old `wallet_fills.raw_json` payloads to the current configured field
+  set used by new imports.
+- Runs manual fill retention cleanup with dry-run by default.
+- Retention cleanup deletes old unprotected `wallet_fills`,
+  `source_trades`, and `source_trade_ignored_fills` rows in batches.
+- Retention cleanup protects active wallets, realtime-slot wallets,
+  copy-enabled wallets, source wallets with open paper positions, wallets with
+  open position snapshots, and the configured number of top scored wallets.
+- Deleting old source-trade materialization clears sync state for affected
+  wallets, so the next scoring or wallet detail refresh rebuilds source trades
+  from the retained fills.
+- Cleanup does not run automatically from the worker.
+
+Config:
+
+- `backend/config/database.json`
+
 ### Manual Wallet Pruning
 
 Endpoint:
@@ -588,6 +621,7 @@ What it does:
 Files:
 
 - `backend/config/app.json`
+- `backend/config/database.json`
 - `backend/config/discovery.json`
 - `backend/config/paper_trading.json`
 - `backend/config/pool_fill_import.json`
@@ -605,6 +639,8 @@ What it does:
   environments to change runtime behavior without editing tracked config files.
 - `backend/config/discovery.json` owns source discovery, candidate filtering,
   backfill quality checks, and promotion.
+- `backend/config/database.json` owns manual database maintenance defaults such
+  as fill retention days, batch size, max rows, and protected top scored wallets.
 - `backend/config/pool_fill_import.json` owns scheduled pool reimport and shared
   fill import storage and market-filter settings.
 - `backend/config/scoring.json` owns scoring schedule, score windows, weights,

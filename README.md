@@ -129,6 +129,11 @@ Notes:
 - `targetFills` is counted after filtering, so `targetFills: 10000` means up to
   10k stored perp fills, not 10k raw spot/perp fills.
 - Fill rows store only compact configured raw payload fields to keep database growth under control.
+- The Database page exposes per-index storage and scan counts so large unused
+  indexes can be reviewed before any schema change.
+- The Database page also includes manual fill retention cleanup. It defaults to
+  dry-run, keeps 90 days, and protects active, realtime, copy-enabled, open
+  paper-position, open-position, and top scored wallets.
 - Wallet scores can be recalculated with `POST /scores/recalculate` and are shown in the wallet pool.
 - Wallet pool list and wallet detail responses include `poolRank`, which is the
   current rank among wallets with a stored score.
@@ -374,6 +379,7 @@ Tweakable non-secret settings live in config files:
 
 - `backend/config/app.json`
 - `backend/config/discovery.json`
+- `backend/config/database.json`
 - `backend/config/paper_trading.json`
 - `backend/config/pool_fill_import.json`
 - `backend/config/prune.json`
@@ -390,6 +396,9 @@ promotion.
 
 `backend/config/pool_fill_import.json` owns scheduled pool reimport settings and
 the shared fill-import storage and market-filter settings.
+
+`backend/config/database.json` owns manual database maintenance defaults such as
+fill retention days, batch size, max rows, and protected top scored wallets.
 
 Use `.env` only for secrets and connection strings:
 

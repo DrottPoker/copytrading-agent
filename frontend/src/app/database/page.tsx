@@ -13,6 +13,7 @@ import {
 import type { ReactNode } from "react";
 
 import { DatabaseFillCompactPanel } from "@/components/DatabaseFillCompactPanel";
+import { DatabaseFillRetentionPanel } from "@/components/DatabaseFillRetentionPanel";
 import { DatabasePrunePanel } from "@/components/DatabasePrunePanel";
 import { StatusPill } from "@/components/StatusPill";
 import { getDatabaseStats, getHealth } from "@/lib/api";
@@ -27,7 +28,7 @@ import {
   formatScore,
   numberValue,
 } from "@/lib/format";
-import type { DatabaseTableStats } from "@/types/database";
+import type { DatabaseIndexStats, DatabaseTableStats } from "@/types/database";
 
 export default async function DatabasePage() {
   const [health, stats] = await Promise.all([getHealth(), getDatabaseStats()]);
@@ -167,6 +168,8 @@ export default async function DatabasePage() {
 
       <DatabasePrunePanel />
 
+      <DatabaseFillRetentionPanel />
+
       <DatabaseFillCompactPanel />
 
       <Panel icon={Database} title="Table Storage">
@@ -188,6 +191,29 @@ export default async function DatabasePage() {
             <tbody>
               {stats.tables.map((table) => (
                 <TableRow key={table.name} table={table} />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Panel>
+
+      <Panel icon={HardDrive} title="Index Storage">
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[980px] border-collapse text-left text-sm">
+            <thead className="border-b border-line bg-[#f8fafb] text-xs uppercase text-[#5b6770]">
+              <tr>
+                <th className="px-4 py-3 font-semibold">Index</th>
+                <th className="px-4 py-3 font-semibold">Table</th>
+                <th className="px-4 py-3 font-semibold">Size</th>
+                <th className="px-4 py-3 font-semibold">Scans</th>
+                <th className="px-4 py-3 font-semibold">Tuples read</th>
+                <th className="px-4 py-3 font-semibold">Tuples fetched</th>
+                <th className="px-4 py-3 font-semibold">Flags</th>
+              </tr>
+            </thead>
+            <tbody>
+              {stats.indexes.slice(0, 30).map((index) => (
+                <IndexRow key={`${index.tableName}:${index.indexName}`} index={index} />
               ))}
             </tbody>
           </table>
@@ -392,6 +418,26 @@ function TableRow({ table }: { table: DatabaseTableStats }) {
       <td className="px-4 py-3 text-[#5b6770]">
         {formatDate(table.lastAutovacuumAt ?? table.lastVacuumAt)}
       </td>
+    </tr>
+  );
+}
+
+function IndexRow({ index }: { index: DatabaseIndexStats }) {
+  const flags = [
+    index.isPrimary ? "primary" : null,
+    index.isUnique ? "unique" : null,
+    index.indexScanCount === 0 ? "unused" : null,
+  ].filter(Boolean);
+
+  return (
+    <tr className="border-b border-line last:border-b-0">
+      <td className="px-4 py-3 font-semibold">{index.indexName}</td>
+      <td className="px-4 py-3 font-mono">{index.tableName}</td>
+      <td className="px-4 py-3 font-mono">{formatBytes(index.indexSizeBytes)}</td>
+      <td className="px-4 py-3 font-mono">{formatInteger(index.indexScanCount)}</td>
+      <td className="px-4 py-3 font-mono">{formatInteger(index.tuplesRead)}</td>
+      <td className="px-4 py-3 font-mono">{formatInteger(index.tuplesFetched)}</td>
+      <td className="px-4 py-3 text-[#5b6770]">{flags.join(", ") || "-"}</td>
     </tr>
   );
 }

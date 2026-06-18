@@ -1,0 +1,8 @@
+{
+  "fill_retention": {
+    "days": 90,
+    "batch_size": 5000,
+    "max_rows": 50000,
+    "protect_top_score_wallets": 50
+  }
+}

@@ -13,6 +13,7 @@ APP_CONFIG_PATH = CONFIG_DIR / "app.json"
 PRUNE_CONFIG_PATH = CONFIG_DIR / "prune.json"
 DISCOVERY_CONFIG_PATH = CONFIG_DIR / "discovery.json"
 POOL_FILL_IMPORT_CONFIG_PATH = CONFIG_DIR / "pool_fill_import.json"
+DATABASE_CONFIG_PATH = CONFIG_DIR / "database.json"
 SCORING_CONFIG_PATH = CONFIG_DIR / "scoring.json"
 PAPER_TRADING_CONFIG_PATH = CONFIG_DIR / "paper_trading.json"
 DISCOVERY_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
@@ -107,6 +108,14 @@ POOL_FILL_IMPORT_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ),
     ("fill_import", "market_filter"): "fill_import_market_filter",
     ("fill_import", "raw_json_fields"): "fill_import_raw_json_fields",
+}
+DATABASE_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
+    ("fill_retention", "days"): "fill_retention_days",
+    ("fill_retention", "batch_size"): "fill_retention_batch_size",
+    ("fill_retention", "max_rows"): "fill_retention_max_rows",
+    ("fill_retention", "protect_top_score_wallets"): (
+        "fill_retention_protect_top_score_wallets"
+    ),
 }
 SCORING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("enabled",): "scoring_enabled",
@@ -400,6 +409,10 @@ class Settings(BaseSettings):
         default_factory=lambda: ["dir", "liquidation", "startPosition", "twapId"],
         max_length=16,
     )
+    fill_retention_days: int = Field(default=90, ge=61, le=730)
+    fill_retention_batch_size: int = Field(default=5000, ge=100, le=25000)
+    fill_retention_max_rows: int = Field(default=50000, ge=100, le=250000)
+    fill_retention_protect_top_score_wallets: int = Field(default=50, ge=0, le=1000)
     scoring_enabled: bool = True
     scoring_run_on_worker_start: bool = True
     scoring_interval_seconds: int = Field(default=600, ge=60)
@@ -766,6 +779,7 @@ def load_app_config() -> dict[str, Any]:
         PRUNE_CONFIG_PATH,
         DISCOVERY_CONFIG_PATH,
         POOL_FILL_IMPORT_CONFIG_PATH,
+        DATABASE_CONFIG_PATH,
         SCORING_CONFIG_PATH,
         PAPER_TRADING_CONFIG_PATH,
     ):
@@ -787,6 +801,8 @@ def load_json_config(config_path: Path) -> dict[str, Any]:
         return normalize_nested_config(config, DISCOVERY_CONFIG_PATH_MAP)
     if config_path == POOL_FILL_IMPORT_CONFIG_PATH:
         return normalize_nested_config(config, POOL_FILL_IMPORT_CONFIG_PATH_MAP)
+    if config_path == DATABASE_CONFIG_PATH:
+        return normalize_nested_config(config, DATABASE_CONFIG_PATH_MAP)
     if config_path == SCORING_CONFIG_PATH:
         return normalize_nested_config(config, SCORING_CONFIG_PATH_MAP)
     return config

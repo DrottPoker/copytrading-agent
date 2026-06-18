@@ -184,6 +184,13 @@ By default, historical and realtime fill ingestion stores perp fills only.
 Historical import counts `targetFills` after this filter, so a 10k target means
 up to 10k stored perp fills even when raw Hyperliquid pages also contain spot
 fills.
+The Database page also exposes per-index storage and usage stats from Postgres,
+so index cost can be reviewed before changing schema. Manual fill retention
+cleanup deletes old unprotected `wallet_fills`, old closed `source_trades`, and
+old `source_trade_ignored_fills` in batches. It protects active, realtime-slot,
+copy-enabled, open paper-position, open position snapshot, and top scored
+wallets. Deleted space becomes reusable after vacuum, but total database file
+size may not shrink immediately on managed Postgres.
 
 ### Redis
 
@@ -205,6 +212,7 @@ Redis restarts and shares the same transactional dependency as wallet data.
 Tweakable non-secret config lives in JSON files:
 
 - `backend/config/app.json`
+- `backend/config/database.json`
 - `backend/config/discovery.json`
 - `backend/config/paper_trading.json`
 - `backend/config/pool_fill_import.json`
@@ -216,6 +224,9 @@ The backend config files are grouped by operational area:
 
 - `discovery.json` owns source discovery, candidate filtering, backfill quality
   checks, and promotion.
+- `database.json` owns manual database maintenance defaults such as fill
+  retention days, retention batch size, max rows, and protected top scored
+  wallets.
 - `pool_fill_import.json` owns scheduled pool reimport and shared fill import
   storage and market-filter settings.
 - `scoring.json` owns scoring schedule, score windows, weights, score curves,
@@ -274,6 +285,30 @@ default. A cycle imports all due pool wallets across configured batches,
 recalculates wallet scores, and then runs sharp pruning when
 `wallet_prune_worker_dry_run` is `false`. Manual pool reimport forces a refresh
 regardless of `last_polled_at` and still deduplicates overlapping fills.
+
+### Fill Retention Cleanup
+
+```mermaid
+sequenceDiagram
+  participant UI as Database Page
+  participant API as FastAPI
+  participant DB as Postgres
+
+  UI->>API: POST /database/fills/retention-cleanup?dry_run=true
+  API->>DB: count old unprotected fills and materialized source rows
+  API-->>UI: candidate counts and protected wallet count
+  UI->>API: POST /database/fills/retention-cleanup?dry_run=false
+  API->>DB: delete old unprotected wallet_fills in batches
+  API->>DB: delete old closed source_trades and ignored fills
+  API->>DB: clear source trade sync state for affected wallets
+  API-->>UI: deleted counts and remaining candidates
+```
+
+Retention cleanup is manual and uses a database-backed job lock. The default
+retention window is 90 days, which is above the default 60 day scoring and pool
+import windows. Source trade sync state is cleared for affected wallets so the
+next scoring run or wallet detail request rebuilds source trades from retained
+fills.
 
 ### Wallet Current State
 

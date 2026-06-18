@@ -22,6 +22,17 @@ export type DatabaseTableStats = {
   lastAutoanalyzeAt: string | null;
 };
 
+export type DatabaseIndexStats = {
+  tableName: string;
+  indexName: string;
+  indexSizeBytes: number;
+  indexScanCount: number;
+  tuplesRead: number;
+  tuplesFetched: number;
+  isUnique: boolean;
+  isPrimary: boolean;
+};
+
 export type DatabaseWalletStats = {
   total: number;
   enabled: number;
@@ -104,6 +115,7 @@ export type DatabaseStatsResponse = {
   signals: DatabaseSignalStats;
   operational: DatabaseOperationalStats;
   tables: DatabaseTableStats[];
+  indexes: DatabaseIndexStats[];
 };
 
 export type FillRawJsonCompactResponse = {
@@ -117,5 +129,25 @@ export type FillRawJsonCompactResponse = {
   keptFields: string[];
   batchSize: number;
   maxRows: number;
+  note: string;
+};
+
+export type FillRetentionCleanupResponse = {
+  dryRun: boolean;
+  retentionDays: number;
+  cutoffTimeMs: number;
+  protectedWallets: number;
+  candidateFills: number;
+  candidateWallets: number;
+  candidateSourceTrades: number;
+  candidateIgnoredFills: number;
+  deletedFills: number;
+  deletedSourceTrades: number;
+  deletedIgnoredFills: number;
+  affectedWallets: number;
+  remainingCandidateFills: number | null;
+  batchSize: number;
+  maxRows: number;
+  protectTopScoreWallets: number;
   note: string;
 };
