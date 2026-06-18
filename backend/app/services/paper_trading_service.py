@@ -72,6 +72,7 @@ class PaperSourceAllocation:
     score: Decimal | None
     allocation_pct: Decimal
     active: bool
+    has_realtime_slot: bool
 
 
 @dataclass(frozen=True)
@@ -130,7 +131,10 @@ async def get_paper_trading_summary(
     client: HyperliquidClient | None = None,
 ) -> PaperTradingSummaryResponse:
     resolved_settings = settings or get_settings()
-    await refresh_paper_copy_allocations(session, settings=resolved_settings)
+    source_allocations = await refresh_paper_copy_allocations(
+        session,
+        settings=resolved_settings,
+    )
     await session.commit()
 
     accounts_result = await session.execute(
@@ -146,6 +150,7 @@ async def get_paper_trading_summary(
         .where(
             PaperCopyAllocation.active.is_(True)
             | PaperCopyAllocation.source_wallet.in_(open_position_sources)
+            | PaperCopyAllocation.source_wallet.in_(list(source_allocations.keys()))
         )
         .order_by(
             PaperCopyAllocation.active.desc(),
@@ -221,7 +226,11 @@ async def get_paper_trading_summary(
     return PaperTradingSummaryResponse(
         policy=paper_trading_policy(resolved_settings),
         accounts=paper_account_reads(accounts=accounts, positions=position_rows),
-        allocations=paper_allocation_reads(allocations=allocations, positions=position_rows),
+        allocations=paper_allocation_reads(
+            allocations=allocations,
+            positions=position_rows,
+            source_allocations=source_allocations,
+        ),
         positions=position_rows,
         wallet_performance=paper_wallet_performance_reads(
             allocations=allocations,
@@ -429,6 +438,7 @@ async def load_paper_allocation_for_position(
             score=None,
             allocation_pct=ZERO,
             active=False,
+            has_realtime_slot=False,
         )
     return PaperSourceAllocation(
         source_wallet=allocation.source_wallet,
@@ -436,6 +446,7 @@ async def load_paper_allocation_for_position(
         score=allocation.score,
         allocation_pct=allocation.allocation_pct,
         active=allocation.active,
+        has_realtime_slot=allocation.active,
     )
 
 
@@ -571,8 +582,10 @@ def paper_allocation_reads(
     *,
     allocations: list[PaperCopyAllocation],
     positions: list[dict[str, Any]],
+    source_allocations: dict[str, PaperSourceAllocation],
 ) -> list[dict[str, Any]]:
     open_margin_by_allocation: dict[tuple[str, str], Decimal] = {}
+    open_position_count_by_source: dict[str, int] = {}
     for position in positions:
         key = (
             str(position["account_key"]),
@@ -581,11 +594,21 @@ def paper_allocation_reads(
         open_margin_by_allocation[key] = open_margin_by_allocation.get(key, ZERO) + decimal_or_zero(
             position["margin_usd"]
         )
+        source = str(position["source_wallet"]).lower()
+        open_position_count_by_source[source] = open_position_count_by_source.get(source, 0) + 1
 
     rows: list[dict[str, Any]] = []
     for allocation in allocations:
-        key = (allocation.account_key, allocation.source_wallet.lower())
+        source_wallet = allocation.source_wallet.lower()
+        key = (allocation.account_key, source_wallet)
         open_margin = open_margin_by_allocation.get(key, ZERO)
+        source_allocation = source_allocations.get(source_wallet)
+        has_realtime_slot = (
+            source_allocation.has_realtime_slot
+            if source_allocation is not None
+            else allocation.active
+        )
+        open_position_count = open_position_count_by_source.get(source_wallet, 0)
         remaining = max(allocation.allocation_usd - open_margin, ZERO)
         rows.append(
             {
@@ -605,10 +628,33 @@ def paper_allocation_reads(
                 ),
                 "max_total_allocation_pct": allocation.max_total_allocation_pct,
                 "active": allocation.active,
+                "has_realtime_slot": has_realtime_slot,
+                "can_open_new_positions": allocation.active,
+                "monitor_status": "monitored" if has_realtime_slot else "waiting",
+                "source_status": paper_source_status(
+                    has_realtime_slot=has_realtime_slot,
+                    can_open_new_positions=allocation.active,
+                    open_position_count=open_position_count,
+                ),
                 "updated_at": allocation.updated_at,
             }
         )
     return rows
+
+
+def paper_source_status(
+    *,
+    has_realtime_slot: bool,
+    can_open_new_positions: bool,
+    open_position_count: int,
+) -> str:
+    if not has_realtime_slot:
+        return "waiting_for_slot"
+    if open_position_count > 0 and can_open_new_positions:
+        return "trading"
+    if open_position_count > 0:
+        return "retained"
+    return "waiting_for_trades"
 
 
 def paper_wallet_performance_reads(
@@ -1189,6 +1235,7 @@ async def load_paper_copy_allocations_for_source(
             score=allocation.score,
             allocation_pct=allocation.allocation_pct,
             active=allocation.active,
+            has_realtime_slot=allocation.active,
         )
     return rows
 
@@ -1483,31 +1530,15 @@ async def load_paper_source_allocations(
     if settings.scoring_current_drawdown_enabled:
         score_filters.append(WalletScore.current_drawdown_status == "ok")
 
-    result = await session.execute(
+    candidate_result = await session.execute(
         select(WatchedWallet.address, WalletScore.score)
         .join(WalletScore, WalletScore.wallet_address == WatchedWallet.address)
         .where(*score_filters)
         .order_by(WalletScore.score.desc(), WalletScore.updated_at.desc())
         .limit(settings.paper_copy_top_wallet_count)
     )
-    allocations: list[PaperSourceAllocation] = []
-    for index, row in enumerate(result.mappings().all(), start=1):
-        allocation_pct = (
-            settings.paper_copy_top_tier_allocation_pct
-            if index <= settings.paper_copy_top_tier_wallet_count
-            else settings.paper_copy_standard_allocation_pct
-        )
-        allocations.append(
-            PaperSourceAllocation(
-                source_wallet=str(row["address"]).lower(),
-                rank=index,
-                score=row["score"],
-                allocation_pct=allocation_pct,
-                active=True,
-            )
-        )
-    allocation_sources = {allocation.source_wallet for allocation in allocations}
-    retained_result = await session.execute(
+    candidate_rows = list(candidate_result.mappings().all())
+    open_source_result = await session.execute(
         select(
             PaperPosition.source_wallet,
             func.max(WalletScore.score).label("score"),
@@ -1520,13 +1551,56 @@ async def load_paper_source_allocations(
         )
         .where(PaperPosition.source_wallet != "")
         .group_by(PaperPosition.source_wallet)
+        .order_by(
+            func.max(WalletScore.score).desc().nulls_last(),
+            PaperPosition.source_wallet.asc(),
+        )
     )
+    open_source_rows = list(open_source_result.mappings().all())
+    max_realtime_slots = max(settings.max_realtime_wallets, 0)
+    slot_sources: list[str] = []
+    for row in open_source_rows:
+        if len(slot_sources) >= max_realtime_slots:
+            break
+        source_wallet = str(row["source_wallet"]).lower()
+        if source_wallet and source_wallet not in slot_sources:
+            slot_sources.append(source_wallet)
+
+    for row in candidate_rows:
+        if len(slot_sources) >= max_realtime_slots:
+            break
+        source_wallet = str(row["address"]).lower()
+        if source_wallet and source_wallet not in slot_sources:
+            slot_sources.append(source_wallet)
+
+    slot_source_set = set(slot_sources)
+    allocations: list[PaperSourceAllocation] = []
+    for index, row in enumerate(candidate_rows, start=1):
+        source_wallet = str(row["address"]).lower()
+        allocation_pct = (
+            settings.paper_copy_top_tier_allocation_pct
+            if index <= settings.paper_copy_top_tier_wallet_count
+            else settings.paper_copy_standard_allocation_pct
+        )
+        has_realtime_slot = source_wallet in slot_source_set
+        allocations.append(
+            PaperSourceAllocation(
+                source_wallet=source_wallet,
+                rank=index,
+                score=row["score"],
+                allocation_pct=allocation_pct,
+                active=has_realtime_slot,
+                has_realtime_slot=has_realtime_slot,
+            )
+        )
+    allocation_sources = {allocation.source_wallet for allocation in allocations}
     retained_rank = settings.paper_copy_top_wallet_count + 1
-    for row in retained_result.mappings().all():
+    for row in open_source_rows:
         source_wallet = str(row["source_wallet"]).lower()
         if not source_wallet or source_wallet in allocation_sources:
             continue
         allocation_pct = decimal_or_none(row["allocation_pct"])
+        has_realtime_slot = source_wallet in slot_source_set
         allocations.append(
             PaperSourceAllocation(
                 source_wallet=source_wallet,
@@ -1538,6 +1612,7 @@ async def load_paper_source_allocations(
                     else settings.paper_copy_standard_allocation_pct
                 ),
                 active=False,
+                has_realtime_slot=has_realtime_slot,
             )
         )
         retained_rank += 1

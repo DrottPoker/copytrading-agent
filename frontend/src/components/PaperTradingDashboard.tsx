@@ -45,8 +45,10 @@ type MonitoredSource = {
   sourceWallet: string;
   rank: number | null;
   score: string | null;
-  active: boolean;
-  status: "trading" | "retained" | "monitored" | "waiting";
+  monitorStatus: "monitored" | "waiting";
+  sourceStatus: "trading" | "retained" | "waiting_for_trades" | "waiting_for_slot";
+  hasRealtimeSlot: boolean;
+  canOpenNewPositions: boolean;
   accountCount: number;
   openPositionCount: number;
   allocationPct: number | null;
@@ -137,7 +139,8 @@ export function PaperTradingDashboard({
   const monitoredSources = useMemo(() => buildMonitoredSources(summary), [summary]);
   const walletHistory = useMemo(() => buildWalletHistory(summary.walletPerformance), [summary.walletPerformance]);
   const tradingSourceCount = countSourcesWithOpenPositions(summary.positions);
-  const waitingSourceCount = countSourcesByStatus(monitoredSources, "waiting");
+  const monitoredSlotCount = countSourcesByMonitorStatus(monitoredSources, "monitored");
+  const waitingSlotCount = countSourcesBySourceStatus(monitoredSources, "waiting_for_slot");
 
   return (
     <>
@@ -213,7 +216,7 @@ export function PaperTradingDashboard({
           icon={RadioTower}
           label="Sources"
           value={`${formatInteger(tradingSourceCount)} trading`}
-          detail={`${formatInteger(monitoredSources.length)} listed, ${formatInteger(waitingSourceCount)} waiting`}
+          detail={`${formatInteger(monitoredSlotCount)} monitored, ${formatInteger(waitingSlotCount)} waiting`}
         />
       </section>
 
@@ -233,8 +236,8 @@ export function PaperTradingDashboard({
 
       <section className="grid gap-3 2xl:grid-cols-[0.95fr_1.05fr]">
         <ListPanel
-          title="Monitored Sources"
-          meta={`${formatInteger(tradingSourceCount)} trading, ${formatInteger(waitingSourceCount)} waiting`}
+          title="Copy Sources"
+          meta={`${formatInteger(monitoredSlotCount)} monitored, ${formatInteger(waitingSlotCount)} waiting for slot`}
         >
           {monitoredSources.length === 0 ? (
             <EmptyState text="No monitored sources." />
@@ -381,10 +384,11 @@ function PolicyRow({
 
 function SourceRow({ source }: { source: MonitoredSource }) {
   const usedPct = clampPercent(numberValue(source.pocketUsedPct ?? 0));
-  const statusTone =
-    source.status === "trading"
+  const monitorTone = source.monitorStatus === "monitored" ? "positive" : "neutral";
+  const sourceTone =
+    source.sourceStatus === "trading"
       ? "positive"
-      : source.status === "retained"
+      : source.sourceStatus === "retained"
         ? "warning"
         : "neutral";
   return (
@@ -398,10 +402,11 @@ function SourceRow({ source }: { source: MonitoredSource }) {
             >
               {shortAddress(source.sourceWallet)}
             </Link>
-            <StatusPill label={source.status} tone={statusTone} />
+            <StatusPill label={source.monitorStatus} tone={monitorTone} />
+            <StatusPill label={formatSourceStatus(source.sourceStatus)} tone={sourceTone} />
           </div>
           <p className="mt-1 text-xs text-[#5b6770]">
-            {source.rank ? `#${source.rank}` : "unranked"}, {formatScore(source.score)} score, {formatInteger(source.accountCount)} accounts, {sourceStatusDetail(source.status)}
+            {source.rank ? `#${source.rank}` : "unranked"}, {formatScore(source.score)} score, {formatInteger(source.accountCount)} accounts, {sourceStatusDetail(source.sourceStatus)}
           </p>
         </div>
         <RowStat label="PnL" value={formatCurrency(source.totalPnlUsd)} tone={numberValue(source.totalPnlUsd) >= 0 ? "positive" : "danger"} />
@@ -630,21 +635,20 @@ function buildMonitoredSources(summary: PaperTradingSummaryResponse): MonitoredS
       const allocationUsd = sumNumbers(allocations.map((allocation) => allocation.allocationUsd));
       const openMarginUsd = sumNumbers(allocations.map((allocation) => allocation.openMarginUsd));
       const remainingAllocationUsd = sumNumbers(allocations.map((allocation) => allocation.remainingAllocationUsd));
-      const active = allocations.some((allocation) => allocation.active);
-      const status: MonitoredSource["status"] =
-        openPositions.length > 0 && active
-          ? "trading"
-          : openPositions.length > 0
-            ? "retained"
-            : active
-              ? "monitored"
-              : "waiting";
+      const hasRealtimeSlot = allocations.some((allocation) => allocation.hasRealtimeSlot);
+      const canOpenNewPositions = allocations.some((allocation) => allocation.canOpenNewPositions);
+      const monitorStatus: MonitoredSource["monitorStatus"] = hasRealtimeSlot
+        ? "monitored"
+        : "waiting";
+      const sourceStatus = resolveSourceStatus(allocations, openPositions.length);
       return {
         sourceWallet: source,
         rank: minNumber(allocations.map((allocation) => allocation.rank)),
         score: firstString(allocations.map((allocation) => allocation.score)) ?? wallet?.score ?? null,
-        active,
-        status,
+        monitorStatus,
+        sourceStatus,
+        hasRealtimeSlot,
+        canOpenNewPositions,
         accountCount: new Set(allocations.map((allocation) => allocation.accountKey)).size,
         openPositionCount: openPositions.length,
         allocationPct: firstNumber(allocations.map((allocation) => allocation.allocationPct)),
@@ -658,8 +662,8 @@ function buildMonitoredSources(summary: PaperTradingSummaryResponse): MonitoredS
       };
     })
     .sort((left, right) => {
-      if (left.status !== right.status) {
-        return statusOrder(left.status) - statusOrder(right.status);
+      if (left.sourceStatus !== right.sourceStatus) {
+        return statusOrder(left.sourceStatus) - statusOrder(right.sourceStatus);
       }
       return (left.rank ?? 9999) - (right.rank ?? 9999);
     });
@@ -690,18 +694,60 @@ function accountNetEquity(account: { equityUsd: string; unrealizedPnlUsd: string
   return numberValue(account.equityUsd) + numberValue(account.unrealizedPnlUsd);
 }
 
-function countSourcesByStatus(sources: MonitoredSource[], status: MonitoredSource["status"]) {
-  return sources.filter((source) => source.status === status).length;
+function countSourcesByMonitorStatus(
+  sources: MonitoredSource[],
+  status: MonitoredSource["monitorStatus"],
+) {
+  return sources.filter((source) => source.monitorStatus === status).length;
 }
 
-function sourceStatusDetail(status: MonitoredSource["status"]) {
+function countSourcesBySourceStatus(
+  sources: MonitoredSource[],
+  status: MonitoredSource["sourceStatus"],
+) {
+  return sources.filter((source) => source.sourceStatus === status).length;
+}
+
+function resolveSourceStatus(
+  allocations: PaperCopyAllocation[],
+  openPositionCount: number,
+): MonitoredSource["sourceStatus"] {
+  const sourceStatus = allocations.find((allocation) => allocation.sourceStatus)?.sourceStatus;
+  if (sourceStatus) {
+    return sourceStatus;
+  }
+  const hasRealtimeSlot = allocations.some((allocation) => allocation.hasRealtimeSlot);
+  const canOpenNewPositions = allocations.some((allocation) => allocation.canOpenNewPositions);
+  if (!hasRealtimeSlot) {
+    return "waiting_for_slot";
+  }
+  if (openPositionCount > 0 && canOpenNewPositions) {
+    return "trading";
+  }
+  if (openPositionCount > 0) {
+    return "retained";
+  }
+  return "waiting_for_trades";
+}
+
+function formatSourceStatus(status: MonitoredSource["sourceStatus"]) {
+  if (status === "waiting_for_slot") {
+    return "waiting for slot";
+  }
+  if (status === "waiting_for_trades") {
+    return "waiting for trades";
+  }
+  return status;
+}
+
+function sourceStatusDetail(status: MonitoredSource["sourceStatus"]) {
   if (status === "trading") {
     return "active slot";
   }
   if (status === "retained") {
     return "existing exposure only";
   }
-  if (status === "monitored") {
+  if (status === "waiting_for_trades") {
     return "ready for new entries";
   }
   return "waiting for slot";
@@ -742,14 +788,14 @@ function minNumber(values: Array<string | number | null | undefined>): number | 
   return Math.min(...numbers);
 }
 
-function statusOrder(status: MonitoredSource["status"]) {
+function statusOrder(status: MonitoredSource["sourceStatus"]) {
   if (status === "trading") {
     return 0;
   }
   if (status === "retained") {
     return 1;
   }
-  if (status === "monitored") {
+  if (status === "waiting_for_trades") {
     return 2;
   }
   return 3;

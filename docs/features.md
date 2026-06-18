@@ -387,6 +387,10 @@ What it does:
   positions from that source are closed, even if the source falls out of the top 10.
 - Makes newly promoted top 10 wallets wait when all realtime slots are occupied
   by retained open-position sources.
+- Allocation refresh follows the realtime slot model: open paper-position
+  sources reserve slots first, then remaining slots go to highest scored
+  candidates. Top candidates without a slot are marked as waiting and cannot
+  open new paper positions until a realtime slot is available.
 - Gives all top 10 ranks a 20% account pocket each.
 - Caps total open copied margin at 80% of each paper account equity.
 - Converts new non-snapshot realtime source fills into simulated paper fills.
@@ -477,9 +481,10 @@ What it does:
 - The paper trading dashboard polls the summary API and shows account PnL,
   monitored sources, currently trading sources, open position PnL, wallet PnL
   history, and closed trade history without a full page refresh.
-- Source rows distinguish `trading`, `retained`, `monitored`, and `waiting`.
-  `waiting` means the source has no active copy slot yet. `retained` means an
-  existing paper exposure is still being managed without allowing new entries.
+- Source rows show a primary monitor status and a source substatus. Primary
+  status is `monitored` when the source has a realtime slot and `waiting` when
+  it does not. Substatus is `trading`, `retained`, `waiting for trades`, or
+  `waiting for slot`.
 - The dashboard separates total, realized, and unrealized PnL and uses compact
   responsive list rows instead of wide tables or large cards.
 

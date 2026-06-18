@@ -106,6 +106,10 @@ Trading worker responsibilities:
 - Select up to `max_realtime_wallets` wallets. Source wallets with open paper
   positions are retained first, then remaining slots are filled by the highest
   positive wallet scores.
+- Paper allocation refresh mirrors that slot model. A source with a realtime
+  slot is exposed as `monitorStatus = "monitored"`. A top candidate without a
+  free slot is exposed as `monitorStatus = "waiting"` and
+  `sourceStatus = "waiting_for_slot"`.
 - Subscribe to Hyperliquid `userFills` over WebSocket.
 - Store snapshot and realtime fills in Postgres.
 - Simulate paper copies for non-snapshot fills from scored allocation wallets.
@@ -504,6 +508,9 @@ Retained sources outside the current top 10 keep their allocation record only
 for managing existing exposure. They can add to matching open paper positions
 and can reduce or close them, but new entries are skipped with
 `retained_source_new_position_blocked`.
+The paper summary reports slot state separately from trade state. `monitorStatus`
+is `monitored` or `waiting`; `sourceStatus` is `trading`, `retained`,
+`waiting_for_trades`, or `waiting_for_slot`.
 After replay, recovery fetches the source wallet's live perp state. If an open
 paper position no longer has a matching source coin and side, paper closes it at
 the current simulated market price with normal fee and slippage. Coin matching

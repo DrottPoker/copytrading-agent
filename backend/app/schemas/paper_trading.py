@@ -37,6 +37,10 @@ class PaperCopyAllocationRead(CamelModel):
     pocket_used_pct: Decimal | None = None
     max_total_allocation_pct: Decimal
     active: bool
+    has_realtime_slot: bool = False
+    can_open_new_positions: bool = False
+    monitor_status: str = "waiting"
+    source_status: str = "waiting_for_slot"
     updated_at: datetime
 
 

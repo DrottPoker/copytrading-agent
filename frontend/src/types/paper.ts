@@ -30,6 +30,10 @@ export type PaperCopyAllocation = {
   pocketUsedPct: string | null;
   maxTotalAllocationPct: string;
   active: boolean;
+  hasRealtimeSlot: boolean;
+  canOpenNewPositions: boolean;
+  monitorStatus: "monitored" | "waiting";
+  sourceStatus: "trading" | "retained" | "waiting_for_trades" | "waiting_for_slot";
   updatedAt: string;
 };
 
