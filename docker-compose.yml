@@ -1,3 +1,7 @@
+x-app-database-environment: &app_database_environment
+  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-copyagent}:${POSTGRES_PASSWORD:-copyagent-local-dev-password}@postgres:5432/${POSTGRES_DB:-copyagent}
+  DATABASE_URL_DIRECT: postgresql://${POSTGRES_USER:-copyagent}:${POSTGRES_PASSWORD:-copyagent-local-dev-password}@postgres:5432/${POSTGRES_DB:-copyagent}
+
 services:
   backend:
     build:
@@ -7,11 +11,15 @@ services:
       - path: .env
         required: false
     environment:
+      <<: *app_database_environment
       WORKER_RUN_IN_API_PROCESS: "false"
     ports:
       - "8000:8000"
     depends_on:
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
 
   trading-worker:
     build:
@@ -21,9 +29,13 @@ services:
       - path: .env
         required: false
     environment:
+      <<: *app_database_environment
       WORKER_ROLE: "trading"
     depends_on:
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
 
   maintenance-worker:
     build:
@@ -33,9 +45,13 @@ services:
       - path: .env
         required: false
     environment:
+      <<: *app_database_environment
       WORKER_ROLE: "maintenance"
     depends_on:
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
 
   frontend:
     build:
@@ -55,6 +71,24 @@ services:
     expose:
       - "6379"
 
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-copyagent}
+      POSTGRES_USER: ${POSTGRES_USER:-copyagent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-copyagent-local-dev-password}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
   caddy:
     image: caddy:2-alpine
     ports:
@@ -71,3 +105,4 @@ services:
 volumes:
   caddy_data:
   caddy_config:
+  postgres_data:

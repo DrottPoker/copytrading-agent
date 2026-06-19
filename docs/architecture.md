@@ -1,7 +1,7 @@
 # Architecture
 
 The system is split into a FastAPI backend, reusable Python worker loops, a
-Next.js dashboard, Neon Postgres as source of truth, and Redis for runtime
+Next.js dashboard, local Postgres as source of truth, and Redis for runtime
 events/cache.
 
 ```mermaid
@@ -10,7 +10,7 @@ flowchart TD
   HL --> MaintenanceWorker["Maintenance worker"]
   HL --> Backend["FastAPI backend"]
 
-  TradingWorker --> Postgres["Neon Postgres"]
+  TradingWorker --> Postgres["Local Postgres"]
   TradingWorker --> Redis["Redis runtime events"]
   MaintenanceWorker --> Postgres
   MaintenanceWorker --> Redis
@@ -234,12 +234,18 @@ The backend config files are grouped by operational area:
 
 Secrets and connection strings live in `.env`:
 
+- `POSTGRES_DB`
+- `POSTGRES_USER`
+- `POSTGRES_PASSWORD`
 - `DATABASE_URL`
 - `DATABASE_URL_DIRECT`
 - `REDIS_URL`
 - Hyperliquid private key and wallet address
 - dashboard auth credentials
 
+Docker Compose builds `DATABASE_URL` and `DATABASE_URL_DIRECT` for app
+containers from `POSTGRES_*` and the local `postgres` service. Direct database
+URLs remain available for non-Compose runs and external Postgres migrations.
 Environment variables override JSON config. This is important in Docker Compose,
 where the backend container overrides `worker_run_in_api_process` without editing
 `backend/config/app.json`.

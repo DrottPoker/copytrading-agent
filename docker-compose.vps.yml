@@ -1,3 +1,8 @@
+x-app-database-environment: &app_database_environment
+  APP_ENV: production
+  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-copyagent}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-copyagent}
+  DATABASE_URL_DIRECT: postgresql://${POSTGRES_USER:-copyagent}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-copyagent}
+
 services:
   backend:
     build:
@@ -6,11 +11,15 @@ services:
     env_file:
       - .env
     environment:
+      <<: *app_database_environment
       WORKER_RUN_IN_API_PROCESS: "false"
     expose:
       - "8000"
     depends_on:
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
     restart: unless-stopped
 
   trading-worker:
@@ -20,9 +29,13 @@ services:
     env_file:
       - .env
     environment:
+      <<: *app_database_environment
       WORKER_ROLE: "trading"
     depends_on:
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
     restart: unless-stopped
 
   maintenance-worker:
@@ -32,9 +45,13 @@ services:
     env_file:
       - .env
     environment:
+      <<: *app_database_environment
       WORKER_ROLE: "maintenance"
     depends_on:
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
     restart: unless-stopped
 
   frontend:
@@ -59,6 +76,47 @@ services:
       - "6379"
     restart: unless-stopped
 
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-copyagent}
+      POSTGRES_USER: ${POSTGRES_USER:-copyagent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    command:
+      - postgres
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - effective_cache_size=2GB
+      - -c
+      - maintenance_work_mem=128MB
+      - -c
+      - work_mem=8MB
+      - -c
+      - max_connections=80
+      - -c
+      - wal_compression=on
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - max_wal_size=2GB
+      - -c
+      - autovacuum_vacuum_scale_factor=0.05
+      - -c
+      - autovacuum_analyze_scale_factor=0.02
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
   caddy:
     image: caddy:2-alpine
     environment:
@@ -79,3 +137,4 @@ volumes:
   caddy_data:
   caddy_config:
   redis_data:
+  postgres_data:

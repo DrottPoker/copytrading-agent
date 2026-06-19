@@ -1,27 +1,31 @@
 # VPS Deployment
 
-This guide runs the full paper trading stack on a Linux VPS with Docker Compose.
+This guide runs the full paper trading stack on a Linux VPS with Docker Compose
+and local Postgres.
 
 ## What Runs
 
 `docker-compose.vps.yml` starts:
 
+- `postgres`: local Postgres with persistent Docker volume storage.
+- `redis`: local Redis with append-only persistence.
 - `backend`: FastAPI API on the internal Docker network.
 - `trading-worker`: realtime monitoring, paper copy, and paper-copy recovery.
-- `maintenance-worker`: discovery, pool import, scoring, and pruning.
+- `maintenance-worker`: discovery, pool import, scoring, pruning, and database maintenance.
 - `frontend`: Next.js dashboard on the internal Docker network.
-- `redis`: local Redis with append-only persistence.
 - `caddy`: public reverse proxy on ports 80 and 443.
 
-The VPS compose file does not publish backend or frontend ports directly. Only
-Caddy is exposed publicly.
+The VPS compose file does not publish backend, frontend, Postgres, or Redis
+ports directly. Only Caddy is exposed publicly.
 
 ## Requirements
 
 - A Linux VPS with Docker and the Docker Compose plugin.
-- A domain or subdomain pointing to the VPS public IP.
-- A Postgres database. Neon works with the existing `DATABASE_URL` settings.
-- Ports 80 and 443 open in the VPS firewall and cloud firewall.
+- Recommended minimum for local Postgres: 2 vCPU, 4 GB RAM, and SSD storage.
+- A domain or subdomain pointing to the VPS public IP, or `DASHBOARD_DOMAIN=:80`
+  for HTTP by IP only.
+- Ports 80 and 443 open in the VPS firewall and cloud firewall when using a
+  domain. Port 80 is enough for IP-only HTTP.
 
 ## First Install
 
@@ -29,9 +33,12 @@ Install Docker:
 
 ```bash
 sudo apt update
-sudo apt install -y git docker.io docker-compose-plugin
+sudo apt install -y git docker.io
 sudo systemctl enable --now docker
 ```
+
+If your distro does not provide `docker compose`, install Docker from the
+official Docker apt repository and install the Compose plugin from there.
 
 Clone the repository:
 
@@ -50,8 +57,10 @@ nano .env
 Set at least these values:
 
 ```env
-DATABASE_URL=postgresql+asyncpg://user:password@host-pooler.region.aws.neon.tech/dbname?ssl=require
-DATABASE_URL_DIRECT=postgresql://user:password@host.region.aws.neon.tech/dbname?sslmode=require
+POSTGRES_DB=copyagent
+POSTGRES_USER=copyagent
+POSTGRES_PASSWORD=replace-with-openssl-rand-hex-24-output
+
 REDIS_URL=redis://redis:6379/0
 
 DASHBOARD_AUTH_USERNAME=admin
@@ -61,6 +70,13 @@ DASHBOARD_DOMAIN=dashboard.example.com
 SERVER_API_BASE_URL=http://backend:8000
 ```
 
+Use a URL-safe Postgres password because Docker Compose builds database URLs
+from `POSTGRES_*`. This is safe and simple:
+
+```bash
+openssl rand -hex 24
+```
+
 For paper trading, Hyperliquid private key settings can remain empty. Do not
 enable live trading on the VPS until the paper trading system has been validated.
 
@@ -68,6 +84,12 @@ Build the images:
 
 ```bash
 docker compose -f docker-compose.vps.yml build
+```
+
+Start Postgres and Redis:
+
+```bash
+docker compose -f docker-compose.vps.yml up -d postgres redis
 ```
 
 Run database migrations:
@@ -85,13 +107,82 @@ docker compose -f docker-compose.vps.yml up -d
 Follow logs:
 
 ```bash
-docker compose -f docker-compose.vps.yml logs -f backend trading-worker maintenance-worker frontend caddy
+docker compose -f docker-compose.vps.yml logs -f backend trading-worker maintenance-worker frontend caddy postgres
 ```
 
 Open:
 
 ```text
 https://dashboard.example.com
+```
+
+## Moving From External Postgres
+
+Use this flow when the current VPS already uses Supabase, Neon, or another
+external Postgres database and you want to move the data into local VPS
+Postgres.
+
+Save the current environment before editing it:
+
+```bash
+cp .env .env.before-local-postgres
+```
+
+Pull the new code:
+
+```bash
+git pull
+```
+
+Edit `.env` and add local Postgres settings:
+
+```bash
+nano .env
+```
+
+Set `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD`. Keep the old
+external URL available in `.env.before-local-postgres`.
+
+Stop app services so the external database stops receiving writes:
+
+```bash
+docker compose -f docker-compose.vps.yml stop backend trading-worker maintenance-worker frontend caddy
+```
+
+Start local Postgres:
+
+```bash
+docker compose -f docker-compose.vps.yml up -d postgres
+```
+
+Export the old external database. Use the direct external URL, not the pooler
+URL:
+
+```bash
+OLD_DATABASE_URL_DIRECT="$(grep '^DATABASE_URL_DIRECT=' .env.before-local-postgres | cut -d= -f2-)"
+SOURCE_DATABASE_URL="$OLD_DATABASE_URL_DIRECT" bash infra/postgres-export-url.sh
+```
+
+Restore the newest exported dump into local Postgres:
+
+```bash
+LATEST_DUMP="$(ls -t backups/postgres/external-postgres-*.dump | head -n 1)"
+CONFIRM_RESTORE=yes bash infra/postgres-restore-local.sh "$LATEST_DUMP"
+```
+
+Build, migrate, and start:
+
+```bash
+docker compose -f docker-compose.vps.yml build
+docker compose -f docker-compose.vps.yml run --rm backend python -m alembic upgrade head
+docker compose -f docker-compose.vps.yml up -d --remove-orphans
+```
+
+Verify services:
+
+```bash
+docker compose -f docker-compose.vps.yml ps
+docker compose -f docker-compose.vps.yml logs --tail=100 backend trading-worker maintenance-worker postgres
 ```
 
 ## Updates
@@ -101,14 +192,50 @@ Pull changes, rebuild, migrate, and restart:
 ```bash
 git pull
 docker compose -f docker-compose.vps.yml build
+docker compose -f docker-compose.vps.yml up -d postgres redis
 docker compose -f docker-compose.vps.yml run --rm backend python -m alembic upgrade head
 docker compose -f docker-compose.vps.yml up -d --remove-orphans
 ```
 
-Paper trading state is stored in Postgres, not in the worker containers. After
-the trading worker restarts it reloads open paper positions, replays recent
-source fills, and checks source live perp state so paper positions can close if
-the source exited while the stack was down.
+Paper trading state is stored in local Postgres, not in the worker containers.
+After the trading worker restarts it reloads open paper positions, replays
+recent source fills, and checks source live perp state so paper positions can
+close if the source exited while the stack was down.
+
+## Backups
+
+Create a manual local Postgres backup:
+
+```bash
+bash infra/postgres-backup-local.sh
+```
+
+By default, backups are written to `backups/postgres` and local backup files
+older than 14 days are deleted. Override with:
+
+```bash
+BACKUP_RETENTION_DAYS=30 bash infra/postgres-backup-local.sh
+```
+
+Add a daily backup cron job:
+
+```bash
+sudo crontab -e
+```
+
+Example:
+
+```cron
+15 3 * * * cd /root/copytrading-agent && bash infra/postgres-backup-local.sh >> /var/log/copyagent-postgres-backup.log 2>&1
+```
+
+Restore a backup only while app services are stopped:
+
+```bash
+docker compose -f docker-compose.vps.yml stop backend trading-worker maintenance-worker frontend caddy
+CONFIRM_RESTORE=yes bash infra/postgres-restore-local.sh backups/postgres/copyagent-postgres-YYYYMMDDTHHMMSSZ.dump
+docker compose -f docker-compose.vps.yml up -d
+```
 
 ## Operational Commands
 
@@ -121,7 +248,7 @@ docker compose -f docker-compose.vps.yml ps
 Show recent logs:
 
 ```bash
-docker compose -f docker-compose.vps.yml logs --tail=200 backend trading-worker maintenance-worker
+docker compose -f docker-compose.vps.yml logs --tail=200 backend trading-worker maintenance-worker postgres
 ```
 
 Restart workers after config changes:
@@ -136,12 +263,24 @@ Stop the stack:
 docker compose -f docker-compose.vps.yml down
 ```
 
+Do not use this unless you intentionally want to delete all local Docker volume
+data:
+
+```bash
+docker compose -f docker-compose.vps.yml down -v
+```
+
 ## Notes
 
-- The default VPS compose file expects an external Postgres database.
+- VPS Postgres data is stored in the `postgres_data` Docker volume.
+- Set `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD` before the first
+  Postgres start. Changing them later does not rename or re-own an existing
+  database volume.
 - Redis data is stored in the `redis_data` Docker volume.
 - Caddy certificates are stored in `caddy_data` and `caddy_config` volumes.
 - Backend routes are protected by dashboard Basic Auth except `/health` and
   `/ready`.
 - The dashboard calls the backend through the Next.js server-side proxy, so the
   backend does not need a public domain.
+- Keep at least a few GB of free disk space for Postgres WAL, autovacuum, and
+  backups.

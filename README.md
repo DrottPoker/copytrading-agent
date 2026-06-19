@@ -11,10 +11,10 @@ disabled by default.
 This repository currently contains the foundation:
 
 - FastAPI backend with `/health`
-- Redis and Neon/Postgres connection checks
+- Redis and local Postgres connection checks
 - Worker entrypoint placeholder
 - Next.js internal dashboard shell
-- Docker Compose for backend, trading worker, maintenance worker, frontend, Redis, and Caddy
+- Docker Compose for backend, trading worker, maintenance worker, frontend, local Postgres, Redis, and Caddy
 - Paper-first config defaults with a live trading acknowledgement guard
 
 ## Phase 2
@@ -411,11 +411,22 @@ Use `.env` only for secrets and connection strings:
 cp .env.example .env
 ```
 
+Docker Compose uses local Postgres by default. Set `POSTGRES_DB`,
+`POSTGRES_USER`, and `POSTGRES_PASSWORD`; the compose files build
+`DATABASE_URL` and `DATABASE_URL_DIRECT` for the app containers.
+
 Change `DASHBOARD_AUTH_PASSWORD` before exposing the dashboard or API. Backend
 auth is enabled by default and protects every route except `/health` and
 `/ready`. The dashboard sends backend credentials from the Next.js server and
 proxies browser API calls through `/api/backend`, so credentials are not placed in
 the client bundle.
+
+For a fresh local Compose database, start Postgres and run migrations first:
+
+```bash
+docker compose up -d postgres redis
+docker compose run --rm backend python -m alembic upgrade head
+```
 
 Run the stack:
 
@@ -428,24 +439,33 @@ Services:
 - Dashboard: http://localhost:3000
 - Backend: http://localhost:8000
 - Health: http://localhost:8000/health
+- Postgres: localhost:5432
 - Caddy dashboard proxy: http://localhost:8080
 - Caddy API proxy: http://localhost:8001
 
 ## VPS Deployment
 
 Use `docker-compose.vps.yml` for a Linux VPS. It exposes only Caddy on ports 80
-and 443, keeps backend and frontend on the internal Docker network, and persists
-Redis data in a Docker volume.
+and 443, keeps backend, frontend, Postgres, and Redis on the internal Docker
+network, and persists Postgres and Redis data in Docker volumes.
 
 Required first-time flow:
 
 ```bash
 cp .env.example .env
-# Edit DATABASE_URL, DATABASE_URL_DIRECT, DASHBOARD_AUTH_PASSWORD, and DASHBOARD_DOMAIN.
+# Edit POSTGRES_PASSWORD, DASHBOARD_AUTH_PASSWORD, and DASHBOARD_DOMAIN.
 docker compose -f docker-compose.vps.yml build
+docker compose -f docker-compose.vps.yml up -d postgres redis
 docker compose -f docker-compose.vps.yml run --rm backend python -m alembic upgrade head
 docker compose -f docker-compose.vps.yml up -d
 ```
+
+Local VPS Postgres data lives in the `postgres_data` Docker volume. Do not run
+`docker compose -f docker-compose.vps.yml down -v` unless you intentionally want
+to delete the database. Use `bash infra/postgres-backup-local.sh` for manual
+backups or add the cron job from the deployment guide. Set `POSTGRES_DB`,
+`POSTGRES_USER`, and `POSTGRES_PASSWORD` before the first Postgres start because
+changing them later does not alter an existing database volume.
 
 Full guide: [docs/deployment.md](docs/deployment.md)
 

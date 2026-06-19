@@ -638,6 +638,10 @@ What it does:
 
 - Keeps tweakable non-secret settings in JSON config files.
 - Keeps secrets and connection strings in `.env`.
+- Uses `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD` as the local
+  Compose Postgres source settings.
+- Builds app container `DATABASE_URL` and `DATABASE_URL_DIRECT` from local
+  Postgres settings in Docker Compose.
 - Makes common system tuning possible without editing environment variables.
 - Environment variables override JSON config. This allows compose and deployment
   environments to change runtime behavior without editing tracked config files.
