@@ -131,6 +131,9 @@ Notes:
 - Fill rows store only compact configured raw payload fields to keep database growth under control.
 - The Database page exposes per-index storage and scan counts so large unused
   indexes can be reviewed before any schema change.
+- Docker Compose gives the Postgres container a 512 MB shared memory limit so
+  heavier aggregate and cleanup queries do not hit Docker's small default
+  `/dev/shm` limit.
 - The Database page also includes manual fill retention cleanup. It defaults to
   dry-run, keeps 90 days, and protects active, realtime, copy-enabled, open
   paper-position, open-position, and top scored wallets.

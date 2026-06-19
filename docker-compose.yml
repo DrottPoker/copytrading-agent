@@ -75,6 +75,7 @@ services:
 
   postgres:
     image: postgres:18-alpine
+    shm_size: 512mb
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-copyagent}
       POSTGRES_USER: ${POSTGRES_USER:-copyagent}

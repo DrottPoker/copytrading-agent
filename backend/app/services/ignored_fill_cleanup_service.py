@@ -10,46 +10,42 @@ from app.services.job_lock_service import job_lock
 IGNORED_FILL_CLEANUP_LOCK_KEY = "ignored_fill_cleanup"
 IGNORED_FILL_CLEANUP_LOCK_TTL_SECONDS = 900
 
-IGNORED_FILL_CANDIDATES_CTE = """
-ignored_matches as (
-  select
-    wf.id as wallet_fill_id,
-    wf.wallet_address,
-    wf.external_fill_id,
-    wf.timestamp_ms,
-    sif.id as ignored_fill_id,
-    sif.reason
-  from source_trade_ignored_fills sif
-  join wallet_fills wf
-    on wf.wallet_address = sif.wallet_address
-   and wf.external_fill_id = sif.external_fill_id
-  where wf.timestamp_ms < :cutoff_time_ms
-),
-candidate_ignored_fills as (
-  select im.*
-  from ignored_matches im
-  where im.reason = 'preexisting_open'
-     or (
-       im.reason = 'unmatched_close'
-       and not exists (
-         select 1
-         from source_trades st
-         where st.wallet_address = im.wallet_address
-           and st.closed_at_ms = im.timestamp_ms
-       )
-     )
-),
-excluded_potential_trade_closes as (
-  select im.*
-  from ignored_matches im
-  where im.reason = 'unmatched_close'
-    and exists (
-      select 1
-      from source_trades st
-      where st.wallet_address = im.wallet_address
-        and st.closed_at_ms = im.timestamp_ms
-    )
+MATCHING_WALLET_FILL_EXISTS_SQL = """
+exists (
+  select 1
+  from wallet_fills wf
+  where wf.wallet_address = sif.wallet_address
+    and wf.external_fill_id = sif.external_fill_id
 )
+"""
+
+POTENTIAL_SOURCE_TRADE_CLOSE_EXISTS_SQL = """
+exists (
+  select 1
+  from source_trades st
+  where st.wallet_address = sif.wallet_address
+    and st.closed_at_ms = sif.timestamp_ms
+)
+"""
+
+PREEXISTING_OPEN_CANDIDATE_WHERE_SQL = f"""
+sif.reason = 'preexisting_open'
+and sif.timestamp_ms < :cutoff_time_ms
+and {MATCHING_WALLET_FILL_EXISTS_SQL}
+"""
+
+UNMATCHED_CLOSE_CANDIDATE_WHERE_SQL = f"""
+sif.reason = 'unmatched_close'
+and sif.timestamp_ms < :cutoff_time_ms
+and {MATCHING_WALLET_FILL_EXISTS_SQL}
+and not {POTENTIAL_SOURCE_TRADE_CLOSE_EXISTS_SQL}
+"""
+
+EXCLUDED_POTENTIAL_TRADE_CLOSE_WHERE_SQL = f"""
+sif.reason = 'unmatched_close'
+and sif.timestamp_ms < :cutoff_time_ms
+and {MATCHING_WALLET_FILL_EXISTS_SQL}
+and {POTENTIAL_SOURCE_TRADE_CLOSE_EXISTS_SQL}
 """
 
 
@@ -151,46 +147,70 @@ async def count_ignored_wallet_fill_candidates(
     *,
     params: dict[str, int],
 ) -> dict[str, int]:
+    preexisting_open_count = await count_candidate_rows(
+        session,
+        where_sql=PREEXISTING_OPEN_CANDIDATE_WHERE_SQL,
+        params=params,
+    )
+    unmatched_close_count = await count_candidate_rows(
+        session,
+        where_sql=UNMATCHED_CLOSE_CANDIDATE_WHERE_SQL,
+        params=params,
+    )
+    excluded_potential_trade_close_count = await count_candidate_rows(
+        session,
+        where_sql=EXCLUDED_POTENTIAL_TRADE_CLOSE_WHERE_SQL,
+        params=params,
+    )
+    candidate_wallet_count = await count_candidate_wallets(session, params=params)
+    return {
+        "candidate_fills": preexisting_open_count + unmatched_close_count,
+        "candidate_wallets": candidate_wallet_count,
+        "candidate_preexisting_open_fills": preexisting_open_count,
+        "candidate_unmatched_close_fills": unmatched_close_count,
+        "excluded_potential_trade_close_fills": excluded_potential_trade_close_count,
+    }
+
+
+async def count_candidate_rows(
+    session: AsyncSession,
+    *,
+    where_sql: str,
+    params: dict[str, int],
+) -> int:
     result = await session.execute(
         text(
             f"""
-            with {IGNORED_FILL_CANDIDATES_CTE}
-            select
-              count(distinct wallet_fill_id)::int as candidate_fills,
-              count(distinct wallet_address)::int as candidate_wallets,
-              coalesce(
-                sum(case when reason = 'preexisting_open' then 1 else 0 end),
-                0
-              )::int
-                as candidate_preexisting_open_fills,
-              coalesce(
-                sum(case when reason = 'unmatched_close' then 1 else 0 end),
-                0
-              )::int
-                as candidate_unmatched_close_fills,
-              (
-                select count(distinct wallet_fill_id)::int
-                from excluded_potential_trade_closes
-              ) as excluded_potential_trade_close_fills
-            from candidate_ignored_fills
+            select count(*)::int as rows
+            from source_trade_ignored_fills sif
+            where {where_sql}
             """
         ),
         params,
     )
-    row = result.mappings().one()
-    return {
-        "candidate_fills": int(row["candidate_fills"] or 0),
-        "candidate_wallets": int(row["candidate_wallets"] or 0),
-        "candidate_preexisting_open_fills": int(
-            row["candidate_preexisting_open_fills"] or 0
+    return int(result.scalar_one() or 0)
+
+
+async def count_candidate_wallets(
+    session: AsyncSession,
+    *,
+    params: dict[str, int],
+) -> int:
+    result = await session.execute(
+        text(
+            f"""
+            select sif.wallet_address
+            from source_trade_ignored_fills sif
+            where {PREEXISTING_OPEN_CANDIDATE_WHERE_SQL}
+            union all
+            select sif.wallet_address
+            from source_trade_ignored_fills sif
+            where {UNMATCHED_CLOSE_CANDIDATE_WHERE_SQL}
+            """
         ),
-        "candidate_unmatched_close_fills": int(
-            row["candidate_unmatched_close_fills"] or 0
-        ),
-        "excluded_potential_trade_close_fills": int(
-            row["excluded_potential_trade_close_fills"] or 0
-        ),
-    }
+        params,
+    )
+    return len({str(row[0]) for row in result.all() if row[0]})
 
 
 async def delete_ignored_wallet_fill_batch(
@@ -202,22 +222,29 @@ async def delete_ignored_wallet_fill_batch(
     result = await session.execute(
         text(
             f"""
-            with {IGNORED_FILL_CANDIDATES_CTE},
-            target_fills as (
-              select distinct wallet_fill_id, wallet_address, external_fill_id
-              from candidate_ignored_fills
-              order by wallet_fill_id
+            with target_markers as (
+              select id, wallet_address, external_fill_id
+              from (
+                select sif.id, sif.wallet_address, sif.external_fill_id
+                from source_trade_ignored_fills sif
+                where {PREEXISTING_OPEN_CANDIDATE_WHERE_SQL}
+                union all
+                select sif.id, sif.wallet_address, sif.external_fill_id
+                from source_trade_ignored_fills sif
+                where {UNMATCHED_CLOSE_CANDIDATE_WHERE_SQL}
+              ) candidates
               limit :max_rows
             ),
             deleted_fills as (
               delete from wallet_fills wf
-              using target_fills target
-              where wf.id = target.wallet_fill_id
+              using target_markers target
+              where wf.wallet_address = target.wallet_address
+                and wf.external_fill_id = target.external_fill_id
               returning wf.wallet_address
             ),
             deleted_ignored as (
               delete from source_trade_ignored_fills sif
-              using target_fills target
+              using target_markers target
               where sif.wallet_address = target.wallet_address
                 and sif.external_fill_id = target.external_fill_id
               returning sif.wallet_address
@@ -231,7 +258,7 @@ async def delete_ignored_wallet_fill_batch(
               (select count(*)::int from deleted_fills) as deleted_fills,
               (select count(*)::int from deleted_ignored)
                 as deleted_ignored_fill_markers,
-              coalesce(array_agg(distinct wallet_address)::text[], array[]::text[])
+              coalesce(array_agg(wallet_address)::text[], array[]::text[])
                 as affected_wallets
             from affected
             """
@@ -242,7 +269,7 @@ async def delete_ignored_wallet_fill_batch(
     return {
         "deleted_fills": int(row["deleted_fills"] or 0),
         "deleted_ignored_fill_markers": int(row["deleted_ignored_fill_markers"] or 0),
-        "affected_wallets": string_list(row["affected_wallets"]),
+        "affected_wallets": sorted(set(string_list(row["affected_wallets"]))),
     }
 
 
