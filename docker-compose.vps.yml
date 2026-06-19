@@ -15,6 +15,8 @@ services:
       WORKER_RUN_IN_API_PROCESS: "false"
     expose:
       - "8000"
+    volumes:
+      - ./backups/postgres:/app/backups/postgres:ro
     depends_on:
       postgres:
         condition: service_healthy

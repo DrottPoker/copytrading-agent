@@ -9,6 +9,7 @@ import type {
 } from "@/types/discovery";
 import type { HealthResponse } from "@/types/health";
 import type { OperationStatusListResponse } from "@/types/operation";
+import type { OpsHealthResponse } from "@/types/ops";
 import type { PaperTradingSummaryResponse } from "@/types/paper";
 import type {
   CopyTradeListResponse,
@@ -68,6 +69,20 @@ export async function getDatabaseStats(): Promise<DatabaseStatsResponse | null> 
     }
 
     return (await response.json()) as DatabaseStatsResponse;
+  } catch {
+    return null;
+  }
+}
+
+export async function getOpsHealth(): Promise<OpsHealthResponse | null> {
+  try {
+    const response = await backendGet(`${getApiBaseUrl()}/ops/health`);
+
+    if (!response.ok) {
+      return null;
+    }
+
+    return (await response.json()) as OpsHealthResponse;
   } catch {
     return null;
   }

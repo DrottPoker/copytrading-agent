@@ -100,6 +100,9 @@ Docker Compose runs `trading-worker` and `maintenance-worker` as separate
 services and sets `WORKER_RUN_IN_API_PROCESS=false` on the backend container.
 Long-running jobs take rows in `job_locks`, so manual API triggers and worker
 services do not run the same long job concurrently.
+Workers also update lightweight heartbeat rows in `settings`. The Ops Health
+page uses those rows to show whether the trading and maintenance workers are
+fresh, stale, or missing.
 
 Trading worker responsibilities:
 

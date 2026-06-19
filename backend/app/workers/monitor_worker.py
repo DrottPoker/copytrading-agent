@@ -29,6 +29,7 @@ from app.services.realtime_event_service import publish_event
 from app.services.realtime_fill_service import store_realtime_fills
 from app.services.wallet_cleanup_service import prune_all_wallets
 from app.services.wallet_score_service import recalculate_wallet_scores
+from app.services.worker_heartbeat_service import mark_worker_heartbeat
 
 logger = logging.getLogger(__name__)
 TRADING_WORKER_ROLES = {"all", "trading"}
@@ -104,7 +105,20 @@ async def run_monitor_services(
             source_wallet=None,
         )
 
+    service_started_at = datetime.now(UTC)
     tasks: list[asyncio.Task[None]] = []
+    tasks.append(
+        asyncio.create_task(
+            run_worker_heartbeat_loop(
+                sessionmaker=sessionmaker,
+                stop_event=stop_event,
+                settings=settings,
+                service_started_at=service_started_at,
+                trading_loops=runs_trading,
+                maintenance_loops=runs_maintenance,
+            )
+        )
+    )
     if runs_maintenance and settings.discovery_enabled:
         tasks.append(
             asyncio.create_task(
@@ -251,6 +265,32 @@ async def run_realtime_monitor_loop(
                 payload={"error": str(exc)},
             )
             await sleep_until_stop(stop_event, settings.realtime_reconnect_seconds)
+
+
+async def run_worker_heartbeat_loop(
+    *,
+    sessionmaker: Any,
+    stop_event: asyncio.Event,
+    settings: Any,
+    service_started_at: datetime,
+    trading_loops: bool,
+    maintenance_loops: bool,
+) -> None:
+    while not stop_event.is_set():
+        try:
+            async with sessionmaker() as session:
+                await mark_worker_heartbeat(
+                    session,
+                    role=settings.worker_role,
+                    trading_loops=trading_loops,
+                    maintenance_loops=maintenance_loops,
+                    started_at=service_started_at,
+                )
+                await session.commit()
+        except Exception:
+            logger.exception("worker heartbeat update failed role=%s", settings.worker_role)
+
+        await sleep_until_stop(stop_event, settings.worker_heartbeat_interval_seconds)
 
 
 def worker_runs_trading(settings: Any) -> bool:

@@ -40,6 +40,35 @@ Config:
 - `DASHBOARD_AUTH_USERNAME`
 - `DASHBOARD_AUTH_PASSWORD`
 
+### Ops Health Monitoring
+
+Endpoint: `GET /ops/health`
+
+Dashboard page:
+
+- `/ops`
+
+What it does:
+
+- Shows overall VPS and service health without exposing database maintenance
+  actions.
+- Checks Postgres and Redis dependency status.
+- Shows disk usage, memory usage, load average, and configured service mode.
+- Reads the latest Postgres backup dump from the read-only mounted backup
+  directory.
+- Shows worker heartbeat freshness for `trading-worker` and
+  `maintenance-worker`.
+- Shows recent long-running operation statuses for discovery, pool reimport,
+  scoring, and pruning.
+
+Config:
+
+- `WORKER_HEARTBEAT_INTERVAL_SECONDS`
+- `WORKER_HEARTBEAT_STALE_SECONDS`
+- `OPS_DISK_PATH`
+- `BACKUP_STATUS_DIRECTORY`
+- `BACKUP_STATUS_STALE_SECONDS`
+
 ### Wallet Pool Management
 
 Endpoints:
@@ -395,6 +424,8 @@ Worker:
   services and disables the in-API worker through `WORKER_RUN_IN_API_PROCESS=false`.
 - `WORKER_ROLE=trading` starts realtime monitoring and paper-copy recovery only.
 - `WORKER_ROLE=maintenance` starts discovery, pool reimport, scoring, and pruning only.
+- Each worker writes a lightweight heartbeat to Postgres so `/ops` can show
+  fresh, stale, or missing worker state.
 
 What it does:
 

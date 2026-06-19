@@ -286,6 +286,11 @@ class Settings(BaseSettings):
     log_level: str = "info"
     worker_run_in_api_process: bool = True
     worker_role: Literal["all", "trading", "maintenance"] = "all"
+    worker_heartbeat_interval_seconds: int = Field(default=60, ge=10, le=3600)
+    worker_heartbeat_stale_seconds: int = Field(default=180, ge=30, le=7200)
+    ops_disk_path: str = "/"
+    backup_status_directory: str = "/app/backups/postgres"
+    backup_status_stale_seconds: int = Field(default=129600, ge=3600, le=2592000)
 
     database_url: str | None = None
     database_url_direct: str | None = None

@@ -7,6 +7,7 @@ import {
   Database,
   LayoutDashboard,
   RadioTower,
+  ServerCog,
   WalletCards,
 } from "lucide-react";
 import Link from "next/link";
@@ -43,6 +44,12 @@ const navItems = [
     icon: BarChart3,
     label: "Paper Trading",
     match: (pathname: string) => pathname.startsWith("/paper-trading"),
+  },
+  {
+    href: "/ops",
+    icon: ServerCog,
+    label: "Ops Health",
+    match: (pathname: string) => pathname.startsWith("/ops"),
   },
   {
     href: "/database",

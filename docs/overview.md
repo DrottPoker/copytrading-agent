@@ -64,6 +64,7 @@ The current application runs in paper mode:
 - Dashboard: `http://127.0.0.1:3000`
 - Wallet Pool: `http://127.0.0.1:3000/wallets`
 - Live Feed: `http://127.0.0.1:3000/live-feed`
+- Ops Health: `http://127.0.0.1:3000/ops`
 - Paper Trading: `http://127.0.0.1:3000/paper-trading`
 
 Browser dashboard API calls use the Next.js proxy at `/api/backend`. Server-side

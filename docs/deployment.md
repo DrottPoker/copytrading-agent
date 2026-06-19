@@ -285,6 +285,8 @@ docker compose -f docker-compose.vps.yml down -v
   database volume.
 - Redis data is stored in the `redis_data` Docker volume.
 - Caddy certificates are stored in `caddy_data` and `caddy_config` volumes.
+- The backend mounts `./backups/postgres` read-only so `/ops` can show latest
+  backup status without database maintenance actions.
 - Backend routes are protected by dashboard Basic Auth except `/health` and
   `/ready`.
 - The dashboard calls the backend through the Next.js server-side proxy, so the

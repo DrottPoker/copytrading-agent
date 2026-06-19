@@ -172,12 +172,17 @@ Docker Compose runs two dedicated worker services and overrides
   copy, and paper-copy recovery.
 - `maintenance-worker`: discovery, pool reimport, scoring, and pruning.
 
+Workers publish lightweight heartbeats to Postgres so the Ops Health page can
+show whether `trading-worker` and `maintenance-worker` are fresh, stale, or
+missing.
+
 API:
 
 - `POST /wallets/fills/import-pool`
 - `POST /wallets/prune-all`
 - `GET /events/recent`
 - `GET /events` Server-Sent Events stream
+- `GET /ops/health`
 - `GET /paper-trading`
 - `POST /paper-trading/positions/{position_id}/close`
 - `POST /paper-trading/sources/{source_wallet}/close`
@@ -185,6 +190,7 @@ API:
 Dashboard:
 
 - `http://127.0.0.1:3000/live-feed`
+- `http://127.0.0.1:3000/ops`
 - `http://127.0.0.1:3000/paper-trading`
 
 Notes:
@@ -405,6 +411,14 @@ the shared fill-import storage and market-filter settings.
 `backend/config/database.json` owns manual database maintenance defaults such as
 fill retention days, batch size, max rows, and protected top scored wallets.
 
+The Ops Health page reads runtime settings from environment variables:
+
+- `WORKER_HEARTBEAT_INTERVAL_SECONDS`
+- `WORKER_HEARTBEAT_STALE_SECONDS`
+- `OPS_DISK_PATH`
+- `BACKUP_STATUS_DIRECTORY`
+- `BACKUP_STATUS_STALE_SECONDS`
+
 Use `.env` only for secrets and connection strings:
 
 ```bash
@@ -439,6 +453,7 @@ Services:
 - Dashboard: http://localhost:3000
 - Backend: http://localhost:8000
 - Health: http://localhost:8000/health
+- Ops Health: http://localhost:3000/ops
 - Postgres: localhost:5432
 - Caddy dashboard proxy: http://localhost:8080
 - Caddy API proxy: http://localhost:8001

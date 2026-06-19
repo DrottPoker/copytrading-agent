@@ -11,6 +11,7 @@ from app.api.routes_discovery import router as discovery_router
 from app.api.routes_events import router as events_router
 from app.api.routes_health import router as health_router
 from app.api.routes_operations import router as operations_router
+from app.api.routes_ops import router as ops_router
 from app.api.routes_paper_trading import router as paper_trading_router
 from app.api.routes_scores import router as scores_router
 from app.api.routes_wallets import router as wallets_router
@@ -85,6 +86,7 @@ app.include_router(discovery_router)
 app.include_router(wallets_router)
 app.include_router(events_router)
 app.include_router(operations_router)
+app.include_router(ops_router)
 app.include_router(scores_router)
 app.include_router(paper_trading_router)
 
