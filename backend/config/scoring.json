@@ -129,17 +129,17 @@
   "penalties": {
     "no_closed_trades": 100,
     "low_sample_max": 20,
-    "negative_pnl_max": 20,
+    "negative_pnl_max": 10,
     "stale_recency": 10,
     "open_only": 10,
     "liquidation": {
       "event_gap_seconds": 300,
       "per_event": 1,
-      "max": 10
+      "max": 5
     },
     "confidence": {
-      "target_trades": 30,
-      "max": 20
+      "target_trades": 25,
+      "max": 10
     }
   },
   "window_scores": {
