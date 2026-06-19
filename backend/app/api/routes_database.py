@@ -1,6 +1,7 @@
+import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import db_session
@@ -15,8 +16,10 @@ from app.services.database_stats_service import get_database_stats
 from app.services.fill_compaction_service import compact_wallet_fill_raw_json
 from app.services.fill_retention_service import cleanup_wallet_fill_retention
 from app.services.ignored_fill_cleanup_service import cleanup_ignored_wallet_fills
+from app.services.job_lock_service import JobLockAlreadyHeldError
 
 router = APIRouter(prefix="/database", tags=["database"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/stats", response_model=DatabaseStatsResponse)
@@ -74,9 +77,18 @@ async def cleanup_ignored_fills_route(
     min_age_days: Annotated[int, Query(ge=0, le=365)] = 7,
     max_rows: Annotated[int, Query(ge=100, le=250000)] = 50000,
 ) -> IgnoredFillCleanupResponse:
-    return await cleanup_ignored_wallet_fills(
-        session,
-        dry_run=dry_run,
-        min_age_days=min_age_days,
-        max_rows=max_rows,
-    )
+    try:
+        return await cleanup_ignored_wallet_fills(
+            session,
+            dry_run=dry_run,
+            min_age_days=min_age_days,
+            max_rows=max_rows,
+        )
+    except JobLockAlreadyHeldError:
+        raise
+    except Exception as exc:
+        logger.exception("ignored fill cleanup failed")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Ignored fill cleanup failed: {exc}",
+        ) from exc

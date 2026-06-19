@@ -16,15 +16,9 @@ ignored_matches as (
     wf.id as wallet_fill_id,
     wf.wallet_address,
     wf.external_fill_id,
-    wf.coin,
     wf.timestamp_ms,
     sif.id as ignored_fill_id,
-    sif.reason,
-    case
-      when wf.raw_json->>'dir' in ('Close Long', 'Long > Short') then 'long'
-      when wf.raw_json->>'dir' in ('Close Short', 'Short > Long') then 'short'
-      else null
-    end as close_side
+    sif.reason
   from source_trade_ignored_fills sif
   join wallet_fills wf
     on wf.wallet_address = sif.wallet_address
@@ -37,13 +31,10 @@ candidate_ignored_fills as (
   where im.reason = 'preexisting_open'
      or (
        im.reason = 'unmatched_close'
-       and im.close_side is not null
        and not exists (
          select 1
          from source_trades st
          where st.wallet_address = im.wallet_address
-           and st.coin = im.coin
-           and st.side = im.close_side
            and st.closed_at_ms = im.timestamp_ms
        )
      )
@@ -56,8 +47,6 @@ excluded_potential_trade_closes as (
       select 1
       from source_trades st
       where st.wallet_address = im.wallet_address
-        and st.coin = im.coin
-        and st.side = im.close_side
         and st.closed_at_ms = im.timestamp_ms
     )
 )
@@ -169,14 +158,14 @@ async def count_ignored_wallet_fill_candidates(
             select
               count(distinct wallet_fill_id)::int as candidate_fills,
               count(distinct wallet_address)::int as candidate_wallets,
-              (
-                count(distinct wallet_fill_id)
-                filter (where reason = 'preexisting_open')
+              coalesce(
+                sum(case when reason = 'preexisting_open' then 1 else 0 end),
+                0
               )::int
                 as candidate_preexisting_open_fills,
-              (
-                count(distinct wallet_fill_id)
-                filter (where reason = 'unmatched_close')
+              coalesce(
+                sum(case when reason = 'unmatched_close' then 1 else 0 end),
+                0
               )::int
                 as candidate_unmatched_close_fills,
               (

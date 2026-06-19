@@ -34,13 +34,16 @@ export function DatabaseIgnoredFillCleanupPanel() {
         `${getPublicApiBaseUrl()}/database/fills/ignored-cleanup?dry_run=${dryRun}`,
         { method: "POST" },
       );
-      const payload = (await response.json().catch(() => null)) as
+      const responseText = await response.text();
+      const payload = parseJson(responseText) as
         | IgnoredFillCleanupResponse
         | { detail?: string }
         | null;
 
       if (!response.ok) {
-        setError(errorDetail(payload) ?? "Could not run ignored fill cleanup.");
+        setError(
+          errorDetail(payload) ?? responseText.trim() ?? "Could not run ignored fill cleanup.",
+        );
         return;
       }
 
@@ -159,4 +162,12 @@ function errorDetail(value: unknown) {
   }
   const detail = (value as { detail?: unknown }).detail;
   return typeof detail === "string" ? detail : null;
+}
+
+function parseJson(value: string) {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
 }
