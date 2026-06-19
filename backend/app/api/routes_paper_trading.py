@@ -12,6 +12,7 @@ from app.services.paper_trading_service import (
     PaperAccountResetError,
     PaperPositionCloseError,
     close_paper_position_manually,
+    close_paper_source_positions_manually,
     get_paper_trading_summary,
     reset_paper_trading_account_balance,
 )
@@ -38,6 +39,28 @@ async def close_paper_position_route(
             await close_paper_position_manually(
                 session,
                 position_id=position_id,
+                settings=settings,
+                client=client,
+            )
+            await session.commit()
+        except PaperPositionCloseError as exc:
+            await session.rollback()
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+        return await get_paper_trading_summary(session, settings=settings, client=client)
+
+
+@router.post("/sources/{source_wallet}/close", response_model=PaperTradingSummaryResponse)
+async def close_paper_source_positions_route(
+    source_wallet: str,
+    session: Annotated[AsyncSession, Depends(db_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> PaperTradingSummaryResponse:
+    async with HyperliquidClient(settings) as client:
+        try:
+            await close_paper_source_positions_manually(
+                session,
+                source_wallet=source_wallet,
                 settings=settings,
                 client=client,
             )

@@ -75,6 +75,7 @@ export function PaperTradingDashboard({
   const [connectionState, setConnectionState] = useState<"live" | "refreshing" | "offline">("live");
   const [lastRefreshAt, setLastRefreshAt] = useState<Date | null>(new Date());
   const [closingPositionId, setClosingPositionId] = useState<string | null>(null);
+  const [closingSourceWallet, setClosingSourceWallet] = useState<string | null>(null);
   const [resettingAccountKey, setResettingAccountKey] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -141,6 +142,44 @@ export function PaperTradingDashboard({
     [closingPositionId],
   );
 
+  const handleCloseSource = useCallback(
+    async (source: MonitoredSource) => {
+      if (closingSourceWallet || closingPositionId || source.openPositionCount <= 0) {
+        return;
+      }
+      const sourceName = sourceDisplayName(source.sourceLabel, source.sourceWallet);
+      const confirmed = window.confirm(
+        `Close all ${formatInteger(source.openPositionCount)} open paper positions for ${sourceName}?`,
+      );
+      if (!confirmed) {
+        return;
+      }
+
+      setClosingSourceWallet(source.sourceWallet);
+      setActionError(null);
+      try {
+        const response = await fetch(
+          `${getPublicApiBaseUrl()}/paper-trading/sources/${encodeURIComponent(source.sourceWallet)}/close`,
+          { cache: "no-store", method: "POST" },
+        );
+        if (!response.ok) {
+          setActionError(await responseError(response, "Source close failed"));
+          return;
+        }
+        const payload = (await response.json()) as PaperTradingSummaryResponse;
+        setSummary(payload);
+        setLastRefreshAt(new Date());
+        setConnectionState("live");
+      } catch {
+        setConnectionState("offline");
+        setActionError("Source close failed.");
+      } finally {
+        setClosingSourceWallet(null);
+      }
+    },
+    [closingPositionId, closingSourceWallet],
+  );
+
   const handleResetAccount = useCallback(
     async (account: PaperTradingAccount) => {
       if (resettingAccountKey) {
@@ -195,7 +234,7 @@ export function PaperTradingDashboard({
             Paper Trading
           </h1>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-1">
           <StatusPill
             label={summary.policy.enabled ? "paper copy enabled" : "paper copy disabled"}
             tone={summary.policy.enabled ? "positive" : "warning"}
@@ -292,7 +331,14 @@ export function PaperTradingDashboard({
           {monitoredSources.length === 0 ? (
             <EmptyState text="No monitored sources." />
           ) : (
-            monitoredSources.map((source) => <SourceRow key={source.sourceWallet} source={source} />)
+            monitoredSources.map((source) => (
+              <SourceRow
+                key={source.sourceWallet}
+                isClosing={closingSourceWallet === source.sourceWallet}
+                onCloseSource={handleCloseSource}
+                source={source}
+              />
+            ))
           )}
         </ListPanel>
 
@@ -502,7 +548,7 @@ function AccountRow({
     <ListRow>
       <div className="grid gap-2 sm:grid-cols-[1.2fr_repeat(5,minmax(0,1fr))_auto] sm:items-center">
         <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1">
             <p className="truncate text-sm font-semibold text-ink">{account.label}</p>
             <StatusPill label={account.enabled ? "enabled" : "disabled"} tone={account.enabled ? "positive" : "warning"} />
           </div>
@@ -558,7 +604,15 @@ function PolicyRow({
   );
 }
 
-function SourceRow({ source }: { source: MonitoredSource }) {
+function SourceRow({
+  isClosing,
+  onCloseSource,
+  source,
+}: {
+  isClosing: boolean;
+  onCloseSource: (source: MonitoredSource) => void;
+  source: MonitoredSource;
+}) {
   const usedPct = clampPercent(numberValue(source.pocketUsedPct ?? 0));
   const monitorTone = source.monitorStatus === "monitored" ? "positive" : "neutral";
   const sourceTone =
@@ -569,9 +623,9 @@ function SourceRow({ source }: { source: MonitoredSource }) {
         : "neutral";
   return (
     <ListRow>
-      <div className="grid gap-2 lg:grid-cols-[1.05fr_0.75fr_0.75fr_1.1fr_0.9fr] lg:items-center">
+      <div className="grid gap-2 lg:grid-cols-[1.05fr_0.7fr_0.7fr_1fr_0.85fr_auto] lg:items-center">
         <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1">
             <Link
               href={`/wallets/${source.sourceWallet}`}
               className="truncate text-sm font-semibold text-ink hover:text-[#297c73]"
@@ -610,6 +664,22 @@ function SourceRow({ source }: { source: MonitoredSource }) {
           value={formatCurrency(source.allocationUsd)}
           detail={`${formatPercent(source.allocationPct)} pocket, ${formatInteger(source.openPositionCount)} open`}
         />
+        {source.openPositionCount > 0 ? (
+          <button
+            type="button"
+            onClick={() => onCloseSource(source)}
+            disabled={isClosing}
+            title="Close all open paper positions for this source"
+            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-[#f2aaa5] bg-[#fff2f0] px-2 text-xs font-semibold text-danger shadow-sm hover:bg-[#ffe6e2] disabled:cursor-not-allowed disabled:border-line disabled:bg-[#f7f9fb] disabled:text-[#98a2b3]"
+          >
+            {isClosing ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+            ) : (
+              <XCircle className="h-3.5 w-3.5" aria-hidden="true" />
+            )}
+            Close all
+          </button>
+        ) : null}
       </div>
     </ListRow>
   );
@@ -630,7 +700,7 @@ function PositionRow({
     <ListRow>
       <div className="grid gap-2 xl:grid-cols-[1.15fr_0.7fr_0.85fr_0.85fr_0.85fr_auto] xl:items-center">
         <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1">
             <p className="font-semibold text-ink">{position.coin}</p>
             <StatusPill label={position.side} tone={position.side === "long" ? "positive" : "warning"} />
             <span className="font-mono text-xs text-[#5b6770]">{formatLeverage(position.leverage)}</span>
@@ -671,7 +741,7 @@ function WalletHistoryRow({ wallet }: { wallet: PaperWalletPerformance }) {
     <ListRow>
       <div className="grid gap-2 xl:grid-cols-[1.05fr_repeat(5,minmax(0,0.75fr))] xl:items-center">
         <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1">
             <Link
               href={`/wallets/${wallet.sourceWallet}`}
               className="truncate text-sm font-semibold text-ink hover:text-[#297c73]"
@@ -706,7 +776,7 @@ function ClosedTradeRow({ trade }: { trade: PaperClosedTrade }) {
     <ListRow>
       <div className="grid gap-2 xl:grid-cols-[1.05fr_0.85fr_0.75fr_0.85fr_0.85fr_0.75fr] xl:items-center">
         <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1">
             <p className="font-semibold text-ink">{trade.coin}</p>
             {trade.side ? <StatusPill label={trade.side} tone={trade.side === "long" ? "positive" : "warning"} /> : null}
             <span className="text-xs text-[#5b6770]">{formatCloseType(trade.closeType)}</span>
@@ -740,7 +810,7 @@ function PaperFillRow({ fill }: { fill: PaperCopyFill }) {
     <ListRow>
       <div className="grid gap-2 xl:grid-cols-[1.05fr_0.7fr_0.85fr_0.85fr_0.85fr_0.9fr] xl:items-center">
         <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1">
             <Link
               href={`/wallets/${fill.sourceWallet}`}
               className="truncate text-sm font-semibold text-ink hover:text-[#297c73]"
@@ -771,7 +841,7 @@ function PaperFillRow({ fill }: { fill: PaperCopyFill }) {
 }
 
 function ListRow({ children }: { children: ReactNode }) {
-  return <div className="border-b border-line px-3 py-2 last:border-b-0">{children}</div>;
+  return <div className="border-b border-line px-3 py-1.5 last:border-b-0">{children}</div>;
 }
 
 function RowStat({

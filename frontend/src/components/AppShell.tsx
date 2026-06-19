@@ -96,7 +96,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           <div className="mt-auto hidden border-t border-[#252b2f] p-4 text-xs text-[#aeb7bd] lg:block">
             <div className="flex items-center justify-between gap-3">
               <span>Mode</span>
-              <span className="rounded-full border border-[#3c454a] px-2 py-1 text-white">Paper</span>
+              <span className="rounded-md border border-[#3c454a] px-1.5 py-0.5 text-xs text-white">Paper</span>
             </div>
           </div>
         </div>

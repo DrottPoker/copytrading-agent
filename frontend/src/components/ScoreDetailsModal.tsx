@@ -47,7 +47,7 @@ export function ScoreDetailsModal({ score, scoreDetail }: ScoreDetailsModalProps
         type="button"
         disabled={!canOpen}
         onClick={() => setOpen(true)}
-        className="inline-flex min-h-8 items-center gap-2 rounded-full border border-line bg-[#f7f9fb] px-3 text-sm font-medium text-[#344054] transition hover:border-[#9eb1c1] hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+        className="inline-flex h-7 items-center gap-1.5 rounded-md border border-line bg-[#f7f9fb] px-2.5 text-xs font-medium text-[#344054] transition hover:border-[#9eb1c1] hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
       >
         <BarChart3 className="h-4 w-4" aria-hidden="true" />
         Detailed scoring
@@ -186,7 +186,7 @@ function ScoreDetailComponent({ component }: { component: WalletScoreComponentDe
           <div className="flex flex-wrap items-center gap-3">
             <h3 className="font-semibold">{component.label}</h3>
             {component.weight ? (
-              <span className="rounded-full border border-line bg-white px-2.5 py-1 text-xs font-medium text-[#526070]">
+              <span className="rounded-md border border-line bg-white px-2 py-0.5 text-xs font-medium text-[#526070]">
                 Weight {formatPercent(component.weight)}
               </span>
             ) : null}

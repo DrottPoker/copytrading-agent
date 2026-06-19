@@ -25,6 +25,7 @@ from app.schemas.paper_trading import (
     PaperTradingPolicyRead,
     PaperTradingSummaryResponse,
 )
+from app.schemas.wallet import normalize_wallet_address
 from app.services.wallet_current_state_service import object_or_empty
 
 logger = logging.getLogger(__name__)
@@ -449,6 +450,49 @@ async def close_paper_position_manually(
         realized_pnl_usd=realized_pnl,
         fee_usd=fee,
     )
+
+
+async def close_paper_source_positions_manually(
+    session: AsyncSession,
+    *,
+    source_wallet: str,
+    settings: Settings | None = None,
+    client: HyperliquidClient | None = None,
+) -> PaperCopyBatchResult:
+    try:
+        normalized_source = normalize_wallet_address(source_wallet)
+    except ValueError as exc:
+        raise PaperPositionCloseError("Invalid source wallet address.") from exc
+
+    resolved_settings = settings or get_settings()
+    if client is None:
+        async with HyperliquidClient(resolved_settings) as hyperliquid_client:
+            return await close_paper_source_positions_manually(
+                session,
+                source_wallet=normalized_source,
+                settings=resolved_settings,
+                client=hyperliquid_client,
+            )
+
+    result = await session.execute(
+        select(PaperPosition.id)
+        .where(PaperPosition.source_wallet == normalized_source)
+        .order_by(PaperPosition.account_key.asc(), PaperPosition.coin.asc())
+    )
+    position_ids = list(result.scalars().all())
+    if not position_ids:
+        raise PaperPositionNotFoundError("No open paper positions found for this source wallet.")
+
+    total = PaperCopyBatchResult()
+    for position_id in position_ids:
+        close_result = await close_paper_position_manually(
+            session,
+            position_id=position_id,
+            settings=resolved_settings,
+            client=client,
+        )
+        total = combine_batch_results(total, close_result)
+    return total
 
 
 async def load_paper_allocation_for_position(

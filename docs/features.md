@@ -420,6 +420,7 @@ Endpoint:
 - `GET /paper-trading`
 - `POST /paper-trading/accounts/{account_key}/reset`
 - `POST /paper-trading/positions/{position_id}/close`
+- `POST /paper-trading/sources/{source_wallet}/close`
 
 Dashboard page:
 
@@ -489,6 +490,9 @@ What it does:
   from the current simulated market price, apply configured adverse slippage and
   fee, update the paper account, delete the open paper position, and record a
   normal `close` row in `paper_copy_fills`.
+- Supports manual source-wide closes from Copy Sources. This closes all open
+  paper positions for the selected source wallet across paper accounts with the
+  same manual close execution model.
 - Uses source `startPosition` to reduce or close paper positions proportionally.
 - Splits source flip fills into a close part and an open part when the source
   payload provides enough information.

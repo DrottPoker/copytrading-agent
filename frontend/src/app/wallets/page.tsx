@@ -266,7 +266,7 @@ function WalletRow({ wallet }: { wallet: Wallet }) {
         </div>
       </td>
       <td className="px-4 py-3 align-top">
-        <div className="flex max-w-[220px] flex-wrap gap-2">
+        <div className="flex max-w-[220px] flex-wrap gap-1">
           <StatusPill
             label={wallet.enabled ? "enabled" : "disabled"}
             tone={wallet.enabled ? "positive" : "warning"}

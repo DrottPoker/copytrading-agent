@@ -506,6 +506,10 @@ sequenceDiagram
   API->>HL: current market price for that paper position
   API->>DB: apply slippage, fee, realized PnL, and close fill
   API-->>UI: refreshed paper trading summary
+  UI->>API: POST /paper-trading/sources/{source_wallet}/close
+  API->>HL: current market prices for that source's open paper positions
+  API->>DB: close every open paper position for the source
+  API-->>UI: refreshed paper trading summary
 ```
 
 Paper sizing uses `source fill notional / source perp equity` and applies that
@@ -571,6 +575,10 @@ The dashboard can also manually close an open paper position. Manual closes use
 the same simulated current market price, adverse slippage, and fee model, then
 persist a normal `close` fill in `paper_copy_fills` so account PnL and source
 wallet history remain durable across restarts.
+Copy source rows can also manually close all open paper positions for a selected
+source wallet across paper accounts. The source-wide close uses the same manual
+close execution model and fails without committing if any required execution
+price is unavailable.
 
 Paper copy fill rows store source wallet sizing context in
 `paper_copy_fills.source_perp_equity_usd`. The API also exposes

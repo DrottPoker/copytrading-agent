@@ -10,7 +10,7 @@ const toneClasses: Record<Tone, string> = {
 export function StatusPill({ label, tone = "neutral" }: { label: string; tone?: Tone }) {
   return (
     <span
-      className={`inline-flex min-h-8 items-center rounded-full border px-3 text-sm font-medium ${toneClasses[tone]}`}
+      className={`inline-flex h-6 max-w-full items-center whitespace-nowrap rounded-md border px-2 text-xs font-medium leading-none ${toneClasses[tone]}`}
     >
       {label}
     </span>

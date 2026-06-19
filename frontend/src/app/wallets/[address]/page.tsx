@@ -59,7 +59,7 @@ export default async function WalletDetailPage({
               {wallet.label || shortAddress(wallet.address)}
             </h1>
             <p className="mt-2 break-all font-mono text-sm text-[#5b6770]">{wallet.address}</p>
-            <div className="mt-4 flex flex-wrap gap-2">
+            <div className="mt-3 flex flex-wrap gap-1">
               <StatusPill
                 label={wallet.enabled ? "enabled" : "disabled"}
                 tone={wallet.enabled ? "positive" : "warning"}

@@ -180,6 +180,7 @@ API:
 - `GET /events` Server-Sent Events stream
 - `GET /paper-trading`
 - `POST /paper-trading/positions/{position_id}/close`
+- `POST /paper-trading/sources/{source_wallet}/close`
 
 Dashboard:
 
@@ -262,6 +263,7 @@ API:
 - `GET /paper-trading`
 - `POST /paper-trading/accounts/{account_key}/reset`
 - `POST /paper-trading/positions/{position_id}/close`
+- `POST /paper-trading/sources/{source_wallet}/close`
 
 Dashboard:
 
@@ -348,6 +350,9 @@ Sizing policy:
 - Open position rows include a manual close action. Manual closes use the same
   live mark, adverse slippage, and fee model as automated paper closes, then
   record a normal `close` row in `paper_copy_fills`.
+- Copy source rows with open exposure include a close-all action. It closes all
+  open paper positions for that source wallet across paper accounts using the
+  same manual close execution model.
 - Allocation source rows show current pocket usage from open paper margin.
 - Paper account state, copied positions, copied fills, and allocations are stored
   in Postgres. Worker restarts recover missed fills from the oldest open paper
