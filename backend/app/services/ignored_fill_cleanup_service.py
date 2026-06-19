@@ -72,7 +72,7 @@ async def cleanup_ignored_wallet_fills(
     max_rows: int = 50000,
     use_lock: bool = True,
 ) -> IgnoredFillCleanupResponse:
-    if use_lock:
+    if use_lock and not dry_run:
         async with job_lock(
             session,
             key=IGNORED_FILL_CLEANUP_LOCK_KEY,
@@ -169,11 +169,15 @@ async def count_ignored_wallet_fill_candidates(
             select
               count(distinct wallet_fill_id)::int as candidate_fills,
               count(distinct wallet_address)::int as candidate_wallets,
-              count(distinct wallet_fill_id)
-                filter (where reason = 'preexisting_open')::int
+              (
+                count(distinct wallet_fill_id)
+                filter (where reason = 'preexisting_open')
+              )::int
                 as candidate_preexisting_open_fills,
-              count(distinct wallet_fill_id)
-                filter (where reason = 'unmatched_close')::int
+              (
+                count(distinct wallet_fill_id)
+                filter (where reason = 'unmatched_close')
+              )::int
                 as candidate_unmatched_close_fills,
               (
                 select count(distinct wallet_fill_id)::int

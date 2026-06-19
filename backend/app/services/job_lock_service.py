@@ -30,8 +30,11 @@ async def job_lock(
 
     try:
         yield
+    except BaseException:
+        await rollback_session(session)
+        raise
     finally:
-        await release_job_lock(session, key=key, owner=owner)
+        await release_job_lock_safely(session, key=key, owner=owner)
 
 
 async def try_acquire_job_lock(
@@ -74,6 +77,26 @@ async def release_job_lock(
         {"key": key, "owner": owner},
     )
     await session.commit()
+
+
+async def release_job_lock_safely(
+    session: AsyncSession,
+    *,
+    key: str,
+    owner: str,
+) -> None:
+    try:
+        await release_job_lock(session, key=key, owner=owner)
+    except Exception:
+        await rollback_session(session)
+        await release_job_lock(session, key=key, owner=owner)
+
+
+async def rollback_session(session: AsyncSession) -> None:
+    try:
+        await session.rollback()
+    except Exception:
+        pass
 
 
 def job_lock_owner() -> str:
