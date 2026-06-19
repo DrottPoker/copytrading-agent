@@ -7,7 +7,7 @@ and local Postgres.
 
 `docker-compose.vps.yml` starts:
 
-- `postgres`: local Postgres with persistent Docker volume storage.
+- `postgres`: local Postgres 18 with persistent Docker volume storage.
 - `redis`: local Redis with append-only persistence.
 - `backend`: FastAPI API on the internal Docker network.
 - `trading-worker`: realtime monitoring, paper copy, and paper-copy recovery.
@@ -162,6 +162,13 @@ URL:
 OLD_DATABASE_URL_DIRECT="$(grep '^DATABASE_URL_DIRECT=' .env.before-local-postgres | cut -d= -f2-)"
 SOURCE_DATABASE_URL="$OLD_DATABASE_URL_DIRECT" bash infra/postgres-export-url.sh
 ```
+
+The export container uses the same Postgres major version as local Postgres.
+This matters because `pg_dump` must be the same major version or newer than the
+source database server. If you previously started an empty local Postgres volume
+with an older image before importing data, stop Postgres, remove only that empty
+local volume, pull the updated compose file, and start Postgres again before
+restoring.
 
 Restore the newest exported dump into local Postgres:
 

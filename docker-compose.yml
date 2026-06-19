@@ -72,7 +72,7 @@ services:
       - "6379"
 
   postgres:
-    image: postgres:17-alpine
+    image: postgres:18-alpine
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-copyagent}
       POSTGRES_USER: ${POSTGRES_USER:-copyagent}
