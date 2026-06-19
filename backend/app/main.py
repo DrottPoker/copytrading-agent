@@ -6,6 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.api.routes_analytics import router as analytics_router
 from app.api.routes_database import router as database_router
 from app.api.routes_discovery import router as discovery_router
 from app.api.routes_events import router as events_router
@@ -81,6 +82,7 @@ app.add_middleware(
 )
 
 app.include_router(health_router)
+app.include_router(analytics_router)
 app.include_router(database_router)
 app.include_router(discovery_router)
 app.include_router(wallets_router)

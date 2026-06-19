@@ -1,5 +1,6 @@
 import "server-only";
 
+import type { AnalyticsResponse } from "@/types/analytics";
 import type { LiveEventListResponse } from "@/types/event";
 import type { DatabaseStatsResponse } from "@/types/database";
 import type {
@@ -83,6 +84,20 @@ export async function getOpsHealth(): Promise<OpsHealthResponse | null> {
     }
 
     return (await response.json()) as OpsHealthResponse;
+  } catch {
+    return null;
+  }
+}
+
+export async function getAnalytics(): Promise<AnalyticsResponse | null> {
+  try {
+    const response = await backendGet(`${getApiBaseUrl()}/analytics`);
+
+    if (!response.ok) {
+      return null;
+    }
+
+    return (await response.json()) as AnalyticsResponse;
   } catch {
     return null;
   }

@@ -183,6 +183,7 @@ API:
 - `GET /events/recent`
 - `GET /events` Server-Sent Events stream
 - `GET /ops/health`
+- `GET /analytics`
 - `GET /paper-trading`
 - `POST /paper-trading/positions/{position_id}/close`
 - `POST /paper-trading/sources/{source_wallet}/close`
@@ -190,6 +191,7 @@ API:
 Dashboard:
 
 - `http://127.0.0.1:3000/live-feed`
+- `http://127.0.0.1:3000/analytics`
 - `http://127.0.0.1:3000/ops`
 - `http://127.0.0.1:3000/paper-trading`
 
@@ -237,6 +239,10 @@ Notes:
   It shows gross score, penalty, final score before sample cap, component
   weights, weighted scores, and the input-level subscores behind profitability,
   consistency, risk, copyability, recency, and penalty scoring.
+- The Analytics tab aggregates pool coverage, score distribution, drawdown
+  state, opportunity wallets, risk watchlists, 30D source and coin performance,
+  paper source performance, skip reasons, discovery funnel quality, and data
+  freshness from `GET /analytics`.
 - Paper allocation only selects positive-score enabled wallets. When current
   drawdown scoring is enabled, the source wallet must also have
   `current_drawdown_status = "ok"` from its latest score.

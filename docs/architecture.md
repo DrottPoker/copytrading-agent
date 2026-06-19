@@ -147,6 +147,7 @@ Current pages:
 - `/wallets`: wallet pool management.
 - `/wallets/[address]`: wallet details and recent fills.
 - `/live-feed`: realtime system and fill events.
+- `/analytics`: pool, scoring, paper, discovery, and freshness analytics.
 - `/paper-trading`: paper accounts, allocations, positions, and recent paper fills.
 
 Important folders:
@@ -161,6 +162,12 @@ Server-side dashboard requests call `serverApiBaseUrl` with a Basic Auth header
 from `DASHBOARD_AUTH_USERNAME` and `DASHBOARD_AUTH_PASSWORD`. Browser requests
 use `/api/backend`, a Next.js proxy route that attaches the same backend auth on
 the server side and streams SSE responses without buffering.
+
+The Analytics page reads `GET /analytics`. The endpoint intentionally returns
+pre-aggregated rows so the dashboard can render pool coverage, score buckets,
+opportunity and risk wallet lists, 30D source and coin performance, paper skip
+analysis, discovery funnel quality, and freshness checks without issuing many
+browser-side API requests.
 
 ## Data Stores
 

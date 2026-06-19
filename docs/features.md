@@ -71,6 +71,34 @@ Config:
 - `BACKUP_STATUS_DIRECTORY`
 - `BACKUP_STATUS_STALE_SECONDS`
 
+### Analytics
+
+Endpoint: `GET /analytics`
+
+Dashboard page:
+
+- `/analytics`
+
+What it does:
+
+- Aggregates wallet pool coverage, scoring coverage, average score, active paper
+  sources, open paper positions, paper realized PnL, paper fees, paper open
+  margin, and paper skip rate.
+- Shows score distribution buckets and current drawdown status buckets.
+- Shows average score components for final score, profitability, consistency,
+  risk, copyability, recency, and penalty.
+- Lists opportunity wallets using enabled, positive-score, drawdown-ok wallets
+  with enough reconstructed trade history.
+- Lists risk watchlist wallets using current drawdown, margin stress, historical
+  drawdown, and unavailable live drawdown state.
+- Shows 30D source-wallet performance from reconstructed closed source trades,
+  including net PnL, ROI, win rate, and average hold time.
+- Shows 30D coin performance so copied markets can be compared by trade count,
+  net PnL, ROI, and win rate.
+- Shows paper source performance, paper skip reason concentration, discovery
+  funnel quality by source, and data freshness.
+- Refreshes automatically every 30 seconds while the browser tab is visible.
+
 ### Wallet Pool Management
 
 Endpoints:

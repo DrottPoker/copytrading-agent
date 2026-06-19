@@ -6,6 +6,7 @@ import {
   Compass,
   Database,
   LayoutDashboard,
+  LineChart,
   RadioTower,
   ServerCog,
   WalletCards,
@@ -32,6 +33,12 @@ const navItems = [
     icon: Compass,
     label: "Discovery",
     match: (pathname: string) => pathname.startsWith("/discovery"),
+  },
+  {
+    href: "/analytics",
+    icon: LineChart,
+    label: "Analytics",
+    match: (pathname: string) => pathname.startsWith("/analytics"),
   },
   {
     href: "/live-feed",
