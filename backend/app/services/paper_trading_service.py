@@ -6,7 +6,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, literal, select, update
+from sqlalchemy import func, literal, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,7 +34,8 @@ ONE = Decimal("1")
 POSITION_EPSILON = Decimal("0.00000001")
 BPS_DENOMINATOR = Decimal("10000")
 PAPER_COPY_RECOVERY_OVERLAP_MS = 5 * 60 * 1000
-SOURCE_EQUITY_ACTIONS = frozenset({"open", "flip_open"})
+PAPER_COPY_SOURCE_LOCK_NAMESPACE = "paper_copy_source"
+SOURCE_EQUITY_ACTIONS = frozenset({"open", "add", "flip_open"})
 SOURCE_CLOSE_DIRECTIONS = frozenset(
     {"Close Long", "Close Short", "Long > Short", "Short > Long"}
 )
@@ -349,6 +350,10 @@ async def close_paper_position_manually(
     if mark_price is None or mark_price <= ZERO:
         raise PaperPositionCloseUnavailableError("Execution price is unavailable.")
 
+    await lock_paper_source_mutation(
+        session,
+        source_wallet=position_snapshot.source_wallet,
+    )
     position = await session.scalar(
         select(PaperPosition)
         .where(PaperPosition.id == position_id)
@@ -474,6 +479,7 @@ async def close_paper_source_positions_manually(
                 client=hyperliquid_client,
             )
 
+    await lock_paper_source_mutation(session, source_wallet=normalized_source)
     result = await session.execute(
         select(PaperPosition.id)
         .where(PaperPosition.source_wallet == normalized_source)
@@ -996,8 +1002,9 @@ async def process_paper_copy_fills(
     ):
         return PaperCopyBatchResult()
 
+    normalized_source_wallet = source_wallet.lower()
     allocations = await refresh_paper_copy_allocations(session, settings=resolved_settings)
-    allocation = allocations.get(source_wallet.lower())
+    allocation = allocations.get(normalized_source_wallet)
     if allocation is None:
         return PaperCopyBatchResult(skipped_fills=len(fills))
 
@@ -1017,7 +1024,7 @@ async def process_paper_copy_fills(
 
     source_account_states = await load_source_account_states(
         client=client,
-        source_wallet=source_wallet,
+        source_wallet=normalized_source_wallet,
         fills=fills,
     )
 
@@ -1026,6 +1033,11 @@ async def process_paper_copy_fills(
         fills=fills,
         settings=resolved_settings,
     )
+
+    await lock_paper_source_mutation(session, source_wallet=normalized_source_wallet)
+    accounts = await load_enabled_paper_accounts(session, for_update=True)
+    if not accounts:
+        return PaperCopyBatchResult(skipped_fills=len(fills))
 
     processed = 0
     skipped = 0
@@ -1131,6 +1143,7 @@ async def process_paper_copy_recovery(
     if source_wallet:
         source_wallets = [source_wallet.lower()]
     else:
+        await refresh_paper_copy_allocations(session, settings=resolved_settings)
         source_wallets = await load_paper_copy_recovery_sources(
             session,
             max_sources=max_sources,
@@ -1155,30 +1168,48 @@ async def load_paper_copy_recovery_sources(
     max_sources: int,
 ) -> list[str]:
     position_result = await session.execute(
-        select(PaperPosition.source_wallet)
+        select(
+            PaperPosition.source_wallet,
+            func.max(WalletScore.score).label("score"),
+        )
+        .outerjoin(WalletScore, WalletScore.wallet_address == PaperPosition.source_wallet)
         .where(PaperPosition.source_wallet != "")
-        .distinct()
+        .group_by(PaperPosition.source_wallet)
+        .order_by(
+            func.max(WalletScore.score).desc().nulls_last(),
+            PaperPosition.source_wallet.asc(),
+        )
         .limit(max_sources)
     )
     sources = [
-        str(source).lower()
-        for source in position_result.scalars().all()
-        if source
+        str(row.source_wallet).lower()
+        for row in position_result.all()
+        if row.source_wallet
     ]
     remaining = max(max_sources - len(sources), 0)
     if remaining <= 0:
         return unique_strings(sources)
 
-    fill_result = await session.execute(
-        select(PaperCopyFill.source_wallet)
-        .where(PaperCopyFill.source_wallet != "")
-        .distinct()
+    allocation_result = await session.execute(
+        select(
+            PaperCopyAllocation.source_wallet,
+            func.min(PaperCopyAllocation.rank).label("first_rank"),
+        )
+        .where(
+            PaperCopyAllocation.active.is_(True),
+            PaperCopyAllocation.source_wallet != "",
+        )
+        .group_by(PaperCopyAllocation.source_wallet)
+        .order_by(
+            func.min(PaperCopyAllocation.rank).asc(),
+            PaperCopyAllocation.source_wallet.asc(),
+        )
         .limit(remaining)
     )
     sources.extend(
-        str(source).lower()
-        for source in fill_result.scalars().all()
-        if source
+        str(row.source_wallet).lower()
+        for row in allocation_result.all()
+        if row.source_wallet
     )
     return unique_strings(sources)
 
@@ -1304,10 +1335,6 @@ async def reconcile_open_paper_positions_for_source(
         return PaperCopyBatchResult()
 
     await refresh_paper_copy_allocations(session, settings=settings)
-    accounts = {
-        account.key: account
-        for account in await load_enabled_paper_accounts(session)
-    }
     allocations = await load_paper_copy_allocations_for_source(
         session,
         source_wallet=source_wallet,
@@ -1318,6 +1345,19 @@ async def reconcile_open_paper_positions_for_source(
         source_wallet=source_wallet,
         positions=positions,
     )
+
+    await lock_paper_source_mutation(session, source_wallet=source_wallet)
+    accounts = {
+        account.key: account
+        for account in await load_enabled_paper_accounts(session, for_update=True)
+    }
+    positions = await load_open_paper_positions_for_source(
+        session,
+        source_wallet=source_wallet,
+        for_update=True,
+    )
+    if not positions:
+        return PaperCopyBatchResult()
 
     result = PaperCopyBatchResult()
     updated_accounts: set[str] = set()
@@ -1405,12 +1445,16 @@ async def load_open_paper_positions_for_source(
     session: AsyncSession,
     *,
     source_wallet: str,
+    for_update: bool = False,
 ) -> list[PaperPosition]:
-    result = await session.execute(
+    stmt = (
         select(PaperPosition)
         .where(PaperPosition.source_wallet == source_wallet)
         .order_by(PaperPosition.opened_at.asc(), PaperPosition.account_key.asc())
     )
+    if for_update:
+        stmt = stmt.with_for_update()
+    result = await session.execute(stmt)
     return list(result.scalars().all())
 
 
@@ -1963,12 +2007,19 @@ def paper_retained_status_reason(
     return "existing_exposure_only"
 
 
-async def load_enabled_paper_accounts(session: AsyncSession) -> list[PaperTradingAccount]:
-    result = await session.execute(
+async def load_enabled_paper_accounts(
+    session: AsyncSession,
+    *,
+    for_update: bool = False,
+) -> list[PaperTradingAccount]:
+    stmt = (
         select(PaperTradingAccount)
         .where(PaperTradingAccount.enabled.is_(True))
         .order_by(PaperTradingAccount.key.asc())
     )
+    if for_update:
+        stmt = stmt.with_for_update()
+    result = await session.execute(stmt)
     return list(result.scalars().all())
 
 
@@ -2564,6 +2615,8 @@ async def apply_open_part(
         )
         session.add(position)
     else:
+        previous_notional = position.notional_usd
+        previous_margin = position.margin_usd
         next_size = position.size + paper_size
         position.entry_price = weighted_average_price(
             position.entry_price,
@@ -2572,9 +2625,13 @@ async def apply_open_part(
             paper_size,
         )
         position.size = next_size
-        position.notional_usd = next_size * price
-        position.leverage = source_leverage
-        position.margin_usd = margin_from_notional(position.notional_usd, source_leverage)
+        position.notional_usd = previous_notional + notional_usd
+        position.margin_usd = previous_margin + margin_usd
+        position.leverage = effective_leverage(
+            notional_usd=position.notional_usd,
+            margin_usd=position.margin_usd,
+            fallback=source_leverage,
+        )
         position.fee_usd += fee
 
     apply_account_fee(account, fee)
@@ -2718,14 +2775,23 @@ async def apply_close_part(
     allocation_usd = max(account.equity_usd, ZERO) * allocation.allocation_pct
     position.realized_pnl_usd += realized_pnl
     position.fee_usd += fee
-    remaining_size = position.size - close_size
+    previous_size = position.size
+    previous_notional = position.notional_usd
+    previous_margin = position.margin_usd
+    remaining_size = previous_size - close_size
     if remaining_size <= POSITION_EPSILON:
         await session.delete(position)
         action = "close" if part.action == "close" else part.action
     else:
+        remaining_ratio = remaining_size / previous_size if previous_size > ZERO else ZERO
         position.size = remaining_size
-        position.notional_usd = remaining_size * price
-        position.margin_usd = margin_from_notional(position.notional_usd, leverage)
+        position.notional_usd = previous_notional * remaining_ratio
+        position.margin_usd = previous_margin * remaining_ratio
+        position.leverage = effective_leverage(
+            notional_usd=position.notional_usd,
+            margin_usd=position.margin_usd,
+            fallback=leverage,
+        )
         action = "reduce" if part.action == "close" else part.action
 
     apply_account_realized_result(account, pnl_usd=realized_pnl, fee_usd=fee)
@@ -2927,11 +2993,40 @@ async def load_paper_position(
     coin: str,
 ) -> PaperPosition | None:
     return await session.scalar(
-        select(PaperPosition).where(
+        select(PaperPosition)
+        .where(
             PaperPosition.account_key == account_key,
             PaperPosition.source_wallet == source_wallet,
             PaperPosition.coin == coin,
         )
+        .with_for_update()
+    )
+
+
+async def lock_paper_source_mutation(
+    session: AsyncSession,
+    *,
+    source_wallet: str,
+) -> None:
+    if not source_wallet:
+        return
+    bind = session.get_bind()
+    dialect_name = bind.dialect.name if bind is not None else ""
+    if dialect_name != "postgresql":
+        return
+    await session.execute(
+        text(
+            """
+            select pg_advisory_xact_lock(
+              hashtext(:namespace),
+              hashtext(:source_wallet)
+            )
+            """
+        ),
+        {
+            "namespace": PAPER_COPY_SOURCE_LOCK_NAMESPACE,
+            "source_wallet": source_wallet.lower(),
+        },
     )
 
 
@@ -3088,6 +3183,17 @@ def margin_from_notional(notional_usd: Decimal, leverage: Decimal) -> Decimal:
     if notional_usd <= ZERO:
         return ZERO
     return notional_usd / resolved_leverage
+
+
+def effective_leverage(
+    *,
+    notional_usd: Decimal,
+    margin_usd: Decimal,
+    fallback: Decimal,
+) -> Decimal:
+    if notional_usd <= ZERO or margin_usd <= ZERO:
+        return safe_leverage(fallback)
+    return safe_leverage(notional_usd / margin_usd)
 
 
 def open_notional_skip_reason(

@@ -106,13 +106,13 @@ fresh, stale, or missing.
 
 Trading worker responsibilities:
 
-- Select up to `max_realtime_wallets` wallets. Source wallets with open paper
-  positions are retained first, then remaining slots are filled by the highest
-  positive wallet scores.
-- Paper allocation refresh mirrors that slot model. A source with a realtime
-  slot is exposed as `monitorStatus = "monitored"`. A top candidate without a
-  free slot is exposed as `monitorStatus = "waiting"` and
-  `sourceStatus = "waiting_for_slot"`.
+- Refresh paper allocations and select up to `max_realtime_wallets` wallets from
+  that same allocation result. Source wallets with open paper positions are
+  retained first, then remaining slots are filled by the highest scored eligible
+  copy candidates.
+- A source with a realtime slot is exposed as `monitorStatus = "monitored"`. A
+  top candidate without a free slot is exposed as `monitorStatus = "waiting"`
+  and `sourceStatus = "waiting_for_slot"`.
 - Subscribe to Hyperliquid `userFills` over WebSocket.
 - Store snapshot and realtime fills in Postgres.
 - Simulate paper copies for non-snapshot fills from scored allocation wallets.
@@ -130,19 +130,12 @@ Maintenance worker responsibilities:
 - Backfill or incrementally refresh all enabled pool wallets in batches.
 - Recalculate scores and run configured prune rules.
 
-The trading worker currently prioritizes wallets in this order:
-
-1. Source wallets with open `paper_positions`
-2. Highest positive `wallet_scores.score`
-3. `active`
-4. `copy_enabled`
-5. `candidate`
-
-Plain `pool` wallets can be selected for realtime monitoring when they have a
-positive score. This is required for paper-copying the top scored wallets before
-full active-set rotation exists. If a monitored wallet falls out of the top 10
-while paper positions are still open, it keeps its realtime slot until those
-positions are closed. New top 10 wallets wait until a slot is available.
+The trading worker does not maintain a separate realtime wallet ranking for
+paper copy. The paper allocation refresh is the source of truth for monitored
+wallets, dashboard allocation state, and realtime subscription slots. If a
+monitored wallet falls out of the top 10 while paper positions are still open,
+it keeps management priority until those positions are closed. New top 10
+wallets wait until a slot is available.
 
 ## Frontend
 
@@ -542,6 +535,10 @@ Opens below the configured minimum notional are skipped before any paper positio
 is created. Paper execution then waits the configured latency, prices from live
 mids when enabled, applies adverse slippage, and skips fills whose observed drift
 exceeds the configured max drift limit.
+Stored paper position notional and margin represent simulated entry exposure.
+Adds increase stored margin by the new fill margin, and partial closes reduce
+stored margin proportionally. Current notional is calculated separately from mark
+price for live unrealized PnL.
 When multiple source fills have the same timestamp, paper-copy processing orders
 close and flip-close fills first by descending source `startPosition` before
 falling back to the fill id. This keeps large split exits deterministic.
@@ -549,12 +546,19 @@ falling back to the fill id. This keeps large split exits deterministic.
 Paper copy state is durable in Postgres. Trading worker restarts keep existing
 `paper_positions` and `paper_copy_fills`, retain source wallets with open paper
 positions in the copy allocation set, and run recovery after worker start,
-WebSocket snapshots, and the configured periodic recovery interval. When a
-source has open paper exposure, recovery scans fills from the oldest open paper
-position with overlap, then the copied-fill uniqueness constraint prevents
-duplicate simulation. Exit skip rows caused by unavailable source state or
-unavailable execution price are retriable during recovery so copied positions can
-still close after transient data issues.
+WebSocket snapshots, and the configured periodic recovery interval. Recovery
+focuses on sources with open paper positions and current monitored allocation
+sources instead of scanning every historical paper-fill source. For open
+exposure sources, recovery scans fills from the oldest open paper position with
+overlap, then the copied-fill uniqueness constraint prevents duplicate
+simulation. Exit skip rows caused by unavailable source state or unavailable
+execution price are retriable during recovery so copied positions can still
+close after transient data issues.
+Paper-copy mutations also take a Postgres advisory transaction lock per source
+wallet. That serializes realtime fill processing, recovery reconciliation, and
+manual closes for the same source exposure.
+Paper account rows are locked before copied fills are written, so different
+source wallets cannot concurrently update the same paper account balance.
 Allocation refresh also restores open paper-position sources into
 `watched_wallets` as neutral `pool` rows if an earlier prune removed the pool
 row.

@@ -60,6 +60,8 @@ What it does:
   `maintenance-worker`.
 - Shows recent long-running operation statuses for discovery, pool reimport,
   scoring, and pruning.
+- Refreshes the page data automatically every 15 seconds while the browser tab
+  is visible.
 
 Config:
 
@@ -431,9 +433,9 @@ What it does:
 
 - Opens a Hyperliquid WebSocket connection.
 - Subscribes to `userFills` for up to `max_realtime_wallets`.
-- Retains source wallets with open paper positions first, then selects positive
-  scored wallets and active, exit-only, candidate, or copy-enabled fallback
-  wallets for remaining slots.
+- Uses paper allocation refresh as the source of truth for realtime
+  subscriptions. Sources with open paper positions reserve slots first, then
+  remaining slots go to the highest scored eligible copy candidates.
 - Processes initial snapshot messages safely.
 - Stores realtime fills in Postgres with the same dedupe logic as historical import.
 - Publishes system and fill events to Redis.
@@ -510,6 +512,10 @@ What it does:
 - Skips paper fills when the observed price has moved more than
   `paper_copy_max_price_drift_bps` from the source fill price.
 - Tracks open paper positions by account, source wallet, and coin.
+- Keeps stored paper position notional and margin as simulated entry exposure.
+  Adds increase stored margin by the new fill margin, and partial closes reduce
+  stored margin proportionally. Live current notional is calculated separately
+  from mark price for unrealized PnL.
 - Computes live mark price, current notional, unrealized PnL, and ROE for open
   paper positions in the paper summary API when Hyperliquid market data is
   available.
@@ -534,11 +540,17 @@ What it does:
   Postgres so Docker restarts do not reset paper trading state.
 - Runs paper-copy recovery on trading-worker start, WebSocket snapshots, and the
   configured periodic recovery interval.
-  Recovery replays fills from the oldest open paper position when a source still
-  has copied exposure, with a small overlap, and relies on copied fill IDs to
-  avoid duplicate paper fills.
+  Recovery focuses on sources with open paper positions and current monitored
+  allocation sources. For open-exposure sources, it replays fills from the oldest
+  open paper position with a small overlap and relies on copied fill IDs to avoid
+  duplicate paper fills.
 - Uses a `paper_copy_recovery` job lock so startup, snapshot, and periodic
   recovery cannot run over each other.
+- Serializes paper-copy mutations per source wallet with a Postgres advisory
+  transaction lock, so realtime processing, recovery reconciliation, and manual
+  closes cannot update the same source exposure concurrently.
+- Locks paper account rows before writing copied fills, so different source
+  wallets cannot concurrently update the same paper account balance.
 - Recovery can retry earlier exit skip rows caused by unavailable source state
   or unavailable execution price, so a close is not permanently blocked by a
   transient paper-copy data issue.

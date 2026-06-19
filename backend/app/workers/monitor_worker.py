@@ -23,6 +23,7 @@ from app.services.paper_trading_service import (
     PaperCopyBatchResult,
     process_paper_copy_fills,
     process_paper_copy_recovery,
+    refresh_paper_copy_allocations,
 )
 from app.services.pool_fill_import_service import import_due_pool_wallet_fills
 from app.services.realtime_event_service import publish_event
@@ -207,6 +208,7 @@ async def run_realtime_monitor_loop(
         wallet_addresses = await load_realtime_wallets(
             sessionmaker=sessionmaker,
             max_wallets=settings.max_realtime_wallets,
+            settings=settings,
         )
         if not wallet_addresses:
             logger.info("no enabled wallets available for realtime monitoring")
@@ -305,9 +307,24 @@ def main() -> None:
     asyncio.run(run_worker())
 
 
-async def load_realtime_wallets(*, sessionmaker: Any, max_wallets: int) -> list[str]:
+async def load_realtime_wallets(
+    *,
+    sessionmaker: Any,
+    max_wallets: int,
+    settings: Any,
+) -> list[str]:
     if max_wallets <= 0:
         return []
+
+    if settings.paper_trading_enabled and settings.paper_copy_enabled:
+        async with sessionmaker() as session:
+            allocations = await refresh_paper_copy_allocations(session, settings=settings)
+            await session.commit()
+        return [
+            allocation.source_wallet
+            for allocation in allocations.values()
+            if allocation.has_realtime_slot
+        ][:max_wallets]
 
     tier_priority = case(
         (WatchedWallet.polling_tier == "active", 0),

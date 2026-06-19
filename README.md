@@ -197,10 +197,10 @@ Notes:
 
 - The trading worker subscribes to Hyperliquid `userFills` for up to
   `max_realtime_wallets`.
-- Realtime subscriptions reserve slots for source wallets with open paper
-  positions first, then fill remaining slots with the highest positive
-  `wallet_scores.score` wallets and active, candidate, or copy-enabled fallback
-  wallets.
+- Realtime subscriptions are derived from the same paper allocation refresh used
+  by the paper summary and copy engine. Open paper-position sources reserve
+  slots first, then remaining slots go to the highest scored eligible copy
+  candidates.
 - Automated sourcing runs through Discovery using `backend/config/discovery.json`.
 - Discovery defaults to Hyperliquid 1D, 7D, and 30D leaderboard sources,
   Hyperliquid vault leaders, leaderboard subaccounts, and configured Hyperdash
@@ -299,6 +299,9 @@ Sizing policy:
 - Paper fill rows store that source perp equity snapshot as
   `paper_copy_fills.source_perp_equity_usd`. The API also exposes the read alias
   `sourceAccountValueUsd` for the same value.
+- Stored paper position margin represents simulated entry margin. Adds increase
+  margin by the copied fill margin, and partial closes reduce margin
+  proportionally. Live current notional is calculated separately from mark price.
 - Source perp equity is fetched from Hyperliquid `clearinghouseState` per perp
   dex. Spot balances are not used for paper copy sizing. For isolated HIP-3
   positions, Hyperliquid `accountValue` can be isolated position equity and can
@@ -361,9 +364,13 @@ Sizing policy:
   same manual close execution model.
 - Allocation source rows show current pocket usage from open paper margin.
 - Paper account state, copied positions, copied fills, and allocations are stored
-  in Postgres. Worker restarts recover missed fills from the oldest open paper
-  position when a source still has copied exposure, and rely on copied fill IDs
-  to avoid duplicate simulation.
+  in Postgres. Worker restarts recover missed fills for open-exposure sources
+  and currently monitored allocation sources, and rely on copied fill IDs to
+  avoid duplicate simulation.
+- Realtime fills, recovery reconciliation, and manual closes are serialized per
+  source wallet with a Postgres advisory transaction lock.
+- Paper account rows are locked before copied fills are written, so different
+  source wallets cannot concurrently update the same paper account balance.
 - Recovery can retry exit skip rows caused by unavailable source state or
   unavailable execution price, so a copied close is not permanently blocked by a
   transient data issue.
@@ -378,8 +385,8 @@ Notes:
 
 - This is paper money only. It never places Hyperliquid orders.
 - Full old history is not imported into fresh paper accounts. Recovery only
-  replays fills after a source wallet already has paper copy history or open
-  paper positions.
+  replays fills for current allocation sources or sources with open paper
+  positions.
 - Existing paper account balances are not reset when `starting_balance_usd` is
   edited. Use the dashboard account reset action to apply configured starting
   capital to an existing paper account.

@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 
+import { AutoRefresh } from "@/components/AutoRefresh";
 import { StatusPill } from "@/components/StatusPill";
 import { getOpsHealth } from "@/lib/api";
 import {
@@ -153,6 +154,7 @@ function PageTitle({ ops }: { ops?: OpsHealthResponse }) {
       </div>
       {ops ? (
         <div className="flex flex-wrap gap-2">
+          <AutoRefresh intervalMs={15000} />
           <StatusPill label={ops.status} tone={toneForStatus(ops.status)} />
           <StatusPill
             label={ops.config.liveTradingEnabled ? "live enabled" : "paper mode"}
