@@ -77,9 +77,6 @@ DISCOVERY_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("quality", "min_profit_factor"): "discovery_quality_min_profit_factor",
     ("quality", "min_win_rate"): "discovery_quality_min_win_rate",
     ("quality", "max_drawdown_pct"): "discovery_quality_max_drawdown_pct",
-    ("quality", "max_ignored_fill_ratio"): (
-        "discovery_quality_max_ignored_fill_ratio"
-    ),
     ("quality", "min_average_trade_notional_usd"): (
         "discovery_quality_min_average_trade_notional_usd"
     ),
@@ -246,7 +243,6 @@ SCORING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("penalties", "low_sample_max"): "scoring_penalty_low_sample_max",
     ("penalties", "negative_pnl_max"): "scoring_penalty_negative_pnl_max",
     ("penalties", "stale_recency"): "scoring_penalty_stale_recency",
-    ("penalties", "ignored_fills_max"): "scoring_penalty_ignored_fills_max",
     ("penalties", "open_only"): "scoring_penalty_open_only",
     ("penalties", "liquidation", "event_gap_seconds"): (
         "scoring_liquidation_event_gap_seconds"
@@ -382,7 +378,6 @@ class Settings(BaseSettings):
     discovery_quality_min_profit_factor: Decimal | None = Decimal("1.2")
     discovery_quality_min_win_rate: Decimal | None = None
     discovery_quality_max_drawdown_pct: Decimal | None = Decimal("0.25")
-    discovery_quality_max_ignored_fill_ratio: Decimal | None = Decimal("0.50")
     discovery_quality_min_average_trade_notional_usd: Decimal | None = Decimal("50")
     discovery_quality_max_average_trade_notional_usd: Decimal | None = Decimal("250000")
     discovery_promotion_batch_size: int = Field(default=25, ge=1, le=250)
@@ -609,7 +604,6 @@ class Settings(BaseSettings):
     scoring_penalty_low_sample_max: Decimal = Field(default=Decimal("30"), ge=0, le=100)
     scoring_penalty_negative_pnl_max: Decimal = Field(default=Decimal("30"), ge=0, le=100)
     scoring_penalty_stale_recency: Decimal = Field(default=Decimal("20"), ge=0, le=100)
-    scoring_penalty_ignored_fills_max: Decimal = Field(default=Decimal("35"), ge=0, le=100)
     scoring_penalty_open_only: Decimal = Field(default=Decimal("10"), ge=0, le=100)
     scoring_window_score_activity_trade_cap: int = Field(default=10, ge=1, le=1000)
     scoring_window_score_weight_profitability: Decimal = Field(

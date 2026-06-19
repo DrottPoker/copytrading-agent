@@ -181,7 +181,8 @@ What it does:
   wallet pool and marked as `promoted`.
 - Trade-quality reject reasons include `no_perp_fills`, `too_few_closed_trades`,
   `net_pnl_not_positive`, `profit_factor_below_min`,
-  `max_drawdown_too_high`, and `too_many_ignored_fills`.
+  `max_drawdown_too_high`, `avg_trade_notional_too_small`, and
+  `avg_trade_notional_too_large`.
 
 ### Historical Fill Import
 
@@ -226,6 +227,7 @@ Endpoints:
 - `GET /database/stats`
 - `POST /database/fills/compact-raw-json`
 - `POST /database/fills/retention-cleanup`
+- `POST /database/fills/ignored-cleanup`
 
 Dashboard page:
 
@@ -240,6 +242,9 @@ What it does:
 - Runs manual fill retention cleanup with dry-run by default.
 - Retention cleanup deletes old unprotected `wallet_fills`,
   `source_trades`, and `source_trade_ignored_fills` rows in batches.
+- Ignored-fill cleanup deletes raw close-only and pre-existing-position fills
+  that are not needed to rebuild reconstructed source trades. It keeps
+  unmatched close fills that may have closed a materialized source trade.
 - Retention cleanup protects active wallets, realtime-slot wallets,
   copy-enabled wallets, source wallets with open paper positions, wallets with
   open position snapshots, and the configured number of top scored wallets.
@@ -832,8 +837,8 @@ Phase A behavior:
   `source_trades`, and refreshes a wallet's materialized trades only when its
   fill count or latest fill timestamp changes.
 - Stores ignored source fills with timestamp and reason in
-  `source_trade_ignored_fills`, so ignored-fill penalties stay scoped to the
-  scoring window.
+  `source_trade_ignored_fills` for diagnostics. Ignored fills do not reduce the
+  wallet score because they usually mean the imported window missed the entry.
 - Counts only trades where the opening fill was observed before the close.
 - Ignores close-only PnL from positions opened before the imported window.
 - Uses reconstructed trade PnL, fees, notional, active days, recency, realized

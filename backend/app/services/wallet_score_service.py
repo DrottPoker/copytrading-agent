@@ -1789,16 +1789,6 @@ def calculate_penalty_items(
 
     stale_penalty = settings.scoring_penalty_stale_recency if recency_score <= ZERO else ZERO
 
-    ignored_ratio = (
-        Decimal(metrics.ignored_fill_count) / Decimal(metrics.fill_count)
-        if metrics.fill_count > 0
-        else ZERO
-    )
-    ignored_fill_penalty = min_decimal(
-        ignored_ratio * settings.scoring_penalty_ignored_fills_max,
-        settings.scoring_penalty_ignored_fills_max,
-    )
-
     open_only_penalty = (
         settings.scoring_penalty_open_only
         if metrics.open_trade_count > 0 and metrics.trade_count == 0
@@ -1866,16 +1856,6 @@ def calculate_penalty_items(
             value=stale_penalty,
             max_value=settings.scoring_penalty_stale_recency,
             detail=f"Recency score is {recency_score}.",
-        ),
-        penalty_item(
-            key="ignored_fills",
-            label="Ignored fills",
-            value=ignored_fill_penalty,
-            max_value=settings.scoring_penalty_ignored_fills_max,
-            detail=(
-                f"{metrics.ignored_fill_count} of {metrics.fill_count} fills were "
-                "close-only or pre-existing-position adds."
-            ),
         ),
         penalty_item(
             key="open_only",

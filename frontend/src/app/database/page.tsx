@@ -13,6 +13,7 @@ import {
 import type { ReactNode } from "react";
 
 import { DatabaseFillCompactPanel } from "@/components/DatabaseFillCompactPanel";
+import { DatabaseIgnoredFillCleanupPanel } from "@/components/DatabaseIgnoredFillCleanupPanel";
 import { DatabaseFillRetentionPanel } from "@/components/DatabaseFillRetentionPanel";
 import { DatabasePrunePanel } from "@/components/DatabasePrunePanel";
 import { StatusPill } from "@/components/StatusPill";
@@ -169,6 +170,8 @@ export default async function DatabasePage() {
       <DatabasePrunePanel />
 
       <DatabaseFillRetentionPanel />
+
+      <DatabaseIgnoredFillCleanupPanel />
 
       <DatabaseFillCompactPanel />
 

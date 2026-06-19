@@ -9,10 +9,12 @@ from app.schemas.database import (
     DatabaseStatsResponse,
     FillRawJsonCompactResponse,
     FillRetentionCleanupResponse,
+    IgnoredFillCleanupResponse,
 )
 from app.services.database_stats_service import get_database_stats
 from app.services.fill_compaction_service import compact_wallet_fill_raw_json
 from app.services.fill_retention_service import cleanup_wallet_fill_retention
+from app.services.ignored_fill_cleanup_service import cleanup_ignored_wallet_fills
 
 router = APIRouter(prefix="/database", tags=["database"])
 
@@ -62,4 +64,19 @@ async def cleanup_fill_retention_route(
             if protect_top_score_wallets is not None
             else settings.fill_retention_protect_top_score_wallets
         ),
+    )
+
+
+@router.post("/fills/ignored-cleanup", response_model=IgnoredFillCleanupResponse)
+async def cleanup_ignored_fills_route(
+    session: Annotated[AsyncSession, Depends(db_session)],
+    dry_run: Annotated[bool, Query()] = True,
+    min_age_days: Annotated[int, Query(ge=0, le=365)] = 7,
+    max_rows: Annotated[int, Query(ge=100, le=250000)] = 50000,
+) -> IgnoredFillCleanupResponse:
+    return await cleanup_ignored_wallet_fills(
+        session,
+        dry_run=dry_run,
+        min_age_days=min_age_days,
+        max_rows=max_rows,
     )

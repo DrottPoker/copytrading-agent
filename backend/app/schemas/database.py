@@ -156,3 +156,20 @@ class FillRetentionCleanupResponse(CamelModel):
     max_rows: int
     protect_top_score_wallets: int
     note: str
+
+
+class IgnoredFillCleanupResponse(CamelModel):
+    dry_run: bool
+    min_age_days: int
+    cutoff_time_ms: int
+    candidate_fills: int
+    candidate_wallets: int
+    candidate_preexisting_open_fills: int
+    candidate_unmatched_close_fills: int
+    excluded_potential_trade_close_fills: int
+    deleted_fills: int
+    deleted_ignored_fill_markers: int
+    affected_wallets: int
+    remaining_candidate_fills: int | None
+    max_rows: int
+    note: str

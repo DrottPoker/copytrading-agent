@@ -134,10 +134,16 @@ Notes:
 - The Database page also includes manual fill retention cleanup. It defaults to
   dry-run, keeps 90 days, and protects active, realtime, copy-enabled, open
   paper-position, open-position, and top scored wallets.
+- The Database page includes separate ignored-fill cleanup for raw close-only
+  and pre-existing-position fills that are not needed for reconstructed source
+  trades.
 - Wallet scores can be recalculated with `POST /scores/recalculate` and are shown in the wallet pool.
 - Wallet pool list and wallet detail responses include `poolRank`, which is the
   current rank among wallets with a stored score.
 - Scoring reconstructs source perp trades and ignores close-only PnL from positions that opened before the observed import window.
+- Close-only and pre-existing-position fills are diagnostics only. They do not
+  reduce wallet score or discovery quality because they usually mean the import
+  window missed the original entry.
 - Reconstructed source trades are materialized in `source_trades` and refreshed
   only when a wallet's fill count or latest fill timestamp changes.
 - Consistency score now penalizes concentrated profits by measuring effective

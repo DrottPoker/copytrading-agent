@@ -131,7 +131,6 @@
     "low_sample_max": 20,
     "negative_pnl_max": 20,
     "stale_recency": 10,
-    "ignored_fills_max": 35,
     "open_only": 10,
     "liquidation": {
       "event_gap_seconds": 300,

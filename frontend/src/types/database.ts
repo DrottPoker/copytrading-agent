@@ -151,3 +151,20 @@ export type FillRetentionCleanupResponse = {
   protectTopScoreWallets: number;
   note: string;
 };
+
+export type IgnoredFillCleanupResponse = {
+  dryRun: boolean;
+  minAgeDays: number;
+  cutoffTimeMs: number;
+  candidateFills: number;
+  candidateWallets: number;
+  candidatePreexistingOpenFills: number;
+  candidateUnmatchedCloseFills: number;
+  excludedPotentialTradeCloseFills: number;
+  deletedFills: number;
+  deletedIgnoredFillMarkers: number;
+  affectedWallets: number;
+  remainingCandidateFills: number | null;
+  maxRows: number;
+  note: string;
+};

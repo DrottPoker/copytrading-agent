@@ -194,6 +194,11 @@ old `source_trade_ignored_fills` in batches. It protects active, realtime-slot,
 copy-enabled, open paper-position, open position snapshot, and top scored
 wallets. Deleted space becomes reusable after vacuum, but total database file
 size may not shrink immediately on managed Postgres.
+The Database page also has ignored-fill cleanup. It deletes raw fills that were
+classified as pre-existing-position adds or close-only fills and are not needed
+for reconstructed source trades. Unmatched close fills are kept when they line up
+with a materialized source-trade close, so source trades can still be rebuilt
+from retained raw fills.
 
 ### Redis
 
@@ -318,6 +323,9 @@ retention window is 90 days, which is above the default 60 day scoring and pool
 import windows. Source trade sync state is cleared for affected wallets so the
 next scoring run or wallet detail request rebuilds source trades from retained
 fills.
+Ignored-fill cleanup is a separate manual action. It has its own job lock, runs
+as dry-run by default, and only deletes raw ignored fills that are not required
+for source-trade reconstruction.
 
 ### Wallet Current State
 
@@ -391,8 +399,9 @@ reference data only and does not raise the profitability score.
 Risk loss-ratio, realized-drawdown, losing-rate, live drawdown, and position
 stress penalty spans are configurable. Copyability trade-count, notional,
 concentration, unique-coin spans, and subweights are configurable. Penalty caps
-for low sample, stale trading, ignored fills, negative PnL, open-only activity,
-liquidations, confidence, and missing live state are configurable.
+for low sample, stale trading, negative PnL, open-only activity, liquidations,
+confidence, and missing live state are configurable. Ignored fills are kept as
+diagnostic reconstruction metadata and do not reduce wallet score.
 Wallet detail pages use `GET /scores/{address}/detail` for the Detailed scoring
 modal. The endpoint recalculates the current wallet score from the same
 materialized trade metrics, then returns gross score, penalty, final score

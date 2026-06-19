@@ -2371,16 +2371,6 @@ def evaluate_candidate_trade_quality(
     ):
         return PrefilterDecision(status="rejected", fail_reason="max_drawdown_too_high")
 
-    ignored_ratio = (
-        Decimal(metrics.ignored_fill_count) / Decimal(metrics.fill_count)
-        if metrics.fill_count > 0
-        else Decimal("0")
-    )
-    if (
-        settings.discovery_quality_max_ignored_fill_ratio is not None
-        and ignored_ratio > settings.discovery_quality_max_ignored_fill_ratio
-    ):
-        return PrefilterDecision(status="rejected", fail_reason="too_many_ignored_fills")
     if (
         settings.discovery_quality_min_average_trade_notional_usd is not None
         and metrics.average_trade_notional_usd

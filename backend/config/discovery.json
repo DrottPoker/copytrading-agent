@@ -58,7 +58,6 @@
     "min_profit_factor": 1.2,
     "min_win_rate": null,
     "max_drawdown_pct": 0.25,
-    "max_ignored_fill_ratio": 0.6,
     "min_average_trade_notional_usd": 50,
     "max_average_trade_notional_usd": 250000
   },
