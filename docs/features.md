@@ -844,6 +844,9 @@ Phase A behavior:
 - Uses reconstructed trade PnL, fees, notional, active days, recency, realized
   drawdown, current drawdown, open-position stress, loss ratio, losing trade
   rate, profit distribution, and coin concentration.
+- Recency is based on the latest non-liquidation trading fill in the scoring
+  window, so opens, adds, reduces, closes, and flips all count as activity.
+  Liquidation fills do not refresh recency.
 - Keeps scoring tunables in organized `backend/config/scoring.json` sections:
   schedule, window, component weights, profitability, consistency, risk,
   copyability, recency, penalties, and window scores.

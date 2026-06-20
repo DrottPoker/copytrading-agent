@@ -414,7 +414,12 @@ async def load_wallet_score_metrics(
                 coalesce(sum(case when f.pnl_usd < 0 then 1 else 0 end), 0)
                   as losing_fill_count,
                 min(f.timestamp_ms) as first_fill_time_ms,
-                max(f.timestamp_ms) as last_fill_time_ms,
+                max(
+                  case
+                    when not (f.raw_json ? 'liquidation') then f.timestamp_ms
+                    else null
+                  end
+                ) as last_activity_time_ms,
                 count(f.id) filter (where f.timestamp_ms >= :start_24h_ms) as fills_24h,
                 coalesce(sum(f.notional_usd) filter (where f.timestamp_ms >= :start_24h_ms), 0)
                   as notional_24h,
@@ -847,7 +852,9 @@ def calculate_score_explanation(
             score=breakdown.recency_score,
             weight=settings.scoring_weight_recency,
             weight_sum=weight_sum,
-            detail="Recency decays as the latest reconstructed source trade gets older.",
+            detail=(
+                "Recency decays as the latest non-liquidation trading fill gets older."
+            ),
             items=recency_score_items(metrics, now=now, settings=settings),
         ),
     ]
@@ -1278,7 +1285,7 @@ def recency_score_items(
     return [
         detail_item(
             key="latest_trade_age",
-            label="Latest trade age",
+            label="Latest activity age",
             value=age_days,
             value_kind="days",
             score=calculate_recency_score(
@@ -1287,7 +1294,10 @@ def recency_score_items(
                 stale_days=settings.scoring_stale_days,
             ),
             weight=ONE,
-            detail=f"Decays to zero after {settings.scoring_stale_days} days without a trade.",
+            detail=(
+                f"Decays to zero after {settings.scoring_stale_days} days without a "
+                "non-liquidation trading fill."
+            ),
         )
     ]
 
@@ -1967,7 +1977,9 @@ def metrics_from_row(row: Any) -> WalletScoreMetrics:
             int(row["first_fill_time_ms"]) if row["first_fill_time_ms"] is not None else None
         ),
         last_trade_time_ms=(
-            int(row["last_fill_time_ms"]) if row["last_fill_time_ms"] is not None else None
+            int(row["last_activity_time_ms"])
+            if row["last_activity_time_ms"] is not None
+            else None
         ),
         trades_24h=int(row["fills_24h"] or 0),
         notional_24h=decimal_value(row["notional_24h"]),
@@ -2016,8 +2028,8 @@ def metrics_with_reconstructed_trades(
             current_notional_exposure_pct=base_metrics.current_notional_exposure_pct,
             open_position_stress_pct=base_metrics.open_position_stress_pct,
             current_drawdown_status=base_metrics.current_drawdown_status,
-            first_trade_time_ms=None,
-            last_trade_time_ms=None,
+            first_trade_time_ms=base_metrics.first_trade_time_ms,
+            last_trade_time_ms=base_metrics.last_trade_time_ms,
             trades_24h=0,
             notional_24h=ZERO,
             net_pnl_24h=ZERO,
@@ -2062,7 +2074,7 @@ def metrics_with_reconstructed_trades(
         open_position_stress_pct=base_metrics.open_position_stress_pct,
         current_drawdown_status=base_metrics.current_drawdown_status,
         first_trade_time_ms=trades.first_trade_time_ms,
-        last_trade_time_ms=trades.last_trade_time_ms,
+        last_trade_time_ms=base_metrics.last_trade_time_ms,
         trades_24h=trades.trades_24h,
         notional_24h=trades.notional_24h,
         net_pnl_24h=trades.net_pnl_24h,

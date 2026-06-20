@@ -963,7 +963,7 @@ function scoreComponents(score: WalletScore): ScoreComponent[] {
       value: numberValue(score.copyabilityScore),
     },
     {
-      detail: "Age of the latest reconstructed source trade.",
+      detail: "Age of the latest non-liquidation trading fill.",
       key: "recency",
       label: "Recency",
       value: numberValue(score.recencyScore),

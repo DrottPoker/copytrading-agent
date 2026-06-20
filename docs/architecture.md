@@ -396,6 +396,10 @@ The weights are 55/30/15, and each ROI subscore maps 0% or lower to 0 and +5%
 to 100. Current-equity return is exposed in the detail modal as reference data
 only because deposits and withdrawals can distort it. Absolute net PnL is also
 reference data only and does not raise the profitability score.
+Recency score uses the latest non-liquidation trading fill in the scoring
+window, not only the latest closed reconstructed source trade. Open, add,
+reduce, close, and flip fills count as activity, while liquidation fills are
+excluded so liquidation events do not create a positive freshness signal.
 Risk loss-ratio, realized-drawdown, losing-rate, live drawdown, and position
 stress penalty spans are configurable. Copyability trade-count, notional,
 concentration, unique-coin spans, and subweights are configurable. Penalty caps
