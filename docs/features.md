@@ -843,7 +843,7 @@ Phase A behavior:
 - Ignores close-only PnL from positions opened before the imported window.
 - Uses reconstructed trade PnL, fees, notional, active days, recency, realized
   drawdown, current drawdown, open-position stress, loss ratio, losing trade
-  rate, result repeatability, and coin concentration.
+  rate, result repeatability, trade-size copyability, and execution simplicity.
 - Recency is based on the latest non-liquidation trading fill in the scoring
   window, so opens, adds, reduces, closes, and flips all count as activity.
   Liquidation fills do not refresh recency.
@@ -852,7 +852,7 @@ Phase A behavior:
   copyability, recency, penalties, and window scores.
 - Profitability score is scale-invariant. It combines total net ROI against
   reconstructed entry notional, capped average trade ROI, and median trade ROI.
-  The weights are 55/30/15, and each ROI subscore maps 0% or lower to 0 and +5%
+  The weights are 55/30/15, and each ROI subscore maps 0% or lower to 0 and +3%
   to 100. Current-equity return is shown as reference data only because deposits
   and withdrawals can distort it. Absolute dollar PnL is also reference data only
   and does not increase the score.
@@ -861,6 +861,10 @@ Phase A behavior:
   ROI stability, downside ROI stability, active-day regularity, and max inactive
   gap. Win rate and profit factor remain reference stats outside the consistency
   component.
+- Copyability score measures practical followability, not sample confidence. It
+  combines copyable trade ratio, median trade notional, p25 trade notional,
+  and execution simplicity. Trade count is handled by sample caps and the
+  low-confidence penalty instead.
 - The stored `max_drawdown_pct` is exposed to the UI as realized drawdown. It is
   based on reconstructed closed trades and does not include intratrade open
   unrealized PnL.

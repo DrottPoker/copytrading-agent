@@ -158,7 +158,10 @@ Notes:
 - Profitability score is scale-invariant. It combines total net ROI, average
   trade ROI, and median trade ROI with 55/30/15 weights instead of rewarding
   absolute dollar PnL or current-equity effects from deposits and withdrawals.
-  Each ROI subscore maps 0% or lower to 0 and +5% to 100.
+  Each ROI subscore maps 0% or lower to 0 and +3% to 100.
+- Copyability score excludes trade count because sample size is handled by
+  sample caps and the low-confidence penalty. It scores copyable trade ratio,
+  median trade notional, p25 trade notional, and execution simplicity.
 - Score rows are kept only for wallets that still exist in the watched wallet
   pool, so pruned wallets do not remain rankable through stale scores.
 - Wallet detail pages show reconstructed source trades from `GET /wallets/{address}/source-trades`.

@@ -226,38 +226,41 @@ SCORING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("risk", "open_position_stress", "penalty_max"): (
         "scoring_open_position_stress_penalty_max"
     ),
-    ("copyability", "target_trades"): "scoring_target_trades",
-    ("copyability", "target_fills"): "scoring_target_fills",
-    ("copyability", "weights", "trade_count"): "scoring_copyability_weight_trade_count",
-    ("copyability", "weights", "average_notional"): (
-        "scoring_copyability_weight_average_notional"
+    ("copyability", "weights", "copyable_trade_ratio"): (
+        "scoring_copyability_weight_copyable_trade_ratio"
     ),
-    ("copyability", "weights", "coin_concentration"): (
-        "scoring_copyability_weight_coin_concentration"
+    ("copyability", "weights", "median_trade_notional"): (
+        "scoring_copyability_weight_median_trade_notional"
     ),
-    ("copyability", "weights", "unique_coins"): (
-        "scoring_copyability_weight_unique_coins"
+    ("copyability", "weights", "p25_trade_notional"): (
+        "scoring_copyability_weight_p25_trade_notional"
     ),
-    ("copyability", "average_notional", "min_full_score_usd"): (
-        "scoring_copyability_average_notional_min_full_score_usd"
+    ("copyability", "weights", "execution_simplicity"): (
+        "scoring_copyability_weight_execution_simplicity"
     ),
-    ("copyability", "average_notional", "max_full_score_usd"): (
-        "scoring_copyability_average_notional_max_full_score_usd"
+    ("copyability", "copyable_trade_ratio", "min_trade_notional_usd"): (
+        "scoring_copyability_copyable_trade_min_notional_usd"
     ),
-    ("copyability", "average_notional", "too_large_min_score_usd"): (
-        "scoring_copyability_average_notional_too_large_min_score_usd"
+    ("copyability", "trade_notional", "min_full_score_usd"): (
+        "scoring_copyability_trade_notional_min_full_score_usd"
     ),
-    ("copyability", "average_notional", "too_small_max_score"): (
-        "scoring_copyability_average_notional_too_small_max_score"
+    ("copyability", "trade_notional", "max_full_score_usd"): (
+        "scoring_copyability_trade_notional_max_full_score_usd"
     ),
-    ("copyability", "average_notional", "too_large_min_score"): (
-        "scoring_copyability_average_notional_too_large_min_score"
+    ("copyability", "trade_notional", "too_large_min_score_usd"): (
+        "scoring_copyability_trade_notional_too_large_min_score_usd"
     ),
-    ("copyability", "coin_concentration", "full_score_at_or_below"): (
-        "scoring_copyability_coin_concentration_full_score_at_or_below"
+    ("copyability", "trade_notional", "too_small_max_score"): (
+        "scoring_copyability_trade_notional_too_small_max_score"
     ),
-    ("copyability", "unique_coins", "full_score_at"): (
-        "scoring_copyability_unique_coins_full_score_at"
+    ("copyability", "trade_notional", "too_large_min_score"): (
+        "scoring_copyability_trade_notional_too_large_min_score"
+    ),
+    ("copyability", "execution_simplicity", "full_score_fills_per_trade_at_or_below"): (
+        "scoring_copyability_execution_full_score_fills_per_trade_at_or_below"
+    ),
+    ("copyability", "execution_simplicity", "zero_score_fills_per_trade_at_or_above"): (
+        "scoring_copyability_execution_zero_score_fills_per_trade_at_or_above"
     ),
     ("recency", "stale_days"): "scoring_stale_days",
     ("penalties", "no_closed_trades"): "scoring_penalty_no_closed_trades",
@@ -436,7 +439,6 @@ class Settings(BaseSettings):
     scoring_min_fills: int = Field(default=20, ge=1)
     scoring_target_fills: int = Field(default=100, ge=1)
     scoring_min_trades: int = Field(default=5, ge=1)
-    scoring_target_trades: int = Field(default=25, ge=1)
     scoring_stale_days: int = Field(default=7, ge=1)
     scoring_sample_cap_max_score: Decimal = Field(default=Decimal("45"), ge=0, le=100)
     scoring_liquidation_event_gap_seconds: int = Field(default=300, ge=1)
@@ -603,50 +605,62 @@ class Settings(BaseSettings):
         ge=0,
         le=1000,
     )
-    scoring_copyability_weight_trade_count: Decimal = Field(default=Decimal("0.35"), ge=0, le=1)
-    scoring_copyability_weight_average_notional: Decimal = Field(
+    scoring_copyability_weight_copyable_trade_ratio: Decimal = Field(
+        default=Decimal("0.40"),
+        ge=0,
+        le=1,
+    )
+    scoring_copyability_weight_median_trade_notional: Decimal = Field(
         default=Decimal("0.25"),
         ge=0,
         le=1,
     )
-    scoring_copyability_weight_coin_concentration: Decimal = Field(
+    scoring_copyability_weight_p25_trade_notional: Decimal = Field(
         default=Decimal("0.20"),
         ge=0,
         le=1,
     )
-    scoring_copyability_weight_unique_coins: Decimal = Field(
-        default=Decimal("0.20"),
+    scoring_copyability_weight_execution_simplicity: Decimal = Field(
+        default=Decimal("0.15"),
         ge=0,
         le=1,
     )
-    scoring_copyability_average_notional_min_full_score_usd: Decimal = Field(
+    scoring_copyability_copyable_trade_min_notional_usd: Decimal = Field(
+        default=Decimal("5"),
+        gt=0,
+    )
+    scoring_copyability_trade_notional_min_full_score_usd: Decimal = Field(
         default=Decimal("50"),
         gt=0,
     )
-    scoring_copyability_average_notional_max_full_score_usd: Decimal = Field(
+    scoring_copyability_trade_notional_max_full_score_usd: Decimal = Field(
         default=Decimal("250000"),
         gt=0,
     )
-    scoring_copyability_average_notional_too_large_min_score_usd: Decimal = Field(
+    scoring_copyability_trade_notional_too_large_min_score_usd: Decimal = Field(
         default=Decimal("1000000"),
         gt=0,
     )
-    scoring_copyability_average_notional_too_small_max_score: Decimal = Field(
+    scoring_copyability_trade_notional_too_small_max_score: Decimal = Field(
         default=Decimal("70"),
         ge=0,
         le=100,
     )
-    scoring_copyability_average_notional_too_large_min_score: Decimal = Field(
+    scoring_copyability_trade_notional_too_large_min_score: Decimal = Field(
         default=Decimal("40"),
         ge=0,
         le=100,
     )
-    scoring_copyability_coin_concentration_full_score_at_or_below: Decimal = Field(
-        default=Decimal("0.30"),
-        ge=0,
-        le=1,
+    scoring_copyability_execution_full_score_fills_per_trade_at_or_below: Decimal = Field(
+        default=Decimal("4"),
+        gt=0,
+        le=100,
     )
-    scoring_copyability_unique_coins_full_score_at: int = Field(default=4, ge=1, le=50)
+    scoring_copyability_execution_zero_score_fills_per_trade_at_or_above: Decimal = Field(
+        default=Decimal("20"),
+        gt=0,
+        le=100,
+    )
     scoring_penalty_no_closed_trades: Decimal = Field(default=Decimal("100"), ge=0, le=100)
     scoring_penalty_low_sample_max: Decimal = Field(default=Decimal("30"), ge=0, le=100)
     scoring_penalty_negative_pnl_max: Decimal = Field(default=Decimal("30"), ge=0, le=100)
@@ -753,20 +767,29 @@ class Settings(BaseSettings):
                 "less than scoring_consistency_max_inactive_gap_zero_score_days."
             )
         if (
-            self.scoring_copyability_average_notional_min_full_score_usd
-            > self.scoring_copyability_average_notional_max_full_score_usd
+            self.scoring_copyability_trade_notional_min_full_score_usd
+            > self.scoring_copyability_trade_notional_max_full_score_usd
         ):
             raise ValueError(
-                "scoring_copyability_average_notional_min_full_score_usd must be less "
-                "than or equal to scoring_copyability_average_notional_max_full_score_usd."
+                "scoring_copyability_trade_notional_min_full_score_usd must be less "
+                "than or equal to scoring_copyability_trade_notional_max_full_score_usd."
             )
         if (
-            self.scoring_copyability_average_notional_max_full_score_usd
-            >= self.scoring_copyability_average_notional_too_large_min_score_usd
+            self.scoring_copyability_trade_notional_max_full_score_usd
+            >= self.scoring_copyability_trade_notional_too_large_min_score_usd
         ):
             raise ValueError(
-                "scoring_copyability_average_notional_too_large_min_score_usd must be "
-                "greater than scoring_copyability_average_notional_max_full_score_usd."
+                "scoring_copyability_trade_notional_too_large_min_score_usd must be "
+                "greater than scoring_copyability_trade_notional_max_full_score_usd."
+            )
+        if (
+            self.scoring_copyability_execution_full_score_fills_per_trade_at_or_below
+            >= self.scoring_copyability_execution_zero_score_fills_per_trade_at_or_above
+        ):
+            raise ValueError(
+                "scoring_copyability_execution_full_score_fills_per_trade_at_or_below "
+                "must be less than "
+                "scoring_copyability_execution_zero_score_fills_per_trade_at_or_above."
             )
         if self.live_trading_enabled and not self.live_trading_acknowledged:
             raise ValueError(

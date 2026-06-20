@@ -957,7 +957,7 @@ function scoreComponents(score: WalletScore): ScoreComponent[] {
       value: numberValue(score.riskScore),
     },
     {
-      detail: "Trade count, trade size, coin spread, and concentration.",
+      detail: "Copyable trade ratio, trade size, and execution simplicity.",
       key: "copyability",
       label: "Copyability",
       value: numberValue(score.copyabilityScore),

@@ -89,26 +89,25 @@
     }
   },
   "copyability": {
-    "target_trades": 25,
-    "target_fills": 100,
     "weights": {
-      "trade_count": 0.35,
-      "average_notional": 0.25,
-      "coin_concentration": 0.2,
-      "unique_coins": 0.2
+      "copyable_trade_ratio": 0.4,
+      "median_trade_notional": 0.25,
+      "p25_trade_notional": 0.2,
+      "execution_simplicity": 0.15
     },
-    "average_notional": {
+    "copyable_trade_ratio": {
+      "min_trade_notional_usd": 5
+    },
+    "trade_notional": {
       "min_full_score_usd": 50,
       "max_full_score_usd": 250000,
       "too_large_min_score_usd": 1000000,
       "too_small_max_score": 70,
       "too_large_min_score": 40
     },
-    "coin_concentration": {
-      "full_score_at_or_below": 0.3
-    },
-    "unique_coins": {
-      "full_score_at": 2
+    "execution_simplicity": {
+      "full_score_fills_per_trade_at_or_below": 4,
+      "zero_score_fills_per_trade_at_or_above": 20
     }
   },
   "recency": {

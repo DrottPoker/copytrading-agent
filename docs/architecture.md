@@ -394,7 +394,7 @@ trades. Win rate and profit factor remain reference stats outside the
 consistency component.
 Profitability score is scale-invariant. It combines total net ROI against
 reconstructed entry notional, capped average trade ROI, and median trade ROI.
-The weights are 55/30/15, and each ROI subscore maps 0% or lower to 0 and +5%
+The weights are 55/30/15, and each ROI subscore maps 0% or lower to 0 and +3%
 to 100. Current-equity return is exposed in the detail modal as reference data
 only because deposits and withdrawals can distort it. Absolute net PnL is also
 reference data only and does not raise the profitability score.
@@ -403,9 +403,12 @@ window, not only the latest closed reconstructed source trade. Open, add,
 reduce, close, and flip fills count as activity, while liquidation fills are
 excluded so liquidation events do not create a positive freshness signal.
 Risk loss-ratio, realized-drawdown, losing-rate, live drawdown, and position
-stress penalty spans are configurable. Copyability trade-count, notional,
-concentration, unique-coin spans, and subweights are configurable. Penalty caps
-for low sample, stale trading, negative PnL, open-only activity, liquidations,
+stress penalty spans are configurable. Copyability measures practical
+followability through copyable trade ratio, median trade notional, p25 trade
+notional, and execution simplicity. Trade count is intentionally excluded from
+Copyability because sample size is handled by sample caps and the
+low-confidence penalty. Penalty caps for low
+sample, stale trading, negative PnL, open-only activity, liquidations,
 confidence, and missing live state are configurable. Ignored fills are kept as
 diagnostic reconstruction metadata and do not reduce wallet score.
 Wallet detail pages use `GET /scores/{address}/detail` for the Detailed scoring

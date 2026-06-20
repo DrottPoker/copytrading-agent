@@ -2,7 +2,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_FLOOR, Decimal, InvalidOperation
 from typing import Any
 
 from sqlalchemy import delete, func, select, text
@@ -61,6 +61,10 @@ class WalletScoreMetrics:
     active_days: int
     total_notional_usd: Decimal
     average_trade_notional_usd: Decimal
+    median_trade_notional_usd: Decimal | None
+    p25_trade_notional_usd: Decimal | None
+    copyable_trade_ratio: Decimal | None
+    average_fills_per_trade: Decimal | None
     average_trade_roi: Decimal | None
     median_trade_roi: Decimal | None
     total_pnl_usd: Decimal
@@ -1237,76 +1241,78 @@ def copyability_score_items(
     *,
     settings: Settings,
 ) -> list[WalletScoreDetailItem]:
-    target_trade_count = max(settings.scoring_target_trades, 1)
-    trade_score = score_value(
-        Decimal(metrics.trade_count) / Decimal(target_trade_count) * HUNDRED
-    )
-    avg_notional_score = calculate_average_notional_score(
-        metrics.average_trade_notional_usd,
+    copyable_trade_score = copyable_trade_ratio_score(metrics.copyable_trade_ratio)
+    median_notional_score = trade_notional_score(
+        metrics.median_trade_notional_usd,
         settings=settings,
     )
-    concentration = (
-        metrics.max_coin_notional_usd / metrics.total_notional_usd
-        if metrics.total_notional_usd > ZERO
-        else ONE
+    p25_notional_score = trade_notional_score(
+        metrics.p25_trade_notional_usd,
+        settings=settings,
     )
-    concentration_score = coin_concentration_score(concentration, settings=settings)
-    unique_coin_target = settings.scoring_copyability_unique_coins_full_score_at
-    unique_coin_score = score_value(
-        Decimal(min(metrics.unique_coin_count, unique_coin_target))
-        / Decimal(unique_coin_target)
-        * HUNDRED
+    execution_score = execution_simplicity_score(
+        metrics.average_fills_per_trade,
+        settings=settings,
     )
     weight_sum = score_group_weight_sum(
-        settings.scoring_copyability_weight_trade_count,
-        settings.scoring_copyability_weight_average_notional,
-        settings.scoring_copyability_weight_coin_concentration,
-        settings.scoring_copyability_weight_unique_coins,
+        settings.scoring_copyability_weight_copyable_trade_ratio,
+        settings.scoring_copyability_weight_median_trade_notional,
+        settings.scoring_copyability_weight_p25_trade_notional,
+        settings.scoring_copyability_weight_execution_simplicity,
     )
     return [
         detail_item(
-            key="trade_count",
-            label="Trade count",
-            value=Decimal(metrics.trade_count),
-            value_kind="integer",
-            score=trade_score,
-            weight=score_group_weight(settings.scoring_copyability_weight_trade_count, weight_sum),
-            detail=f"Closed trades scored against target {settings.scoring_target_trades}.",
-        ),
-        detail_item(
-            key="average_notional",
-            label="Average notional",
-            value=metrics.average_trade_notional_usd,
-            value_kind="currency",
-            score=avg_notional_score,
-            weight=score_group_weight(
-                settings.scoring_copyability_weight_average_notional,
-                weight_sum,
-            ),
-            detail="Average reconstructed entry notional per closed trade.",
-        ),
-        detail_item(
-            key="coin_concentration",
-            label="Coin concentration",
-            value=concentration,
+            key="copyable_trade_ratio",
+            label="Copyable trade ratio",
+            value=metrics.copyable_trade_ratio,
             value_kind="percent",
-            score=concentration_score,
+            score=copyable_trade_score,
             weight=score_group_weight(
-                settings.scoring_copyability_weight_coin_concentration,
+                settings.scoring_copyability_weight_copyable_trade_ratio,
                 weight_sum,
             ),
-            detail="Largest coin notional share is penalized when too concentrated.",
+            detail=(
+                "Share of closed trades with reconstructed entry notional at or above "
+                f"{settings.scoring_copyability_copyable_trade_min_notional_usd} USD."
+            ),
         ),
         detail_item(
-            key="unique_coins",
-            label="Unique coins",
-            value=Decimal(metrics.unique_coin_count),
-            value_kind="integer",
-            score=unique_coin_score,
-            weight=score_group_weight(settings.scoring_copyability_weight_unique_coins, weight_sum),
+            key="median_trade_notional",
+            label="Median trade notional",
+            value=metrics.median_trade_notional_usd,
+            value_kind="currency",
+            score=median_notional_score,
+            weight=score_group_weight(
+                settings.scoring_copyability_weight_median_trade_notional,
+                weight_sum,
+            ),
+            detail="Median reconstructed entry notional per closed trade.",
+        ),
+        detail_item(
+            key="p25_trade_notional",
+            label="P25 trade notional",
+            value=metrics.p25_trade_notional_usd,
+            value_kind="currency",
+            score=p25_notional_score,
+            weight=score_group_weight(
+                settings.scoring_copyability_weight_p25_trade_notional,
+                weight_sum,
+            ),
+            detail="25th percentile reconstructed entry notional per closed trade.",
+        ),
+        detail_item(
+            key="execution_simplicity",
+            label="Execution simplicity",
+            value=metrics.average_fills_per_trade,
+            value_kind="number",
+            score=execution_score,
+            weight=score_group_weight(
+                settings.scoring_copyability_weight_execution_simplicity,
+                weight_sum,
+            ),
             detail=(
-                "Unique traded coins scored against target "
-                f"{settings.scoring_copyability_unique_coins_full_score_at}."
+                "Average entry and close fills per closed trade. Lower is easier "
+                "to follow."
             ),
         ),
     ]
@@ -1531,6 +1537,40 @@ def source_trade_roi_values(trades: ReconstructedWalletTrades) -> list[Decimal]:
     ]
 
 
+def source_trade_notional_values(trades: ReconstructedWalletTrades) -> list[Decimal]:
+    return [
+        item.entry_notional_usd
+        for item in trades.items
+        if item.status == "closed" and item.entry_notional_usd > ZERO
+    ]
+
+
+def copyable_trade_ratio(
+    trade_notional_values: list[Decimal],
+    *,
+    settings: Settings,
+) -> Decimal | None:
+    if not trade_notional_values:
+        return None
+    copyable_count = sum(
+        1
+        for notional_usd in trade_notional_values
+        if notional_usd >= settings.scoring_copyability_copyable_trade_min_notional_usd
+    )
+    return Decimal(copyable_count) / Decimal(len(trade_notional_values))
+
+
+def average_fills_per_trade(trades: ReconstructedWalletTrades) -> Decimal | None:
+    closed_items = [item for item in trades.items if item.status == "closed"]
+    if not closed_items:
+        return None
+    total_fills = sum(
+        (item.entry_fill_count + item.close_fill_count for item in closed_items),
+        0,
+    )
+    return Decimal(total_fills) / Decimal(len(closed_items))
+
+
 def largest_win_profit_share(trades: ReconstructedWalletTrades) -> Decimal | None:
     if trades.gross_profit_usd <= ZERO or not trades.winning_trade_pnls:
         return None
@@ -1594,6 +1634,20 @@ def median_decimal(values: list[Decimal]) -> Decimal | None:
     if len(ordered) % 2:
         return ordered[midpoint]
     return (ordered[midpoint - 1] + ordered[midpoint]) / Decimal("2")
+
+
+def percentile_decimal(values: list[Decimal], percentile: Decimal) -> Decimal | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    clamped_percentile = clamp_decimal(percentile, ZERO, ONE)
+    position = Decimal(len(ordered) - 1) * clamped_percentile
+    lower_index = int(position.to_integral_value(rounding=ROUND_FLOOR))
+    upper_index = min(lower_index + 1, len(ordered) - 1)
+    fraction = position - Decimal(lower_index)
+    return ordered[lower_index] + (ordered[upper_index] - ordered[lower_index]) * fraction
 
 
 def profitability_ratio_score(
@@ -1842,77 +1896,85 @@ def calculate_copyability_score(
     metrics: WalletScoreMetrics,
     settings: Settings,
 ) -> Decimal:
-    target_trade_count = max(settings.scoring_target_trades, 1)
-    trade_score = score_value(
-        Decimal(metrics.trade_count) / Decimal(target_trade_count) * HUNDRED
-    )
-    avg_notional_score = calculate_average_notional_score(
-        metrics.average_trade_notional_usd,
+    copyable_trade_score = copyable_trade_ratio_score(metrics.copyable_trade_ratio)
+    median_notional_score = trade_notional_score(
+        metrics.median_trade_notional_usd,
         settings=settings,
     )
-    concentration = (
-        metrics.max_coin_notional_usd / metrics.total_notional_usd
-        if metrics.total_notional_usd > ZERO
-        else ONE
+    p25_notional_score = trade_notional_score(
+        metrics.p25_trade_notional_usd,
+        settings=settings,
     )
-    concentration_score = coin_concentration_score(concentration, settings=settings)
-    unique_coin_target = settings.scoring_copyability_unique_coins_full_score_at
-    unique_coin_score = score_value(
-        Decimal(min(metrics.unique_coin_count, unique_coin_target))
-        / Decimal(unique_coin_target)
-        * HUNDRED
+    execution_score = execution_simplicity_score(
+        metrics.average_fills_per_trade,
+        settings=settings,
     )
     return weighted_score(
         (
-            (trade_score, settings.scoring_copyability_weight_trade_count),
-            (avg_notional_score, settings.scoring_copyability_weight_average_notional),
             (
-                concentration_score,
-                settings.scoring_copyability_weight_coin_concentration,
+                copyable_trade_score,
+                settings.scoring_copyability_weight_copyable_trade_ratio,
             ),
-            (unique_coin_score, settings.scoring_copyability_weight_unique_coins),
+            (
+                median_notional_score,
+                settings.scoring_copyability_weight_median_trade_notional,
+            ),
+            (
+                p25_notional_score,
+                settings.scoring_copyability_weight_p25_trade_notional,
+            ),
+            (
+                execution_score,
+                settings.scoring_copyability_weight_execution_simplicity,
+            ),
         )
     )
 
 
-def calculate_average_notional_score(
-    average_notional_usd: Decimal,
+def copyable_trade_ratio_score(copyable_ratio: Decimal | None) -> Decimal:
+    if copyable_ratio is None:
+        return ZERO
+    return score_value(copyable_ratio * HUNDRED)
+
+
+def trade_notional_score(
+    notional_usd: Decimal | None,
     *,
     settings: Settings,
 ) -> Decimal:
-    if average_notional_usd <= ZERO:
+    if notional_usd is None or notional_usd <= ZERO:
         return ZERO
-    min_full = settings.scoring_copyability_average_notional_min_full_score_usd
-    max_full = settings.scoring_copyability_average_notional_max_full_score_usd
-    large_min_score_at = (
-        settings.scoring_copyability_average_notional_too_large_min_score_usd
-    )
-    if average_notional_usd < min_full:
+    min_full = settings.scoring_copyability_trade_notional_min_full_score_usd
+    max_full = settings.scoring_copyability_trade_notional_max_full_score_usd
+    large_min_score_at = settings.scoring_copyability_trade_notional_too_large_min_score_usd
+    if notional_usd < min_full:
         return score_value(
-            average_notional_usd
+            notional_usd
             / min_full
-            * settings.scoring_copyability_average_notional_too_small_max_score
+            * settings.scoring_copyability_trade_notional_too_small_max_score
         )
-    if average_notional_usd <= max_full:
+    if notional_usd <= max_full:
         return HUNDRED
-    if average_notional_usd >= large_min_score_at:
-        return settings.scoring_copyability_average_notional_too_large_min_score
+    if notional_usd >= large_min_score_at:
+        return settings.scoring_copyability_trade_notional_too_large_min_score
     reduction = (
-        (average_notional_usd - max_full)
+        (notional_usd - max_full)
         / (large_min_score_at - max_full)
-        * (HUNDRED - settings.scoring_copyability_average_notional_too_large_min_score)
+        * (HUNDRED - settings.scoring_copyability_trade_notional_too_large_min_score)
     )
     return score_value(HUNDRED - reduction)
 
 
-def coin_concentration_score(concentration: Decimal, *, settings: Settings) -> Decimal:
-    full_score_at = settings.scoring_copyability_coin_concentration_full_score_at_or_below
-    if concentration <= full_score_at:
-        return HUNDRED
-    denominator = ONE - full_score_at
-    if denominator <= ZERO:
-        return ZERO
-    return score_value((ONE - concentration) / denominator * HUNDRED)
+def execution_simplicity_score(
+    average_fills_per_trade: Decimal | None,
+    *,
+    settings: Settings,
+) -> Decimal:
+    return inverse_range_score(
+        average_fills_per_trade,
+        settings.scoring_copyability_execution_full_score_fills_per_trade_at_or_below,
+        settings.scoring_copyability_execution_zero_score_fills_per_trade_at_or_above,
+    )
 
 
 def calculate_recency_score(
@@ -2142,6 +2204,10 @@ def metrics_from_row(row: Any) -> WalletScoreMetrics:
         active_days=int(row["active_days"] or 0),
         total_notional_usd=decimal_value(row["total_notional_usd"]),
         average_trade_notional_usd=decimal_value(row["average_fill_notional_usd"]),
+        median_trade_notional_usd=None,
+        p25_trade_notional_usd=None,
+        copyable_trade_ratio=None,
+        average_fills_per_trade=None,
         average_trade_roi=None,
         median_trade_roi=None,
         total_pnl_usd=decimal_value(row["total_pnl_usd"]),
@@ -2201,6 +2267,10 @@ def metrics_with_reconstructed_trades(
             active_days=0,
             total_notional_usd=ZERO,
             average_trade_notional_usd=ZERO,
+            median_trade_notional_usd=None,
+            p25_trade_notional_usd=None,
+            copyable_trade_ratio=None,
+            average_fills_per_trade=None,
             average_trade_roi=None,
             median_trade_roi=None,
             total_pnl_usd=ZERO,
@@ -2238,6 +2308,7 @@ def metrics_with_reconstructed_trades(
 
     ignored_fill_count = trades.unmatched_close_fill_count + trades.preexisting_open_fill_count
     trade_roi_values = source_trade_roi_values(trades)
+    trade_notional_values = source_trade_notional_values(trades)
     downside_trade_roi_values = [value for value in trade_roi_values if value < ZERO]
     return WalletScoreMetrics(
         wallet_address=base_metrics.wallet_address,
@@ -2249,6 +2320,10 @@ def metrics_with_reconstructed_trades(
         active_days=trades.active_day_count,
         total_notional_usd=trades.total_entry_notional_usd,
         average_trade_notional_usd=trades.average_trade_notional_usd,
+        median_trade_notional_usd=median_decimal(trade_notional_values),
+        p25_trade_notional_usd=percentile_decimal(trade_notional_values, Decimal("0.25")),
+        copyable_trade_ratio=copyable_trade_ratio(trade_notional_values, settings=settings),
+        average_fills_per_trade=average_fills_per_trade(trades),
         average_trade_roi=average_decimal(
             capped_trade_roi_values(trade_roi_values, settings=settings)
         ),
