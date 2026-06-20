@@ -1560,7 +1560,7 @@ def max_inactive_gap_days(active_days: set[date]) -> int | None:
     ordered_days = sorted(active_days)
     gaps = [
         max(0, (current_day - previous_day).days - 1)
-        for previous_day, current_day in zip(ordered_days, ordered_days[1:], strict=True)
+        for previous_day, current_day in zip(ordered_days, ordered_days[1:], strict=False)
     ]
     return max(gaps, default=0)
 
