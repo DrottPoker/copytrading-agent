@@ -20,9 +20,9 @@
   },
   "profitability": {
     "weights": {
-      "net_roi": 0.55,
-      "average_trade_roi": 0.3,
-      "median_trade_roi": 0.15
+      "net_roi": 0.50,
+      "average_trade_roi": 0.20,
+      "median_trade_roi": 0.30
     },
     "roi_score": {
       "full_score_at": 0.03
