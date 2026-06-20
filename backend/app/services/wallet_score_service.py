@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -71,6 +71,10 @@ class WalletScoreMetrics:
     profitable_trade_count: int
     losing_trade_count: int
     effective_winning_trade_count: Decimal | None
+    largest_win_profit_share: Decimal | None
+    trade_roi_stddev: Decimal | None
+    downside_trade_roi_stddev: Decimal | None
+    max_inactive_gap_days: int | None
     liquidation_fill_count: int
     liquidation_event_count: int
     max_coin_notional_usd: Decimal
@@ -703,10 +707,7 @@ def calculate_wallet_score(
 
     pnl_score = calculate_profitability_score(metrics, settings=settings)
     consistency_score = calculate_consistency_score(
-        win_rate=win_rate,
-        profit_factor=profit_factor,
-        effective_winning_trade_count=metrics.effective_winning_trade_count,
-        active_days=metrics.active_days,
+        metrics=metrics,
         settings=settings,
     )
     risk_score = calculate_risk_score(
@@ -823,8 +824,8 @@ def calculate_score_explanation(
             weight=settings.scoring_weight_consistency,
             weight_sum=weight_sum,
             detail=(
-                "Consistency combines win rate, profit factor, profit distribution, "
-                "and activity."
+                "Consistency scores repeatability and evenness, not profitability "
+                "or win rate."
             ),
             items=consistency_score_items(metrics, settings=settings),
         ),
@@ -1007,91 +1008,130 @@ def consistency_score_items(
     *,
     settings: Settings,
 ) -> list[WalletScoreDetailItem]:
-    closed_trade_count = metrics.profitable_trade_count + metrics.losing_trade_count
-    win_rate = (
-        Decimal(metrics.profitable_trade_count) / Decimal(closed_trade_count)
-        if closed_trade_count > 0
-        else None
+    distribution_ratio = profit_distribution_ratio(metrics)
+    distribution_score = profit_distribution_consistency_score(
+        distribution_ratio,
+        settings=settings,
     )
-    profit_factor = calculate_profit_factor(metrics.gross_profit_usd, metrics.gross_loss_usd)
-    win_score = (
-        settings.scoring_consistency_win_rate_missing_score
-        if win_rate is None
-        else range_score(
-            win_rate,
-            settings.scoring_consistency_win_rate_zero_score_at,
-            settings.scoring_consistency_win_rate_full_score_at,
-        )
+    largest_win_score = largest_win_dependency_score(
+        metrics.largest_win_profit_share,
+        settings=settings,
     )
-    pf_score = (
-        settings.scoring_consistency_profit_factor_missing_score
-        if profit_factor is None
-        else profit_factor_score(profit_factor, settings=settings)
+    trade_roi_stability_score = roi_stability_score(
+        metrics.trade_roi_stddev,
+        full_score_at_or_below=(
+            settings.scoring_consistency_trade_roi_stddev_full_score_at_or_below
+        ),
+        zero_score_at_or_above=(
+            settings.scoring_consistency_trade_roi_stddev_zero_score_at_or_above
+        ),
     )
-    distribution_score = calculate_profit_distribution_score(
-        effective_winning_trade_count=metrics.effective_winning_trade_count,
-        target_profit_winners=settings.scoring_target_profit_winners,
+    downside_stability_score = roi_stability_score(
+        metrics.downside_trade_roi_stddev,
+        full_score_at_or_below=(
+            settings.scoring_consistency_downside_stddev_full_score_at_or_below
+        ),
+        zero_score_at_or_above=(
+            settings.scoring_consistency_downside_stddev_zero_score_at_or_above
+        ),
     )
-    target_day_count = max(settings.scoring_target_active_days, 1)
-    activity_score = score_value(
-        Decimal(metrics.active_days) / Decimal(target_day_count) * HUNDRED
-    )
+    active_day_score = active_day_regularity_score(metrics, settings=settings)
+    max_gap_score = max_inactive_gap_score(metrics.max_inactive_gap_days, settings=settings)
     weight_sum = score_group_weight_sum(
-        settings.scoring_consistency_weight_win_rate,
-        settings.scoring_consistency_weight_profit_factor,
         settings.scoring_consistency_weight_profit_distribution,
-        settings.scoring_consistency_weight_active_days,
+        settings.scoring_consistency_weight_largest_win_dependency,
+        settings.scoring_consistency_weight_trade_roi_stability,
+        settings.scoring_consistency_weight_downside_stability,
+        settings.scoring_consistency_weight_active_day_regularity,
+        settings.scoring_consistency_weight_max_inactive_gap,
     )
     return [
         detail_item(
-            key="win_rate",
-            label="Win rate",
-            value=win_rate,
-            value_kind="percent",
-            score=win_score,
-            weight=score_group_weight(settings.scoring_consistency_weight_win_rate, weight_sum),
-            detail=(
-                f"{metrics.profitable_trade_count} profitable closed trades "
-                f"of {closed_trade_count}."
-            ),
-        ),
-        detail_item(
-            key="profit_factor",
-            label="Profit factor",
-            value=profit_factor,
-            value_kind="number",
-            score=pf_score,
-            weight=score_group_weight(
-                settings.scoring_consistency_weight_profit_factor,
-                weight_sum,
-            ),
-            detail="Gross profit divided by gross loss.",
-        ),
-        detail_item(
             key="profit_distribution",
             label="Profit distribution",
-            value=metrics.effective_winning_trade_count,
-            value_kind="number",
+            value=distribution_ratio,
+            value_kind="percent",
             score=distribution_score,
             weight=score_group_weight(
                 settings.scoring_consistency_weight_profit_distribution,
                 weight_sum,
             ),
             detail=(
-                "Effective winning trades scored against target "
-                f"{settings.scoring_target_profit_winners}."
+                "Effective winning trades divided by winning trades. "
+                f"{settings.scoring_consistency_profit_distribution_full_score_ratio:.0%} "
+                "reaches full score."
             ),
         ),
         detail_item(
-            key="active_days",
-            label="Active days",
-            value=Decimal(metrics.active_days),
-            value_kind="integer",
-            score=activity_score,
-            weight=score_group_weight(settings.scoring_consistency_weight_active_days, weight_sum),
+            key="largest_win_dependency",
+            label="Largest win dependency",
+            value=metrics.largest_win_profit_share,
+            value_kind="percent",
+            score=largest_win_score,
+            weight=score_group_weight(
+                settings.scoring_consistency_weight_largest_win_dependency,
+                weight_sum,
+            ),
+            detail="Largest winning trade as share of gross profit. Lower is better.",
+        ),
+        detail_item(
+            key="trade_roi_stability",
+            label="Trade ROI stability",
+            value=metrics.trade_roi_stddev,
+            value_kind="percent",
+            score=trade_roi_stability_score,
+            weight=score_group_weight(
+                settings.scoring_consistency_weight_trade_roi_stability,
+                weight_sum,
+            ),
+            detail="Population standard deviation of closed-trade ROI. Lower is better.",
+        ),
+        detail_item(
+            key="downside_stability",
+            label="Downside stability",
+            value=metrics.downside_trade_roi_stddev,
+            value_kind="percent",
+            score=downside_stability_score,
+            weight=score_group_weight(
+                settings.scoring_consistency_weight_downside_stability,
+                weight_sum,
+            ),
+            detail="Population standard deviation of losing closed-trade ROI. Lower is better.",
+        ),
+        detail_item(
+            key="active_day_regularity",
+            label="Active day regularity",
+            value=active_day_ratio(metrics, settings=settings),
+            value_kind="percent",
+            score=active_day_score,
+            weight=score_group_weight(
+                settings.scoring_consistency_weight_active_day_regularity,
+                weight_sum,
+            ),
             detail=(
-                "Active trading days scored against target "
-                f"{settings.scoring_target_active_days}."
+                "Closed-trade active days divided by scoring window. "
+                f"{settings.scoring_consistency_active_day_full_score_ratio:.0%} "
+                "reaches full score."
+            ),
+        ),
+        detail_item(
+            key="max_inactive_gap",
+            label="Max inactive gap",
+            value=(
+                Decimal(metrics.max_inactive_gap_days)
+                if metrics.max_inactive_gap_days is not None
+                else None
+            ),
+            value_kind="days",
+            score=max_gap_score,
+            weight=score_group_weight(
+                settings.scoring_consistency_weight_max_inactive_gap,
+                weight_sum,
+            ),
+            detail=(
+                "Largest gap between closed-trade active days. "
+                f"{settings.scoring_consistency_max_inactive_gap_zero_score_days} "
+                "days or more scores zero."
             ),
         ),
     ]
@@ -1491,6 +1531,40 @@ def source_trade_roi_values(trades: ReconstructedWalletTrades) -> list[Decimal]:
     ]
 
 
+def largest_win_profit_share(trades: ReconstructedWalletTrades) -> Decimal | None:
+    if trades.gross_profit_usd <= ZERO or not trades.winning_trade_pnls:
+        return None
+    largest_win = max((value for value in trades.winning_trade_pnls if value > ZERO), default=ZERO)
+    if largest_win <= ZERO:
+        return None
+    return min_decimal(largest_win / trades.gross_profit_usd, ONE)
+
+
+def standard_deviation_decimal(values: list[Decimal]) -> Decimal | None:
+    if not values:
+        return None
+    if len(values) == 1:
+        return ZERO
+    mean = sum(values, ZERO) / Decimal(len(values))
+    variance = sum(((value - mean) * (value - mean) for value in values), ZERO) / Decimal(
+        len(values)
+    )
+    if variance <= ZERO:
+        return ZERO
+    return variance.sqrt()
+
+
+def max_inactive_gap_days(active_days: set[date]) -> int | None:
+    if len(active_days) < 2:
+        return None
+    ordered_days = sorted(active_days)
+    gaps = [
+        max(0, (current_day - previous_day).days - 1)
+        for previous_day, current_day in zip(ordered_days, ordered_days[1:], strict=True)
+    ]
+    return max(gaps, default=0)
+
+
 def capped_trade_roi_values(
     values: list[Decimal],
     *,
@@ -1534,55 +1608,171 @@ def profitability_ratio_score(
 
 def calculate_consistency_score(
     *,
-    win_rate: Decimal | None,
-    profit_factor: Decimal | None,
-    effective_winning_trade_count: Decimal | None,
-    active_days: int,
+    metrics: WalletScoreMetrics,
     settings: Settings,
 ) -> Decimal:
-    win_score = (
-        settings.scoring_consistency_win_rate_missing_score
-        if win_rate is None
-        else range_score(
-            win_rate,
-            settings.scoring_consistency_win_rate_zero_score_at,
-            settings.scoring_consistency_win_rate_full_score_at,
-        )
+    distribution_score = profit_distribution_consistency_score(
+        profit_distribution_ratio(metrics),
+        settings=settings,
     )
-    pf_score = (
-        settings.scoring_consistency_profit_factor_missing_score
-        if profit_factor is None
-        else profit_factor_score(profit_factor, settings=settings)
+    largest_win_score = largest_win_dependency_score(
+        metrics.largest_win_profit_share,
+        settings=settings,
     )
-    distribution_score = calculate_profit_distribution_score(
-        effective_winning_trade_count=effective_winning_trade_count,
-        target_profit_winners=settings.scoring_target_profit_winners,
+    trade_roi_stability_score = roi_stability_score(
+        metrics.trade_roi_stddev,
+        full_score_at_or_below=(
+            settings.scoring_consistency_trade_roi_stddev_full_score_at_or_below
+        ),
+        zero_score_at_or_above=(
+            settings.scoring_consistency_trade_roi_stddev_zero_score_at_or_above
+        ),
     )
-    target_day_count = max(settings.scoring_target_active_days, 1)
-    activity_score = score_value(Decimal(active_days) / Decimal(target_day_count) * HUNDRED)
+    downside_stability_score = roi_stability_score(
+        metrics.downside_trade_roi_stddev,
+        full_score_at_or_below=(
+            settings.scoring_consistency_downside_stddev_full_score_at_or_below
+        ),
+        zero_score_at_or_above=(
+            settings.scoring_consistency_downside_stddev_zero_score_at_or_above
+        ),
+    )
+    active_day_score = active_day_regularity_score(metrics, settings=settings)
+    max_gap_score = max_inactive_gap_score(metrics.max_inactive_gap_days, settings=settings)
     return weighted_score(
         (
-            (win_score, settings.scoring_consistency_weight_win_rate),
-            (pf_score, settings.scoring_consistency_weight_profit_factor),
             (
                 distribution_score,
                 settings.scoring_consistency_weight_profit_distribution,
             ),
-            (activity_score, settings.scoring_consistency_weight_active_days),
+            (
+                largest_win_score,
+                settings.scoring_consistency_weight_largest_win_dependency,
+            ),
+            (
+                trade_roi_stability_score,
+                settings.scoring_consistency_weight_trade_roi_stability,
+            ),
+            (
+                downside_stability_score,
+                settings.scoring_consistency_weight_downside_stability,
+            ),
+            (
+                active_day_score,
+                settings.scoring_consistency_weight_active_day_regularity,
+            ),
+            (
+                max_gap_score,
+                settings.scoring_consistency_weight_max_inactive_gap,
+            ),
         )
     )
 
 
-def calculate_profit_distribution_score(
+def profit_distribution_ratio(metrics: WalletScoreMetrics) -> Decimal | None:
+    if (
+        metrics.effective_winning_trade_count is None
+        or metrics.effective_winning_trade_count <= ZERO
+        or metrics.profitable_trade_count <= 0
+    ):
+        return None
+    return min_decimal(
+        metrics.effective_winning_trade_count / Decimal(metrics.profitable_trade_count),
+        ONE,
+    )
+
+
+def profit_distribution_consistency_score(
+    distribution_ratio: Decimal | None,
     *,
-    effective_winning_trade_count: Decimal | None,
-    target_profit_winners: int,
+    settings: Settings,
 ) -> Decimal:
-    if effective_winning_trade_count is None or effective_winning_trade_count <= ZERO:
+    if distribution_ratio is None or distribution_ratio <= ZERO:
         return ZERO
-    target_count = max(target_profit_winners, 1)
-    effective_ratio = min_decimal(effective_winning_trade_count / Decimal(target_count), ONE)
-    return score_value(effective_ratio.sqrt() * HUNDRED)
+    return score_value(
+        min_decimal(
+            distribution_ratio
+            / settings.scoring_consistency_profit_distribution_full_score_ratio,
+            ONE,
+        )
+        * HUNDRED
+    )
+
+
+def largest_win_dependency_score(
+    largest_win_profit_share: Decimal | None,
+    *,
+    settings: Settings,
+) -> Decimal:
+    return inverse_range_score(
+        largest_win_profit_share,
+        settings.scoring_consistency_largest_win_full_score_at_or_below,
+        settings.scoring_consistency_largest_win_zero_score_at_or_above,
+    )
+
+
+def roi_stability_score(
+    roi_stddev: Decimal | None,
+    *,
+    full_score_at_or_below: Decimal,
+    zero_score_at_or_above: Decimal,
+) -> Decimal:
+    return inverse_range_score(
+        roi_stddev,
+        full_score_at_or_below,
+        zero_score_at_or_above,
+    )
+
+
+def active_day_ratio(metrics: WalletScoreMetrics, *, settings: Settings) -> Decimal:
+    window_days = max(settings.scoring_window_days, 1)
+    return min_decimal(Decimal(metrics.active_days) / Decimal(window_days), ONE)
+
+
+def active_day_regularity_score(
+    metrics: WalletScoreMetrics,
+    *,
+    settings: Settings,
+) -> Decimal:
+    return score_value(
+        min_decimal(
+            active_day_ratio(metrics, settings=settings)
+            / settings.scoring_consistency_active_day_full_score_ratio,
+            ONE,
+        )
+        * HUNDRED
+    )
+
+
+def max_inactive_gap_score(
+    max_inactive_gap_days: int | None,
+    *,
+    settings: Settings,
+) -> Decimal:
+    if max_inactive_gap_days is None:
+        return ZERO
+    return inverse_range_score(
+        Decimal(max_inactive_gap_days),
+        Decimal(settings.scoring_consistency_max_inactive_gap_full_score_days),
+        Decimal(settings.scoring_consistency_max_inactive_gap_zero_score_days),
+    )
+
+
+def inverse_range_score(
+    value: Decimal | None,
+    full_score_at_or_below: Decimal,
+    zero_score_at_or_above: Decimal,
+) -> Decimal:
+    if value is None:
+        return ZERO
+    if value <= full_score_at_or_below:
+        return HUNDRED
+    if value >= zero_score_at_or_above:
+        return ZERO
+    span = zero_score_at_or_above - full_score_at_or_below
+    if span <= ZERO:
+        return ZERO
+    return score_value((zero_score_at_or_above - value) / span * HUNDRED)
 
 
 def calculate_open_position_stress_pct(
@@ -1962,6 +2152,10 @@ def metrics_from_row(row: Any) -> WalletScoreMetrics:
         profitable_trade_count=int(row["profitable_fill_count"] or 0),
         losing_trade_count=int(row["losing_fill_count"] or 0),
         effective_winning_trade_count=None,
+        largest_win_profit_share=None,
+        trade_roi_stddev=None,
+        downside_trade_roi_stddev=None,
+        max_inactive_gap_days=None,
         liquidation_fill_count=int(row["liquidation_fill_count"] or 0),
         liquidation_event_count=int(row["liquidation_event_count"] or 0),
         max_coin_notional_usd=decimal_value(row["max_coin_notional_usd"]),
@@ -2017,6 +2211,10 @@ def metrics_with_reconstructed_trades(
             profitable_trade_count=0,
             losing_trade_count=0,
             effective_winning_trade_count=None,
+            largest_win_profit_share=None,
+            trade_roi_stddev=None,
+            downside_trade_roi_stddev=None,
+            max_inactive_gap_days=None,
             liquidation_fill_count=base_metrics.liquidation_fill_count,
             liquidation_event_count=base_metrics.liquidation_event_count,
             max_coin_notional_usd=ZERO,
@@ -2040,6 +2238,7 @@ def metrics_with_reconstructed_trades(
 
     ignored_fill_count = trades.unmatched_close_fill_count + trades.preexisting_open_fill_count
     trade_roi_values = source_trade_roi_values(trades)
+    downside_trade_roi_values = [value for value in trade_roi_values if value < ZERO]
     return WalletScoreMetrics(
         wallet_address=base_metrics.wallet_address,
         fill_count=base_metrics.fill_count,
@@ -2062,6 +2261,14 @@ def metrics_with_reconstructed_trades(
         profitable_trade_count=trades.winning_trade_count,
         losing_trade_count=trades.losing_trade_count,
         effective_winning_trade_count=trades.effective_winning_trade_count,
+        largest_win_profit_share=largest_win_profit_share(trades),
+        trade_roi_stddev=standard_deviation_decimal(trade_roi_values),
+        downside_trade_roi_stddev=(
+            standard_deviation_decimal(downside_trade_roi_values)
+            if downside_trade_roi_values
+            else ZERO
+        ),
+        max_inactive_gap_days=max_inactive_gap_days(trades.active_days),
         liquidation_fill_count=base_metrics.liquidation_fill_count,
         liquidation_event_count=base_metrics.liquidation_event_count,
         max_coin_notional_usd=trades.max_coin_notional_usd,
@@ -2082,35 +2289,6 @@ def metrics_with_reconstructed_trades(
         notional_7d=trades.notional_7d,
         net_pnl_7d=trades.net_pnl_7d,
     )
-
-
-def profit_factor_score(profit_factor: Decimal, *, settings: Settings) -> Decimal:
-    return score_curve(profit_factor, settings.scoring_consistency_profit_factor_curve)
-
-
-def score_curve(value: Decimal, points: list[Any]) -> Decimal:
-    ordered_points = sorted(points, key=lambda point: point.value)
-    if not ordered_points:
-        return ZERO
-    if value <= ordered_points[0].value:
-        return score_value(ordered_points[0].score)
-    if value >= ordered_points[-1].value:
-        return score_value(ordered_points[-1].score)
-
-    for lower, upper in zip(ordered_points, ordered_points[1:], strict=True):
-        if lower.value <= value <= upper.value:
-            if upper.value <= lower.value:
-                return score_value(upper.score)
-            ratio = (value - lower.value) / (upper.value - lower.value)
-            return score_value(lower.score + (upper.score - lower.score) * ratio)
-
-    return score_value(ordered_points[-1].score)
-
-
-def range_score(value: Decimal, low: Decimal, high: Decimal) -> Decimal:
-    if high <= low:
-        return ZERO
-    return score_value((value - low) / (high - low) * HUNDRED)
 
 
 def score_value(value: Decimal) -> Decimal:

@@ -151,8 +151,10 @@ Notes:
   only when a wallet's fill count or latest fill timestamp changes.
 - Recency score uses the latest non-liquidation trading fill, so opens, adds,
   reduces, closes, and flips count as activity while liquidation fills do not.
-- Consistency score now penalizes concentrated profits by measuring effective
-  winning trades from winning closed trade profit shares.
+- Consistency score measures repeatability and evenness through profit
+  distribution, largest-win dependency, ROI stability, downside stability,
+  active-day regularity, and max inactive gap. It does not score win rate or
+  profit factor.
 - Profitability score is scale-invariant. It combines total net ROI, average
   trade ROI, and median trade ROI with 55/30/15 weights instead of rewarding
   absolute dollar PnL or current-equity effects from deposits and withdrawals.

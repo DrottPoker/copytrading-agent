@@ -945,7 +945,7 @@ function scoreComponents(score: WalletScore): ScoreComponent[] {
       value: numberValue(score.pnlScore),
     },
     {
-      detail: "Win rate, profit factor, and active trading days.",
+      detail: "Profit spread, ROI stability, downside stability, and activity regularity.",
       key: "consistency",
       label: "Consistency",
       value: numberValue(score.consistencyScore),

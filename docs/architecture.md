@@ -237,7 +237,7 @@ The backend config files are grouped by operational area:
   wallets.
 - `pool_fill_import.json` owns scheduled pool reimport and shared fill import
   storage and market-filter settings.
-- `scoring.json` owns scoring schedule, score windows, weights, score curves,
+- `scoring.json` owns scoring schedule, score windows, weights, ratio spans,
   thresholds, and penalties.
 
 Secrets and connection strings live in `.env`:
@@ -385,11 +385,13 @@ perp equity is zero, the scoring run keeps the history-only risk component and
 applies the configured missing-state penalty. Scoring only checks default perp
 plus dexes already observed in stored fills, so full HIP-3 discovery remains
 limited to single-wallet current-state views.
-Consistency score uses win rate, profit factor, active days, and profit
-distribution. Profit distribution is calculated from winning closed trades as
-effective winning trades, `1 / sum(profit_share^2)`, then scored against
-the configured profit-winner target. Consistency subweights, win-rate span, and
-profit-factor curve are configurable.
+Consistency score measures repeatability and evenness, not profitability or win
+rate. It uses profit distribution, largest-win dependency, closed-trade ROI
+stability, downside ROI stability, active-day regularity, and max inactive gap.
+Profit distribution is calculated from winning closed trades as effective
+winning trades, `1 / sum(profit_share^2)`, divided by the number of winning
+trades. Win rate and profit factor remain reference stats outside the
+consistency component.
 Profitability score is scale-invariant. It combines total net ROI against
 reconstructed entry notional, capped average trade ROI, and median trade ROI.
 The weights are 55/30/15, and each ROI subscore maps 0% or lower to 0 and +5%

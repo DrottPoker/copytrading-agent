@@ -728,7 +728,7 @@ What it does:
 - `backend/config/pool_fill_import.json` owns scheduled pool reimport and shared
   fill import storage and market-filter settings.
 - `backend/config/scoring.json` owns scoring schedule, score windows, weights,
-  score curves, thresholds, and penalties.
+  ratio spans, thresholds, and penalties.
 
 ### Job Locking
 
@@ -843,7 +843,7 @@ Phase A behavior:
 - Ignores close-only PnL from positions opened before the imported window.
 - Uses reconstructed trade PnL, fees, notional, active days, recency, realized
   drawdown, current drawdown, open-position stress, loss ratio, losing trade
-  rate, profit distribution, and coin concentration.
+  rate, result repeatability, and coin concentration.
 - Recency is based on the latest non-liquidation trading fill in the scoring
   window, so opens, adds, reduces, closes, and flips all count as activity.
   Liquidation fills do not refresh recency.
@@ -856,12 +856,11 @@ Phase A behavior:
   to 100. Current-equity return is shown as reference data only because deposits
   and withdrawals can distort it. Absolute dollar PnL is also reference data only
   and does not increase the score.
-- Consistency score includes profit distribution across winning closed trades.
-  It calculates effective winning trades as `1 / sum(profit_share^2)` and scores
-  it against the configured profit-winner target, so wallets where most profit
-  comes from one or two trades score lower than wallets with repeated independent
-  wins. Consistency subweights, win-rate span, and profit-factor curve are
-  configurable.
+- Consistency score measures repeatability and evenness, not profitability or
+  win rate. It combines profit distribution, largest-win dependency, closed-trade
+  ROI stability, downside ROI stability, active-day regularity, and max inactive
+  gap. Win rate and profit factor remain reference stats outside the consistency
+  component.
 - The stored `max_drawdown_pct` is exposed to the UI as realized drawdown. It is
   based on reconstructed closed trades and does not include intratrade open
   unrealized PnL.

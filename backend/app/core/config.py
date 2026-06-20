@@ -148,33 +148,54 @@ SCORING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("profitability", "average_trade_roi", "cap_max"): (
         "scoring_profitability_average_trade_roi_cap_max"
     ),
-    ("consistency", "weights", "win_rate"): "scoring_consistency_weight_win_rate",
-    ("consistency", "weights", "profit_factor"): (
-        "scoring_consistency_weight_profit_factor"
-    ),
     ("consistency", "weights", "profit_distribution"): (
         "scoring_consistency_weight_profit_distribution"
     ),
-    ("consistency", "weights", "active_days"): "scoring_consistency_weight_active_days",
-    ("consistency", "win_rate", "missing_score"): (
-        "scoring_consistency_win_rate_missing_score"
+    ("consistency", "weights", "largest_win_dependency"): (
+        "scoring_consistency_weight_largest_win_dependency"
     ),
-    ("consistency", "win_rate", "zero_score_at"): (
-        "scoring_consistency_win_rate_zero_score_at"
+    ("consistency", "weights", "trade_roi_stability"): (
+        "scoring_consistency_weight_trade_roi_stability"
     ),
-    ("consistency", "win_rate", "full_score_at"): (
-        "scoring_consistency_win_rate_full_score_at"
+    ("consistency", "weights", "downside_stability"): (
+        "scoring_consistency_weight_downside_stability"
     ),
-    ("consistency", "profit_factor", "missing_score"): (
-        "scoring_consistency_profit_factor_missing_score"
+    ("consistency", "weights", "active_day_regularity"): (
+        "scoring_consistency_weight_active_day_regularity"
     ),
-    ("consistency", "profit_factor", "curve"): (
-        "scoring_consistency_profit_factor_curve"
+    ("consistency", "weights", "max_inactive_gap"): (
+        "scoring_consistency_weight_max_inactive_gap"
     ),
-    ("consistency", "profit_distribution", "target_winners"): (
-        "scoring_target_profit_winners"
+    ("consistency", "profit_distribution", "full_score_ratio"): (
+        "scoring_consistency_profit_distribution_full_score_ratio"
     ),
-    ("consistency", "active_days", "target"): "scoring_target_active_days",
+    ("consistency", "largest_win_dependency", "full_score_at_or_below"): (
+        "scoring_consistency_largest_win_full_score_at_or_below"
+    ),
+    ("consistency", "largest_win_dependency", "zero_score_at_or_above"): (
+        "scoring_consistency_largest_win_zero_score_at_or_above"
+    ),
+    ("consistency", "trade_roi_stability", "full_score_stddev_at_or_below"): (
+        "scoring_consistency_trade_roi_stddev_full_score_at_or_below"
+    ),
+    ("consistency", "trade_roi_stability", "zero_score_stddev_at_or_above"): (
+        "scoring_consistency_trade_roi_stddev_zero_score_at_or_above"
+    ),
+    ("consistency", "downside_stability", "full_score_stddev_at_or_below"): (
+        "scoring_consistency_downside_stddev_full_score_at_or_below"
+    ),
+    ("consistency", "downside_stability", "zero_score_stddev_at_or_above"): (
+        "scoring_consistency_downside_stddev_zero_score_at_or_above"
+    ),
+    ("consistency", "active_day_regularity", "full_score_active_day_ratio"): (
+        "scoring_consistency_active_day_full_score_ratio"
+    ),
+    ("consistency", "max_inactive_gap", "full_score_days"): (
+        "scoring_consistency_max_inactive_gap_full_score_days"
+    ),
+    ("consistency", "max_inactive_gap", "zero_score_days"): (
+        "scoring_consistency_max_inactive_gap_zero_score_days"
+    ),
     ("risk", "loss_ratio", "penalty_per_ratio"): (
         "scoring_risk_loss_ratio_penalty_per_ratio"
     ),
@@ -266,11 +287,6 @@ class PaperTradingAccountConfig(BaseModel):
     label: str = Field(min_length=1, max_length=120)
     starting_balance_usd: Decimal = Field(gt=0)
     enabled: bool = True
-
-
-class ScoreCurvePointConfig(BaseModel):
-    value: Decimal
-    score: Decimal = Field(ge=0, le=100)
 
 
 class Settings(BaseSettings):
@@ -421,8 +437,6 @@ class Settings(BaseSettings):
     scoring_target_fills: int = Field(default=100, ge=1)
     scoring_min_trades: int = Field(default=5, ge=1)
     scoring_target_trades: int = Field(default=25, ge=1)
-    scoring_target_profit_winners: int = Field(default=10, ge=1)
-    scoring_target_active_days: int = Field(default=10, ge=1)
     scoring_stale_days: int = Field(default=7, ge=1)
     scoring_sample_cap_max_score: Decimal = Field(default=Decimal("45"), ge=0, le=100)
     scoring_liquidation_event_gap_seconds: int = Field(default=300, ge=1)
@@ -488,52 +502,85 @@ class Settings(BaseSettings):
         ge=-10,
         le=10,
     )
-    scoring_consistency_weight_win_rate: Decimal = Field(default=Decimal("0.30"), ge=0, le=1)
-    scoring_consistency_weight_profit_factor: Decimal = Field(
+    scoring_consistency_weight_profit_distribution: Decimal = Field(
         default=Decimal("0.25"),
         ge=0,
         le=1,
     )
-    scoring_consistency_weight_profit_distribution: Decimal = Field(
-        default=Decimal("0.30"),
+    scoring_consistency_weight_largest_win_dependency: Decimal = Field(
+        default=Decimal("0.20"),
         ge=0,
         le=1,
     )
-    scoring_consistency_weight_active_days: Decimal = Field(
+    scoring_consistency_weight_trade_roi_stability: Decimal = Field(
+        default=Decimal("0.20"),
+        ge=0,
+        le=1,
+    )
+    scoring_consistency_weight_downside_stability: Decimal = Field(
         default=Decimal("0.15"),
         ge=0,
         le=1,
     )
-    scoring_consistency_win_rate_missing_score: Decimal = Field(
-        default=Decimal("50"),
-        ge=0,
-        le=100,
-    )
-    scoring_consistency_win_rate_zero_score_at: Decimal = Field(
-        default=Decimal("0.35"),
+    scoring_consistency_weight_active_day_regularity: Decimal = Field(
+        default=Decimal("0.10"),
         ge=0,
         le=1,
     )
-    scoring_consistency_win_rate_full_score_at: Decimal = Field(
-        default=Decimal("0.65"),
+    scoring_consistency_weight_max_inactive_gap: Decimal = Field(
+        default=Decimal("0.10"),
         ge=0,
         le=1,
     )
-    scoring_consistency_profit_factor_missing_score: Decimal = Field(
-        default=Decimal("50"),
-        ge=0,
-        le=100,
+    scoring_consistency_profit_distribution_full_score_ratio: Decimal = Field(
+        default=Decimal("0.75"),
+        gt=0,
+        le=1,
     )
-    scoring_consistency_profit_factor_curve: list[ScoreCurvePointConfig] = Field(
-        default_factory=lambda: [
-            ScoreCurvePointConfig(value=Decimal("0.75"), score=Decimal("0")),
-            ScoreCurvePointConfig(value=Decimal("1"), score=Decimal("25")),
-            ScoreCurvePointConfig(value=Decimal("2"), score=Decimal("60")),
-            ScoreCurvePointConfig(value=Decimal("4"), score=Decimal("90")),
-            ScoreCurvePointConfig(value=Decimal("8"), score=Decimal("100")),
-        ],
-        min_length=2,
-        max_length=12,
+    scoring_consistency_largest_win_full_score_at_or_below: Decimal = Field(
+        default=Decimal("0.15"),
+        ge=0,
+        le=1,
+    )
+    scoring_consistency_largest_win_zero_score_at_or_above: Decimal = Field(
+        default=Decimal("0.60"),
+        ge=0,
+        le=1,
+    )
+    scoring_consistency_trade_roi_stddev_full_score_at_or_below: Decimal = Field(
+        default=Decimal("0.01"),
+        ge=0,
+        le=10,
+    )
+    scoring_consistency_trade_roi_stddev_zero_score_at_or_above: Decimal = Field(
+        default=Decimal("0.10"),
+        gt=0,
+        le=10,
+    )
+    scoring_consistency_downside_stddev_full_score_at_or_below: Decimal = Field(
+        default=Decimal("0.005"),
+        ge=0,
+        le=10,
+    )
+    scoring_consistency_downside_stddev_zero_score_at_or_above: Decimal = Field(
+        default=Decimal("0.05"),
+        gt=0,
+        le=10,
+    )
+    scoring_consistency_active_day_full_score_ratio: Decimal = Field(
+        default=Decimal("0.50"),
+        gt=0,
+        le=1,
+    )
+    scoring_consistency_max_inactive_gap_full_score_days: int = Field(
+        default=2,
+        ge=0,
+        le=365,
+    )
+    scoring_consistency_max_inactive_gap_zero_score_days: int = Field(
+        default=21,
+        ge=1,
+        le=365,
     )
     scoring_risk_loss_ratio_penalty_per_ratio: Decimal = Field(
         default=Decimal("40"),
@@ -674,18 +721,37 @@ class Settings(BaseSettings):
                 "or equal to scoring_profitability_average_trade_roi_cap_max."
             )
         if (
-            self.scoring_consistency_win_rate_zero_score_at
-            >= self.scoring_consistency_win_rate_full_score_at
+            self.scoring_consistency_largest_win_full_score_at_or_below
+            >= self.scoring_consistency_largest_win_zero_score_at_or_above
         ):
             raise ValueError(
-                "scoring_consistency_win_rate_zero_score_at must be less than "
-                "scoring_consistency_win_rate_full_score_at."
+                "scoring_consistency_largest_win_full_score_at_or_below must be "
+                "less than scoring_consistency_largest_win_zero_score_at_or_above."
             )
-        profit_factor_values = [
-            point.value for point in self.scoring_consistency_profit_factor_curve
-        ]
-        if profit_factor_values != sorted(profit_factor_values):
-            raise ValueError("scoring_consistency_profit_factor_curve must be sorted by value.")
+        if (
+            self.scoring_consistency_trade_roi_stddev_full_score_at_or_below
+            >= self.scoring_consistency_trade_roi_stddev_zero_score_at_or_above
+        ):
+            raise ValueError(
+                "scoring_consistency_trade_roi_stddev_full_score_at_or_below must "
+                "be less than scoring_consistency_trade_roi_stddev_zero_score_at_or_above."
+            )
+        if (
+            self.scoring_consistency_downside_stddev_full_score_at_or_below
+            >= self.scoring_consistency_downside_stddev_zero_score_at_or_above
+        ):
+            raise ValueError(
+                "scoring_consistency_downside_stddev_full_score_at_or_below must "
+                "be less than scoring_consistency_downside_stddev_zero_score_at_or_above."
+            )
+        if (
+            self.scoring_consistency_max_inactive_gap_full_score_days
+            >= self.scoring_consistency_max_inactive_gap_zero_score_days
+        ):
+            raise ValueError(
+                "scoring_consistency_max_inactive_gap_full_score_days must be "
+                "less than scoring_consistency_max_inactive_gap_zero_score_days."
+            )
         if (
             self.scoring_copyability_average_notional_min_full_score_usd
             > self.scoring_copyability_average_notional_max_full_score_usd
