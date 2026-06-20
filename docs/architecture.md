@@ -473,9 +473,9 @@ sequenceDiagram
   configured share of perp equity.
 - Current drawdown fetch errors are reported separately and are never included in
   the delete list.
-- High-fill low-score pruning removes polled, scored wallets whose fill count is
-  at least the configured minimum and whose final score matches the configured
-  cutoff in `backend/config/prune.json`.
+- Low-score pruning removes polled, scored wallets whose reconstructed closed
+  trade count is at least the configured minimum and whose final score matches
+  the configured cutoff in `backend/config/prune.json`.
 - All pruning rules exclude source wallets with open `paper_positions`. Orphan
   fill pruning also keeps fill rows for those sources even if their
   `watched_wallets` row is missing.

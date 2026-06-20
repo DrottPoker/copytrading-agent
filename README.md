@@ -241,7 +241,7 @@ Notes:
 - Discovery retries Hyperliquid 429 responses with backoff and stops the current
   backfill batch cleanly if rate limits persist.
 - Manual pruning runs through `POST /wallets/prune-all`, which applies orphan-fill,
-  zero-fill, minimum closed-trades, realized drawdown, high-fill low-score,
+  zero-fill, minimum closed-trades, realized drawdown, low-score,
   and current drawdown cleanup in one reviewed operation.
 - Pruning excludes source wallets that still have open paper positions. If a
   source was pruned earlier while paper exposure remains open, paper allocation
@@ -429,6 +429,9 @@ Tweakable non-secret settings live in config files:
 `backend/config/scoring.json` uses organized sections for schedule, window,
 component weights, profitability, consistency, risk, copyability, recency,
 penalties, and window scores.
+
+`backend/config/prune.json` uses organized sections for prune rules, scheduled
+worker behavior, and worker execution defaults.
 
 `backend/config/discovery.json` uses organized sections for discovery sources,
 discovery import, prefiltering, candidate backfill, quality checks, and

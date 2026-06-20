@@ -114,6 +114,28 @@ DATABASE_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
         "fill_retention_protect_top_score_wallets"
     ),
 }
+PRUNE_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
+    ("rules", "current_drawdown", "unrealized_loss_ratio"): (
+        "wallet_prune_unrealized_loss_ratio"
+    ),
+    ("rules", "current_drawdown", "concurrency"): (
+        "wallet_prune_current_state_concurrency"
+    ),
+    ("rules", "minimum_closed_trades", "min_closed_trades"): (
+        "wallet_prune_min_closed_trades"
+    ),
+    ("rules", "realized_drawdown", "max_drawdown_pct"): (
+        "wallet_prune_max_drawdown_pct"
+    ),
+    ("rules", "low_score", "min_closed_trades"): (
+        "wallet_prune_low_score_min_closed_trades"
+    ),
+    ("rules", "low_score", "threshold"): "wallet_prune_low_score_threshold",
+    ("rules", "low_score", "operator"): "wallet_prune_low_score_operator",
+    ("schedule", "after_pool_import_enabled"): "wallet_prune_after_pool_import_enabled",
+    ("worker", "dry_run"): "wallet_prune_worker_dry_run",
+    ("worker", "limit"): "wallet_prune_worker_limit",
+}
 SCORING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("enabled",): "scoring_enabled",
     ("schedule", "run_on_worker_start"): "scoring_run_on_worker_start",
@@ -411,13 +433,13 @@ class Settings(BaseSettings):
     pool_fill_import_days: int = Field(default=90, ge=1, le=365)
     pool_fill_import_max_pages: int = Field(default=5, ge=1, le=50)
     pool_fill_import_overlap_seconds: int = Field(default=300, ge=0, le=86400)
-    wallet_prune_unrealized_loss_ratio: Decimal = Field(default=Decimal("0.40"), ge=0, le=1)
+    wallet_prune_unrealized_loss_ratio: Decimal = Field(default=Decimal("0.80"), ge=0, le=1)
     wallet_prune_current_state_concurrency: int = Field(default=8, ge=1, le=25)
-    wallet_prune_min_closed_trades: int = Field(default=1, ge=0)
+    wallet_prune_min_closed_trades: int = Field(default=5, ge=0)
     wallet_prune_max_drawdown_pct: Decimal = Field(default=Decimal("0.60"), ge=0, le=1)
-    wallet_prune_low_score_min_fills: int = Field(default=5000, ge=0)
-    wallet_prune_low_score_threshold: Decimal = Field(default=Decimal("0"), ge=0, le=100)
-    wallet_prune_low_score_operator: Literal["lte", "gte"] = "lte"
+    wallet_prune_low_score_min_closed_trades: int = Field(default=5, ge=0)
+    wallet_prune_low_score_threshold: Decimal = Field(default=Decimal("30"), ge=0, le=100)
+    wallet_prune_low_score_operator: Literal["lt", "lte", "gt", "gte"] = "lt"
     wallet_prune_after_pool_import_enabled: bool = True
     wallet_prune_worker_dry_run: bool = False
     wallet_prune_worker_limit: int = Field(default=1000, ge=1, le=5000)
@@ -891,6 +913,8 @@ def load_json_config(config_path: Path) -> dict[str, Any]:
         return normalize_nested_config(config, POOL_FILL_IMPORT_CONFIG_PATH_MAP)
     if config_path == DATABASE_CONFIG_PATH:
         return normalize_nested_config(config, DATABASE_CONFIG_PATH_MAP)
+    if config_path == PRUNE_CONFIG_PATH:
+        return normalize_nested_config(config, PRUNE_CONFIG_PATH_MAP)
     if config_path == SCORING_CONFIG_PATH:
         return normalize_nested_config(config, SCORING_CONFIG_PATH_MAP)
     return config

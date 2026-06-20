@@ -1,12 +1,26 @@
 {
-  "wallet_prune_unrealized_loss_ratio": 0.8,
-  "wallet_prune_current_state_concurrency": 8,
-  "wallet_prune_min_closed_trades": 5,
-  "wallet_prune_max_drawdown_pct": 0.6,
-  "wallet_prune_low_score_min_fills": 1000,
-  "wallet_prune_low_score_threshold": 30,
-  "wallet_prune_low_score_operator": "lte",
-  "wallet_prune_after_pool_import_enabled": true,
-  "wallet_prune_worker_dry_run": false,
-  "wallet_prune_worker_limit": 1000
+  "rules": {
+    "current_drawdown": {
+      "unrealized_loss_ratio": 0.8,
+      "concurrency": 8
+    },
+    "minimum_closed_trades": {
+      "min_closed_trades": 5
+    },
+    "realized_drawdown": {
+      "max_drawdown_pct": 0.6
+    },
+    "low_score": {
+      "min_closed_trades": 5,
+      "threshold": 30,
+      "operator": "lt"
+    }
+  },
+  "schedule": {
+    "after_pool_import_enabled": true
+  },
+  "worker": {
+    "dry_run": false,
+    "limit": 1000
+  }
 }

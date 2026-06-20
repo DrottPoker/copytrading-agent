@@ -19,7 +19,7 @@ from app.schemas.trade import CopyTradeListResponse
 from app.schemas.wallet import WalletCreate, WalletListResponse, WalletRead, WalletUpdate
 from app.schemas.wallet_cleanup import (
     CurrentDrawdownPruneResponse,
-    HighFillLowScorePruneResponse,
+    LowScorePruneResponse,
     WalletPruneAllResponse,
     ZeroFillWalletPruneResponse,
 )
@@ -34,7 +34,7 @@ from app.services.source_trade_reconstruction_service import list_reconstructed_
 from app.services.wallet_cleanup_service import (
     prune_all_wallets,
     prune_current_drawdown_wallets,
-    prune_high_fill_low_score_wallets,
+    prune_low_score_wallets,
     prune_zero_fill_wallets,
 )
 from app.services.wallet_service import (
@@ -121,9 +121,9 @@ async def prune_all_wallets_route(
     return await prune_all_wallets(
         session,
         dry_run=dry_run,
-        high_fill_min_fills=settings.wallet_prune_low_score_min_fills,
-        high_fill_score_threshold=settings.wallet_prune_low_score_threshold,
-        high_fill_score_operator=settings.wallet_prune_low_score_operator,
+        low_score_min_closed_trades=settings.wallet_prune_low_score_min_closed_trades,
+        low_score_threshold=settings.wallet_prune_low_score_threshold,
+        low_score_operator=settings.wallet_prune_low_score_operator,
         min_closed_trades=settings.wallet_prune_min_closed_trades,
         max_drawdown_threshold_pct=settings.wallet_prune_max_drawdown_pct,
         current_drawdown_threshold_ratio=settings.wallet_prune_unrealized_loss_ratio,
@@ -152,22 +152,24 @@ async def prune_current_drawdown_wallets_route(
     )
 
 
-@router.post("/prune-high-fill-low-score", response_model=HighFillLowScorePruneResponse)
-async def prune_high_fill_low_score_wallets_route(
+@router.post("/prune-low-score", response_model=LowScorePruneResponse)
+async def prune_low_score_wallets_route(
     session: Annotated[AsyncSession, Depends(db_session)],
     settings: Annotated[Settings, Depends(get_settings)],
     dry_run: Annotated[bool, Query()] = True,
-    min_fills: Annotated[int | None, Query(ge=0)] = None,
+    min_closed_trades: Annotated[int | None, Query(ge=0)] = None,
     score_threshold: Annotated[Decimal | None, Query(ge=0, le=100)] = None,
-    score_operator: Annotated[str | None, Query(pattern="^(lte|gte)$")] = None,
+    score_operator: Annotated[str | None, Query(pattern="^(lt|lte|gt|gte)$")] = None,
     limit: Annotated[int, Query(ge=1, le=1000)] = 250,
-) -> HighFillLowScorePruneResponse:
-    return await prune_high_fill_low_score_wallets(
+) -> LowScorePruneResponse:
+    return await prune_low_score_wallets(
         session,
         dry_run=dry_run,
-        min_fills=min_fills
-        if min_fills is not None
-        else settings.wallet_prune_low_score_min_fills,
+        min_closed_trades=(
+            min_closed_trades
+            if min_closed_trades is not None
+            else settings.wallet_prune_low_score_min_closed_trades
+        ),
         score_threshold=(
             score_threshold
             if score_threshold is not None

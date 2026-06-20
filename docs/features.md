@@ -273,8 +273,9 @@ What it does:
   reconstructed closed-trade threshold.
 - Realized drawdown cleanup removes polled, scored wallets whose reconstructed
   closed-trade drawdown is at or above the configured threshold.
-- High-fill low-score cleanup removes polled wallets whose final score matches
-  the configured cutoff in `backend/config/prune.json`.
+- Low-score cleanup removes polled wallets whose reconstructed closed trade
+  count is at least the configured minimum and whose final score matches the
+  configured cutoff in `backend/config/prune.json`.
 - Current drawdown cleanup removes wallets whose live unrealized loss breaches
   the configured account-value threshold.
 - Excludes copy-enabled, active, exit-only, and open paper-position source
@@ -305,8 +306,8 @@ What it does:
 - Fetches live Hyperliquid `clearinghouseState` for enabled pool wallets across
   default perp and known perp dex prefixes from stored fills.
 - Deletes wallets whose total open perp unrealized loss is at least the configured
-  share of perp equity. Default threshold is `0.40`, meaning unrealized PnL is
-  `<= -40%` of perp equity.
+  share of perp equity. Default threshold is `0.80`, meaning unrealized PnL is
+  `<= -80%` of perp equity.
 - Excludes copy-enabled, active, and exit-only wallets from cleanup candidates.
 - Runs as a dry run by default and supports `dry_run=false` for deletion.
 - Adds deleted addresses to the discovery ignore list so they are not imported
@@ -349,19 +350,21 @@ Purpose:
 - Remove wallets whose realized trade history shows unacceptable drawdown even if
   their current open-position state looks acceptable.
 
-### High-Fill Low-Score Cleanup
+### Low-Score Cleanup
 
 Individual endpoint:
 
-- `POST /wallets/prune-high-fill-low-score`
+- `POST /wallets/prune-low-score`
 
 Normal manual pruning runs this through `POST /wallets/prune-all`.
 
 What it does:
 
-- Finds polled wallets with a stored final score and a fill count at or above the
-  configured minimum.
-- Compares final score with the configured threshold using `lte` or `gte`.
+- Finds polled wallets with a stored final score and a reconstructed closed
+  trade count at or above the configured minimum.
+- Compares final score with the configured threshold using `lt`, `lte`, `gt`,
+  or `gte`. The default is `lt`, so the default rule prunes wallets with at
+  least 5 closed trades and score below 30.
 - Excludes copy-enabled, active, exit-only, and never-polled wallets.
 - Runs as a dry run by default and supports `dry_run=false` for deletion.
 - Adds deleted addresses to the discovery ignore list so they are not imported
@@ -370,15 +373,14 @@ What it does:
 Config:
 
 - `backend/config/prune.json`
-- `wallet_prune_low_score_min_fills`
-- `wallet_prune_min_closed_trades`
-- `wallet_prune_max_drawdown_pct`
+- `wallet_prune_low_score_min_closed_trades`
 - `wallet_prune_low_score_threshold`
 - `wallet_prune_low_score_operator`
 
 Purpose:
 
-- Remove high-history wallets that still score at or below the configured cutoff.
+- Remove evaluated wallets that still score below the configured cutoff after
+  enough reconstructed closed trades.
 - Keep unpolled wallets in the pool until they have been evaluated.
 
 ### Source Trade Reconstruction
@@ -727,6 +729,8 @@ What it does:
   as fill retention days, batch size, max rows, and protected top scored wallets.
 - `backend/config/pool_fill_import.json` owns scheduled pool reimport and shared
   fill import storage and market-filter settings.
+- `backend/config/prune.json` owns wallet prune rules, scheduled prune behavior,
+  and worker execution defaults.
 - `backend/config/scoring.json` owns scoring schedule, score windows, weights,
   ratio spans, thresholds, and penalties.
 

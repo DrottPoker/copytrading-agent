@@ -103,25 +103,26 @@ class MaxDrawdownPruneResponse(CamelModel):
     items: list[MaxDrawdownWalletCandidate]
 
 
-class HighFillLowScoreWalletCandidate(CamelModel):
+class LowScoreWalletCandidate(CamelModel):
     address: str
     label: str | None
     fill_count: int
+    closed_trade_count: int
     score: str
     last_polled_at: str | None
     last_seen_fill_at: str | None
 
 
-class HighFillLowScorePruneResponse(CamelModel):
+class LowScorePruneResponse(CamelModel):
     dry_run: bool
     scanned_wallets: int
     candidate_wallets: int
     deleted_wallets: int
     deleted_fills: int
-    min_fills: int
+    min_closed_trades: int
     score_threshold: str
     score_operator: str
-    items: list[HighFillLowScoreWalletCandidate]
+    items: list[LowScoreWalletCandidate]
 
 
 class WalletPruneCandidate(CamelModel):

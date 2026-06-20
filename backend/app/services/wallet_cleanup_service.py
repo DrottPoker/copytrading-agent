@@ -11,8 +11,8 @@ from app.integrations.hyperliquid_client import HyperliquidClient
 from app.schemas.wallet_cleanup import (
     CurrentDrawdownPruneResponse,
     CurrentDrawdownWalletCandidate,
-    HighFillLowScorePruneResponse,
-    HighFillLowScoreWalletCandidate,
+    LowScorePruneResponse,
+    LowScoreWalletCandidate,
     MaxDrawdownPruneResponse,
     MaxDrawdownWalletCandidate,
     MinClosedTradesPruneResponse,
@@ -49,12 +49,12 @@ async def prune_all_wallets(
     session: AsyncSession,
     *,
     dry_run: bool = True,
-    high_fill_min_fills: int = 5000,
-    high_fill_score_threshold: Decimal = Decimal("0"),
-    high_fill_score_operator: str = "lte",
-    min_closed_trades: int = 1,
+    low_score_min_closed_trades: int = 5,
+    low_score_threshold: Decimal = Decimal("30"),
+    low_score_operator: str = "lt",
+    min_closed_trades: int = 5,
     max_drawdown_threshold_pct: Decimal = Decimal("0.60"),
-    current_drawdown_threshold_ratio: Decimal = Decimal("0.40"),
+    current_drawdown_threshold_ratio: Decimal = Decimal("0.80"),
     current_drawdown_concurrency: int = 8,
     limit: int = 1000,
     use_lock: bool = True,
@@ -64,9 +64,9 @@ async def prune_all_wallets(
             return await prune_all_wallets(
                 session,
                 dry_run=dry_run,
-                high_fill_min_fills=high_fill_min_fills,
-                high_fill_score_threshold=high_fill_score_threshold,
-                high_fill_score_operator=high_fill_score_operator,
+                low_score_min_closed_trades=low_score_min_closed_trades,
+                low_score_threshold=low_score_threshold,
+                low_score_operator=low_score_operator,
                 min_closed_trades=min_closed_trades,
                 max_drawdown_threshold_pct=max_drawdown_threshold_pct,
                 current_drawdown_threshold_ratio=current_drawdown_threshold_ratio,
@@ -101,12 +101,12 @@ async def prune_all_wallets(
         limit=limit,
         use_lock=False,
     )
-    high_fill_result = await prune_high_fill_low_score_wallets(
+    low_score_result = await prune_low_score_wallets(
         session,
         dry_run=dry_run,
-        min_fills=high_fill_min_fills,
-        score_threshold=high_fill_score_threshold,
-        score_operator=high_fill_score_operator,
+        min_closed_trades=low_score_min_closed_trades,
+        score_threshold=low_score_threshold,
+        score_operator=low_score_operator,
         limit=limit,
         use_lock=False,
     )
@@ -123,7 +123,7 @@ async def prune_all_wallets(
         zero_fill_rule_result(zero_fill_result),
         min_closed_trades_rule_result(min_closed_trades_result),
         max_drawdown_rule_result(max_drawdown_result),
-        high_fill_low_score_rule_result(high_fill_result),
+        low_score_rule_result(low_score_result),
         current_drawdown_rule_result(current_drawdown_result),
     ]
 
@@ -190,24 +190,28 @@ def orphan_fill_rule_result(
     )
 
 
-def high_fill_low_score_rule_result(
-    result: HighFillLowScorePruneResponse,
+def low_score_rule_result(
+    result: LowScorePruneResponse,
 ) -> WalletPruneRuleResult:
-    score_operator_label = "<=" if result.score_operator == "lte" else ">="
+    score_operator_label = score_operator_symbol(result.score_operator)
     return WalletPruneRuleResult(
-        key="high_fill_low_score",
-        label="High-fill low-score",
+        key="low_score",
+        label="Low score",
         dry_run=result.dry_run,
         scanned_wallets=result.scanned_wallets,
         candidate_wallets=result.candidate_wallets,
         deleted_wallets=result.deleted_wallets,
         deleted_fills=result.deleted_fills,
-        rule=f"{result.min_fills}+ fills, score {score_operator_label} {result.score_threshold}",
+        rule=(
+            f"{result.min_closed_trades}+ closed trades, "
+            f"score {score_operator_label} {result.score_threshold}"
+        ),
         items=[
             WalletPruneCandidate(
                 address=item.address,
                 label=item.label,
                 fill_count=item.fill_count,
+                closed_trade_count=item.closed_trade_count,
                 score=item.score,
                 last_polled_at=item.last_polled_at,
                 last_seen_fill_at=item.last_seen_fill_at,
@@ -481,7 +485,7 @@ async def prune_min_closed_trades_wallets(
     session: AsyncSession,
     *,
     dry_run: bool = True,
-    min_closed_trades: int = 1,
+    min_closed_trades: int = 5,
     limit: int = 250,
     use_lock: bool = True,
 ) -> MinClosedTradesPruneResponse:
@@ -887,7 +891,7 @@ async def prune_current_drawdown_wallets(
     session: AsyncSession,
     *,
     dry_run: bool = True,
-    threshold_ratio: Decimal = Decimal("0.40"),
+    threshold_ratio: Decimal = Decimal("0.80"),
     limit: int = 250,
     concurrency: int = 8,
     use_lock: bool = True,
@@ -973,22 +977,22 @@ async def prune_current_drawdown_wallets(
     )
 
 
-async def prune_high_fill_low_score_wallets(
+async def prune_low_score_wallets(
     session: AsyncSession,
     *,
     dry_run: bool = True,
-    min_fills: int = 5000,
-    score_threshold: Decimal = Decimal("0"),
-    score_operator: str = "lte",
+    min_closed_trades: int = 5,
+    score_threshold: Decimal = Decimal("30"),
+    score_operator: str = "lt",
     limit: int = 250,
     use_lock: bool = True,
-) -> HighFillLowScorePruneResponse:
+) -> LowScorePruneResponse:
     if use_lock:
         async with job_lock(session, key="wallet_prune", ttl_seconds=4 * 60 * 60):
-            return await prune_high_fill_low_score_wallets(
+            return await prune_low_score_wallets(
                 session,
                 dry_run=dry_run,
-                min_fills=min_fills,
+                min_closed_trades=min_closed_trades,
                 score_threshold=score_threshold,
                 score_operator=score_operator,
                 limit=limit,
@@ -996,10 +1000,10 @@ async def prune_high_fill_low_score_wallets(
             )
 
     normalized_operator = normalize_score_operator(score_operator)
-    scanned_wallets = await count_high_fill_low_score_scan_wallets(session)
-    candidates = await load_high_fill_low_score_wallet_candidates(
+    scanned_wallets = await count_low_score_scan_wallets(session)
+    candidates = await load_low_score_wallet_candidates(
         session,
-        min_fills=min_fills,
+        min_closed_trades=min_closed_trades,
         score_threshold=score_threshold,
         score_operator=normalized_operator,
         limit=limit,
@@ -1016,54 +1020,55 @@ async def prune_high_fill_low_score_wallets(
         await add_ignored_wallet_addresses(
             session,
             addresses=addresses,
-            reason="high_fill_low_score_prune",
+            reason="low_score_prune",
         )
         await session.commit()
 
-    return HighFillLowScorePruneResponse(
+    return LowScorePruneResponse(
         dry_run=dry_run,
         scanned_wallets=scanned_wallets,
         candidate_wallets=len(candidates),
         deleted_wallets=deleted_wallets,
         deleted_fills=deleted_fills,
-        min_fills=min_fills,
+        min_closed_trades=min_closed_trades,
         score_threshold=str(score_threshold),
         score_operator=normalized_operator,
         items=candidates,
     )
 
 
-async def load_high_fill_low_score_wallet_candidates(
+async def load_low_score_wallet_candidates(
     session: AsyncSession,
     *,
-    min_fills: int,
+    min_closed_trades: int,
     score_threshold: Decimal,
     score_operator: str,
     limit: int,
-) -> list[HighFillLowScoreWalletCandidate]:
+) -> list[LowScoreWalletCandidate]:
     result = await session.execute(
-        high_fill_low_score_statement(
+        low_score_statement(
             """
             select *
             from scored_wallets
-            where fill_count >= :min_fills
+            where closed_trade_count >= :min_closed_trades
               and {score_condition}
-            order by score asc, fill_count desc, address asc
+            order by score asc, closed_trade_count desc, address asc
             limit :limit
             """,
             score_operator=score_operator,
         ),
         {
             "limit": limit,
-            "min_fills": min_fills,
+            "min_closed_trades": min_closed_trades,
             "score_threshold": score_threshold,
         },
     )
     return [
-        HighFillLowScoreWalletCandidate(
+        LowScoreWalletCandidate(
             address=str(row["address"]),
             label=row["label"],
             fill_count=int(row["fill_count"] or 0),
+            closed_trade_count=int(row["closed_trade_count"] or 0),
             score=str(row["score"]),
             last_polled_at=str(row["last_polled_at"]) if row["last_polled_at"] else None,
             last_seen_fill_at=str(row["last_seen_fill_at"]) if row["last_seen_fill_at"] else None,
@@ -1072,10 +1077,10 @@ async def load_high_fill_low_score_wallet_candidates(
     ]
 
 
-async def count_high_fill_low_score_scan_wallets(session: AsyncSession) -> int:
+async def count_low_score_scan_wallets(session: AsyncSession) -> int:
     return int(
         await session.scalar(
-            high_fill_low_score_statement(
+            low_score_statement(
                 "select count(*) from scored_wallets",
                 score_operator="lte",
             )
@@ -1084,26 +1089,26 @@ async def count_high_fill_low_score_scan_wallets(session: AsyncSession) -> int:
     )
 
 
-async def count_high_fill_low_score_wallet_candidates(
+async def count_low_score_wallet_candidates(
     session: AsyncSession,
     *,
-    min_fills: int,
+    min_closed_trades: int,
     score_threshold: Decimal,
     score_operator: str,
 ) -> int:
     return int(
         await session.scalar(
-            high_fill_low_score_statement(
+            low_score_statement(
                 """
                 select count(*)
                 from scored_wallets
-                where fill_count >= :min_fills
+                where closed_trade_count >= :min_closed_trades
                   and {score_condition}
                 """,
                 score_operator=score_operator,
             ),
             {
-                "min_fills": min_fills,
+                "min_closed_trades": min_closed_trades,
                 "score_threshold": score_threshold,
             },
         )
@@ -1212,12 +1217,13 @@ async def load_current_drawdown_scan_wallets(
     ]
 
 
-def high_fill_low_score_statement(sql: str, *, score_operator: str):
-    score_condition = (
-        "score <= :score_threshold"
-        if score_operator == "lte"
-        else "score >= :score_threshold"
-    )
+def low_score_statement(sql: str, *, score_operator: str):
+    score_condition = {
+        "lt": "score < :score_threshold",
+        "lte": "score <= :score_threshold",
+        "gt": "score > :score_threshold",
+        "gte": "score >= :score_threshold",
+    }[score_operator]
     return text(
         f"""
         with scored_wallets as (
@@ -1227,6 +1233,7 @@ def high_fill_low_score_statement(sql: str, *, score_operator: str):
             ww.last_polled_at,
             ww.last_seen_fill_at,
             ws.score,
+            ws.trade_count as closed_trade_count,
             count(wf.id) as fill_count
           from watched_wallets ww
           join wallet_scores ws on ws.wallet_address = ww.address
@@ -1239,7 +1246,13 @@ def high_fill_low_score_statement(sql: str, *, score_operator: str):
               from paper_positions pp
               where pp.source_wallet = ww.address
             )
-          group by ww.address, ww.label, ww.last_polled_at, ww.last_seen_fill_at, ws.score
+          group by
+            ww.address,
+            ww.label,
+            ww.last_polled_at,
+            ww.last_seen_fill_at,
+            ws.score,
+            ws.trade_count
         )
         {sql.format(score_condition=score_condition)}
         """
@@ -1247,6 +1260,15 @@ def high_fill_low_score_statement(sql: str, *, score_operator: str):
 
 
 def normalize_score_operator(score_operator: str) -> str:
-    if score_operator not in {"lte", "gte"}:
-        raise ValueError("score_operator must be one of: lte, gte.")
+    if score_operator not in {"lt", "lte", "gt", "gte"}:
+        raise ValueError("score_operator must be one of: lt, lte, gt, gte.")
     return score_operator
+
+
+def score_operator_symbol(score_operator: str) -> str:
+    return {
+        "lt": "<",
+        "lte": "<=",
+        "gt": ">",
+        "gte": ">=",
+    }[normalize_score_operator(score_operator)]

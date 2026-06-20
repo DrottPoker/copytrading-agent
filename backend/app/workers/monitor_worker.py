@@ -696,9 +696,11 @@ async def run_wallet_prune_once(
                 result = await prune_all_wallets(
                     session,
                     dry_run=settings.wallet_prune_worker_dry_run,
-                    high_fill_min_fills=settings.wallet_prune_low_score_min_fills,
-                    high_fill_score_threshold=settings.wallet_prune_low_score_threshold,
-                    high_fill_score_operator=settings.wallet_prune_low_score_operator,
+                    low_score_min_closed_trades=(
+                        settings.wallet_prune_low_score_min_closed_trades
+                    ),
+                    low_score_threshold=settings.wallet_prune_low_score_threshold,
+                    low_score_operator=settings.wallet_prune_low_score_operator,
                     min_closed_trades=settings.wallet_prune_min_closed_trades,
                     max_drawdown_threshold_pct=settings.wallet_prune_max_drawdown_pct,
                     current_drawdown_threshold_ratio=settings.wallet_prune_unrealized_loss_ratio,

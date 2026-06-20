@@ -1,22 +1,23 @@
-export type HighFillLowScoreWalletCandidate = {
+export type LowScoreWalletCandidate = {
   address: string;
   label: string | null;
   fillCount: number;
+  closedTradeCount: number;
   score: string;
   lastPolledAt: string | null;
   lastSeenFillAt: string | null;
 };
 
-export type HighFillLowScorePruneResponse = {
+export type LowScorePruneResponse = {
   dryRun: boolean;
   scannedWallets: number;
   candidateWallets: number;
   deletedWallets: number;
   deletedFills: number;
-  minFills: number;
+  minClosedTrades: number;
   scoreThreshold: string;
-  scoreOperator: "lte" | "gte";
-  items: HighFillLowScoreWalletCandidate[];
+  scoreOperator: "lt" | "lte" | "gt" | "gte";
+  items: LowScoreWalletCandidate[];
 };
 
 export type ZeroFillWalletCandidate = {
