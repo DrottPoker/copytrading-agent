@@ -124,6 +124,9 @@ PRUNE_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("rules", "minimum_closed_trades", "min_closed_trades"): (
         "wallet_prune_min_closed_trades"
     ),
+    ("rules", "stale_fills", "min_days_without_fill"): (
+        "wallet_prune_stale_fill_days"
+    ),
     ("rules", "realized_drawdown", "max_drawdown_pct"): (
         "wallet_prune_max_drawdown_pct"
     ),
@@ -436,6 +439,7 @@ class Settings(BaseSettings):
     wallet_prune_unrealized_loss_ratio: Decimal = Field(default=Decimal("0.80"), ge=0, le=1)
     wallet_prune_current_state_concurrency: int = Field(default=8, ge=1, le=25)
     wallet_prune_min_closed_trades: int = Field(default=5, ge=0)
+    wallet_prune_stale_fill_days: int = Field(default=30, ge=1, le=3650)
     wallet_prune_max_drawdown_pct: Decimal = Field(default=Decimal("0.60"), ge=0, le=1)
     wallet_prune_low_score_min_closed_trades: int = Field(default=5, ge=0)
     wallet_prune_low_score_threshold: Decimal = Field(default=Decimal("30"), ge=0, le=100)

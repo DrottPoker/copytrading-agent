@@ -465,6 +465,10 @@ sequenceDiagram
   present in `watched_wallets`.
 - Zero-fill pruning removes polled wallets that have no stored fill rows at all;
   this replaces the older non-perp cleanup in normal UI workflows.
+- Stale-fill pruning removes polled wallets with stored fills when their latest
+  fill is at least the configured inactivity window old. The default is 30 days.
+  It requires a poll after that inactivity window elapsed, so stale cleanup does
+  not delete wallets solely because their local import state is old.
 - Realized drawdown pruning uses stored reconstructed closed-trade scores and
   removes non-active, non-copy wallets at or above the configured drawdown
   threshold.

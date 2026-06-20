@@ -269,6 +269,8 @@ What it does:
 - Orphan-fill cleanup removes stored fill data for addresses that are no longer
   present in the wallet pool.
 - Zero-fill cleanup removes polled wallets with exactly zero stored fills.
+- Stale-fill cleanup removes polled wallets that have stored fills, but whose
+  latest fill is older than the configured inactivity window. Default is 30 days.
 - Minimum closed-trades cleanup removes polled, scored wallets below the configured
   reconstructed closed-trade threshold.
 - Realized drawdown cleanup removes polled, scored wallets whose reconstructed
@@ -292,6 +294,37 @@ Purpose:
 
 - Keep the research pool focused on perp traders.
 - Avoid managing several overlapping cleanup buttons for the same pruning pass.
+
+### Stale-Fill Wallet Cleanup
+
+Individual endpoint:
+
+- `POST /wallets/prune-stale-fills`
+
+Normal manual pruning runs this through `POST /wallets/prune-all`.
+
+What it does:
+
+- Deletes polled wallets with at least one stored fill when `last_seen_fill_at`
+  is at least the configured number of days old.
+- Requires `last_polled_at` to confirm the inactivity window has elapsed after
+  the latest known fill, so old unpolled wallets are not deleted as stale.
+- Default inactivity window is 30 days.
+- Excludes copy-enabled, active, exit-only, never-polled, zero-fill, and open
+  paper-position source wallets.
+- Runs as a dry run by default and supports `dry_run=false` for deletion.
+- Adds deleted addresses to the discovery ignore list so inactive wallets are
+  not imported back into the pool immediately.
+
+Config:
+
+- `backend/config/prune.json`
+- `wallet_prune_stale_fill_days`
+
+Purpose:
+
+- Keep the pool focused on currently active wallets.
+- Reduce stored fill volume from wallets that stopped trading recently.
 
 ### Current Drawdown Wallet Cleanup
 

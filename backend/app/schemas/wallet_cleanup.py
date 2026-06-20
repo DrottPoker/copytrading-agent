@@ -19,6 +19,26 @@ class ZeroFillWalletPruneResponse(CamelModel):
     items: list[ZeroFillWalletCandidate]
 
 
+class StaleFillWalletCandidate(CamelModel):
+    address: str
+    label: str | None
+    fill_count: int
+    score: str | None = None
+    stale_days: int
+    last_polled_at: str | None
+    last_seen_fill_at: str | None
+
+
+class StaleFillPruneResponse(CamelModel):
+    dry_run: bool
+    scanned_wallets: int
+    candidate_wallets: int
+    deleted_wallets: int
+    deleted_fills: int
+    min_days_without_fill: int
+    items: list[StaleFillWalletCandidate]
+
+
 class OrphanFillWalletCandidate(CamelModel):
     address: str
     label: str | None = None

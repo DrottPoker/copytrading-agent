@@ -7,6 +7,9 @@
     "minimum_closed_trades": {
       "min_closed_trades": 5
     },
+    "stale_fills": {
+      "min_days_without_fill": 30
+    },
     "realized_drawdown": {
       "max_drawdown_pct": 0.6
     },

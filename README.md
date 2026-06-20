@@ -241,7 +241,7 @@ Notes:
 - Discovery retries Hyperliquid 429 responses with backoff and stops the current
   backfill batch cleanly if rate limits persist.
 - Manual pruning runs through `POST /wallets/prune-all`, which applies orphan-fill,
-  zero-fill, minimum closed-trades, realized drawdown, low-score,
+  zero-fill, stale-fill, minimum closed-trades, realized drawdown, low-score,
   and current drawdown cleanup in one reviewed operation.
 - Pruning excludes source wallets that still have open paper positions. If a
   source was pruned earlier while paper exposure remains open, paper allocation

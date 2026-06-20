@@ -20,6 +20,7 @@ from app.schemas.wallet import WalletCreate, WalletListResponse, WalletRead, Wal
 from app.schemas.wallet_cleanup import (
     CurrentDrawdownPruneResponse,
     LowScorePruneResponse,
+    StaleFillPruneResponse,
     WalletPruneAllResponse,
     ZeroFillWalletPruneResponse,
 )
@@ -35,6 +36,7 @@ from app.services.wallet_cleanup_service import (
     prune_all_wallets,
     prune_current_drawdown_wallets,
     prune_low_score_wallets,
+    prune_stale_fill_wallets,
     prune_zero_fill_wallets,
 )
 from app.services.wallet_service import (
@@ -110,6 +112,26 @@ async def prune_zero_fill_wallets_route(
     return await prune_zero_fill_wallets(session, dry_run=dry_run, limit=limit)
 
 
+@router.post("/prune-stale-fills", response_model=StaleFillPruneResponse)
+async def prune_stale_fill_wallets_route(
+    session: Annotated[AsyncSession, Depends(db_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    dry_run: Annotated[bool, Query()] = True,
+    min_days_without_fill: Annotated[int | None, Query(ge=1, le=3650)] = None,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 250,
+) -> StaleFillPruneResponse:
+    return await prune_stale_fill_wallets(
+        session,
+        dry_run=dry_run,
+        min_days_without_fill=(
+            min_days_without_fill
+            if min_days_without_fill is not None
+            else settings.wallet_prune_stale_fill_days
+        ),
+        limit=limit,
+    )
+
+
 @router.post("/prune-all", response_model=WalletPruneAllResponse)
 async def prune_all_wallets_route(
     session: Annotated[AsyncSession, Depends(db_session)],
@@ -125,6 +147,7 @@ async def prune_all_wallets_route(
         low_score_threshold=settings.wallet_prune_low_score_threshold,
         low_score_operator=settings.wallet_prune_low_score_operator,
         min_closed_trades=settings.wallet_prune_min_closed_trades,
+        stale_fill_days=settings.wallet_prune_stale_fill_days,
         max_drawdown_threshold_pct=settings.wallet_prune_max_drawdown_pct,
         current_drawdown_threshold_ratio=settings.wallet_prune_unrealized_loss_ratio,
         current_drawdown_concurrency=(

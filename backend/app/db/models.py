@@ -43,6 +43,7 @@ class WatchedWallet(Base, TimestampMixin, UpdatedAtMixin):
         ),
         Index("ix_watched_wallets_enabled_eligible", "enabled", "eligible"),
         Index("ix_watched_wallets_polling_tier", "polling_tier"),
+        Index("ix_watched_wallets_last_seen_fill_at", "last_seen_fill_at"),
     )
 
     id: Mapped[UUID] = mapped_column(

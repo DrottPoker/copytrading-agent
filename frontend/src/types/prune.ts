@@ -38,6 +38,26 @@ export type ZeroFillPruneResponse = {
   items: ZeroFillWalletCandidate[];
 };
 
+export type StaleFillWalletCandidate = {
+  address: string;
+  label: string | null;
+  fillCount: number;
+  score: string | null;
+  staleDays: number;
+  lastPolledAt: string | null;
+  lastSeenFillAt: string | null;
+};
+
+export type StaleFillPruneResponse = {
+  dryRun: boolean;
+  scannedWallets: number;
+  candidateWallets: number;
+  deletedWallets: number;
+  deletedFills: number;
+  minDaysWithoutFill: number;
+  items: StaleFillWalletCandidate[];
+};
+
 export type WalletPruneCandidate = {
   address: string;
   label: string | null;

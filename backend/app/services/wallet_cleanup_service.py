@@ -19,6 +19,8 @@ from app.schemas.wallet_cleanup import (
     MinClosedTradesWalletCandidate,
     OrphanFillPruneResponse,
     OrphanFillWalletCandidate,
+    StaleFillPruneResponse,
+    StaleFillWalletCandidate,
     WalletPruneAllResponse,
     WalletPruneCandidate,
     WalletPruneRuleResult,
@@ -53,6 +55,7 @@ async def prune_all_wallets(
     low_score_threshold: Decimal = Decimal("30"),
     low_score_operator: str = "lt",
     min_closed_trades: int = 5,
+    stale_fill_days: int = 30,
     max_drawdown_threshold_pct: Decimal = Decimal("0.60"),
     current_drawdown_threshold_ratio: Decimal = Decimal("0.80"),
     current_drawdown_concurrency: int = 8,
@@ -68,6 +71,7 @@ async def prune_all_wallets(
                 low_score_threshold=low_score_threshold,
                 low_score_operator=low_score_operator,
                 min_closed_trades=min_closed_trades,
+                stale_fill_days=stale_fill_days,
                 max_drawdown_threshold_pct=max_drawdown_threshold_pct,
                 current_drawdown_threshold_ratio=current_drawdown_threshold_ratio,
                 current_drawdown_concurrency=current_drawdown_concurrency,
@@ -84,6 +88,13 @@ async def prune_all_wallets(
     zero_fill_result = await prune_zero_fill_wallets(
         session,
         dry_run=dry_run,
+        limit=limit,
+        use_lock=False,
+    )
+    stale_fill_result = await prune_stale_fill_wallets(
+        session,
+        dry_run=dry_run,
+        min_days_without_fill=stale_fill_days,
         limit=limit,
         use_lock=False,
     )
@@ -121,6 +132,7 @@ async def prune_all_wallets(
     rules = [
         orphan_fill_rule_result(orphan_fill_result),
         zero_fill_rule_result(zero_fill_result),
+        stale_fill_rule_result(stale_fill_result),
         min_closed_trades_rule_result(min_closed_trades_result),
         max_drawdown_rule_result(max_drawdown_result),
         low_score_rule_result(low_score_result),
@@ -184,6 +196,33 @@ def orphan_fill_rule_result(
                 score=item.score,
                 last_seen_fill_at=item.last_seen_fill_at,
                 detail="Fill data exists, but wallet is not in the active pool.",
+            )
+            for item in result.items
+        ],
+    )
+
+
+def stale_fill_rule_result(
+    result: StaleFillPruneResponse,
+) -> WalletPruneRuleResult:
+    return WalletPruneRuleResult(
+        key="stale_fills",
+        label="Stale fills",
+        dry_run=result.dry_run,
+        scanned_wallets=result.scanned_wallets,
+        candidate_wallets=result.candidate_wallets,
+        deleted_wallets=result.deleted_wallets,
+        deleted_fills=result.deleted_fills,
+        rule=f"no fills for {result.min_days_without_fill}+ days",
+        items=[
+            WalletPruneCandidate(
+                address=item.address,
+                label=item.label,
+                fill_count=item.fill_count,
+                score=item.score,
+                last_polled_at=item.last_polled_at,
+                last_seen_fill_at=item.last_seen_fill_at,
+                detail=f"No fill for {item.stale_days} days.",
             )
             for item in result.items
         ],
@@ -360,6 +399,60 @@ async def prune_zero_fill_wallets(
         candidate_wallets=len(candidates),
         deleted_wallets=deleted_wallets,
         deleted_fills=deleted_fills,
+        items=candidates,
+    )
+
+
+async def prune_stale_fill_wallets(
+    session: AsyncSession,
+    *,
+    dry_run: bool = True,
+    min_days_without_fill: int = 30,
+    limit: int = 250,
+    use_lock: bool = True,
+) -> StaleFillPruneResponse:
+    if min_days_without_fill < 1:
+        raise ValueError("min_days_without_fill must be at least 1.")
+
+    if use_lock:
+        async with job_lock(session, key="wallet_prune", ttl_seconds=4 * 60 * 60):
+            return await prune_stale_fill_wallets(
+                session,
+                dry_run=dry_run,
+                min_days_without_fill=min_days_without_fill,
+                limit=limit,
+                use_lock=False,
+            )
+
+    scanned_wallets = await count_stale_fill_scan_wallets(session)
+    candidates = await load_stale_fill_wallet_candidates(
+        session,
+        min_days_without_fill=min_days_without_fill,
+        limit=limit,
+    )
+    addresses = [candidate.address for candidate in candidates]
+    deleted_fills = 0
+    deleted_wallets = 0
+
+    if not dry_run and addresses:
+        deleted_fills, deleted_wallets = await delete_wallet_related_rows(
+            session,
+            addresses=addresses,
+        )
+        await add_ignored_wallet_addresses(
+            session,
+            addresses=addresses,
+            reason="stale_fill_prune",
+        )
+        await session.commit()
+
+    return StaleFillPruneResponse(
+        dry_run=dry_run,
+        scanned_wallets=scanned_wallets,
+        candidate_wallets=len(candidates),
+        deleted_wallets=deleted_wallets,
+        deleted_fills=deleted_fills,
+        min_days_without_fill=min_days_without_fill,
         items=candidates,
     )
 
@@ -811,6 +904,101 @@ async def count_zero_fill_scan_wallets(session: AsyncSession) -> int:
                 where ww.last_polled_at is not null
                   and ww.copy_enabled is false
                   and ww.polling_tier <> 'active'
+                  and not exists (
+                    select 1
+                    from paper_positions pp
+                    where pp.source_wallet = ww.address
+                  )
+                """
+            )
+        )
+        or 0
+    )
+
+
+async def load_stale_fill_wallet_candidates(
+    session: AsyncSession,
+    *,
+    min_days_without_fill: int,
+    limit: int,
+) -> list[StaleFillWalletCandidate]:
+    result = await session.execute(
+        text(
+            """
+            select
+              ww.address,
+              ww.label,
+              ww.last_polled_at,
+              ww.last_seen_fill_at,
+              ws.score,
+              floor(extract(epoch from (now() - ww.last_seen_fill_at)) / 86400)::int
+                as stale_days,
+              (
+                select count(*)
+                from wallet_fills wf
+                where wf.wallet_address = ww.address
+              ) as fill_count
+            from watched_wallets ww
+            left join wallet_scores ws on ws.wallet_address = ww.address
+            where ww.last_polled_at is not null
+              and ww.last_seen_fill_at is not null
+              and ww.last_seen_fill_at <= (
+                now() - (:min_days_without_fill * interval '1 day')
+              )
+              and ww.last_polled_at >= (
+                ww.last_seen_fill_at + (:min_days_without_fill * interval '1 day')
+              )
+              and ww.copy_enabled is false
+              and ww.polling_tier <> 'active'
+              and exists (
+                select 1
+                from wallet_fills wf
+                where wf.wallet_address = ww.address
+              )
+              and not exists (
+                select 1
+                from paper_positions pp
+                where pp.source_wallet = ww.address
+              )
+            order by ww.last_seen_fill_at asc, ww.address asc
+            limit :limit
+            """
+        ),
+        {
+            "limit": limit,
+            "min_days_without_fill": min_days_without_fill,
+        },
+    )
+    return [
+        StaleFillWalletCandidate(
+            address=str(row["address"]),
+            label=row["label"],
+            fill_count=int(row["fill_count"] or 0),
+            score=str(row["score"]) if row["score"] is not None else None,
+            stale_days=int(row["stale_days"] or 0),
+            last_polled_at=str(row["last_polled_at"]) if row["last_polled_at"] else None,
+            last_seen_fill_at=str(row["last_seen_fill_at"]) if row["last_seen_fill_at"] else None,
+        )
+        for row in result.mappings().all()
+    ]
+
+
+async def count_stale_fill_scan_wallets(session: AsyncSession) -> int:
+    return int(
+        await session.scalar(
+            text(
+                """
+                select count(*)
+                from watched_wallets ww
+                where ww.last_polled_at is not null
+                  and ww.last_seen_fill_at is not null
+                  and ww.copy_enabled is false
+                  and ww.polling_tier <> 'active'
+                  and exists (
+                    select 1
+                    from wallet_fills wf
+                    where wf.wallet_address = ww.address
+                  )
                   and not exists (
                     select 1
                     from paper_positions pp

@@ -702,6 +702,7 @@ async def run_wallet_prune_once(
                     low_score_threshold=settings.wallet_prune_low_score_threshold,
                     low_score_operator=settings.wallet_prune_low_score_operator,
                     min_closed_trades=settings.wallet_prune_min_closed_trades,
+                    stale_fill_days=settings.wallet_prune_stale_fill_days,
                     max_drawdown_threshold_pct=settings.wallet_prune_max_drawdown_pct,
                     current_drawdown_threshold_ratio=settings.wallet_prune_unrealized_loss_ratio,
                     current_drawdown_concurrency=settings.wallet_prune_current_state_concurrency,
