@@ -413,15 +413,19 @@ and live score-cap thresholds are configurable. Copyability measures practical
 followability through copyable trade ratio, median trade notional, p25 trade
 notional, and execution simplicity. Trade count is intentionally excluded from
 Copyability because sample size is handled by sample caps and the
-low-confidence penalty. Penalty caps for low
-sample, stale trading, negative PnL, open-only activity, liquidations,
-confidence, and missing live state are configurable. Ignored fills are kept as
-diagnostic reconstruction metadata and do not reduce wallet score.
-Liquidation penalty is severity-based. It combines a small per-event base with
-liquidation notional as a share of reconstructed entry notional, then applies the
-configured cap. Materialized `source_trades` rows store liquidation flags,
-liquidation fill count, and liquidation notional so wallet source trade history
-can tag affected closed trades.
+low-confidence penalty. Penalty caps for low sample, stale trading, negative
+PnL, open-only activity, confidence, and missing live state are configurable.
+Ignored fills are kept as diagnostic reconstruction metadata and do not reduce
+wallet score.
+Forced exits are scored inside Risk and Copyability, not as a separate
+final-score penalty. Risk includes forced-exit severity, which compares
+liquidation-tagged close notional with reconstructed entry notional. Copyability
+includes forced-exit frequency, which compares liquidation-tagged reconstructed
+trades with total closed trades. Profitable forced exits still count as these
+signals because exact liquidation behavior is difficult to copy. Materialized
+`source_trades` rows store liquidation flags, liquidation fill count, and
+liquidation notional so wallet source trade history can tag affected closed
+trades.
 Wallet detail pages use `GET /scores/{address}/detail` for the Detailed scoring
 modal. The endpoint recalculates the current wallet score from the same
 materialized trade metrics, then returns gross score, penalty, final score

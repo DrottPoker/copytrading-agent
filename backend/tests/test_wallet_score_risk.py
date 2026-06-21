@@ -4,10 +4,11 @@ from decimal import Decimal
 from app.core.config import Settings
 from app.services.wallet_score_service import (
     WalletScoreMetrics,
-    calculate_liquidation_penalty,
     calculate_wallet_score,
     current_drawdown_risk_penalty,
     current_drawdown_score_cap,
+    forced_exit_frequency_score,
+    forced_exit_severity_penalty,
 )
 
 
@@ -41,24 +42,41 @@ def test_current_drawdown_score_cap_is_inactive_until_start_ratio() -> None:
     assert current_drawdown_score_cap(Decimal("0.625"), settings=settings) == Decimal("50.00")
 
 
-def test_liquidation_penalty_scales_with_notional_severity() -> None:
+def test_forced_exit_severity_scales_with_notional_even_when_profitable() -> None:
     settings = risk_settings()
 
     small = wallet_metrics(current_drawdown_pct=Decimal("0"))
-    small = replace_liquidation_metrics(small, notional_usd=Decimal("1000"))
+    small = replace_forced_exit_metrics(small, trade_count=1, notional_usd=Decimal("1000"))
     large = wallet_metrics(current_drawdown_pct=Decimal("0"))
-    large = replace_liquidation_metrics(large, notional_usd=Decimal("25000"))
+    large = replace_forced_exit_metrics(large, trade_count=1, notional_usd=Decimal("25000"))
 
-    assert calculate_liquidation_penalty(small, settings=settings) == Decimal("0.68")
-    assert calculate_liquidation_penalty(large, settings=settings) == Decimal("5")
+    assert forced_exit_severity_penalty(small, settings=settings) == Decimal("0.60")
+    assert forced_exit_severity_penalty(large, settings=settings) == Decimal("15")
+
+
+def test_forced_exit_frequency_reduces_copyability() -> None:
+    settings = risk_settings()
+
+    rare = replace_forced_exit_metrics(
+        wallet_metrics(current_drawdown_pct=Decimal("0")),
+        trade_count=1,
+        notional_usd=Decimal("1000"),
+    )
+    frequent = replace_forced_exit_metrics(
+        wallet_metrics(current_drawdown_pct=Decimal("0")),
+        trade_count=10,
+        notional_usd=Decimal("1000"),
+    )
+
+    assert forced_exit_frequency_score(rare, settings=settings) == Decimal("90.00")
+    assert forced_exit_frequency_score(frequent, settings=settings) == Decimal("0")
 
 
 def risk_settings() -> Settings:
     return Settings(
-        scoring_liquidation_penalty_per_event=Decimal("0.5"),
-        scoring_liquidation_notional_full_ratio=Decimal("0.25"),
-        scoring_liquidation_notional_penalty_max=Decimal("4.5"),
-        scoring_liquidation_penalty_max=Decimal("5"),
+        scoring_forced_exit_notional_full_ratio=Decimal("0.25"),
+        scoring_forced_exit_penalty_max=Decimal("15"),
+        scoring_copyability_forced_exit_frequency_zero_score_ratio=Decimal("0.20"),
         scoring_current_drawdown_penalty_start_ratio=Decimal("0.05"),
         scoring_current_drawdown_full_penalty_ratio=Decimal("0.75"),
         scoring_current_drawdown_penalty_max=Decimal("100"),
@@ -121,17 +139,18 @@ def wallet_metrics(*, current_drawdown_pct: Decimal) -> WalletScoreMetrics:
     )
 
 
-def replace_liquidation_metrics(
+def replace_forced_exit_metrics(
     metrics: WalletScoreMetrics,
     *,
+    trade_count: int,
     notional_usd: Decimal,
 ) -> WalletScoreMetrics:
     return WalletScoreMetrics(
         **{
             **metrics.__dict__,
-            "liquidation_fill_count": 1,
-            "liquidation_event_count": 1,
-            "liquidation_trade_count": 1,
+            "liquidation_fill_count": trade_count,
+            "liquidation_event_count": trade_count,
+            "liquidation_trade_count": trade_count,
             "liquidation_notional_usd": notional_usd,
         }
     )

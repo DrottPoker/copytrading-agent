@@ -89,14 +89,20 @@
     "open_position_stress": {
       "notional_full_ratio": 10,
       "penalty_max": 20
+    },
+    "forced_exit": {
+      "event_gap_seconds": 300,
+      "notional_full_ratio": 0.25,
+      "penalty_max": 15
     }
   },
   "copyability": {
     "weights": {
-      "copyable_trade_ratio": 0.4,
-      "median_trade_notional": 0.25,
-      "p25_trade_notional": 0.2,
-      "execution_simplicity": 0.15
+      "copyable_trade_ratio": 0.35,
+      "median_trade_notional": 0.22,
+      "p25_trade_notional": 0.18,
+      "execution_simplicity": 0.10,
+      "forced_exit_frequency": 0.15
     },
     "copyable_trade_ratio": {
       "min_trade_notional_usd": 5
@@ -111,6 +117,9 @@
     "execution_simplicity": {
       "full_score_fills_per_trade_at_or_below": 4,
       "zero_score_fills_per_trade_at_or_above": 20
+    },
+    "forced_exit_frequency": {
+      "zero_score_ratio": 0.2
     }
   },
   "recency": {
@@ -122,13 +131,6 @@
     "negative_pnl_max": 10,
     "stale_recency": 10,
     "open_only": 10,
-    "liquidation": {
-      "event_gap_seconds": 300,
-      "per_event": 0.5,
-      "notional_full_ratio": 0.25,
-      "notional_penalty_max": 4.5,
-      "max": 5
-    },
     "confidence": {
       "target_trades": 30,
       "max": 8

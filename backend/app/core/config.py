@@ -260,6 +260,13 @@ SCORING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("risk", "open_position_stress", "penalty_max"): (
         "scoring_open_position_stress_penalty_max"
     ),
+    ("risk", "forced_exit", "event_gap_seconds"): (
+        "scoring_forced_exit_event_gap_seconds"
+    ),
+    ("risk", "forced_exit", "notional_full_ratio"): (
+        "scoring_forced_exit_notional_full_ratio"
+    ),
+    ("risk", "forced_exit", "penalty_max"): "scoring_forced_exit_penalty_max",
     ("copyability", "weights", "copyable_trade_ratio"): (
         "scoring_copyability_weight_copyable_trade_ratio"
     ),
@@ -271,6 +278,9 @@ SCORING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ),
     ("copyability", "weights", "execution_simplicity"): (
         "scoring_copyability_weight_execution_simplicity"
+    ),
+    ("copyability", "weights", "forced_exit_frequency"): (
+        "scoring_copyability_weight_forced_exit_frequency"
     ),
     ("copyability", "copyable_trade_ratio", "min_trade_notional_usd"): (
         "scoring_copyability_copyable_trade_min_notional_usd"
@@ -296,25 +306,15 @@ SCORING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("copyability", "execution_simplicity", "zero_score_fills_per_trade_at_or_above"): (
         "scoring_copyability_execution_zero_score_fills_per_trade_at_or_above"
     ),
+    ("copyability", "forced_exit_frequency", "zero_score_ratio"): (
+        "scoring_copyability_forced_exit_frequency_zero_score_ratio"
+    ),
     ("recency", "stale_days"): "scoring_stale_days",
     ("penalties", "no_closed_trades"): "scoring_penalty_no_closed_trades",
     ("penalties", "low_sample_max"): "scoring_penalty_low_sample_max",
     ("penalties", "negative_pnl_max"): "scoring_penalty_negative_pnl_max",
     ("penalties", "stale_recency"): "scoring_penalty_stale_recency",
     ("penalties", "open_only"): "scoring_penalty_open_only",
-    ("penalties", "liquidation", "event_gap_seconds"): (
-        "scoring_liquidation_event_gap_seconds"
-    ),
-    ("penalties", "liquidation", "per_event"): (
-        "scoring_liquidation_penalty_per_event"
-    ),
-    ("penalties", "liquidation", "notional_full_ratio"): (
-        "scoring_liquidation_notional_full_ratio"
-    ),
-    ("penalties", "liquidation", "notional_penalty_max"): (
-        "scoring_liquidation_notional_penalty_max"
-    ),
-    ("penalties", "liquidation", "max"): "scoring_liquidation_penalty_max",
     ("penalties", "confidence", "target_trades"): "scoring_confidence_target_trades",
     ("penalties", "confidence", "max"): "scoring_confidence_penalty_max",
     ("window_scores", "activity_trade_cap"): "scoring_window_score_activity_trade_cap",
@@ -483,19 +483,6 @@ class Settings(BaseSettings):
     scoring_min_trades: int = Field(default=5, ge=1)
     scoring_stale_days: int = Field(default=7, ge=1)
     scoring_sample_cap_max_score: Decimal = Field(default=Decimal("45"), ge=0, le=100)
-    scoring_liquidation_event_gap_seconds: int = Field(default=300, ge=1)
-    scoring_liquidation_penalty_per_event: Decimal = Field(default=Decimal("0.5"), ge=0, le=100)
-    scoring_liquidation_notional_full_ratio: Decimal = Field(
-        default=Decimal("0.25"),
-        gt=0,
-        le=1,
-    )
-    scoring_liquidation_notional_penalty_max: Decimal = Field(
-        default=Decimal("4.5"),
-        ge=0,
-        le=100,
-    )
-    scoring_liquidation_penalty_max: Decimal = Field(default=Decimal("5"), ge=0, le=100)
     scoring_confidence_target_trades: int = Field(default=50, ge=1)
     scoring_confidence_penalty_max: Decimal = Field(default=Decimal("20"), ge=0, le=100)
     scoring_current_drawdown_enabled: bool = True
@@ -540,6 +527,13 @@ class Settings(BaseSettings):
         ge=0,
         le=100,
     )
+    scoring_forced_exit_event_gap_seconds: int = Field(default=300, ge=1)
+    scoring_forced_exit_notional_full_ratio: Decimal = Field(
+        default=Decimal("0.25"),
+        gt=0,
+        le=1,
+    )
+    scoring_forced_exit_penalty_max: Decimal = Field(default=Decimal("15"), ge=0, le=100)
     scoring_weight_pnl: Decimal = Field(default=Decimal("0.30"), ge=0, le=1)
     scoring_weight_consistency: Decimal = Field(default=Decimal("0.20"), ge=0, le=1)
     scoring_weight_risk: Decimal = Field(default=Decimal("0.20"), ge=0, le=1)
@@ -673,21 +667,26 @@ class Settings(BaseSettings):
         le=1000,
     )
     scoring_copyability_weight_copyable_trade_ratio: Decimal = Field(
-        default=Decimal("0.40"),
+        default=Decimal("0.35"),
         ge=0,
         le=1,
     )
     scoring_copyability_weight_median_trade_notional: Decimal = Field(
-        default=Decimal("0.25"),
+        default=Decimal("0.22"),
         ge=0,
         le=1,
     )
     scoring_copyability_weight_p25_trade_notional: Decimal = Field(
-        default=Decimal("0.20"),
+        default=Decimal("0.18"),
         ge=0,
         le=1,
     )
     scoring_copyability_weight_execution_simplicity: Decimal = Field(
+        default=Decimal("0.10"),
+        ge=0,
+        le=1,
+    )
+    scoring_copyability_weight_forced_exit_frequency: Decimal = Field(
         default=Decimal("0.15"),
         ge=0,
         le=1,
@@ -727,6 +726,11 @@ class Settings(BaseSettings):
         default=Decimal("20"),
         gt=0,
         le=100,
+    )
+    scoring_copyability_forced_exit_frequency_zero_score_ratio: Decimal = Field(
+        default=Decimal("0.20"),
+        gt=0,
+        le=1,
     )
     scoring_penalty_no_closed_trades: Decimal = Field(default=Decimal("100"), ge=0, le=100)
     scoring_penalty_low_sample_max: Decimal = Field(default=Decimal("30"), ge=0, le=100)

@@ -945,14 +945,14 @@ Phase A behavior:
   `scoring_current_drawdown_missing_penalty`.
 - Adds a confidence penalty up to `scoring_confidence_penalty_max` until the
   wallet reaches `scoring_confidence_target_trades`.
-- Groups liquidation fills into account-level liquidation events and keeps them
-  as a separate final-score penalty instead of mixing them into the risk
-  component.
-- Applies liquidation penalties from `backend/config/scoring.json` using a
-  severity model. The default adds 0.5 points per liquidation event, then adds a
-  notional severity penalty that reaches 4.5 points when liquidation notional is
-  25 percent of reconstructed entry notional. The combined liquidation penalty
-  is capped at 5 points by default.
+- Groups liquidation fills into account-level liquidation events for diagnostics.
+- Scores forced exits through the normal components instead of a separate
+  final-score penalty. Risk includes forced-exit severity, based on
+  liquidation-tagged close notional as a share of reconstructed entry notional.
+  Copyability includes forced-exit frequency, based on liquidation-tagged
+  reconstructed trades as a share of closed trades. Profitable forced exits are
+  still counted as risk and copyability signals because they are hard to copy
+  exactly, but they are no longer treated as direct final-score penalties.
 - Reconstructed source trades store liquidation flags, liquidation fill count,
   and liquidation notional. Wallet source trade history and paper closed trade
   history show a liquidation tag on affected closed trades.

@@ -545,7 +545,7 @@ async def load_wallet_score_metrics(
             "window_start_ms": window_start_ms,
             "start_24h_ms": start_24h_ms,
             "start_7d_ms": start_7d_ms,
-            "liquidation_event_gap_ms": settings.scoring_liquidation_event_gap_seconds * 1000,
+            "liquidation_event_gap_ms": settings.scoring_forced_exit_event_gap_seconds * 1000,
         },
     )
 
@@ -857,7 +857,8 @@ def calculate_score_explanation(
             weight_sum=weight_sum,
             detail=(
                 "Risk starts at 100 and subtracts realized and live-state risk "
-                "penalties. Severe current drawdown also caps the final score."
+                "penalties plus forced-exit severity. Severe current drawdown "
+                "also caps the final score."
             ),
             items=risk_score_items(metrics, settings=settings),
         ),
@@ -867,7 +868,10 @@ def calculate_score_explanation(
             score=breakdown.copyability_score,
             weight=settings.scoring_weight_copyability,
             weight_sum=weight_sum,
-            detail="Copyability scores whether the trade set is practical to follow.",
+            detail=(
+                "Copyability scores whether the trade set is practical to follow, "
+                "including forced-exit frequency."
+            ),
             items=copyability_score_items(metrics, settings=settings),
         ),
         score_component_detail(
@@ -1180,6 +1184,7 @@ def risk_score_items(
         settings.scoring_open_position_stress_penalty_max,
     )
     live_penalty = max_decimal(current_drawdown_penalty, open_stress_penalty)
+    forced_exit_penalty = forced_exit_severity_penalty(metrics, settings=settings)
     live_risk_cap = current_drawdown_score_cap(current_drawdown, settings=settings)
     losing_rate = (
         Decimal(metrics.losing_trade_count) / Decimal(closed_trade_count)
@@ -1245,6 +1250,18 @@ def risk_score_items(
                 "same open risk is not double-counted."
             ),
         ),
+        penalty_detail_item(
+            key="forced_exit_severity",
+            label="Forced exit severity",
+            value=forced_exit_severity_ratio(metrics),
+            value_kind="percent",
+            penalty=forced_exit_penalty,
+            detail=(
+                "Liquidation-tagged close notional divided by reconstructed entry "
+                "notional. This counts forced exits as risk even when the "
+                "reconstructed trade finished profitable."
+            ),
+        ),
         reference_detail_item(
             key="live_risk_score_cap",
             label="Live risk score cap",
@@ -1286,11 +1303,13 @@ def copyability_score_items(
         metrics.average_fills_per_trade,
         settings=settings,
     )
+    forced_exit_score = forced_exit_frequency_score(metrics, settings=settings)
     weight_sum = score_group_weight_sum(
         settings.scoring_copyability_weight_copyable_trade_ratio,
         settings.scoring_copyability_weight_median_trade_notional,
         settings.scoring_copyability_weight_p25_trade_notional,
         settings.scoring_copyability_weight_execution_simplicity,
+        settings.scoring_copyability_weight_forced_exit_frequency,
     )
     return [
         detail_item(
@@ -1345,6 +1364,22 @@ def copyability_score_items(
             detail=(
                 "Average entry and close fills per closed trade. Lower is easier "
                 "to follow."
+            ),
+        ),
+        detail_item(
+            key="forced_exit_frequency",
+            label="Forced exit frequency",
+            value=forced_exit_frequency(metrics),
+            value_kind="percent",
+            score=forced_exit_score,
+            weight=score_group_weight(
+                settings.scoring_copyability_weight_forced_exit_frequency,
+                weight_sum,
+            ),
+            detail=(
+                "Liquidation-tagged reconstructed trades divided by closed trades. "
+                f"{settings.scoring_copyability_forced_exit_frequency_zero_score_ratio:.0%} "
+                "or more scores zero for this input."
             ),
         ),
     ]
@@ -1914,6 +1949,7 @@ def calculate_risk_score(
             settings.scoring_risk_realized_drawdown_penalty_max,
         )
         + max_decimal(current_drawdown_penalty, open_position_stress_penalty)
+        + forced_exit_severity_penalty(metrics, settings=settings)
         + losing_rate * settings.scoring_risk_losing_trade_rate_penalty_per_ratio
     )
     return score_value(HUNDRED - penalty)
@@ -1976,6 +2012,7 @@ def calculate_copyability_score(
         metrics.average_fills_per_trade,
         settings=settings,
     )
+    forced_exit_score = forced_exit_frequency_score(metrics, settings=settings)
     return weighted_score(
         (
             (
@@ -1993,6 +2030,10 @@ def calculate_copyability_score(
             (
                 execution_score,
                 settings.scoring_copyability_weight_execution_simplicity,
+            ),
+            (
+                forced_exit_score,
+                settings.scoring_copyability_weight_forced_exit_frequency,
             ),
         )
     )
@@ -2041,6 +2082,44 @@ def execution_simplicity_score(
         average_fills_per_trade,
         settings.scoring_copyability_execution_full_score_fills_per_trade_at_or_below,
         settings.scoring_copyability_execution_zero_score_fills_per_trade_at_or_above,
+    )
+
+
+def forced_exit_frequency(metrics: WalletScoreMetrics) -> Decimal | None:
+    if metrics.trade_count <= 0:
+        return None
+    return Decimal(metrics.liquidation_trade_count) / Decimal(metrics.trade_count)
+
+
+def forced_exit_frequency_score(
+    metrics: WalletScoreMetrics,
+    *,
+    settings: Settings,
+) -> Decimal:
+    return inverse_range_score(
+        forced_exit_frequency(metrics),
+        ZERO,
+        settings.scoring_copyability_forced_exit_frequency_zero_score_ratio,
+    )
+
+
+def forced_exit_severity_ratio(metrics: WalletScoreMetrics) -> Decimal:
+    if metrics.total_notional_usd <= ZERO:
+        return ZERO
+    return metrics.liquidation_notional_usd / metrics.total_notional_usd
+
+
+def forced_exit_severity_penalty(
+    metrics: WalletScoreMetrics,
+    *,
+    settings: Settings,
+) -> Decimal:
+    severity = forced_exit_severity_ratio(metrics)
+    return min_decimal(
+        severity
+        / settings.scoring_forced_exit_notional_full_ratio
+        * settings.scoring_forced_exit_penalty_max,
+        settings.scoring_forced_exit_penalty_max,
     )
 
 
@@ -2123,7 +2202,6 @@ def calculate_penalty_items(
         if metrics.open_trade_count > 0 and metrics.trade_count == 0
         else ZERO
     )
-    liquidation_penalty = calculate_liquidation_penalty(metrics, settings=settings)
     confidence_trade_count = max(settings.scoring_confidence_target_trades, 1)
     confidence_ratio = min_decimal(
         Decimal(metrics.trade_count) / Decimal(confidence_trade_count),
@@ -2193,46 +2271,7 @@ def calculate_penalty_items(
                 f"{metrics.trade_count} closed trades."
             ),
         ),
-        penalty_item(
-            key="liquidations",
-            label="Liquidation events",
-            value=liquidation_penalty,
-            max_value=settings.scoring_liquidation_penalty_max,
-            detail=(
-                f"{metrics.liquidation_event_count} liquidation events observed from "
-                f"{metrics.liquidation_fill_count} liquidation fills, "
-                f"{metrics.liquidation_trade_count} reconstructed liquidation trades, "
-                f"{metrics.liquidation_notional_usd} liquidation notional. "
-                "Penalty combines a small per-event base with notional severity."
-            ),
-        ),
     ]
-
-
-def calculate_liquidation_penalty(
-    metrics: WalletScoreMetrics,
-    *,
-    settings: Settings,
-) -> Decimal:
-    event_penalty = (
-        Decimal(metrics.liquidation_event_count) * settings.scoring_liquidation_penalty_per_event
-    )
-    notional_base = max_decimal(
-        metrics.total_notional_usd,
-        metrics.liquidation_notional_usd,
-        ONE,
-    )
-    severity_ratio = metrics.liquidation_notional_usd / notional_base
-    severity_penalty = min_decimal(
-        severity_ratio
-        / settings.scoring_liquidation_notional_full_ratio
-        * settings.scoring_liquidation_notional_penalty_max,
-        settings.scoring_liquidation_notional_penalty_max,
-    )
-    return min_decimal(
-        event_penalty + severity_penalty,
-        settings.scoring_liquidation_penalty_max,
-    )
 
 
 def penalty_item(
@@ -2382,7 +2421,7 @@ def metrics_with_reconstructed_trades(
             liquidation_fill_count=base_metrics.liquidation_fill_count,
             liquidation_event_count=base_metrics.liquidation_event_count,
             liquidation_trade_count=0,
-            liquidation_notional_usd=base_metrics.liquidation_notional_usd,
+            liquidation_notional_usd=ZERO,
             max_coin_notional_usd=ZERO,
             max_drawdown_usd=ZERO,
             current_perp_equity_usd=base_metrics.current_perp_equity_usd,
@@ -2443,7 +2482,7 @@ def metrics_with_reconstructed_trades(
         liquidation_fill_count=base_metrics.liquidation_fill_count,
         liquidation_event_count=base_metrics.liquidation_event_count,
         liquidation_trade_count=trades.liquidation_trade_count,
-        liquidation_notional_usd=base_metrics.liquidation_notional_usd,
+        liquidation_notional_usd=trades.liquidation_notional_usd,
         max_coin_notional_usd=trades.max_coin_notional_usd,
         max_drawdown_usd=trades.max_drawdown_usd,
         current_perp_equity_usd=base_metrics.current_perp_equity_usd,

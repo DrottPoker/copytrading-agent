@@ -156,7 +156,9 @@ Notes:
   only when a wallet's fill count or latest fill timestamp changes.
 - Materialized source trades store whether an observed close was a liquidation,
   the liquidation fill count, and liquidation notional so trade history can tag
-  affected closed trades.
+  affected closed trades. Scoring uses forced exits as normal component inputs:
+  severity reduces Risk and frequency reduces Copyability, while there is no
+  standalone final-score liquidation deduction.
 - Recency score uses the latest non-liquidation trading fill, so opens, adds,
   reduces, closes, and flips count as activity while liquidation fills do not.
 - Consistency score measures repeatability and evenness through profit
