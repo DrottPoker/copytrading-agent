@@ -92,7 +92,7 @@ export function ScoreDetailsModal({ score, scoreDetail }: ScoreDetailsModalProps
               </div>
 
               <div className="max-h-[calc(100vh-10rem)] overflow-y-auto">
-                <div className="grid gap-0 divide-y divide-line border-b border-line md:grid-cols-4 md:divide-x md:divide-y-0">
+                <div className="grid gap-0 divide-y divide-line border-b border-line md:grid-cols-5 md:divide-x md:divide-y-0">
                   <ScoreSummaryMetric
                     label="Final score"
                     value={formatScore(score.score)}
@@ -110,6 +110,12 @@ export function ScoreDetailsModal({ score, scoreDetail }: ScoreDetailsModalProps
                     value={formatSignedScore(scoreDetail?.penaltyScore ?? score.penaltyScore, "subtract")}
                     tone={numberValue(scoreDetail?.penaltyScore ?? score.penaltyScore) > 0 ? "danger" : "positive"}
                     detail="Subtracted after weights"
+                  />
+                  <ScoreSummaryMetric
+                    label="Live cap"
+                    value={scoreDetail?.liveRiskScoreCap ? formatScore(scoreDetail.liveRiskScoreCap) : "None"}
+                    tone={scoreDetail?.liveRiskScoreCap ? "danger" : "neutral"}
+                    detail="Current drawdown cap"
                   />
                   <ScoreSummaryMetric
                     label="Sample cap"
@@ -272,6 +278,9 @@ function formatDetailValue(value: string | null, kind: string) {
   }
   if (kind === "percent") {
     return formatPercent(value);
+  }
+  if (kind === "score") {
+    return formatScore(value);
   }
   return formatDecimal(value, 4);
 }

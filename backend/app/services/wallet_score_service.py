@@ -120,6 +120,7 @@ class WalletScoreBreakdown:
     realized_drawdown_pct: Decimal | None
     current_drawdown_pct: Decimal | None
     open_position_stress_pct: Decimal | None
+    live_risk_score_cap: Decimal | None
     current_drawdown_status: str
     trade_count: int
     last_24h_score: Decimal | None
@@ -351,6 +352,7 @@ async def get_wallet_score_detail(
         realized_drawdown_pct=breakdown.realized_drawdown_pct,
         current_drawdown_pct=breakdown.current_drawdown_pct,
         open_position_stress_pct=breakdown.open_position_stress_pct,
+        live_risk_score_cap=breakdown.live_risk_score_cap,
         current_drawdown_status=breakdown.current_drawdown_status,
         gross_score=explanation.gross_score,
         final_score_before_cap=explanation.final_score_before_cap,
@@ -692,6 +694,7 @@ def calculate_wallet_score(
             realized_drawdown_pct=None,
             current_drawdown_pct=metrics.current_drawdown_pct,
             open_position_stress_pct=metrics.open_position_stress_pct,
+            live_risk_score_cap=None,
             current_drawdown_status=metrics.current_drawdown_status,
             trade_count=0,
             last_24h_score=ZERO,
@@ -735,6 +738,10 @@ def calculate_wallet_score(
         recency_score=recency_score,
         settings=settings,
     )
+    live_risk_score_cap = current_drawdown_score_cap(
+        metrics.current_drawdown_pct,
+        settings=settings,
+    )
 
     weight_sum = (
         settings.scoring_weight_pnl
@@ -754,6 +761,8 @@ def calculate_wallet_score(
         + recency_score * settings.scoring_weight_recency
     ) / weight_sum
     final_score = score_value(gross_score - penalty_score)
+    if live_risk_score_cap is not None:
+        final_score = min_decimal(final_score, live_risk_score_cap)
     if metrics.trade_count < settings.scoring_min_trades:
         sample_cap = score_sample_cap(
             metrics.trade_count,
@@ -777,6 +786,7 @@ def calculate_wallet_score(
         realized_drawdown_pct=max_drawdown_pct,
         current_drawdown_pct=metrics.current_drawdown_pct,
         open_position_stress_pct=metrics.open_position_stress_pct,
+        live_risk_score_cap=live_risk_score_cap,
         current_drawdown_status=metrics.current_drawdown_status,
         trade_count=metrics.trade_count,
         last_24h_score=calculate_window_score(
@@ -839,7 +849,10 @@ def calculate_score_explanation(
             score=breakdown.risk_score,
             weight=settings.scoring_weight_risk,
             weight_sum=weight_sum,
-            detail="Risk starts at 100 and subtracts realized and live-state risk penalties.",
+            detail=(
+                "Risk starts at 100 and subtracts realized and live-state risk "
+                "penalties. Severe current drawdown also caps the final score."
+            ),
             items=risk_score_items(metrics, settings=settings),
         ),
         score_component_detail(
@@ -1151,20 +1164,17 @@ def risk_score_items(
     loss_ratio = metrics.gross_loss_usd / max_decimal(metrics.gross_profit_usd, ONE)
     realized_drawdown = metrics.max_drawdown_usd / drawdown_base
     current_drawdown = metrics.current_drawdown_pct or ZERO
-    current_drawdown_penalty = ZERO
-    if settings.scoring_current_drawdown_full_penalty_ratio > ZERO:
-        current_drawdown_penalty = min_decimal(
-            current_drawdown
-            / settings.scoring_current_drawdown_full_penalty_ratio
-            * settings.scoring_current_drawdown_penalty_max,
-            settings.scoring_current_drawdown_penalty_max,
-        )
+    current_drawdown_penalty = current_drawdown_risk_penalty(
+        current_drawdown,
+        settings=settings,
+    )
     open_stress_penalty = min_decimal(
         (metrics.open_position_stress_pct or ZERO)
         * settings.scoring_open_position_stress_penalty_max,
         settings.scoring_open_position_stress_penalty_max,
     )
     live_penalty = max_decimal(current_drawdown_penalty, open_stress_penalty)
+    live_risk_cap = current_drawdown_score_cap(current_drawdown, settings=settings)
     losing_rate = (
         Decimal(metrics.losing_trade_count) / Decimal(closed_trade_count)
         if closed_trade_count > 0
@@ -1200,7 +1210,11 @@ def risk_score_items(
             value=metrics.current_drawdown_pct,
             value_kind="percent",
             detail=(
-                "Candidate live penalty before comparing with open-position stress: "
+                "Candidate live penalty before comparing with margin stress. "
+                "Penalty starts at "
+                f"{settings.scoring_current_drawdown_penalty_start_ratio} and "
+                "reaches max at "
+                f"{settings.scoring_current_drawdown_full_penalty_ratio}: "
                 f"{score_value(current_drawdown_penalty)} points."
             ),
         ),
@@ -1223,6 +1237,18 @@ def risk_score_items(
             detail=(
                 "Actual live-state risk penalty, using the larger candidate so the "
                 "same open risk is not double-counted."
+            ),
+        ),
+        reference_detail_item(
+            key="live_risk_score_cap",
+            label="Live risk score cap",
+            value=live_risk_cap,
+            value_kind="score",
+            detail=(
+                "Caps final score when current drawdown is above "
+                f"{settings.scoring_current_drawdown_score_cap_start_ratio}. "
+                "The cap reaches zero at "
+                f"{settings.scoring_current_drawdown_score_cap_zero_ratio}."
             ),
         ),
         penalty_detail_item(
@@ -1858,14 +1884,10 @@ def calculate_risk_score(
     loss_ratio = metrics.gross_loss_usd / max_decimal(metrics.gross_profit_usd, ONE)
     drawdown_ratio = metrics.max_drawdown_usd / drawdown_base
     current_drawdown_ratio = metrics.current_drawdown_pct or ZERO
-    current_drawdown_penalty = ZERO
-    if settings.scoring_current_drawdown_full_penalty_ratio > ZERO:
-        current_drawdown_penalty = min_decimal(
-            current_drawdown_ratio
-            / settings.scoring_current_drawdown_full_penalty_ratio
-            * settings.scoring_current_drawdown_penalty_max,
-            settings.scoring_current_drawdown_penalty_max,
-        )
+    current_drawdown_penalty = current_drawdown_risk_penalty(
+        current_drawdown_ratio,
+        settings=settings,
+    )
     open_position_stress_penalty = min_decimal(
         (metrics.open_position_stress_pct or ZERO)
         * settings.scoring_open_position_stress_penalty_max,
@@ -1889,6 +1911,45 @@ def calculate_risk_score(
         + losing_rate * settings.scoring_risk_losing_trade_rate_penalty_per_ratio
     )
     return score_value(HUNDRED - penalty)
+
+
+def current_drawdown_risk_penalty(
+    current_drawdown_pct: Decimal | None,
+    *,
+    settings: Settings,
+) -> Decimal:
+    if current_drawdown_pct is None:
+        return ZERO
+    start_ratio = settings.scoring_current_drawdown_penalty_start_ratio
+    full_ratio = settings.scoring_current_drawdown_full_penalty_ratio
+    if current_drawdown_pct <= start_ratio:
+        return ZERO
+    if current_drawdown_pct >= full_ratio:
+        return settings.scoring_current_drawdown_penalty_max
+    span = full_ratio - start_ratio
+    if span <= ZERO:
+        return settings.scoring_current_drawdown_penalty_max
+    return (
+        (current_drawdown_pct - start_ratio)
+        / span
+        * settings.scoring_current_drawdown_penalty_max
+    )
+
+
+def current_drawdown_score_cap(
+    current_drawdown_pct: Decimal | None,
+    *,
+    settings: Settings,
+) -> Decimal | None:
+    if current_drawdown_pct is None:
+        return None
+    if current_drawdown_pct <= settings.scoring_current_drawdown_score_cap_start_ratio:
+        return None
+    return inverse_range_score(
+        current_drawdown_pct,
+        settings.scoring_current_drawdown_score_cap_start_ratio,
+        settings.scoring_current_drawdown_score_cap_zero_ratio,
+    )
 
 
 def calculate_copyability_score(

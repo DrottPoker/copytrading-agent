@@ -58,7 +58,7 @@ const OPERATION_CARDS: Array<{
   {
     icon: ShieldCheck,
     key: "wallet_scoring",
-    manualEndpoint: "/scores/recalculate",
+    manualEndpoint: "/scores/recalculate/start",
     manualLabel: "Run wallet scoring",
     title: "Wallet scoring",
     metrics: [
@@ -103,6 +103,18 @@ export function OperationStatusStrip({ initialItems }: { initialItems: Operation
       window.clearInterval(intervalId);
     };
   }, [refreshStatuses]);
+
+  useEffect(() => {
+    setManualErrors((current) => {
+      let next = current;
+      for (const item of items) {
+        if ((item.status === "running" || item.status === "succeeded") && next[item.key]) {
+          next = omitKey(next, item.key);
+        }
+      }
+      return next;
+    });
+  }, [items]);
 
   const runOperation = useCallback(
     async (card: (typeof OPERATION_CARDS)[number]) => {

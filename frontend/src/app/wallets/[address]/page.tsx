@@ -951,7 +951,7 @@ function scoreComponents(score: WalletScore): ScoreComponent[] {
       value: numberValue(score.consistencyScore),
     },
     {
-      detail: "Loss ratio, realized drawdown, open-position stress, and losing trade rate.",
+      detail: "Loss ratio, realized drawdown, live drawdown, margin stress, and losing trade rate.",
       key: "risk",
       label: "Risk",
       value: numberValue(score.riskScore),

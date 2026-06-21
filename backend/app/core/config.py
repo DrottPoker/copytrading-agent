@@ -239,11 +239,20 @@ SCORING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("risk", "current_drawdown", "missing_penalty"): (
         "scoring_current_drawdown_missing_penalty"
     ),
+    ("risk", "current_drawdown", "penalty_start_ratio"): (
+        "scoring_current_drawdown_penalty_start_ratio"
+    ),
     ("risk", "current_drawdown", "full_penalty_ratio"): (
         "scoring_current_drawdown_full_penalty_ratio"
     ),
     ("risk", "current_drawdown", "penalty_max"): (
         "scoring_current_drawdown_penalty_max"
+    ),
+    ("risk", "current_drawdown", "score_cap_start_ratio"): (
+        "scoring_current_drawdown_score_cap_start_ratio"
+    ),
+    ("risk", "current_drawdown", "score_cap_zero_ratio"): (
+        "scoring_current_drawdown_score_cap_zero_ratio"
     ),
     ("risk", "open_position_stress", "notional_full_ratio"): (
         "scoring_open_position_stress_notional_full_ratio"
@@ -480,15 +489,30 @@ class Settings(BaseSettings):
         ge=0,
         le=100,
     )
+    scoring_current_drawdown_penalty_start_ratio: Decimal = Field(
+        default=Decimal("0.05"),
+        ge=0,
+        le=1,
+    )
     scoring_current_drawdown_full_penalty_ratio: Decimal = Field(
-        default=Decimal("0.40"),
+        default=Decimal("0.75"),
         gt=0,
         le=1,
     )
     scoring_current_drawdown_penalty_max: Decimal = Field(
-        default=Decimal("35"),
+        default=Decimal("100"),
         ge=0,
         le=100,
+    )
+    scoring_current_drawdown_score_cap_start_ratio: Decimal = Field(
+        default=Decimal("0.20"),
+        ge=0,
+        le=1,
+    )
+    scoring_current_drawdown_score_cap_zero_ratio: Decimal = Field(
+        default=Decimal("0.80"),
+        gt=0,
+        le=1,
     )
     scoring_open_position_stress_notional_full_ratio: Decimal = Field(
         default=Decimal("10"),
@@ -792,6 +816,22 @@ class Settings(BaseSettings):
             raise ValueError(
                 "scoring_consistency_max_inactive_gap_full_score_days must be "
                 "less than scoring_consistency_max_inactive_gap_zero_score_days."
+            )
+        if (
+            self.scoring_current_drawdown_penalty_start_ratio
+            >= self.scoring_current_drawdown_full_penalty_ratio
+        ):
+            raise ValueError(
+                "scoring_current_drawdown_penalty_start_ratio must be less than "
+                "scoring_current_drawdown_full_penalty_ratio."
+            )
+        if (
+            self.scoring_current_drawdown_score_cap_start_ratio
+            >= self.scoring_current_drawdown_score_cap_zero_ratio
+        ):
+            raise ValueError(
+                "scoring_current_drawdown_score_cap_start_ratio must be less than "
+                "scoring_current_drawdown_score_cap_zero_ratio."
             )
         if (
             self.scoring_copyability_trade_notional_min_full_score_usd

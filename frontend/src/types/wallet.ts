@@ -91,6 +91,7 @@ export type WalletScoreDetail = {
   realizedDrawdownPct: string | null;
   currentDrawdownPct: string | null;
   openPositionStressPct: string | null;
+  liveRiskScoreCap: string | null;
   currentDrawdownStatus: string;
   grossScore: string;
   finalScoreBeforeCap: string;

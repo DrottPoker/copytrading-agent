@@ -100,6 +100,7 @@ class WalletScoreDetailResponse(CamelModel):
     realized_drawdown_pct: Decimal | None
     current_drawdown_pct: Decimal | None
     open_position_stress_pct: Decimal | None
+    live_risk_score_cap: Decimal | None
     current_drawdown_status: str
     gross_score: Decimal
     final_score_before_cap: Decimal

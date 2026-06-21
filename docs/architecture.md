@@ -362,7 +362,7 @@ sequenceDiagram
   participant DB as Postgres
 
   Worker->>API: periodic scoring service call
-  UI->>API: POST /scores/recalculate
+  UI->>API: POST /scores/recalculate/start
   API->>DB: aggregate wallet_fills over scoring window
   API->>DB: refresh changed source_trades from fill directions
   API->>DB: load materialized source trade metrics
@@ -376,15 +376,21 @@ sequenceDiagram
 ```
 
 Risk score combines realized reconstructed-trade risk with current open perp
-drawdown and open-position stress when `scoring_current_drawdown_enabled` is
-true. Current drawdown is stored as `wallet_scores.current_drawdown_pct` with
-`wallet_scores.current_drawdown_status`. Open-position stress is stored as
+drawdown and margin stress when `scoring_current_drawdown_enabled` is true.
+Current drawdown is stored as `wallet_scores.current_drawdown_pct` with
+`wallet_scores.current_drawdown_status`. Margin stress is stored as
 `wallet_scores.open_position_stress_pct` and is calculated from live unrealized
-loss, margin usage, and notional exposure. If live perp state is incomplete or
-perp equity is zero, the scoring run keeps the history-only risk component and
-applies the configured missing-state penalty. Scoring only checks default perp
-plus dexes already observed in stored fills, so full HIP-3 discovery remains
-limited to single-wallet current-state views.
+loss, margin usage, and notional exposure. Live current drawdown can consume the
+full risk component, and severe current drawdown also caps the final score. This
+prevents wallets with perfect realized win rates from ranking highly while they
+carry large unrealized losses. If live perp state is incomplete or perp equity is
+zero, the scoring run keeps the history-only risk component and applies the
+configured missing-state penalty. Scoring only checks default perp plus dexes
+already observed in stored fills, so full HIP-3 discovery remains limited to
+single-wallet current-state views.
+By default, current drawdown risk penalty starts at 5 percent and reaches full
+penalty at 75 percent. The final score cap starts at 20 percent current drawdown
+and reaches zero at 80 percent.
 Consistency score measures repeatability and evenness, not profitability or win
 rate. It uses profit distribution, largest-win dependency, closed-trade ROI
 stability, downside ROI stability, active-day regularity, and max inactive gap.
@@ -402,8 +408,8 @@ Recency score uses the latest non-liquidation trading fill in the scoring
 window, not only the latest closed reconstructed source trade. Open, add,
 reduce, close, and flip fills count as activity, while liquidation fills are
 excluded so liquidation events do not create a positive freshness signal.
-Risk loss-ratio, realized-drawdown, losing-rate, live drawdown, and position
-stress penalty spans are configurable. Copyability measures practical
+Risk loss-ratio, realized-drawdown, losing-rate, live drawdown, margin-stress,
+and live score-cap thresholds are configurable. Copyability measures practical
 followability through copyable trade ratio, median trade notional, p25 trade
 notional, and execution simplicity. Trade count is intentionally excluded from
 Copyability because sample size is handled by sample caps and the
@@ -414,9 +420,9 @@ diagnostic reconstruction metadata and do not reduce wallet score.
 Wallet detail pages use `GET /scores/{address}/detail` for the Detailed scoring
 modal. The endpoint recalculates the current wallet score from the same
 materialized trade metrics, then returns gross score, penalty, final score
-before sample cap, sample cap, component weights, weighted scores, and
-input-level explanations for each scoring part. The modal is explanatory only
-and does not write scoring data.
+before caps, live risk score cap, sample cap, component weights, weighted
+scores, and input-level explanations for each scoring part. The modal is
+explanatory only and does not write scoring data.
 Wallet list and wallet detail responses expose `poolRank`, which is calculated
 from the latest stored wallet score ordering and is independent of realtime
 monitor slots.

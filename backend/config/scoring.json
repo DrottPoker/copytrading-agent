@@ -80,8 +80,11 @@
       "enabled": true,
       "concurrency": 8,
       "missing_penalty": 10,
-      "full_penalty_ratio": 0.4,
-      "penalty_max": 35
+      "penalty_start_ratio": 0.05,
+      "full_penalty_ratio": 0.75,
+      "penalty_max": 100,
+      "score_cap_start_ratio": 0.2,
+      "score_cap_zero_ratio": 0.8
     },
     "open_position_stress": {
       "notional_full_ratio": 10,

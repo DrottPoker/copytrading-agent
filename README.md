@@ -140,7 +140,9 @@ Notes:
 - The Database page includes separate ignored-fill cleanup for raw close-only
   and pre-existing-position fills that are not needed for reconstructed source
   trades.
-- Wallet scores can be recalculated with `POST /scores/recalculate` and are shown in the wallet pool.
+- Wallet scores can be recalculated synchronously with `POST /scores/recalculate`
+  or started as a background dashboard operation with
+  `POST /scores/recalculate/start`.
 - Wallet pool list and wallet detail responses include `poolRank`, which is the
   current rank among wallets with a stored score.
 - Scoring reconstructs source perp trades and ignores close-only PnL from positions that opened before the observed import window.
@@ -249,12 +251,15 @@ Notes:
 - Wallet risk scoring can include current open perp drawdown from Hyperliquid.
   It also calculates open position stress from live unrealized loss, margin
   usage, and notional exposure. `backend/config/scoring.json` controls whether
-  live state is enabled, fetch concurrency, missing-state penalty, and max risk
-  penalties.
+  live state is enabled, fetch concurrency, missing-state penalty, max risk
+  penalties, and current-drawdown final score caps. By default, current
+  drawdown penalty scales from 5% to 75% drawdown, and the final score cap
+  scales from 20% to 80% drawdown.
 - Wallet detail pages include a Detailed scoring modal next to the score header.
   It shows gross score, penalty, final score before sample cap, component
-  weights, weighted scores, and the input-level subscores behind profitability,
-  consistency, risk, copyability, recency, and penalty scoring.
+  weights, weighted scores, live risk score cap, and the input-level subscores
+  behind profitability, consistency, risk, copyability, recency, and penalty
+  scoring.
 - The Analytics tab aggregates pool coverage, score distribution, drawdown
   state, opportunity wallets, risk watchlists, 30D source and coin performance,
   paper source performance, skip reasons, discovery funnel quality, and data

@@ -857,12 +857,16 @@ Endpoints:
 
 - `GET /scores`
 - `POST /scores/recalculate`
+- `POST /scores/recalculate/start`
 
 Purpose:
 
 - Calculate wallet score, profitability score, copyability score, risk score,
   consistency score, recency score, and penalties.
 - Rank wallets based on copyable performance, not just source-wallet PnL.
+- Dashboard-triggered scoring uses `POST /scores/recalculate/start` so the HTTP
+  request returns immediately and progress is tracked through operation status.
+  `POST /scores/recalculate` remains available for synchronous API calls.
 
 Phase A behavior:
 
@@ -880,8 +884,8 @@ Phase A behavior:
 - Counts only trades where the opening fill was observed before the close.
 - Ignores close-only PnL from positions opened before the imported window.
 - Uses reconstructed trade PnL, fees, notional, active days, recency, realized
-  drawdown, current drawdown, open-position stress, loss ratio, losing trade
-  rate, result repeatability, trade-size copyability, and execution simplicity.
+  drawdown, current drawdown, margin stress, loss ratio, losing trade rate,
+  result repeatability, trade-size copyability, and execution simplicity.
 - Recency is based on the latest non-liquidation trading fill in the scoring
   window, so opens, adds, reduces, closes, and flips all count as activity.
   Liquidation fills do not refresh recency.
@@ -911,21 +915,29 @@ Phase A behavior:
   wallet fills, then stores `current_drawdown_pct` and
   `current_drawdown_status` on `wallet_scores`. Current drawdown is open
   unrealized perp loss divided by perp equity.
-- It also stores `open_position_stress_pct`, a normalized live stress metric
-  from unrealized loss, margin usage, and notional exposure. By default, notional
-  exposure reaches full stress at 10x perp equity.
-- Current drawdown and open-position stress reduce the risk component. Current
-  drawdown can scale up to a 35 point risk penalty at 40 percent drawdown.
-  Open-position stress can scale up to a 25 point risk penalty at full stress.
-  The larger of those two live-state penalties is used so the same open loss is
-  not double-counted.
-- Risk loss-ratio, realized-drawdown, and losing-rate penalty multipliers and
-  caps are configurable.
+- It also stores `open_position_stress_pct`, a normalized live margin stress
+  metric from unrealized loss, margin usage, and notional exposure. By default,
+  notional exposure reaches full stress at 10x perp equity.
+- Current drawdown and margin stress reduce the risk component. Current drawdown
+  has no penalty until the configured start ratio, then scales linearly to the
+  configured max penalty. By default, current drawdown penalty starts at 5
+  percent drawdown and reaches 100 points at 75 percent drawdown. Margin stress
+  can scale up to the configured stress penalty at full stress. The larger of
+  those two live-state penalties is used so the same open risk is not
+  double-counted.
+- Severe current drawdown also caps final score after weighted components and
+  penalties. By default, the cap starts above 20 percent current drawdown and
+  reaches zero at 80 percent current drawdown. This catches wallets that show a
+  high realized win rate by leaving large losing positions open.
+- Risk loss-ratio, realized-drawdown, current-drawdown, margin-stress, and
+  losing-rate penalty multipliers, caps, and live drawdown score-cap thresholds
+  are configurable.
 - `GET /scores/{address}/detail` returns component-level explanations for the
   wallet detail scoring modal. The response includes gross score, penalty,
-  final score before sample cap, any sample cap, component weights, weighted
-  scores, and the input-level subscores used inside profitability, consistency,
-  risk, copyability, recency, and penalty calculations.
+  final score before caps, any live risk score cap, any sample cap, component
+  weights, weighted scores, and the input-level subscores used inside
+  profitability, consistency, risk, copyability, recency, and penalty
+  calculations.
 - If current perp state cannot be fetched completely or perp equity is zero, the
   wallet keeps a history-only risk component and receives the configured
   `scoring_current_drawdown_missing_penalty`.
