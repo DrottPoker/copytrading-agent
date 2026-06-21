@@ -148,6 +148,7 @@ export type PaperClosedTrade = {
   feeUsd: string;
   realizedPnlUsd: string;
   netPnlUsd: string;
+  isSourceLiquidation: boolean;
   closedAt: string;
   createdAt: string;
 };

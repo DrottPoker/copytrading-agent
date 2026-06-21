@@ -25,7 +25,7 @@
       "median_trade_roi": 0.30
     },
     "roi_score": {
-      "full_score_at": 0.03
+      "full_score_at": 0.04
     },
     "average_trade_roi": {
       "cap_min": -0.05,
@@ -83,8 +83,8 @@
       "penalty_start_ratio": 0.05,
       "full_penalty_ratio": 0.75,
       "penalty_max": 100,
-      "score_cap_start_ratio": 0.2,
-      "score_cap_zero_ratio": 0.8
+      "score_cap_start_ratio": 0.25,
+      "score_cap_zero_ratio": 1
     },
     "open_position_stress": {
       "notional_full_ratio": 10,
@@ -124,7 +124,9 @@
     "open_only": 10,
     "liquidation": {
       "event_gap_seconds": 300,
-      "per_event": 1,
+      "per_event": 0.5,
+      "notional_full_ratio": 0.25,
+      "notional_penalty_max": 4.5,
       "max": 5
     },
     "confidence": {

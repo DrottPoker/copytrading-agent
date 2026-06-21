@@ -367,6 +367,15 @@ class SourceTrade(Base, UpdatedAtMixin):
     net_pnl_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
     entry_fill_count: Mapped[int] = mapped_column(Integer, nullable=False)
     close_fill_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    has_liquidation: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    liquidation_fill_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    liquidation_notional_usd: Mapped[Decimal] = mapped_column(
+        Numeric, nullable=False, server_default=text("0")
+    )
 
 
 class SourceTradeSyncState(Base):

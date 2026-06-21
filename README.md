@@ -151,6 +151,9 @@ Notes:
   window missed the original entry.
 - Reconstructed source trades are materialized in `source_trades` and refreshed
   only when a wallet's fill count or latest fill timestamp changes.
+- Materialized source trades store whether an observed close was a liquidation,
+  the liquidation fill count, and liquidation notional so trade history can tag
+  affected closed trades.
 - Recency score uses the latest non-liquidation trading fill, so opens, adds,
   reduces, closes, and flips count as activity while liquidation fills do not.
 - Consistency score measures repeatability and evenness through profit
@@ -254,7 +257,7 @@ Notes:
   live state is enabled, fetch concurrency, missing-state penalty, max risk
   penalties, and current-drawdown final score caps. By default, current
   drawdown penalty scales from 5% to 75% drawdown, and the final score cap
-  scales from 20% to 80% drawdown.
+  scales from 25% to 100% drawdown.
 - Wallet detail pages include a Detailed scoring modal next to the score header.
   It shows gross score, penalty, final score before sample cap, component
   weights, weighted scores, live risk score cap, and the input-level subscores
@@ -382,7 +385,8 @@ Sizing policy:
   cooldown, or missing score.
 - Closed trade history comes from paper `close` and `flip_close` executions.
   Raw fills and skip rows remain available in the API for diagnostics, but they
-  are not shown as trade history.
+  are not shown as trade history. Closed trade rows show a liquidation tag when
+  the source close fill was marked as a liquidation by Hyperliquid.
 - Open position rows include a manual close action. Manual closes use the same
   live mark, adverse slippage, and fee model as automated paper closes, then
   record a normal `close` row in `paper_copy_fills`.

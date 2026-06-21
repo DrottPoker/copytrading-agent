@@ -40,6 +40,9 @@ class ReconstructedSourceTrade:
     net_pnl_usd: Decimal
     entry_fill_count: int
     close_fill_count: int
+    has_liquidation: bool = False
+    liquidation_fill_count: int = 0
+    liquidation_notional_usd: Decimal = ZERO
 
 
 @dataclass(frozen=True)
@@ -65,6 +68,9 @@ class OpenSourceTrade:
     fee_usd: Decimal = ZERO
     entry_fill_count: int = 0
     close_fill_count: int = 0
+    has_liquidation: bool = False
+    liquidation_fill_count: int = 0
+    liquidation_notional_usd: Decimal = ZERO
 
     def add_entry(
         self,
@@ -89,6 +95,7 @@ class OpenSourceTrade:
         notional_usd: Decimal,
         pnl_usd: Decimal,
         fee_usd: Decimal,
+        is_liquidation: bool,
     ) -> Decimal:
         if size <= ZERO or self.remaining_size <= ZERO:
             return ZERO
@@ -101,6 +108,10 @@ class OpenSourceTrade:
         self.realized_pnl_usd += pnl_usd * ratio
         self.fee_usd += fee_usd * ratio
         self.close_fill_count += 1
+        if is_liquidation:
+            self.has_liquidation = True
+            self.liquidation_fill_count += 1
+            self.liquidation_notional_usd += notional_usd * ratio
         return closed_size
 
     @property
@@ -154,6 +165,8 @@ class ReconstructedWalletTrades:
     trades_7d: int = 0
     notional_7d: Decimal = ZERO
     net_pnl_7d: Decimal = ZERO
+    liquidation_trade_count: int = 0
+    liquidation_notional_usd: Decimal = ZERO
     items: list[ReconstructedSourceTrade] = field(default_factory=list)
     ignored_fills: list[IgnoredSourceFill] = field(default_factory=list)
     winning_trade_pnls: list[Decimal] = field(default_factory=list)
@@ -226,6 +239,9 @@ class ReconstructedWalletTrades:
         elif net_pnl_usd < ZERO:
             self.gross_loss_usd += net_pnl_usd.copy_abs()
             self.losing_trade_count += 1
+        if trade.has_liquidation:
+            self.liquidation_trade_count += 1
+            self.liquidation_notional_usd += trade.liquidation_notional_usd
 
         self._cumulative_pnl_usd += net_pnl_usd
         self._peak_pnl_usd = max(self._peak_pnl_usd, self._cumulative_pnl_usd)
@@ -304,7 +320,8 @@ async def reconstruct_wallet_trades(
               coalesce(wf.pnl_usd, 0) as pnl_usd,
               wf.size,
               wf.raw_json->>'dir' as direction,
-              wf.raw_json->>'startPosition' as start_position
+              wf.raw_json->>'startPosition' as start_position,
+              wf.raw_json ? 'liquidation' as is_liquidation
             from wallet_fills wf
             left join watched_wallets ww on ww.address = wf.wallet_address
             where wf.timestamp_ms >= :window_start_ms
@@ -407,6 +424,8 @@ async def list_reconstructed_source_trades(
             realized_pnl_usd=wallet_trades.realized_pnl_usd,
             fee_usd=wallet_trades.fee_usd,
             net_pnl_usd=wallet_trades.net_pnl_usd,
+            liquidation_trade_count=wallet_trades.liquidation_trade_count,
+            liquidation_notional_usd=wallet_trades.liquidation_notional_usd,
         ),
     )
 
@@ -586,6 +605,9 @@ def source_trade_record(item: ReconstructedSourceTrade) -> dict[str, Any]:
         "net_pnl_usd": item.net_pnl_usd,
         "entry_fill_count": item.entry_fill_count,
         "close_fill_count": item.close_fill_count,
+        "has_liquidation": item.has_liquidation,
+        "liquidation_fill_count": item.liquidation_fill_count,
+        "liquidation_notional_usd": item.liquidation_notional_usd,
     }
 
 
@@ -639,7 +661,10 @@ async def load_materialized_wallet_trades(
               st.fee_usd,
               st.net_pnl_usd,
               st.entry_fill_count,
-              st.close_fill_count
+              st.close_fill_count,
+              st.has_liquidation,
+              st.liquidation_fill_count,
+              st.liquidation_notional_usd
             from source_trades st
             left join watched_wallets ww on ww.address = st.wallet_address
             where (
@@ -762,6 +787,9 @@ def record_materialized_trade(
     elif net_pnl_usd < ZERO:
         wallet_trades.gross_loss_usd += net_pnl_usd.copy_abs()
         wallet_trades.losing_trade_count += 1
+    if item.has_liquidation:
+        wallet_trades.liquidation_trade_count += 1
+        wallet_trades.liquidation_notional_usd += item.liquidation_notional_usd
 
     wallet_trades._cumulative_pnl_usd += net_pnl_usd
     wallet_trades._peak_pnl_usd = max(
@@ -811,6 +839,9 @@ def reconstructed_source_trade_from_row(row: Mapping[str, Any]) -> Reconstructed
         net_pnl_usd=decimal_value(row["net_pnl_usd"]),
         entry_fill_count=int(row["entry_fill_count"] or 0),
         close_fill_count=int(row["close_fill_count"] or 0),
+        has_liquidation=bool(row["has_liquidation"]),
+        liquidation_fill_count=int(row["liquidation_fill_count"] or 0),
+        liquidation_notional_usd=decimal_value(row["liquidation_notional_usd"]),
     )
 
 
@@ -846,6 +877,9 @@ def source_trade_from_open_trade(
         net_pnl_usd=trade.net_pnl_usd,
         entry_fill_count=trade.entry_fill_count,
         close_fill_count=trade.close_fill_count,
+        has_liquidation=trade.has_liquidation,
+        liquidation_fill_count=trade.liquidation_fill_count,
+        liquidation_notional_usd=trade.liquidation_notional_usd,
     )
 
 
@@ -875,6 +909,7 @@ def process_trade_fill(
         fee_usd=decimal_value(row["fee_usd"]),
         pnl_usd=decimal_value(row["pnl_usd"]),
         start_position=start_position,
+        is_liquidation=bool(row["is_liquidation"]),
     )
 
     if direction == "Open Long":
@@ -932,6 +967,7 @@ class FillParts:
     fee_usd: Decimal
     pnl_usd: Decimal
     start_position: Decimal | None
+    is_liquidation: bool
 
 
 def apply_open(
@@ -986,6 +1022,7 @@ def apply_close(
         notional_usd=fill.notional_usd,
         pnl_usd=fill.pnl_usd,
         fee_usd=fill.fee_usd,
+        is_liquidation=fill.is_liquidation,
     )
     if closed_size < fill.size:
         wallet_trades.record_ignored_fill(fill, reason="unmatched_close")
@@ -1037,6 +1074,7 @@ def apply_flip(
                 fee_usd=fill.fee_usd,
                 pnl_usd=ZERO,
                 start_position=ZERO,
+                is_liquidation=False,
             ),
             size=open_size,
         )
@@ -1076,6 +1114,7 @@ def proportional_fill(fill: FillParts, *, size: Decimal) -> FillParts:
         fee_usd=fill.fee_usd * ratio,
         pnl_usd=fill.pnl_usd * ratio,
         start_position=fill.start_position,
+        is_liquidation=fill.is_liquidation,
     )
 
 

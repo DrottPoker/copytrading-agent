@@ -6,7 +6,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, literal, select, text, update
+from sqlalchemy import func, literal, select, text, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -227,6 +227,10 @@ async def get_paper_trading_summary(
             *(allocation.source_wallet for allocation in source_allocations.values()),
         ],
     )
+    liquidation_source_fill_ids = await load_liquidation_source_fill_ids(
+        session,
+        fills=closed_trades,
+    )
 
     if client is None:
         async with HyperliquidClient(resolved_settings) as hyperliquid_client:
@@ -270,7 +274,11 @@ async def get_paper_trading_summary(
             source_allocations=source_allocations,
             source_labels=source_labels,
         ),
-        closed_trades=paper_closed_trade_reads(closed_trades, source_labels=source_labels),
+        closed_trades=paper_closed_trade_reads(
+            closed_trades,
+            source_labels=source_labels,
+            liquidation_source_fill_ids=liquidation_source_fill_ids,
+        ),
         recent_fills=paper_copy_fill_reads(recent_fills, source_labels=source_labels),
         updated_at=updated_at,
         market_data_status=market_data_status(
@@ -899,6 +907,7 @@ def paper_closed_trade_reads(
     fills: list[PaperCopyFill],
     *,
     source_labels: dict[str, str],
+    liquidation_source_fill_ids: set[tuple[str, str]],
 ) -> list[dict[str, Any]]:
     return [
         {
@@ -918,11 +927,41 @@ def paper_closed_trade_reads(
             "fee_usd": fill.fee_usd,
             "realized_pnl_usd": fill.realized_pnl_usd,
             "net_pnl_usd": fill.realized_pnl_usd - fill.fee_usd,
+            "is_source_liquidation": (
+                fill.source_wallet.lower(),
+                fill.source_fill_id,
+            )
+            in liquidation_source_fill_ids,
             "closed_at": fill.filled_at,
             "created_at": fill.created_at,
         }
         for fill in fills
     ]
+
+
+async def load_liquidation_source_fill_ids(
+    session: AsyncSession,
+    *,
+    fills: list[PaperCopyFill],
+) -> set[tuple[str, str]]:
+    pairs = {
+        (fill.source_wallet.lower(), fill.source_fill_id)
+        for fill in fills
+        if fill.source_wallet and fill.source_fill_id
+    }
+    if not pairs:
+        return set()
+
+    result = await session.execute(
+        select(WalletFill.wallet_address, WalletFill.external_fill_id).where(
+            tuple_(WalletFill.wallet_address, WalletFill.external_fill_id).in_(pairs),
+            WalletFill.raw_json.has_key("liquidation"),
+        )
+    )
+    return {
+        (str(row.wallet_address).lower(), str(row.external_fill_id))
+        for row in result.all()
+    }
 
 
 def paper_copy_fill_reads(

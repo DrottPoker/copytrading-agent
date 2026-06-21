@@ -155,6 +155,7 @@ class PaperClosedTradeRead(CamelModel):
     fee_usd: Decimal
     realized_pnl_usd: Decimal
     net_pnl_usd: Decimal
+    is_source_liquidation: bool = False
     closed_at: datetime
     created_at: datetime
 

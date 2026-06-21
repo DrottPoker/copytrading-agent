@@ -81,6 +81,8 @@ class WalletScoreMetrics:
     max_inactive_gap_days: int | None
     liquidation_fill_count: int
     liquidation_event_count: int
+    liquidation_trade_count: int
+    liquidation_notional_usd: Decimal
     max_coin_notional_usd: Decimal
     max_drawdown_usd: Decimal
     current_perp_equity_usd: Decimal | None
@@ -507,6 +509,7 @@ async def load_wallet_score_metrics(
               select
                 wallet_address,
                 count(*) as liquidation_fill_count,
+                coalesce(sum(notional_usd), 0) as liquidation_notional_usd,
                 coalesce(
                   sum(
                     case
@@ -525,7 +528,8 @@ async def load_wallet_score_metrics(
               coalesce(ca.max_coin_notional_usd, 0) as max_coin_notional_usd,
               coalesce(da.max_drawdown_usd, 0) as max_drawdown_usd,
               coalesce(la.liquidation_fill_count, 0) as liquidation_fill_count,
-              coalesce(la.liquidation_event_count, 0) as liquidation_event_count
+              coalesce(la.liquidation_event_count, 0) as liquidation_event_count,
+              coalesce(la.liquidation_notional_usd, 0) as liquidation_notional_usd
             from wallet_agg wa
             left join coin_agg ca on ca.wallet_address = wa.wallet_address
             left join drawdown_agg da on da.wallet_address = wa.wallet_address
@@ -2117,10 +2121,7 @@ def calculate_penalty_items(
         if metrics.open_trade_count > 0 and metrics.trade_count == 0
         else ZERO
     )
-    liquidation_penalty = min_decimal(
-        Decimal(metrics.liquidation_event_count) * settings.scoring_liquidation_penalty_per_event,
-        settings.scoring_liquidation_penalty_max,
-    )
+    liquidation_penalty = calculate_liquidation_penalty(metrics, settings=settings)
     confidence_trade_count = max(settings.scoring_confidence_target_trades, 1)
     confidence_ratio = min_decimal(
         Decimal(metrics.trade_count) / Decimal(confidence_trade_count),
@@ -2197,11 +2198,39 @@ def calculate_penalty_items(
             max_value=settings.scoring_liquidation_penalty_max,
             detail=(
                 f"{metrics.liquidation_event_count} liquidation events observed from "
-                f"{metrics.liquidation_fill_count} liquidation fills; "
-                f"{settings.scoring_liquidation_penalty_per_event} penalty per event."
+                f"{metrics.liquidation_fill_count} liquidation fills, "
+                f"{metrics.liquidation_trade_count} reconstructed liquidation trades, "
+                f"{metrics.liquidation_notional_usd} liquidation notional. "
+                "Penalty combines a small per-event base with notional severity."
             ),
         ),
     ]
+
+
+def calculate_liquidation_penalty(
+    metrics: WalletScoreMetrics,
+    *,
+    settings: Settings,
+) -> Decimal:
+    event_penalty = (
+        Decimal(metrics.liquidation_event_count) * settings.scoring_liquidation_penalty_per_event
+    )
+    notional_base = max_decimal(
+        metrics.total_notional_usd,
+        metrics.liquidation_notional_usd,
+        ONE,
+    )
+    severity_ratio = metrics.liquidation_notional_usd / notional_base
+    severity_penalty = min_decimal(
+        severity_ratio
+        / settings.scoring_liquidation_notional_full_ratio
+        * settings.scoring_liquidation_notional_penalty_max,
+        settings.scoring_liquidation_notional_penalty_max,
+    )
+    return min_decimal(
+        event_penalty + severity_penalty,
+        settings.scoring_liquidation_penalty_max,
+    )
 
 
 def penalty_item(
@@ -2285,6 +2314,8 @@ def metrics_from_row(row: Any) -> WalletScoreMetrics:
         max_inactive_gap_days=None,
         liquidation_fill_count=int(row["liquidation_fill_count"] or 0),
         liquidation_event_count=int(row["liquidation_event_count"] or 0),
+        liquidation_trade_count=0,
+        liquidation_notional_usd=decimal_value(row["liquidation_notional_usd"]),
         max_coin_notional_usd=decimal_value(row["max_coin_notional_usd"]),
         max_drawdown_usd=decimal_value(row["max_drawdown_usd"]),
         current_perp_equity_usd=None,
@@ -2348,6 +2379,8 @@ def metrics_with_reconstructed_trades(
             max_inactive_gap_days=None,
             liquidation_fill_count=base_metrics.liquidation_fill_count,
             liquidation_event_count=base_metrics.liquidation_event_count,
+            liquidation_trade_count=0,
+            liquidation_notional_usd=base_metrics.liquidation_notional_usd,
             max_coin_notional_usd=ZERO,
             max_drawdown_usd=ZERO,
             current_perp_equity_usd=base_metrics.current_perp_equity_usd,
@@ -2407,6 +2440,8 @@ def metrics_with_reconstructed_trades(
         max_inactive_gap_days=max_inactive_gap_days(trades.active_days),
         liquidation_fill_count=base_metrics.liquidation_fill_count,
         liquidation_event_count=base_metrics.liquidation_event_count,
+        liquidation_trade_count=trades.liquidation_trade_count,
+        liquidation_notional_usd=base_metrics.liquidation_notional_usd,
         max_coin_notional_usd=trades.max_coin_notional_usd,
         max_drawdown_usd=trades.max_drawdown_usd,
         current_perp_equity_usd=base_metrics.current_perp_equity_usd,

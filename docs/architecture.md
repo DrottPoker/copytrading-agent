@@ -389,8 +389,8 @@ configured missing-state penalty. Scoring only checks default perp plus dexes
 already observed in stored fills, so full HIP-3 discovery remains limited to
 single-wallet current-state views.
 By default, current drawdown risk penalty starts at 5 percent and reaches full
-penalty at 75 percent. The final score cap starts at 20 percent current drawdown
-and reaches zero at 80 percent.
+penalty at 75 percent. The final score cap starts at 25 percent current drawdown
+and reaches zero at 100 percent.
 Consistency score measures repeatability and evenness, not profitability or win
 rate. It uses profit distribution, largest-win dependency, closed-trade ROI
 stability, downside ROI stability, active-day regularity, and max inactive gap.
@@ -417,6 +417,11 @@ low-confidence penalty. Penalty caps for low
 sample, stale trading, negative PnL, open-only activity, liquidations,
 confidence, and missing live state are configurable. Ignored fills are kept as
 diagnostic reconstruction metadata and do not reduce wallet score.
+Liquidation penalty is severity-based. It combines a small per-event base with
+liquidation notional as a share of reconstructed entry notional, then applies the
+configured cap. Materialized `source_trades` rows store liquidation flags,
+liquidation fill count, and liquidation notional so wallet source trade history
+can tag affected closed trades.
 Wallet detail pages use `GET /scores/{address}/detail` for the Detailed scoring
 modal. The endpoint recalculates the current wallet score from the same
 materialized trade metrics, then returns gross score, penalty, final score
@@ -636,7 +641,9 @@ position snapshots store Hyperliquid `positionValue` in
 `wallet_fills.notional_usd`.
 The paper summary exposes closed trade history separately from raw recent fills.
 Closed trade rows are derived from paper `close` and `flip_close` executions,
-so dashboard trade history is not a skip or fill activity log.
+so dashboard trade history is not a skip or fill activity log. The summary also
+matches closed paper fills back to original source fills and marks rows whose
+source close fill was a Hyperliquid liquidation.
 Recent fills remain available in the summary as the diagnostic fill and skip
 activity log, and the paper trading page renders them in a separate paginated
 list at the bottom of the page.

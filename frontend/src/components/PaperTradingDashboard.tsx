@@ -779,6 +779,7 @@ function ClosedTradeRow({ trade }: { trade: PaperClosedTrade }) {
           <div className="flex flex-wrap items-center gap-1">
             <p className="font-semibold text-ink">{trade.coin}</p>
             {trade.side ? <StatusPill label={trade.side} tone={trade.side === "long" ? "positive" : "warning"} /> : null}
+            {trade.isSourceLiquidation ? <StatusPill label="liquidation" tone="danger" /> : null}
             <span className="text-xs text-[#5b6770]">{formatCloseType(trade.closeType)}</span>
           </div>
           <Link

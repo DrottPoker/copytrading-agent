@@ -308,6 +308,12 @@ SCORING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("penalties", "liquidation", "per_event"): (
         "scoring_liquidation_penalty_per_event"
     ),
+    ("penalties", "liquidation", "notional_full_ratio"): (
+        "scoring_liquidation_notional_full_ratio"
+    ),
+    ("penalties", "liquidation", "notional_penalty_max"): (
+        "scoring_liquidation_notional_penalty_max"
+    ),
     ("penalties", "liquidation", "max"): "scoring_liquidation_penalty_max",
     ("penalties", "confidence", "target_trades"): "scoring_confidence_target_trades",
     ("penalties", "confidence", "max"): "scoring_confidence_penalty_max",
@@ -478,8 +484,18 @@ class Settings(BaseSettings):
     scoring_stale_days: int = Field(default=7, ge=1)
     scoring_sample_cap_max_score: Decimal = Field(default=Decimal("45"), ge=0, le=100)
     scoring_liquidation_event_gap_seconds: int = Field(default=300, ge=1)
-    scoring_liquidation_penalty_per_event: Decimal = Field(default=Decimal("2"), ge=0, le=100)
-    scoring_liquidation_penalty_max: Decimal = Field(default=Decimal("10"), ge=0, le=100)
+    scoring_liquidation_penalty_per_event: Decimal = Field(default=Decimal("0.5"), ge=0, le=100)
+    scoring_liquidation_notional_full_ratio: Decimal = Field(
+        default=Decimal("0.25"),
+        gt=0,
+        le=1,
+    )
+    scoring_liquidation_notional_penalty_max: Decimal = Field(
+        default=Decimal("4.5"),
+        ge=0,
+        le=100,
+    )
+    scoring_liquidation_penalty_max: Decimal = Field(default=Decimal("5"), ge=0, le=100)
     scoring_confidence_target_trades: int = Field(default=50, ge=1)
     scoring_confidence_penalty_max: Decimal = Field(default=Decimal("20"), ge=0, le=100)
     scoring_current_drawdown_enabled: bool = True
@@ -505,12 +521,12 @@ class Settings(BaseSettings):
         le=100,
     )
     scoring_current_drawdown_score_cap_start_ratio: Decimal = Field(
-        default=Decimal("0.20"),
+        default=Decimal("0.25"),
         ge=0,
         le=1,
     )
     scoring_current_drawdown_score_cap_zero_ratio: Decimal = Field(
-        default=Decimal("0.80"),
+        default=Decimal("1"),
         gt=0,
         le=1,
     )

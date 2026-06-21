@@ -24,6 +24,9 @@ class SourceTradeRead(CamelModel):
     net_pnl_usd: Decimal
     entry_fill_count: int
     close_fill_count: int
+    has_liquidation: bool = False
+    liquidation_fill_count: int = 0
+    liquidation_notional_usd: Decimal = Decimal("0")
 
 
 class SourceTradeSummary(CamelModel):
@@ -35,6 +38,8 @@ class SourceTradeSummary(CamelModel):
     realized_pnl_usd: Decimal
     fee_usd: Decimal
     net_pnl_usd: Decimal
+    liquidation_trade_count: int = 0
+    liquidation_notional_usd: Decimal = Decimal("0")
 
 
 class SourceTradeListResponse(CamelModel):

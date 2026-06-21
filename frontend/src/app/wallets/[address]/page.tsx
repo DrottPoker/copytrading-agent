@@ -699,6 +699,12 @@ function SourceTradesSection({ sourceTrades }: { sourceTrades: SourceTradeListRe
         <div className="flex flex-wrap gap-2">
           <StatusPill label={`${summary.closedTradeCount} closed`} tone="positive" />
           <StatusPill label={`${summary.openTradeCount} open`} tone="neutral" />
+          {summary.liquidationTradeCount > 0 ? (
+            <StatusPill
+              label={`${summary.liquidationTradeCount} liquidation`}
+              tone="danger"
+            />
+          ) : null}
           <StatusPill label={`${summary.unmatchedCloseFillCount} close-only`} tone="warning" />
           <StatusPill label={`${summary.preexistingOpenFillCount} pre-existing adds`} tone="warning" />
         </div>
@@ -754,7 +760,10 @@ function SourceTradeRow({ trade }: { trade: SourceTrade }) {
   return (
     <tr className="border-b border-line last:border-b-0">
       <td className="px-4 py-3">
-        <StatusPill label={trade.status} tone={trade.status === "closed" ? "positive" : "neutral"} />
+        <div className="flex flex-wrap gap-1">
+          <StatusPill label={trade.status} tone={trade.status === "closed" ? "positive" : "neutral"} />
+          {trade.hasLiquidation ? <StatusPill label="liquidation" tone="danger" /> : null}
+        </div>
       </td>
       <td className="px-4 py-3 font-semibold">{trade.coin}</td>
       <td className="px-4 py-3">{trade.side}</td>

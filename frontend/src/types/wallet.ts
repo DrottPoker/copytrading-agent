@@ -167,6 +167,9 @@ export type SourceTrade = {
   netPnlUsd: string;
   entryFillCount: number;
   closeFillCount: number;
+  hasLiquidation: boolean;
+  liquidationFillCount: number;
+  liquidationNotionalUsd: string;
 };
 
 export type SourceTradeSummary = {
@@ -178,6 +181,8 @@ export type SourceTradeSummary = {
   realizedPnlUsd: string;
   feeUsd: string;
   netPnlUsd: string;
+  liquidationTradeCount: number;
+  liquidationNotionalUsd: string;
 };
 
 export type SourceTradeListResponse = {

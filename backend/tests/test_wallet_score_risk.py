@@ -4,6 +4,7 @@ from decimal import Decimal
 from app.core.config import Settings
 from app.services.wallet_score_service import (
     WalletScoreMetrics,
+    calculate_liquidation_penalty,
     calculate_wallet_score,
     current_drawdown_risk_penalty,
     current_drawdown_score_cap,
@@ -21,8 +22,8 @@ def test_large_current_drawdown_is_penalized_without_zeroing_score_too_early() -
     )
 
     assert breakdown.risk_score == Decimal("9.29")
-    assert breakdown.live_risk_score_cap == Decimal("19.17")
-    assert breakdown.score == Decimal("19.17")
+    assert breakdown.live_risk_score_cap == Decimal("42.00")
+    assert breakdown.score == Decimal("42.00")
 
 
 def test_current_drawdown_penalty_is_inactive_until_start_ratio() -> None:
@@ -36,17 +37,33 @@ def test_current_drawdown_penalty_is_inactive_until_start_ratio() -> None:
 def test_current_drawdown_score_cap_is_inactive_until_start_ratio() -> None:
     settings = risk_settings()
 
-    assert current_drawdown_score_cap(Decimal("0.19"), settings=settings) is None
-    assert current_drawdown_score_cap(Decimal("0.50"), settings=settings) == Decimal("50.00")
+    assert current_drawdown_score_cap(Decimal("0.24"), settings=settings) is None
+    assert current_drawdown_score_cap(Decimal("0.625"), settings=settings) == Decimal("50.00")
+
+
+def test_liquidation_penalty_scales_with_notional_severity() -> None:
+    settings = risk_settings()
+
+    small = wallet_metrics(current_drawdown_pct=Decimal("0"))
+    small = replace_liquidation_metrics(small, notional_usd=Decimal("1000"))
+    large = wallet_metrics(current_drawdown_pct=Decimal("0"))
+    large = replace_liquidation_metrics(large, notional_usd=Decimal("25000"))
+
+    assert calculate_liquidation_penalty(small, settings=settings) == Decimal("0.68")
+    assert calculate_liquidation_penalty(large, settings=settings) == Decimal("5")
 
 
 def risk_settings() -> Settings:
     return Settings(
+        scoring_liquidation_penalty_per_event=Decimal("0.5"),
+        scoring_liquidation_notional_full_ratio=Decimal("0.25"),
+        scoring_liquidation_notional_penalty_max=Decimal("4.5"),
+        scoring_liquidation_penalty_max=Decimal("5"),
         scoring_current_drawdown_penalty_start_ratio=Decimal("0.05"),
         scoring_current_drawdown_full_penalty_ratio=Decimal("0.75"),
         scoring_current_drawdown_penalty_max=Decimal("100"),
-        scoring_current_drawdown_score_cap_start_ratio=Decimal("0.20"),
-        scoring_current_drawdown_score_cap_zero_ratio=Decimal("0.80"),
+        scoring_current_drawdown_score_cap_start_ratio=Decimal("0.25"),
+        scoring_current_drawdown_score_cap_zero_ratio=Decimal("1"),
         scoring_confidence_target_trades=50,
     )
 
@@ -82,6 +99,8 @@ def wallet_metrics(*, current_drawdown_pct: Decimal) -> WalletScoreMetrics:
         max_inactive_gap_days=2,
         liquidation_fill_count=0,
         liquidation_event_count=0,
+        liquidation_trade_count=0,
+        liquidation_notional_usd=Decimal("0"),
         max_coin_notional_usd=Decimal("25000"),
         max_drawdown_usd=Decimal("0"),
         current_perp_equity_usd=Decimal("1000"),
@@ -99,4 +118,20 @@ def wallet_metrics(*, current_drawdown_pct: Decimal) -> WalletScoreMetrics:
         trades_7d=10,
         notional_7d=Decimal("20000"),
         net_pnl_7d=Decimal("400"),
+    )
+
+
+def replace_liquidation_metrics(
+    metrics: WalletScoreMetrics,
+    *,
+    notional_usd: Decimal,
+) -> WalletScoreMetrics:
+    return WalletScoreMetrics(
+        **{
+            **metrics.__dict__,
+            "liquidation_fill_count": 1,
+            "liquidation_event_count": 1,
+            "liquidation_trade_count": 1,
+            "liquidation_notional_usd": notional_usd,
+        }
     )

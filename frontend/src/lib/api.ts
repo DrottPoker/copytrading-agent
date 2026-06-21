@@ -292,6 +292,8 @@ function emptySourceTrades(): SourceTradeListResponse {
       realizedPnlUsd: "0",
       feeUsd: "0",
       netPnlUsd: "0",
+      liquidationTradeCount: 0,
+      liquidationNotionalUsd: "0",
     },
   };
 }

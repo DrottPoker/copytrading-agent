@@ -591,7 +591,9 @@ What it does:
 - Aggregates paper PnL by source wallet so the dashboard can show which copied
   wallets made or lost money across accounts.
 - Returns a closed trade history built from paper `close` and `flip_close`
-  executions, separate from the raw recent fill and skip log.
+  executions, separate from the raw recent fill and skip log. Closed trade rows
+  include a liquidation flag when the original source close fill had a
+  Hyperliquid liquidation marker.
 - Supports manual paper-position closes from the dashboard. Manual closes price
   from the current simulated market price, apply configured adverse slippage and
   fee, update the paper account, delete the open paper position, and record a
@@ -926,8 +928,8 @@ Phase A behavior:
   those two live-state penalties is used so the same open risk is not
   double-counted.
 - Severe current drawdown also caps final score after weighted components and
-  penalties. By default, the cap starts above 20 percent current drawdown and
-  reaches zero at 80 percent current drawdown. This catches wallets that show a
+  penalties. By default, the cap starts above 25 percent current drawdown and
+  reaches zero at 100 percent current drawdown. This catches wallets that show a
   high realized win rate by leaving large losing positions open.
 - Risk loss-ratio, realized-drawdown, current-drawdown, margin-stress, and
   losing-rate penalty multipliers, caps, and live drawdown score-cap thresholds
@@ -943,10 +945,17 @@ Phase A behavior:
   `scoring_current_drawdown_missing_penalty`.
 - Adds a confidence penalty up to `scoring_confidence_penalty_max` until the
   wallet reaches `scoring_confidence_target_trades`.
-- Groups liquidation fills into account-level liquidation events and keeps them as a
-  separate final-score penalty instead of mixing them into the risk component.
-- Applies liquidation penalties from `backend/config/scoring.json`, default 2 points
-  per liquidation event capped at 10 points.
+- Groups liquidation fills into account-level liquidation events and keeps them
+  as a separate final-score penalty instead of mixing them into the risk
+  component.
+- Applies liquidation penalties from `backend/config/scoring.json` using a
+  severity model. The default adds 0.5 points per liquidation event, then adds a
+  notional severity penalty that reaches 4.5 points when liquidation notional is
+  25 percent of reconstructed entry notional. The combined liquidation penalty
+  is capped at 5 points by default.
+- Reconstructed source trades store liquidation flags, liquidation fill count,
+  and liquidation notional. Wallet source trade history and paper closed trade
+  history show a liquidation tag on affected closed trades.
 - Caps scores for wallets below the configured minimum trade count so tiny
   samples cannot rank high. The sample-cap max score is configurable.
 - Runs after each maintenance worker pool reimport when pool maintenance is enabled.
