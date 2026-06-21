@@ -386,6 +386,7 @@ class Settings(BaseSettings):
             "hyperliquid_leaderboard_day",
             "hyperliquid_leaderboard_week",
             "hyperliquid_leaderboard_month",
+            "hyperliquid_vault_leaders_week",
             "hyperliquid_vault_leaders",
         ],
         max_length=16,

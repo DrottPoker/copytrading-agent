@@ -5,6 +5,7 @@
       "hyperliquid_leaderboard_day",
       "hyperliquid_leaderboard_week",
       "hyperliquid_leaderboard_month",
+      "hyperliquid_vault_leaders_week",
       "hyperliquid_vault_leaders",
       "hyperdash_tagged",
       "hyperdash_cohorts",
@@ -57,7 +58,7 @@
     "require_positive_net_pnl": true,
     "min_profit_factor": 1.2,
     "min_win_rate": null,
-    "max_drawdown_pct": 0.25,
+    "max_drawdown_pct": 0.40,
     "min_average_trade_notional_usd": 50,
     "max_average_trade_notional_usd": 250000
   },

@@ -148,7 +148,8 @@ What it does:
 - Stores discovery import runs so source quality can be measured over time.
 - Supports Hyperliquid 1D, 7D, 30D, and all-time leaderboard sources.
 - Defaults to Hyperliquid 1D, 7D, and 30D leaderboard discovery, Hyperliquid
-  vault leaders, leaderboard subaccounts, and configured Hyperdash sources.
+  7D and 30D vault leaders, leaderboard subaccounts, and configured Hyperdash
+  sources.
   All-time leaderboard discovery remains available manually, but is not enabled
   by default because current activity is more useful for copy trading.
 - Imports leaderboard subaccounts as candidates by default.
@@ -159,8 +160,8 @@ What it does:
 - Filters vault discovery to open `normal` vaults, excluding HLP parent/child
   protocol vaults from copy candidate intake.
 - Skips vaults below the discovery `min_account_value_usd` threshold before the
-  source limit is filled, then ranks remaining vaults by 30D ROI first and TVL
-  second.
+  source limit is filled, then ranks remaining vaults by each vault source
+  window's ROI first, 7D or 30D, and TVL second.
 - Includes configurable Hyperdash source adapters, but they require stable
   `discovery_hyperdash_*_url` config values before use.
 - Runs a configurable source-metadata prefilter after import by default.

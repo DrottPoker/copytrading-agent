@@ -59,7 +59,10 @@ HYPERLIQUID_LEADERBOARD_SOURCES = {
     "hyperliquid_leaderboard_month": "month",
     "hyperliquid_leaderboard_all_time": "allTime",
 }
-HYPERLIQUID_VAULT_SOURCE = "hyperliquid_vault_leaders"
+HYPERLIQUID_VAULT_SOURCES = {
+    "hyperliquid_vault_leaders_week": "week",
+    "hyperliquid_vault_leaders": "month",
+}
 
 HYPERDASH_URL_SETTINGS = {
     "hyperdash_copytrading": "discovery_hyperdash_copytrading_url",
@@ -160,7 +163,8 @@ SOURCE_LABELS = {
     "hyperliquid_leaderboard_week": "Hyperliquid 7D leaderboard",
     "hyperliquid_leaderboard_month": "Hyperliquid 30D leaderboard",
     "hyperliquid_leaderboard_all_time": "Hyperliquid all-time leaderboard",
-    "hyperliquid_vault_leaders": "Hyperliquid vault leaders",
+    "hyperliquid_vault_leaders_week": "Hyperliquid 7D vault leaders",
+    "hyperliquid_vault_leaders": "Hyperliquid 30D vault leaders",
     "hyperdash_copytrading": "Hyperdash copytrading",
     "hyperdash_cohorts": "Hyperdash cohorts",
     "hyperdash_tagged": "Hyperdash tagged traders",
@@ -242,12 +246,12 @@ async def list_discovery_sources(
     for source in KNOWN_DISCOVERY_SOURCES:
         provider = (
             "hyperliquid"
-            if source in HYPERLIQUID_LEADERBOARD_SOURCES or source == HYPERLIQUID_VAULT_SOURCE
+            if source in HYPERLIQUID_LEADERBOARD_SOURCES or source in HYPERLIQUID_VAULT_SOURCES
             else "hyperdash"
         )
         configured = (
             source in HYPERLIQUID_LEADERBOARD_SOURCES
-            or source == HYPERLIQUID_VAULT_SOURCE
+            or source in HYPERLIQUID_VAULT_SOURCES
             or bool(hyperdash_url_for_source(source, resolved_settings))
         )
         notes = None
@@ -927,8 +931,12 @@ async def fetch_discovery_source(
 ) -> DiscoverySourceResult:
     if source in HYPERLIQUID_LEADERBOARD_SOURCES:
         return await fetch_hyperliquid_leaderboard_source(source, limit=limit, settings=settings)
-    if source == HYPERLIQUID_VAULT_SOURCE:
-        return await fetch_hyperliquid_vault_leaders_source(limit=limit, settings=settings)
+    if source in HYPERLIQUID_VAULT_SOURCES:
+        return await fetch_hyperliquid_vault_leaders_source(
+            source,
+            limit=limit,
+            settings=settings,
+        )
     if source in HYPERDASH_URL_SETTINGS:
         return await fetch_hyperdash_source(source, limit=limit, settings=settings)
     raise UnknownDiscoverySourceError(f"Unknown discovery source: {source}")
@@ -1043,14 +1051,16 @@ async def fetch_hyperliquid_leaderboard_source(
 
 
 async def fetch_hyperliquid_vault_leaders_source(
+    source: str,
     *,
     limit: int,
     settings: Settings,
 ) -> DiscoverySourceResult:
+    window = HYPERLIQUID_VAULT_SOURCES[source]
     rows = await fetch_hyperliquid_vault_rows(settings)
     ranked_rows = sorted(
         [row for row in rows if isinstance(row, dict)],
-        key=vault_sort_value,
+        key=lambda row: vault_sort_value(row, window=window),
         reverse=True,
     )
 
@@ -1097,22 +1107,22 @@ async def fetch_hyperliquid_vault_leaders_source(
         usable_rank += 1
         rank = usable_rank
         vault_name = string_or_none(summary.get("name")) or f"Hyperliquid vault #{rank}"
-        source_pnl = vault_pnl(row, window="month")
-        if source_pnl is None:
+        source_pnl = vault_pnl(row, window=window)
+        if source_pnl is None and window == "month":
             source_pnl = vault_pnl(row, window="allTime")
-        source_roi = vault_roi(row, window="month")
+        source_roi = vault_roi(row, window=window)
         if source_roi is None:
             source_roi = estimate_roi_percent(source_pnl, tvl)
-        compact_payload = compact_vault_payload(row, rank=rank)
+        compact_payload = compact_vault_payload(row, rank=rank, window=window)
 
         if vault_address is not None:
             candidates.append(
                 DiscoveryCandidate(
                     wallet_address=vault_address,
-                    source=HYPERLIQUID_VAULT_SOURCE,
+                    source=source,
                     source_rank=rank,
-                    source_label=f"{vault_name} vault",
-                    source_cohort="vault",
+                    source_label=vault_source_label(vault_name, window=window, role="vault"),
+                    source_cohort=vault_source_cohort(window=window, role="vault"),
                     account_value=tvl,
                     source_pnl=source_pnl,
                     source_roi=source_roi,
@@ -1128,10 +1138,10 @@ async def fetch_hyperliquid_vault_leaders_source(
             candidates.append(
                 DiscoveryCandidate(
                     wallet_address=leader_address,
-                    source=HYPERLIQUID_VAULT_SOURCE,
+                    source=source,
                     source_rank=rank,
-                    source_label=f"{vault_name} leader",
-                    source_cohort="vault_leader",
+                    source_label=vault_source_label(vault_name, window=window, role="leader"),
+                    source_cohort=vault_source_cohort(window=window, role="vault_leader"),
                     account_value=tvl,
                     source_pnl=source_pnl,
                     source_roi=source_roi,
@@ -1151,6 +1161,8 @@ async def fetch_hyperliquid_vault_leaders_source(
         metadata={
             "provider": "hyperliquid",
             "source": "vaults",
+            "window": window,
+            "sortMetric": f"{window}_roi_then_tvl",
             "url": hyperliquid_vaults_url(settings),
         },
     )
@@ -1161,12 +1173,12 @@ async def fetch_hyperliquid_vault_rows(settings: Settings) -> list[Any]:
         response = await client.get(hyperliquid_vaults_url(settings))
     if response.status_code >= 400:
         raise DiscoverySourceUnavailableError(
-            f"{HYPERLIQUID_VAULT_SOURCE} request failed with status {response.status_code}."
+            f"Hyperliquid vault source request failed with status {response.status_code}."
         )
     payload = response.json()
     if not isinstance(payload, list):
         raise DiscoverySourceUnavailableError(
-            f"{HYPERLIQUID_VAULT_SOURCE} returned an unexpected shape."
+            "Hyperliquid vault source returned an unexpected shape."
         )
     return payload
 
@@ -2670,9 +2682,9 @@ def compact_leaderboard_payload(row: dict[str, Any], *, window: str) -> dict[str
     }
 
 
-def vault_sort_value(row: dict[str, Any]) -> tuple[Decimal, Decimal]:
+def vault_sort_value(row: dict[str, Any], *, window: str) -> tuple[Decimal, Decimal]:
     return (
-        vault_roi(row, window="month") or Decimal("-1000000000000"),
+        vault_roi(row, window=window) or Decimal("-1000000000000"),
         vault_tvl(row) or Decimal("0"),
     )
 
@@ -2720,7 +2732,7 @@ def decimal_string(value: Decimal | None) -> str:
     return "" if value is None else str(value)
 
 
-def compact_vault_payload(row: dict[str, Any], *, rank: int) -> dict[str, Any]:
+def compact_vault_payload(row: dict[str, Any], *, rank: int, window: str) -> dict[str, Any]:
     summary = row.get("summary") if isinstance(row.get("summary"), dict) else {}
     return {
         "name": summary.get("name"),
@@ -2735,10 +2747,25 @@ def compact_vault_payload(row: dict[str, Any], *, rank: int) -> dict[str, Any]:
         "weekPnl": decimal_string(vault_pnl(row, window="week")),
         "monthPnl": decimal_string(vault_pnl(row, window="month")),
         "allTimePnl": decimal_string(vault_pnl(row, window="allTime")),
+        "window": window,
+        "windowPnl": decimal_string(vault_pnl(row, window=window)),
+        "windowRoi": decimal_string(vault_roi(row, window=window)),
         "monthRoi": decimal_string(vault_roi(row, window="month")),
-        "sortMetric": "month_roi_then_tvl",
+        "sortMetric": f"{window}_roi_then_tvl",
         "sourceRank": rank,
     }
+
+
+def vault_source_label(vault_name: str, *, window: str, role: str) -> str:
+    if window == "month":
+        return f"{vault_name} {role}"
+    return f"{vault_name} {leaderboard_window_label(window)} {role}"
+
+
+def vault_source_cohort(*, window: str, role: str) -> str:
+    if window == "month":
+        return role
+    return f"{leaderboard_window_label(window)} {role}"
 
 
 def vault_relationship_type(summary: dict[str, Any]) -> str | None:
