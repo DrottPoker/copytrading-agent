@@ -491,7 +491,8 @@ async def load_wallet_score_metrics(
               select
                 wallet_address,
                 timestamp_ms,
-                id
+                id,
+                notional_usd
               from fills
               where raw_json ? 'liquidation'
             ),
@@ -499,6 +500,7 @@ async def load_wallet_score_metrics(
               select
                 wallet_address,
                 timestamp_ms,
+                notional_usd,
                 lag(timestamp_ms) over (
                   partition by wallet_address
                   order by timestamp_ms, id

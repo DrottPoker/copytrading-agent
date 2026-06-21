@@ -44,6 +44,9 @@ Current schema includes:
 - `paper_copy_fills`, simulated paper fills with source perp equity snapshots
 - `audit_logs`
 
+`wallet_fills.notional_usd` is stored for imported fills and backfilled from
+`price * size` by migrations when older databases are upgraded.
+
 Run migrations from the repository root:
 
 ```bash
