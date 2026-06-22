@@ -279,8 +279,8 @@ SCORING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("copyability", "weights", "execution_simplicity"): (
         "scoring_copyability_weight_execution_simplicity"
     ),
-    ("copyability", "weights", "forced_exit_frequency"): (
-        "scoring_copyability_weight_forced_exit_frequency"
+    ("copyability", "weights", "forced_exit_fill_ratio"): (
+        "scoring_copyability_weight_forced_exit_fill_ratio"
     ),
     ("copyability", "copyable_trade_ratio", "min_trade_notional_usd"): (
         "scoring_copyability_copyable_trade_min_notional_usd"
@@ -306,8 +306,8 @@ SCORING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("copyability", "execution_simplicity", "zero_score_fills_per_trade_at_or_above"): (
         "scoring_copyability_execution_zero_score_fills_per_trade_at_or_above"
     ),
-    ("copyability", "forced_exit_frequency", "zero_score_ratio"): (
-        "scoring_copyability_forced_exit_frequency_zero_score_ratio"
+    ("copyability", "forced_exit_fill_ratio", "zero_score_ratio"): (
+        "scoring_copyability_forced_exit_fill_ratio_zero_score_ratio"
     ),
     ("recency", "stale_days"): "scoring_stale_days",
     ("penalties", "no_closed_trades"): "scoring_penalty_no_closed_trades",
@@ -686,7 +686,7 @@ class Settings(BaseSettings):
         ge=0,
         le=1,
     )
-    scoring_copyability_weight_forced_exit_frequency: Decimal = Field(
+    scoring_copyability_weight_forced_exit_fill_ratio: Decimal = Field(
         default=Decimal("0.15"),
         ge=0,
         le=1,
@@ -727,7 +727,7 @@ class Settings(BaseSettings):
         gt=0,
         le=100,
     )
-    scoring_copyability_forced_exit_frequency_zero_score_ratio: Decimal = Field(
+    scoring_copyability_forced_exit_fill_ratio_zero_score_ratio: Decimal = Field(
         default=Decimal("0.20"),
         gt=0,
         le=1,

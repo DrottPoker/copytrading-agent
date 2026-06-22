@@ -166,6 +166,7 @@ class ReconstructedWalletTrades:
     notional_7d: Decimal = ZERO
     net_pnl_7d: Decimal = ZERO
     liquidation_trade_count: int = 0
+    liquidation_close_fill_count: int = 0
     liquidation_notional_usd: Decimal = ZERO
     items: list[ReconstructedSourceTrade] = field(default_factory=list)
     ignored_fills: list[IgnoredSourceFill] = field(default_factory=list)
@@ -241,6 +242,7 @@ class ReconstructedWalletTrades:
             self.losing_trade_count += 1
         if trade.has_liquidation:
             self.liquidation_trade_count += 1
+            self.liquidation_close_fill_count += trade.liquidation_fill_count
             self.liquidation_notional_usd += trade.liquidation_notional_usd
 
         self._cumulative_pnl_usd += net_pnl_usd
@@ -789,6 +791,7 @@ def record_materialized_trade(
         wallet_trades.losing_trade_count += 1
     if item.has_liquidation:
         wallet_trades.liquidation_trade_count += 1
+        wallet_trades.liquidation_close_fill_count += item.liquidation_fill_count
         wallet_trades.liquidation_notional_usd += item.liquidation_notional_usd
 
     wallet_trades._cumulative_pnl_usd += net_pnl_usd

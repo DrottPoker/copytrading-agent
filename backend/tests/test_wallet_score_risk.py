@@ -7,7 +7,7 @@ from app.services.wallet_score_service import (
     calculate_wallet_score,
     current_drawdown_risk_penalty,
     current_drawdown_score_cap,
-    forced_exit_frequency_score,
+    forced_exit_fill_ratio_score,
     forced_exit_severity_penalty,
 )
 
@@ -46,37 +46,39 @@ def test_forced_exit_severity_scales_with_notional_even_when_profitable() -> Non
     settings = risk_settings()
 
     small = wallet_metrics(current_drawdown_pct=Decimal("0"))
-    small = replace_forced_exit_metrics(small, trade_count=1, notional_usd=Decimal("1000"))
+    small = replace_forced_exit_metrics(small, notional_usd=Decimal("1000"))
     large = wallet_metrics(current_drawdown_pct=Decimal("0"))
-    large = replace_forced_exit_metrics(large, trade_count=1, notional_usd=Decimal("25000"))
+    large = replace_forced_exit_metrics(large, notional_usd=Decimal("25000"))
 
     assert forced_exit_severity_penalty(small, settings=settings) == Decimal("0.60")
     assert forced_exit_severity_penalty(large, settings=settings) == Decimal("15")
 
 
-def test_forced_exit_frequency_reduces_copyability() -> None:
+def test_forced_exit_fill_ratio_reduces_copyability() -> None:
     settings = risk_settings()
 
     rare = replace_forced_exit_metrics(
         wallet_metrics(current_drawdown_pct=Decimal("0")),
-        trade_count=1,
+        close_fill_count=100,
+        liquidation_close_fill_count=2,
         notional_usd=Decimal("1000"),
     )
     frequent = replace_forced_exit_metrics(
         wallet_metrics(current_drawdown_pct=Decimal("0")),
-        trade_count=10,
+        close_fill_count=100,
+        liquidation_close_fill_count=20,
         notional_usd=Decimal("1000"),
     )
 
-    assert forced_exit_frequency_score(rare, settings=settings) == Decimal("90.00")
-    assert forced_exit_frequency_score(frequent, settings=settings) == Decimal("0")
+    assert forced_exit_fill_ratio_score(rare, settings=settings) == Decimal("90.00")
+    assert forced_exit_fill_ratio_score(frequent, settings=settings) == Decimal("0")
 
 
 def risk_settings() -> Settings:
     return Settings(
         scoring_forced_exit_notional_full_ratio=Decimal("0.25"),
         scoring_forced_exit_penalty_max=Decimal("15"),
-        scoring_copyability_forced_exit_frequency_zero_score_ratio=Decimal("0.20"),
+        scoring_copyability_forced_exit_fill_ratio_zero_score_ratio=Decimal("0.20"),
         scoring_current_drawdown_penalty_start_ratio=Decimal("0.05"),
         scoring_current_drawdown_full_penalty_ratio=Decimal("0.75"),
         scoring_current_drawdown_penalty_max=Decimal("100"),
@@ -93,6 +95,7 @@ def wallet_metrics(*, current_drawdown_pct: Decimal) -> WalletScoreMetrics:
         trade_count=50,
         ignored_fill_count=0,
         open_trade_count=1,
+        close_fill_count=100,
         unique_coin_count=5,
         active_days=20,
         total_notional_usd=Decimal("100000"),
@@ -118,6 +121,7 @@ def wallet_metrics(*, current_drawdown_pct: Decimal) -> WalletScoreMetrics:
         liquidation_fill_count=0,
         liquidation_event_count=0,
         liquidation_trade_count=0,
+        liquidation_close_fill_count=0,
         liquidation_notional_usd=Decimal("0"),
         max_coin_notional_usd=Decimal("25000"),
         max_drawdown_usd=Decimal("0"),
@@ -142,15 +146,18 @@ def wallet_metrics(*, current_drawdown_pct: Decimal) -> WalletScoreMetrics:
 def replace_forced_exit_metrics(
     metrics: WalletScoreMetrics,
     *,
-    trade_count: int,
+    close_fill_count: int = 100,
+    liquidation_close_fill_count: int = 1,
     notional_usd: Decimal,
 ) -> WalletScoreMetrics:
     return WalletScoreMetrics(
         **{
             **metrics.__dict__,
-            "liquidation_fill_count": trade_count,
-            "liquidation_event_count": trade_count,
-            "liquidation_trade_count": trade_count,
+            "close_fill_count": close_fill_count,
+            "liquidation_fill_count": liquidation_close_fill_count,
+            "liquidation_event_count": liquidation_close_fill_count,
+            "liquidation_trade_count": 1,
+            "liquidation_close_fill_count": liquidation_close_fill_count,
             "liquidation_notional_usd": notional_usd,
         }
     )

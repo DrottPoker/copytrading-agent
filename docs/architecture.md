@@ -420,12 +420,12 @@ wallet score.
 Forced exits are scored inside Risk and Copyability, not as a separate
 final-score penalty. Risk includes forced-exit severity, which compares
 liquidation-tagged close notional with reconstructed entry notional. Copyability
-includes forced-exit frequency, which compares liquidation-tagged reconstructed
-trades with total closed trades. Profitable forced exits still count as these
-signals because exact liquidation behavior is difficult to copy. Materialized
-`source_trades` rows store liquidation flags, liquidation fill count, and
-liquidation notional so wallet source trade history can tag affected closed
-trades.
+includes forced-exit fill ratio, which compares liquidation-tagged reconstructed
+close fills with total reconstructed close fills. Profitable forced exits still
+count as these signals because exact liquidation behavior is difficult to copy.
+Materialized `source_trades` rows store liquidation flags, liquidation fill
+count, and liquidation notional so wallet source trade history can tag affected
+closed trades.
 Wallet detail pages use `GET /scores/{address}/detail` for the Detailed scoring
 modal. The endpoint recalculates the current wallet score from the same
 materialized trade metrics, then returns gross score, penalty, final score

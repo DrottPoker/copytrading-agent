@@ -102,7 +102,7 @@
       "median_trade_notional": 0.22,
       "p25_trade_notional": 0.18,
       "execution_simplicity": 0.10,
-      "forced_exit_frequency": 0.15
+      "forced_exit_fill_ratio": 0.15
     },
     "copyable_trade_ratio": {
       "min_trade_notional_usd": 5
@@ -118,7 +118,7 @@
       "full_score_fills_per_trade_at_or_below": 4,
       "zero_score_fills_per_trade_at_or_above": 20
     },
-    "forced_exit_frequency": {
+    "forced_exit_fill_ratio": {
       "zero_score_ratio": 0.2
     }
   },

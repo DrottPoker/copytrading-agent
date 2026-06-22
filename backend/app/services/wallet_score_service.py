@@ -57,6 +57,7 @@ class WalletScoreMetrics:
     trade_count: int
     ignored_fill_count: int
     open_trade_count: int
+    close_fill_count: int
     unique_coin_count: int
     active_days: int
     total_notional_usd: Decimal
@@ -82,6 +83,7 @@ class WalletScoreMetrics:
     liquidation_fill_count: int
     liquidation_event_count: int
     liquidation_trade_count: int
+    liquidation_close_fill_count: int
     liquidation_notional_usd: Decimal
     max_coin_notional_usd: Decimal
     max_drawdown_usd: Decimal
@@ -870,7 +872,7 @@ def calculate_score_explanation(
             weight_sum=weight_sum,
             detail=(
                 "Copyability scores whether the trade set is practical to follow, "
-                "including forced-exit frequency."
+                "including forced-exit fill ratio."
             ),
             items=copyability_score_items(metrics, settings=settings),
         ),
@@ -1303,13 +1305,13 @@ def copyability_score_items(
         metrics.average_fills_per_trade,
         settings=settings,
     )
-    forced_exit_score = forced_exit_frequency_score(metrics, settings=settings)
+    forced_exit_score = forced_exit_fill_ratio_score(metrics, settings=settings)
     weight_sum = score_group_weight_sum(
         settings.scoring_copyability_weight_copyable_trade_ratio,
         settings.scoring_copyability_weight_median_trade_notional,
         settings.scoring_copyability_weight_p25_trade_notional,
         settings.scoring_copyability_weight_execution_simplicity,
-        settings.scoring_copyability_weight_forced_exit_frequency,
+        settings.scoring_copyability_weight_forced_exit_fill_ratio,
     )
     return [
         detail_item(
@@ -1367,18 +1369,19 @@ def copyability_score_items(
             ),
         ),
         detail_item(
-            key="forced_exit_frequency",
-            label="Forced exit frequency",
-            value=forced_exit_frequency(metrics),
+            key="forced_exit_fill_ratio",
+            label="Forced exit fill ratio",
+            value=forced_exit_fill_ratio(metrics),
             value_kind="percent",
             score=forced_exit_score,
             weight=score_group_weight(
-                settings.scoring_copyability_weight_forced_exit_frequency,
+                settings.scoring_copyability_weight_forced_exit_fill_ratio,
                 weight_sum,
             ),
             detail=(
-                "Liquidation-tagged reconstructed trades divided by closed trades. "
-                f"{settings.scoring_copyability_forced_exit_frequency_zero_score_ratio:.0%} "
+                "Liquidation-tagged reconstructed close fills divided by all "
+                "reconstructed close fills. "
+                f"{settings.scoring_copyability_forced_exit_fill_ratio_zero_score_ratio:.0%} "
                 "or more scores zero for this input."
             ),
         ),
@@ -2012,7 +2015,7 @@ def calculate_copyability_score(
         metrics.average_fills_per_trade,
         settings=settings,
     )
-    forced_exit_score = forced_exit_frequency_score(metrics, settings=settings)
+    forced_exit_score = forced_exit_fill_ratio_score(metrics, settings=settings)
     return weighted_score(
         (
             (
@@ -2033,7 +2036,7 @@ def calculate_copyability_score(
             ),
             (
                 forced_exit_score,
-                settings.scoring_copyability_weight_forced_exit_frequency,
+                settings.scoring_copyability_weight_forced_exit_fill_ratio,
             ),
         )
     )
@@ -2085,21 +2088,21 @@ def execution_simplicity_score(
     )
 
 
-def forced_exit_frequency(metrics: WalletScoreMetrics) -> Decimal | None:
-    if metrics.trade_count <= 0:
+def forced_exit_fill_ratio(metrics: WalletScoreMetrics) -> Decimal | None:
+    if metrics.close_fill_count <= 0:
         return None
-    return Decimal(metrics.liquidation_trade_count) / Decimal(metrics.trade_count)
+    return Decimal(metrics.liquidation_close_fill_count) / Decimal(metrics.close_fill_count)
 
 
-def forced_exit_frequency_score(
+def forced_exit_fill_ratio_score(
     metrics: WalletScoreMetrics,
     *,
     settings: Settings,
 ) -> Decimal:
     return inverse_range_score(
-        forced_exit_frequency(metrics),
+        forced_exit_fill_ratio(metrics),
         ZERO,
-        settings.scoring_copyability_forced_exit_frequency_zero_score_ratio,
+        settings.scoring_copyability_forced_exit_fill_ratio_zero_score_ratio,
     )
 
 
@@ -2331,6 +2334,7 @@ def metrics_from_row(row: Any) -> WalletScoreMetrics:
         trade_count=0,
         ignored_fill_count=0,
         open_trade_count=0,
+        close_fill_count=0,
         unique_coin_count=int(row["unique_coin_count"] or 0),
         active_days=int(row["active_days"] or 0),
         total_notional_usd=decimal_value(row["total_notional_usd"]),
@@ -2356,6 +2360,7 @@ def metrics_from_row(row: Any) -> WalletScoreMetrics:
         liquidation_fill_count=int(row["liquidation_fill_count"] or 0),
         liquidation_event_count=int(row["liquidation_event_count"] or 0),
         liquidation_trade_count=0,
+        liquidation_close_fill_count=0,
         liquidation_notional_usd=decimal_value(row["liquidation_notional_usd"]),
         max_coin_notional_usd=decimal_value(row["max_coin_notional_usd"]),
         max_drawdown_usd=decimal_value(row["max_drawdown_usd"]),
@@ -2396,6 +2401,7 @@ def metrics_with_reconstructed_trades(
             trade_count=0,
             ignored_fill_count=base_metrics.fill_count,
             open_trade_count=0,
+            close_fill_count=0,
             unique_coin_count=0,
             active_days=0,
             total_notional_usd=ZERO,
@@ -2421,6 +2427,7 @@ def metrics_with_reconstructed_trades(
             liquidation_fill_count=base_metrics.liquidation_fill_count,
             liquidation_event_count=base_metrics.liquidation_event_count,
             liquidation_trade_count=0,
+            liquidation_close_fill_count=0,
             liquidation_notional_usd=ZERO,
             max_coin_notional_usd=ZERO,
             max_drawdown_usd=ZERO,
@@ -2451,6 +2458,7 @@ def metrics_with_reconstructed_trades(
         trade_count=trades.closed_trade_count,
         ignored_fill_count=ignored_fill_count,
         open_trade_count=trades.open_trade_count,
+        close_fill_count=trades.close_fill_count,
         unique_coin_count=trades.unique_coin_count,
         active_days=trades.active_day_count,
         total_notional_usd=trades.total_entry_notional_usd,
@@ -2482,6 +2490,7 @@ def metrics_with_reconstructed_trades(
         liquidation_fill_count=base_metrics.liquidation_fill_count,
         liquidation_event_count=base_metrics.liquidation_event_count,
         liquidation_trade_count=trades.liquidation_trade_count,
+        liquidation_close_fill_count=trades.liquidation_close_fill_count,
         liquidation_notional_usd=trades.liquidation_notional_usd,
         max_coin_notional_usd=trades.max_coin_notional_usd,
         max_drawdown_usd=trades.max_drawdown_usd,

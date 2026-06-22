@@ -949,10 +949,11 @@ Phase A behavior:
 - Scores forced exits through the normal components instead of a separate
   final-score penalty. Risk includes forced-exit severity, based on
   liquidation-tagged close notional as a share of reconstructed entry notional.
-  Copyability includes forced-exit frequency, based on liquidation-tagged
-  reconstructed trades as a share of closed trades. Profitable forced exits are
-  still counted as risk and copyability signals because they are hard to copy
-  exactly, but they are no longer treated as direct final-score penalties.
+  Copyability includes forced-exit fill ratio, based on liquidation-tagged
+  reconstructed close fills as a share of all reconstructed close fills.
+  Profitable forced exits are still counted as risk and copyability signals
+  because they are hard to copy exactly, but they are no longer treated as
+  direct final-score penalties.
 - Reconstructed source trades store liquidation flags, liquidation fill count,
   and liquidation notional. Wallet source trade history and paper closed trade
   history show a liquidation tag on affected closed trades.
