@@ -295,6 +295,7 @@ function emptySourceTrades(): SourceTradeListResponse {
       liquidationTradeCount: 0,
       liquidationNotionalUsd: "0",
     },
+    windows: [],
   };
 }
 

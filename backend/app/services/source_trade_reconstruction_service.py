@@ -1,6 +1,6 @@
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -9,7 +9,11 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import SourceTrade, SourceTradeIgnoredFill, SourceTradeSyncState
-from app.schemas.source_trade import SourceTradeListResponse, SourceTradeSummary
+from app.schemas.source_trade import (
+    SourceTradeListResponse,
+    SourceTradeSummary,
+    SourceTradeWindowStats,
+)
 from app.schemas.wallet import normalize_wallet_address
 
 ZERO = Decimal("0")
@@ -458,7 +462,101 @@ async def list_reconstructed_source_trades(
             liquidation_trade_count=wallet_trades.liquidation_trade_count,
             liquidation_notional_usd=wallet_trades.liquidation_notional_usd,
         ),
+        windows=source_trade_windows(items, now=now),
     )
+
+
+def source_trade_windows(
+    items: list[ReconstructedSourceTrade],
+    *,
+    now: datetime,
+) -> list[SourceTradeWindowStats]:
+    return [
+        source_trade_window_stats(
+            items,
+            label="24h",
+            start_time_ms=timestamp_ms(now - timedelta(days=1)),
+            include_open=False,
+        ),
+        source_trade_window_stats(
+            items,
+            label="7d",
+            start_time_ms=timestamp_ms(now - timedelta(days=7)),
+            include_open=False,
+        ),
+        source_trade_window_stats(
+            items,
+            label="30d",
+            start_time_ms=timestamp_ms(now - timedelta(days=30)),
+            include_open=False,
+        ),
+        source_trade_window_stats(
+            items,
+            label="60d score window",
+            start_time_ms=timestamp_ms(now - timedelta(days=60)),
+            include_open=True,
+        ),
+        source_trade_window_stats(
+            items,
+            label="All time",
+            start_time_ms=None,
+            include_open=True,
+        ),
+    ]
+
+
+def source_trade_window_stats(
+    items: list[ReconstructedSourceTrade],
+    *,
+    label: str,
+    start_time_ms: int | None,
+    include_open: bool,
+) -> SourceTradeWindowStats:
+    included = [
+        item
+        for item in items
+        if source_trade_in_window(item, start_time_ms=start_time_ms, include_open=include_open)
+    ]
+    closed_items = [item for item in included if item.status == "closed"]
+    open_items = [item for item in included if item.status == "open"]
+    entry_notional_usd = sum_decimal(item.entry_notional_usd for item in included)
+    realized_pnl_usd = sum_decimal(item.realized_pnl_usd for item in included)
+    fee_usd = sum_decimal(item.fee_usd for item in included)
+    net_pnl_usd = sum_decimal(item.net_pnl_usd for item in included)
+    winning_closed_count = sum(1 for item in closed_items if item.net_pnl_usd > ZERO)
+
+    return SourceTradeWindowStats(
+        label=label,
+        closed_trade_count=len(closed_items),
+        open_trade_count=len(open_items),
+        entry_notional_usd=entry_notional_usd,
+        realized_pnl_usd=realized_pnl_usd,
+        fee_usd=fee_usd,
+        net_pnl_usd=net_pnl_usd,
+        roi_pct=net_pnl_usd / entry_notional_usd if entry_notional_usd > ZERO else None,
+        win_rate=(
+            Decimal(winning_closed_count) / Decimal(len(closed_items))
+            if closed_items
+            else None
+        ),
+    )
+
+
+def source_trade_in_window(
+    item: ReconstructedSourceTrade,
+    *,
+    start_time_ms: int | None,
+    include_open: bool,
+) -> bool:
+    if item.status == "open":
+        return include_open
+    if item.closed_at_ms is None:
+        return False
+    return start_time_ms is None or item.closed_at_ms >= start_time_ms
+
+
+def timestamp_ms(value: datetime) -> int:
+    return int(value.timestamp() * 1000)
 
 
 async def sync_materialized_source_trades(
@@ -1195,3 +1293,11 @@ def decimal_or_none(value: Any) -> Decimal | None:
 def decimal_value(value: Any) -> Decimal:
     parsed = decimal_or_none(value)
     return parsed if parsed is not None else ZERO
+
+
+def sum_decimal(values: Any) -> Decimal:
+    total = ZERO
+    for value in values:
+        if value is not None:
+            total += value
+    return total

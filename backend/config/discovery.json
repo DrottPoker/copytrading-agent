@@ -47,7 +47,7 @@
     "accept_if_metrics_missing": true
   },
   "candidate_backfill": {
-    "days": 60,
+    "days": 90,
     "max_pages": 5,
     "target_fills": 10000,
     "batch_size": 10

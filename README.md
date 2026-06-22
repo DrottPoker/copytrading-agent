@@ -115,8 +115,9 @@ Dashboard:
 
 - Use `Import fills` in the Wallet Pool row.
 - Open a wallet detail page from the address link to inspect recent fills.
-- Wallet detail pages show 24h, 7d, 30d, and all-time windows for the imported
-  fill history available in the database.
+- Wallet detail pages show 24h, 7d, 30d, 60D score-window, and all-time
+  performance windows from reconstructed source trades. Close-only and
+  pre-existing-position fills are excluded from these windows.
 - Wallet detail pages also show current perp state, open position times when
   reconstructed, unrealized PnL, current unrealized drawdown, and spot balances.
 
@@ -255,6 +256,8 @@ Notes:
 - Discovery auto-import runs every 6 hours by default.
 - Discovery config is organized into discovery sources, import scheduling,
   prefiltering, candidate backfill, quality checks, and promotion.
+- Discovery candidate backfill and pool fill reimport use 90 days of historical
+  fills by default so source-trade reconstruction has a larger entry window.
 - Pool reimport and shared fill-import guards live in
   `backend/config/pool_fill_import.json`.
 - Discovery imports only new addresses, skipping wallets already in candidates or in the pool.

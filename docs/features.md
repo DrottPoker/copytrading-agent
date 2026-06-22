@@ -206,7 +206,8 @@ What it does:
 - Returns fetched, inserted, and duplicate counts.
 - Returns raw fetched and page counts so spot-heavy wallets are visible during import.
 - The pool importer works through all enabled wallets in configured batches.
-- First-time wallets get the full configured backfill window; already-polled wallets refresh incrementally.
+- First-time wallets get the full configured backfill window, 90 days by
+  default. Already-polled wallets refresh incrementally.
 - Manual pool reimport uses `force=true` by default, so it refreshes the full
   enabled pool regardless of `last_polled_at`.
 - Worker pool maintenance runs every 30 minutes by default and uses the same
@@ -488,8 +489,9 @@ What it does:
 - Shows wallet-level statistics.
 - Shows the wallet's current rank in the scored wallet pool.
 - Shows total fills, notional, PnL, fees, win rate, latency, and realtime/snapshot split.
-- Shows 24h, 7d, 30d, and all-time windows with PnL, net ROI, notional, fees,
-  and fills.
+- Shows 24h, 7d, 30d, 60D score-window, and all-time performance windows from
+  reconstructed source trades. Close-only and pre-existing-position fills are
+  excluded from these performance windows.
 - Shows top traded coins.
 - Shows reconstructed source trades for the wallet.
 - Shows copy trades associated with the source wallet when paper/live trades exist.
@@ -884,7 +886,9 @@ Purpose:
 
 Phase A behavior:
 
-- Uses imported fills from the configured scoring window, default 60 days.
+- Uses imported fills from the configured scoring window, default 60 days. This
+  remains shorter than the 90 day import and backfill window so wallets can
+  improve or deteriorate without old history dominating the score.
 - Stores the latest score in `wallet_scores`.
 - Deletes stale `wallet_scores` rows for wallets that no longer exist in the
   watched wallet pool.

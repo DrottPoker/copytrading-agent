@@ -185,6 +185,18 @@ export type SourceTradeSummary = {
   liquidationNotionalUsd: string;
 };
 
+export type SourceTradeWindowStats = {
+  label: string;
+  closedTradeCount: number;
+  openTradeCount: number;
+  entryNotionalUsd: string;
+  realizedPnlUsd: string;
+  feeUsd: string;
+  netPnlUsd: string;
+  roiPct: string | null;
+  winRate: string | null;
+};
+
 export type SourceTradeListResponse = {
   items: SourceTrade[];
   total: number;
@@ -192,6 +204,7 @@ export type SourceTradeListResponse = {
   offset: number;
   days: number | null;
   summary: SourceTradeSummary;
+  windows: SourceTradeWindowStats[];
 };
 
 export type WalletFillImportResponse = {

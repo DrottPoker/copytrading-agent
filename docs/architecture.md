@@ -319,10 +319,10 @@ sequenceDiagram
 ```
 
 Retention cleanup is manual and uses a database-backed job lock. The default
-retention window is 90 days, which is above the default 60 day scoring and pool
-import windows. Source trade sync state is cleared for affected wallets so the
-next scoring run or wallet detail request rebuilds source trades from retained
-fills.
+retention window is 90 days, matching the default pool import and candidate
+backfill windows. The default scoring window stays 60 days. Source trade sync
+state is cleared for affected wallets so the next scoring run or wallet detail
+request rebuilds source trades from retained fills.
 Ignored-fill cleanup is a separate manual action. It has its own job lock, runs
 as dry-run by default, and only deletes raw ignored fills that are not required
 for source-trade reconstruction.

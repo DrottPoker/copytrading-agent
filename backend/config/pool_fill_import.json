@@ -7,7 +7,7 @@
     "min_wallet_interval_seconds": 1800,
     "batch_size": 50,
     "max_batches": 200,
-    "days": 60,
+    "days": 90,
     "max_pages": 5,
     "overlap_seconds": 300
   },

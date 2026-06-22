@@ -16,6 +16,7 @@ import type {
   CopyTrade,
   SourceTrade,
   SourceTradeListResponse,
+  SourceTradeWindowStats,
   WalletCoinStats,
   WalletCurrentStateStats,
   WalletFill,
@@ -25,7 +26,6 @@ import type {
   WalletScorePenaltyItem,
   WalletSpotBalanceStats,
   WalletStats,
-  WalletWindowStats,
 } from "@/types/wallet";
 
 export default async function WalletDetailPage({
@@ -83,7 +83,11 @@ export default async function WalletDetailPage({
             <HeaderMetric
               label="Score PnL"
               value={wallet.score ? formatCurrency(wallet.score.copyablePnlUsd) : "-"}
-              detail={wallet.score ? "realized in score window" : undefined}
+              detail={
+                wallet.score
+                  ? `${formatInteger(scoreDetail?.windowDays ?? 60)}D score window`
+                  : undefined
+              }
               tone={numberValue(wallet.score?.copyablePnlUsd ?? 0) >= 0 ? "positive" : "danger"}
             />
             <HeaderMetric
@@ -130,7 +134,7 @@ export default async function WalletDetailPage({
 
       {stats?.currentState ? <CurrentStateSection state={stats.currentState} /> : null}
 
-      {stats ? <WindowStatsSection windows={stats.windows} /> : null}
+      <SourceTradeWindowsSection windows={sourceTrades.windows} />
 
       <SourceTradesSection sourceTrades={sourceTrades} />
 
@@ -154,9 +158,9 @@ function WalletStatsPanel({ stats }: { stats: WalletStats }) {
         detail={`${formatInteger(stats.uniqueCoinCount)} coins traded`}
       />
       <StatTile
-        label="Realized PnL"
+        label="Raw Fill PnL"
         value={formatCurrency(stats.totalPnlUsd)}
-        detail={`${formatPercent(stats.winRate)} profitable fill rate`}
+        detail="Diagnostic, not scoring"
         tone={numberValue(stats.totalPnlUsd) >= 0 ? "positive" : "danger"}
       />
       <StatTile
@@ -249,6 +253,7 @@ function ScoreBreakdownSection({
     scoreDetail?.openPositionStressPct ?? score.openPositionStressPct;
   const currentDrawdownStatus =
     scoreDetail?.currentDrawdownStatus ?? score.currentDrawdownStatus;
+  const scoreWindowDays = scoreDetail?.windowDays ?? 60;
 
   return (
     <section className="overflow-hidden rounded-lg border border-line bg-panel">
@@ -256,11 +261,13 @@ function ScoreBreakdownSection({
         <div>
           <h2 className="text-base font-semibold">Score Breakdown</h2>
           <p className="mt-1 text-sm text-[#526070]">
-            Last scored {formatDate(score.updatedAt)}
+            Last scored {formatDate(score.updatedAt)}. Scoring window{" "}
+            {formatInteger(scoreWindowDays)}D.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <StatusPill label={`score ${formatScore(score.score)}`} tone={scoreTone(score.score)} />
+          <StatusPill label={`${formatInteger(scoreWindowDays)}D scoring`} tone="neutral" />
           <StatusPill label={`${formatInteger(score.tradeCount)} closed`} tone="neutral" />
           <StatusPill
             label={`penalty ${formatPenaltyScore(penalty)}`}
@@ -292,7 +299,10 @@ function ScoreBreakdownSection({
               </p>
             </div>
             <div className="grid gap-2 text-sm text-[#526070] sm:text-right">
-              <p>Score-window realized PnL {formatCurrency(score.copyablePnlUsd)}</p>
+              <p>
+                {formatInteger(scoreWindowDays)}D score realized PnL{" "}
+                {formatCurrency(score.copyablePnlUsd)}
+              </p>
               <p>Win rate {formatPercent(score.winRate)}</p>
               <p>Profit factor {formatNullableNumber(score.profitFactor)}</p>
               <p>Realized drawdown {formatPercent(realizedDrawdownPct)}</p>
@@ -630,17 +640,25 @@ function SpotBalanceRow({ balance }: { balance: WalletSpotBalanceStats }) {
   );
 }
 
-function WindowStatsSection({ windows }: { windows: WalletWindowStats[] }) {
+function SourceTradeWindowsSection({ windows }: { windows: SourceTradeWindowStats[] }) {
   return (
     <section className="overflow-hidden rounded-lg border border-line bg-panel">
       <div className="border-b border-line px-4 py-3">
-        <h2 className="text-base font-semibold">Time Windows</h2>
+        <h2 className="text-base font-semibold">Performance Windows</h2>
+        <p className="mt-1 text-sm text-[#526070]">
+          Reconstructed source trades only. Close-only and pre-existing fills are excluded.
+        </p>
       </div>
-      <div className="grid gap-0 divide-y divide-line lg:grid-cols-4 lg:divide-x lg:divide-y-0">
+      {windows.length === 0 ? (
+        <div className="px-4 py-8 text-center text-sm text-[#526070]">
+          No reconstructed source trade windows yet.
+        </div>
+      ) : null}
+      <div className="grid gap-0 divide-y divide-line xl:grid-cols-5 xl:divide-x xl:divide-y-0">
         {windows.map((window) => (
           <div key={window.label} className="p-4">
             <p className="text-xs font-medium uppercase text-[#526070]">{window.label}</p>
-            <p className={windowPnlClass(window.pnlUsd)}>{formatCurrency(window.pnlUsd)}</p>
+            <p className={windowPnlClass(window.netPnlUsd)}>{formatCurrency(window.netPnlUsd)}</p>
             <div className="mt-3 grid gap-1 text-sm text-[#526070]">
               <p>
                 ROI{" "}
@@ -648,8 +666,12 @@ function WindowStatsSection({ windows }: { windows: WalletWindowStats[] }) {
                   {formatPercent(window.roiPct)}
                 </span>
               </p>
-              <p>{formatInteger(window.fillCount)} fills</p>
-              <p>{formatCurrency(window.notionalUsd)} notional</p>
+              <p>
+                {formatInteger(window.closedTradeCount)} closed
+                {window.openTradeCount > 0 ? `, ${formatInteger(window.openTradeCount)} open` : ""}
+              </p>
+              <p>Win {formatPercent(window.winRate)}</p>
+              <p>{formatCurrency(window.entryNotionalUsd)} entry notional</p>
               <p>{formatCurrency(window.feeUsd)} fees</p>
             </div>
           </div>
@@ -711,7 +733,8 @@ function SourceTradesSection({ sourceTrades }: { sourceTrades: SourceTradeListRe
         <div>
           <h2 className="text-base font-semibold">Source Trades</h2>
           <p className="mt-1 text-sm text-[#526070]">
-            Reconstructed from {sourceTrades.days ? `${sourceTrades.days}D of` : "all"} observed open and close fills.
+            Reconstructed from {sourceTrades.days ? `${sourceTrades.days}D of` : "all"} observed
+            open and close fills. Ignored fills are diagnostics only.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">

@@ -42,6 +42,18 @@ class SourceTradeSummary(CamelModel):
     liquidation_notional_usd: Decimal = Decimal("0")
 
 
+class SourceTradeWindowStats(CamelModel):
+    label: str
+    closed_trade_count: int
+    open_trade_count: int
+    entry_notional_usd: Decimal
+    realized_pnl_usd: Decimal
+    fee_usd: Decimal
+    net_pnl_usd: Decimal
+    roi_pct: Decimal | None
+    win_rate: Decimal | None
+
+
 class SourceTradeListResponse(CamelModel):
     items: list[SourceTradeRead]
     total: int
@@ -49,3 +61,4 @@ class SourceTradeListResponse(CamelModel):
     offset: int
     days: int | None
     summary: SourceTradeSummary
+    windows: list[SourceTradeWindowStats]
