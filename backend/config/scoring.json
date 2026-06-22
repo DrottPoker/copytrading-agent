@@ -105,7 +105,7 @@
       "forced_exit_fill_ratio": 0.15
     },
     "copyable_trade_ratio": {
-      "min_trade_notional_usd": 5
+      "min_trade_notional_usd": 2
     },
     "trade_notional": {
       "min_full_score_usd": 50,
@@ -116,14 +116,14 @@
     },
     "execution_simplicity": {
       "full_score_fills_per_trade_at_or_below": 4,
-      "zero_score_fills_per_trade_at_or_above": 20
+      "zero_score_fills_per_trade_at_or_above": 50
     },
     "forced_exit_fill_ratio": {
       "zero_score_ratio": 0.2
     }
   },
   "recency": {
-    "stale_days": 7
+    "stale_days": 14
   },
   "penalties": {
     "no_closed_trades": 100,
@@ -132,7 +132,7 @@
     "stale_recency": 10,
     "open_only": 10,
     "confidence": {
-      "target_trades": 30,
+      "target_trades": 40,
       "max": 8
     }
   },
