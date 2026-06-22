@@ -83,7 +83,7 @@ export default async function WalletDetailPage({
             <HeaderMetric
               label="Score PnL"
               value={wallet.score ? formatCurrency(wallet.score.copyablePnlUsd) : "-"}
-              detail={wallet.score ? `${formatInteger(wallet.score.tradeCount)} closed in score window` : undefined}
+              detail={wallet.score ? "realized in score window" : undefined}
               tone={numberValue(wallet.score?.copyablePnlUsd ?? 0) >= 0 ? "positive" : "danger"}
             />
             <HeaderMetric
@@ -292,7 +292,7 @@ function ScoreBreakdownSection({
               </p>
             </div>
             <div className="grid gap-2 text-sm text-[#526070] sm:text-right">
-              <p>Score-window closed PnL {formatCurrency(score.copyablePnlUsd)}</p>
+              <p>Score-window realized PnL {formatCurrency(score.copyablePnlUsd)}</p>
               <p>Win rate {formatPercent(score.winRate)}</p>
               <p>Profit factor {formatNullableNumber(score.profitFactor)}</p>
               <p>Realized drawdown {formatPercent(realizedDrawdownPct)}</p>

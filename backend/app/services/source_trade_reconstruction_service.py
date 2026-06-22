@@ -148,6 +148,8 @@ class ReconstructedWalletTrades:
     active_days: set[date] = field(default_factory=set)
     coin_notional_usd: dict[str, Decimal] = field(default_factory=dict)
     total_entry_notional_usd: Decimal = ZERO
+    closed_entry_notional_usd: Decimal = ZERO
+    realized_entry_notional_usd: Decimal = ZERO
     total_close_notional_usd: Decimal = ZERO
     realized_pnl_usd: Decimal = ZERO
     fee_usd: Decimal = ZERO
@@ -186,7 +188,7 @@ class ReconstructedWalletTrades:
     def average_trade_notional_usd(self) -> Decimal:
         if self.closed_trade_count <= 0:
             return ZERO
-        return self.total_entry_notional_usd / Decimal(self.closed_trade_count)
+        return self.closed_entry_notional_usd / Decimal(self.closed_trade_count)
 
     @property
     def max_coin_notional_usd(self) -> Decimal:
@@ -229,6 +231,8 @@ class ReconstructedWalletTrades:
             self.coin_notional_usd.get(trade.coin, ZERO) + trade.entry_notional_usd
         )
         self.total_entry_notional_usd += trade.entry_notional_usd
+        self.closed_entry_notional_usd += trade.entry_notional_usd
+        self.realized_entry_notional_usd += trade.entry_notional_usd
         self.total_close_notional_usd += trade.close_notional_usd
         self.realized_pnl_usd += trade.realized_pnl_usd
         self.fee_usd += trade.fee_usd
@@ -275,15 +279,40 @@ class ReconstructedWalletTrades:
         )
 
     def record_open_trade(self, trade: OpenSourceTrade) -> None:
-        self.open_trade_count += 1
-        self.items.append(
-            source_trade_from_open_trade(
-                trade,
-                sequence=self.closed_trade_count + self.open_trade_count,
-                status="open",
-                closed_at_ms=None,
-            )
+        item = source_trade_from_open_trade(
+            trade,
+            sequence=self.closed_trade_count + self.open_trade_count + 1,
+            status="open",
+            closed_at_ms=None,
         )
+        self.record_open_trade_item(item)
+
+    def record_open_trade_item(self, item: ReconstructedSourceTrade) -> None:
+        self.open_trade_count += 1
+        self.total_entry_notional_usd += item.entry_notional_usd
+        if item.close_fill_count > 0:
+            realized_entry_notional_usd = realized_entry_notional_for_trade(item)
+            self.close_fill_count += item.close_fill_count
+            self.realized_entry_notional_usd += realized_entry_notional_usd
+            self.total_close_notional_usd += item.close_notional_usd
+            self.realized_pnl_usd += item.realized_pnl_usd
+            self.fee_usd += item.fee_usd
+            self.net_pnl_usd += item.net_pnl_usd
+            if item.net_pnl_usd > ZERO:
+                self.gross_profit_usd += item.net_pnl_usd
+            elif item.net_pnl_usd < ZERO:
+                self.gross_loss_usd += item.net_pnl_usd.copy_abs()
+            if item.has_liquidation:
+                self.liquidation_trade_count += 1
+                self.liquidation_close_fill_count += item.liquidation_fill_count
+                self.liquidation_notional_usd += item.liquidation_notional_usd
+            self._cumulative_pnl_usd += item.net_pnl_usd
+            self._peak_pnl_usd = max(self._peak_pnl_usd, self._cumulative_pnl_usd)
+            self.max_drawdown_usd = max(
+                self.max_drawdown_usd,
+                self._peak_pnl_usd - self._cumulative_pnl_usd,
+            )
+        self.items.append(item)
 
     def record_ignored_fill(self, fill: "FillParts", *, reason: str) -> None:
         if reason == "unmatched_close":
@@ -767,8 +796,7 @@ def record_materialized_trade(
     wallet_trades = get_wallet_trades(trades_by_wallet, str(row["wallet_address"]))
     item = reconstructed_source_trade_from_row(row)
     if item.status == "open":
-        wallet_trades.open_trade_count += 1
-        wallet_trades.items.append(item)
+        wallet_trades.record_open_trade_item(item)
         return
 
     closed_at_ms = int(item.closed_at_ms or item.opened_at_ms)
@@ -782,6 +810,8 @@ def record_materialized_trade(
         wallet_trades.coin_notional_usd.get(item.coin, ZERO) + item.entry_notional_usd
     )
     wallet_trades.total_entry_notional_usd += item.entry_notional_usd
+    wallet_trades.closed_entry_notional_usd += item.entry_notional_usd
+    wallet_trades.realized_entry_notional_usd += item.entry_notional_usd
     wallet_trades.total_close_notional_usd += item.close_notional_usd
     wallet_trades.realized_pnl_usd += item.realized_pnl_usd
     wallet_trades.fee_usd += item.fee_usd
@@ -888,6 +918,15 @@ def source_trade_from_open_trade(
         liquidation_fill_count=trade.liquidation_fill_count,
         liquidation_notional_usd=trade.liquidation_notional_usd,
     )
+
+
+def realized_entry_notional_for_trade(trade: ReconstructedSourceTrade) -> Decimal:
+    if trade.status == "closed":
+        return trade.entry_notional_usd
+    if trade.closed_size <= ZERO or trade.entry_size <= ZERO:
+        return ZERO
+    close_ratio = min(trade.closed_size / trade.entry_size, ONE)
+    return trade.entry_notional_usd * close_ratio
 
 
 def process_trade_fill(

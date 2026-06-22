@@ -431,6 +431,9 @@ What it does:
   to inspect a bounded window.
 - Wallet score values on the same page remain score-window metrics, while the
   source-trade table and summary default to all available wallet history.
+- Score-window realized PnL and Profitability include realized partial closes
+  from still-open source trades. Win rate and closed-trade count still only
+  count fully closed reconstructed trades.
 - Displays entry price, exit price, size, notional, realized PnL, fees, net PnL,
   duration, and entry/close fill counts.
 - Reports ignored close-only fills and adds to positions that already existed before the observed window.

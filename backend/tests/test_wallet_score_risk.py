@@ -2,14 +2,23 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from app.core.config import Settings
+from app.services.source_trade_reconstruction_service import (
+    OpenSourceTrade,
+    ReconstructedWalletTrades,
+)
 from app.services.wallet_score_service import (
     WalletScoreMetrics,
+    calculate_profitability_score,
     calculate_wallet_score,
     current_drawdown_risk_penalty,
     current_drawdown_score_cap,
     forced_exit_fill_ratio_score,
     forced_exit_severity_penalty,
+    metrics_with_reconstructed_trades,
 )
+
+ZERO = Decimal("0")
+HUNDRED = Decimal("100")
 
 
 def test_large_current_drawdown_is_penalized_without_zeroing_score_too_early() -> None:
@@ -72,6 +81,71 @@ def test_forced_exit_fill_ratio_reduces_copyability() -> None:
 
     assert forced_exit_fill_ratio_score(rare, settings=settings) == Decimal("90.00")
     assert forced_exit_fill_ratio_score(frequent, settings=settings) == Decimal("0")
+
+
+def test_open_trade_realized_loss_reduces_profitability() -> None:
+    settings = risk_settings()
+    wallet_address = "0x1111111111111111111111111111111111111111"
+    trades = ReconstructedWalletTrades(wallet_address=wallet_address)
+    closed_trade = OpenSourceTrade(
+        wallet_address=wallet_address,
+        coin="HYPE",
+        side="long",
+        opened_at_ms=1_780_000_000_000,
+    )
+    closed_trade.add_entry(
+        size=Decimal("10"),
+        notional_usd=Decimal("100"),
+        fee_usd=ZERO,
+        timestamp_ms=1_780_000_000_000,
+    )
+    closed_trade.add_close(
+        size=Decimal("10"),
+        notional_usd=Decimal("110"),
+        pnl_usd=Decimal("10"),
+        fee_usd=ZERO,
+        is_liquidation=False,
+    )
+    trades.record_closed_trade(
+        closed_trade,
+        closed_at_ms=1_780_010_000_000,
+        start_24h_ms=0,
+        start_7d_ms=0,
+    )
+    open_trade = OpenSourceTrade(
+        wallet_address=wallet_address,
+        coin="HYPE",
+        side="short",
+        opened_at_ms=1_780_020_000_000,
+    )
+    open_trade.add_entry(
+        size=Decimal("100"),
+        notional_usd=Decimal("1000"),
+        fee_usd=ZERO,
+        timestamp_ms=1_780_020_000_000,
+    )
+    open_trade.add_close(
+        size=Decimal("50"),
+        notional_usd=Decimal("450"),
+        pnl_usd=Decimal("-200"),
+        fee_usd=ZERO,
+        is_liquidation=True,
+    )
+    trades.record_open_trade(open_trade)
+
+    metrics = metrics_with_reconstructed_trades(
+        wallet_metrics(current_drawdown_pct=ZERO),
+        trades,
+        settings=settings,
+    )
+
+    assert metrics.trade_count == 1
+    assert metrics.open_trade_count == 1
+    assert metrics.net_pnl_usd == Decimal("-190")
+    assert metrics.total_notional_usd == Decimal("600")
+    assert metrics.gross_loss_usd == Decimal("200")
+    assert metrics.liquidation_trade_count == 1
+    assert calculate_profitability_score(metrics, settings=settings) < HUNDRED
 
 
 def risk_settings() -> Settings:

@@ -158,6 +158,9 @@ Notes:
   wallet. Callers can still pass `days` to inspect a bounded window.
 - Wallet score values on the same page remain score-window metrics and are
   labeled separately from all-history source trade totals.
+- Score-window realized PnL and Profitability include realized partial closes
+  from still-open source trades. Win rate and closed-trade count still only
+  count fully closed reconstructed trades.
 - Materialized source trades store whether an observed close was a liquidation,
   the liquidation fill count, and liquidation notional so trade history can tag
   affected closed trades. Scoring uses forced exits as normal component inputs:

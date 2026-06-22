@@ -30,6 +30,7 @@ from app.services.operation_status_service import (
 from app.services.source_trade_reconstruction_service import (
     ReconstructedWalletTrades,
     load_materialized_wallet_trades,
+    realized_entry_notional_for_trade,
     sync_materialized_source_trades,
 )
 from app.services.wallet_current_state_service import (
@@ -977,7 +978,8 @@ def profitability_score_items(
                 weight_sum,
             ),
             detail=(
-                "Net realized PnL divided by reconstructed entry notional. "
+                "Net realized PnL divided by reconstructed realized entry notional, "
+                "including realized partial closes from still-open trades. "
                 "0% or lower gets zero score, "
                 f"{settings.scoring_profitability_roi_full_score_at:.2%} reaches full score."
             ),
@@ -1027,7 +1029,10 @@ def profitability_score_items(
             label="Net PnL",
             value=metrics.net_pnl_usd,
             value_kind="currency",
-            detail="Reference only. Absolute dollar PnL is not scored.",
+            detail=(
+                "Reference only. Absolute dollar PnL is not scored. Includes realized "
+                "partial closes from still-open trades."
+            ),
         ),
     ]
 
@@ -1605,6 +1610,19 @@ def source_trade_roi_values(trades: ReconstructedWalletTrades) -> list[Decimal]:
         for item in trades.items
         if item.status == "closed" and item.entry_notional_usd > ZERO
     ]
+
+
+def realized_source_trade_roi_values(trades: ReconstructedWalletTrades) -> list[Decimal]:
+    values: list[Decimal] = []
+    for item in trades.items:
+        if item.status == "closed":
+            if item.entry_notional_usd > ZERO:
+                values.append(item.net_pnl_usd / item.entry_notional_usd)
+            continue
+        realized_entry_notional_usd = realized_entry_notional_for_trade(item)
+        if item.close_fill_count > 0 and realized_entry_notional_usd > ZERO:
+            values.append(item.net_pnl_usd / realized_entry_notional_usd)
+    return values
 
 
 def source_trade_notional_values(trades: ReconstructedWalletTrades) -> list[Decimal]:
@@ -2450,6 +2468,7 @@ def metrics_with_reconstructed_trades(
 
     ignored_fill_count = trades.unmatched_close_fill_count + trades.preexisting_open_fill_count
     trade_roi_values = source_trade_roi_values(trades)
+    profitability_trade_roi_values = realized_source_trade_roi_values(trades)
     trade_notional_values = source_trade_notional_values(trades)
     downside_trade_roi_values = [value for value in trade_roi_values if value < ZERO]
     return WalletScoreMetrics(
@@ -2461,16 +2480,16 @@ def metrics_with_reconstructed_trades(
         close_fill_count=trades.close_fill_count,
         unique_coin_count=trades.unique_coin_count,
         active_days=trades.active_day_count,
-        total_notional_usd=trades.total_entry_notional_usd,
+        total_notional_usd=trades.realized_entry_notional_usd,
         average_trade_notional_usd=trades.average_trade_notional_usd,
         median_trade_notional_usd=median_decimal(trade_notional_values),
         p25_trade_notional_usd=percentile_decimal(trade_notional_values, Decimal("0.25")),
         copyable_trade_ratio=copyable_trade_ratio(trade_notional_values, settings=settings),
         average_fills_per_trade=average_fills_per_trade(trades),
         average_trade_roi=average_decimal(
-            capped_trade_roi_values(trade_roi_values, settings=settings)
+            capped_trade_roi_values(profitability_trade_roi_values, settings=settings)
         ),
-        median_trade_roi=median_decimal(trade_roi_values),
+        median_trade_roi=median_decimal(profitability_trade_roi_values),
         total_pnl_usd=trades.realized_pnl_usd,
         total_fee_usd=trades.fee_usd,
         net_pnl_usd=trades.net_pnl_usd,
