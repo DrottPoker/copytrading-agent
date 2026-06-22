@@ -154,6 +154,10 @@ Notes:
   window missed the original entry.
 - Reconstructed source trades are materialized in `source_trades` and refreshed
   only when a wallet's fill count or latest fill timestamp changes.
+- Wallet detail source trades default to all materialized history for the
+  wallet. Callers can still pass `days` to inspect a bounded window.
+- Wallet score values on the same page remain score-window metrics and are
+  labeled separately from all-history source trade totals.
 - Materialized source trades store whether an observed close was a liquidation,
   the liquidation fill count, and liquidation notional so trade history can tag
   affected closed trades. Scoring uses forced exits as normal component inputs:

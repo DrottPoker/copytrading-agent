@@ -190,7 +190,7 @@ export type SourceTradeListResponse = {
   total: number;
   limit: number;
   offset: number;
-  days: number;
+  days: number | null;
   summary: SourceTradeSummary;
 };
 

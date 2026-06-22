@@ -380,13 +380,13 @@ async def list_reconstructed_source_trades(
     session: AsyncSession,
     *,
     address: str,
-    days: int,
+    days: int | None,
     limit: int = 100,
     offset: int = 0,
 ) -> SourceTradeListResponse:
     normalized_address = normalize_wallet_address(address)
     now = datetime.now(UTC)
-    window_start_ms = int((now.timestamp() - days * 86_400) * 1000)
+    window_start_ms = int((now.timestamp() - days * 86_400) * 1000) if days else None
     start_24h_ms = int((now.timestamp() - 86_400) * 1000)
     start_7d_ms = int((now.timestamp() - 7 * 86_400) * 1000)
     await sync_materialized_source_trades(
@@ -625,7 +625,7 @@ def ignored_fill_record(item: IgnoredSourceFill) -> dict[str, Any]:
 async def load_materialized_wallet_trades(
     session: AsyncSession,
     *,
-    window_start_ms: int,
+    window_start_ms: int | None,
     start_24h_ms: int,
     start_7d_ms: int,
     include_disabled: bool,
@@ -684,7 +684,8 @@ async def load_materialized_wallet_trades(
               )
               and (
                 st.status = 'open'
-                or st.closed_at_ms >= :window_start_ms
+                or cast(:window_start_ms as bigint) is null
+                or st.closed_at_ms >= cast(:window_start_ms as bigint)
               )
             order by st.wallet_address, coalesce(st.closed_at_ms, st.opened_at_ms), st.trade_key
             """
@@ -709,7 +710,7 @@ async def apply_materialized_ignored_fill_counts(
     session: AsyncSession,
     *,
     trades_by_wallet: dict[str, ReconstructedWalletTrades],
-    window_start_ms: int,
+    window_start_ms: int | None,
     include_disabled: bool,
     wallet_address: str | None,
 ) -> None:
@@ -737,7 +738,10 @@ async def apply_materialized_ignored_fill_counts(
                 cast(:wallet_address as text) is null
                 or sif.wallet_address = cast(:wallet_address as text)
               )
-              and sif.timestamp_ms >= :window_start_ms
+              and (
+                cast(:window_start_ms as bigint) is null
+                or sif.timestamp_ms >= cast(:window_start_ms as bigint)
+              )
             group by sif.wallet_address
             """
         ),

@@ -427,6 +427,10 @@ What it does:
 
 - Reconstructs source perp trades from imported fills.
 - Shows closed and currently open reconstructed source trades.
+- Defaults to all materialized history for the wallet. Callers can pass `days`
+  to inspect a bounded window.
+- Wallet score values on the same page remain score-window metrics, while the
+  source-trade table and summary default to all available wallet history.
 - Displays entry price, exit price, size, notional, realized PnL, fees, net PnL,
   duration, and entry/close fill counts.
 - Reports ignored close-only fills and adds to positions that already existed before the observed window.

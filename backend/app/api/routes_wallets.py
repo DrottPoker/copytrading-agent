@@ -289,9 +289,8 @@ async def list_wallet_copy_trades_route(
 async def list_wallet_source_trades_route(
     address: str,
     session: Annotated[AsyncSession, Depends(db_session)],
-    settings: Annotated[Settings, Depends(get_settings)],
     days: Annotated[int | None, Query(ge=1, le=365)] = None,
-    limit: Annotated[int, Query(ge=1, le=250)] = 100,
+    limit: Annotated[int, Query(ge=1, le=5000)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> SourceTradeListResponse:
     try:
@@ -299,7 +298,7 @@ async def list_wallet_source_trades_route(
         return await list_reconstructed_source_trades(
             session,
             address=address,
-            days=days or settings.scoring_window_days,
+            days=days,
             limit=limit,
             offset=offset,
         )

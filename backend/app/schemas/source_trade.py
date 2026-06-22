@@ -47,5 +47,5 @@ class SourceTradeListResponse(CamelModel):
     total: int
     limit: int
     offset: int
-    days: int
+    days: int | None
     summary: SourceTradeSummary

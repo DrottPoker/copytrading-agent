@@ -81,8 +81,9 @@ export default async function WalletDetailPage({
               tone={scoreTone(wallet.score?.score)}
             />
             <HeaderMetric
-              label="Copyable PnL"
+              label="Score PnL"
               value={wallet.score ? formatCurrency(wallet.score.copyablePnlUsd) : "-"}
+              detail={wallet.score ? `${formatInteger(wallet.score.tradeCount)} closed in score window` : undefined}
               tone={numberValue(wallet.score?.copyablePnlUsd ?? 0) >= 0 ? "positive" : "danger"}
             />
             <HeaderMetric
@@ -260,7 +261,7 @@ function ScoreBreakdownSection({
         </div>
         <div className="flex flex-wrap gap-2">
           <StatusPill label={`score ${formatScore(score.score)}`} tone={scoreTone(score.score)} />
-          <StatusPill label={`${formatInteger(score.tradeCount)} trades`} tone="neutral" />
+          <StatusPill label={`${formatInteger(score.tradeCount)} closed`} tone="neutral" />
           <StatusPill
             label={`penalty ${formatPenaltyScore(penalty)}`}
             tone={penalty >= 35 ? "danger" : penalty > 0 ? "warning" : "positive"}
@@ -291,7 +292,7 @@ function ScoreBreakdownSection({
               </p>
             </div>
             <div className="grid gap-2 text-sm text-[#526070] sm:text-right">
-              <p>Copyable PnL {formatCurrency(score.copyablePnlUsd)}</p>
+              <p>Score-window closed PnL {formatCurrency(score.copyablePnlUsd)}</p>
               <p>Win rate {formatPercent(score.winRate)}</p>
               <p>Profit factor {formatNullableNumber(score.profitFactor)}</p>
               <p>Realized drawdown {formatPercent(realizedDrawdownPct)}</p>
@@ -697,7 +698,7 @@ function SourceTradesSection({ sourceTrades }: { sourceTrades: SourceTradeListRe
         <div>
           <h2 className="text-base font-semibold">Source Trades</h2>
           <p className="mt-1 text-sm text-[#526070]">
-            Reconstructed from observed open and close fills over {sourceTrades.days}D.
+            Reconstructed from {sourceTrades.days ? `${sourceTrades.days}D of` : "all"} observed open and close fills.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">

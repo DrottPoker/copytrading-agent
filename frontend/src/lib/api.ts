@@ -263,7 +263,7 @@ export async function getWalletCopyTrades(address: string): Promise<CopyTradeLis
 export async function getWalletSourceTrades(address: string): Promise<SourceTradeListResponse> {
   try {
     const response = await backendGet(
-      `${getApiBaseUrl()}/wallets/${address}/source-trades?days=30&limit=100`,
+      `${getApiBaseUrl()}/wallets/${address}/source-trades?limit=5000`,
     );
 
     if (!response.ok) {
@@ -280,9 +280,9 @@ function emptySourceTrades(): SourceTradeListResponse {
   return {
     items: [],
     total: 0,
-    limit: 100,
+    limit: 5000,
     offset: 0,
-    days: 30,
+    days: null,
     summary: {
       closedTradeCount: 0,
       openTradeCount: 0,
