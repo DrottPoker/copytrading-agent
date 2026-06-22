@@ -14,8 +14,8 @@
   "component_weights": {
     "profitability": 0.3,
     "consistency": 0.2,
-    "risk": 0.2,
-    "copyability": 0.2,
+    "risk": 0.25,
+    "copyability": 0.15,
     "recency": 0.1
   },
   "profitability": {
