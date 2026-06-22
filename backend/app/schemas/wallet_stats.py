@@ -2,6 +2,8 @@ from decimal import Decimal
 
 from app.schemas.base import CamelModel
 
+ZERO = Decimal("0")
+
 
 class WalletWindowStats(CamelModel):
     label: str
@@ -31,6 +33,11 @@ class WalletPerpPositionStats(CamelModel):
     entry_price: Decimal | None
     position_value_usd: Decimal | None
     unrealized_pnl_usd: Decimal | None
+    realized_pnl_usd: Decimal = ZERO
+    net_pnl_usd: Decimal = ZERO
+    add_fill_count: int = 0
+    reduce_fill_count: int = 0
+    liquidation_fill_count: int = 0
     return_on_equity: Decimal | None
     margin_used_usd: Decimal | None
     liquidation_price: Decimal | None

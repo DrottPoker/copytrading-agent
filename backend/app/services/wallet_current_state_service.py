@@ -39,6 +39,17 @@ class WalletPerpStateSummary:
     raw_positions: list[dict[str, Any]]
 
 
+@dataclass
+class OpenPositionTradeStats:
+    opened_at_ms: int | None = None
+    realized_pnl_usd: Decimal = ZERO
+    fee_usd: Decimal = ZERO
+    net_pnl_usd: Decimal = ZERO
+    add_fill_count: int = 0
+    reduce_fill_count: int = 0
+    liquidation_fill_count: int = 0
+
+
 async def get_wallet_current_state(
     session: AsyncSession,
     *,
@@ -81,9 +92,9 @@ async def get_wallet_current_state(
 
     perp_summary = summarize_perp_clearinghouse_states(perp_states)
     if perp_summary.positions:
-        annotate_open_position_times(
+        annotate_open_position_source_stats(
             perp_summary.positions,
-            await load_open_source_trade_times(session, address=address),
+            await load_open_source_trade_position_stats(session, address=address),
         )
     spot_balances = parse_spot_balances(spot_state)
     if not perp_errors:
@@ -357,38 +368,76 @@ def parse_perp_positions(
     )
 
 
-async def load_open_source_trade_times(
+async def load_open_source_trade_position_stats(
     session: AsyncSession,
     *,
     address: str,
-) -> dict[tuple[str, str], int]:
+) -> dict[tuple[str, str], OpenPositionTradeStats]:
     result = await session.execute(
-        select(SourceTrade.coin, SourceTrade.side, SourceTrade.opened_at_ms).where(
+        select(
+            SourceTrade.coin,
+            SourceTrade.side,
+            SourceTrade.opened_at_ms,
+            SourceTrade.realized_pnl_usd,
+            SourceTrade.fee_usd,
+            SourceTrade.net_pnl_usd,
+            SourceTrade.entry_fill_count,
+            SourceTrade.close_fill_count,
+            SourceTrade.liquidation_fill_count,
+        ).where(
             SourceTrade.wallet_address == address.lower(),
             SourceTrade.status == "open",
         )
     )
-    opened_at_by_position: dict[tuple[str, str], int] = {}
+    stats_by_position: dict[tuple[str, str], OpenPositionTradeStats] = {}
     for row in result.mappings().all():
         coin = str(row["coin"] or "")
         side = str(row["side"] or "")
-        opened_at_ms = int(row["opened_at_ms"])
         key = (coin, side)
-        current_opened_at_ms = opened_at_by_position.get(key)
-        if current_opened_at_ms is None or opened_at_ms < current_opened_at_ms:
-            opened_at_by_position[key] = opened_at_ms
-    return opened_at_by_position
+        stats = stats_by_position.setdefault(key, OpenPositionTradeStats())
+        opened_at_ms = int(row["opened_at_ms"])
+        if stats.opened_at_ms is None or opened_at_ms < stats.opened_at_ms:
+            stats.opened_at_ms = opened_at_ms
+        stats.realized_pnl_usd += decimal_value(row["realized_pnl_usd"])
+        stats.fee_usd += decimal_value(row["fee_usd"])
+        stats.net_pnl_usd += decimal_value(row["net_pnl_usd"])
+        stats.add_fill_count += max(int(row["entry_fill_count"] or 0) - 1, 0)
+        stats.reduce_fill_count += int(row["close_fill_count"] or 0)
+        stats.liquidation_fill_count += int(row["liquidation_fill_count"] or 0)
+    return stats_by_position
 
 
-def annotate_open_position_times(
+def annotate_open_position_source_stats(
     positions: list[WalletPerpPositionStats],
-    opened_at_by_position: dict[tuple[str, str], int],
+    stats_by_position: dict[tuple[str, str], OpenPositionTradeStats],
 ) -> None:
-    if not opened_at_by_position:
+    if not stats_by_position:
         return
 
     for position in positions:
-        position.opened_at_ms = opened_at_by_position.get((position.coin, position.side))
+        stats = open_trade_stats_for_position(position, stats_by_position)
+        if stats is None:
+            continue
+        position.opened_at_ms = stats.opened_at_ms
+        position.realized_pnl_usd = stats.realized_pnl_usd
+        position.net_pnl_usd = stats.net_pnl_usd
+        position.add_fill_count = stats.add_fill_count
+        position.reduce_fill_count = stats.reduce_fill_count
+        position.liquidation_fill_count = stats.liquidation_fill_count
+
+
+def open_trade_stats_for_position(
+    position: WalletPerpPositionStats,
+    stats_by_position: dict[tuple[str, str], OpenPositionTradeStats],
+) -> OpenPositionTradeStats | None:
+    exact = stats_by_position.get((position.coin, position.side))
+    if exact is not None:
+        return exact
+
+    for (coin, side), stats in stats_by_position.items():
+        if side == position.side and coins_match(coin, position.coin):
+            return stats
+    return None
 
 
 def normalized_asset_positions(raw_positions: Any, *, dex: str = "") -> list[dict[str, Any]]:

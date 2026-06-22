@@ -62,6 +62,8 @@ async def get_wallet_stats(session: AsyncSession, *, address: str) -> WalletStat
         else None
     )
     total_notional_usd = decimal_value(aggregate_row.total_notional_usd)
+    total_pnl_usd = decimal_value(aggregate_row.total_pnl_usd)
+    total_fee_usd = decimal_value(aggregate_row.total_fee_usd)
 
     windows = [
         await get_window_stats(
@@ -82,6 +84,13 @@ async def get_wallet_stats(session: AsyncSession, *, address: str) -> WalletStat
             label="30d",
             start_time_ms=timestamp_ms(now - timedelta(days=30)),
         ),
+        wallet_window_stats_from_values(
+            label="All time",
+            fill_count=fill_count,
+            notional_usd=total_notional_usd,
+            pnl_usd=total_pnl_usd,
+            fee_usd=total_fee_usd,
+        ),
     ]
 
     return WalletStatsResponse(
@@ -99,8 +108,8 @@ async def get_wallet_stats(session: AsyncSession, *, address: str) -> WalletStat
         average_fill_notional_usd=(
             total_notional_usd / Decimal(fill_count) if fill_count > 0 else ZERO
         ),
-        total_pnl_usd=decimal_value(aggregate_row.total_pnl_usd),
-        total_fee_usd=decimal_value(aggregate_row.total_fee_usd),
+        total_pnl_usd=total_pnl_usd,
+        total_fee_usd=total_fee_usd,
         average_ingest_latency_ms=decimal_or_none(aggregate_row.average_ingest_latency_ms),
         max_ingest_latency_ms=(
             int(aggregate_row.max_ingest_latency_ms)
@@ -138,15 +147,53 @@ async def get_window_stats(
     notional_usd = decimal_value(row.notional_usd)
     pnl_usd = decimal_value(row.pnl_usd)
     fee_usd = decimal_value(row.fee_usd)
-    net_pnl_usd = pnl_usd - fee_usd
     return WalletWindowStats(
-        label=label,
-        fill_count=int(row.fill_count or 0),
-        notional_usd=notional_usd,
-        pnl_usd=pnl_usd,
-        fee_usd=fee_usd,
-        roi_pct=net_pnl_usd / notional_usd if notional_usd > ZERO else None,
+        **wallet_window_stats_values(
+            label=label,
+            fill_count=int(row.fill_count or 0),
+            notional_usd=notional_usd,
+            pnl_usd=pnl_usd,
+            fee_usd=fee_usd,
+        )
     )
+
+
+def wallet_window_stats_from_values(
+    *,
+    label: str,
+    fill_count: int,
+    notional_usd: Decimal,
+    pnl_usd: Decimal,
+    fee_usd: Decimal,
+) -> WalletWindowStats:
+    return WalletWindowStats(
+        **wallet_window_stats_values(
+            label=label,
+            fill_count=fill_count,
+            notional_usd=notional_usd,
+            pnl_usd=pnl_usd,
+            fee_usd=fee_usd,
+        )
+    )
+
+
+def wallet_window_stats_values(
+    *,
+    label: str,
+    fill_count: int,
+    notional_usd: Decimal,
+    pnl_usd: Decimal,
+    fee_usd: Decimal,
+) -> dict[str, object]:
+    net_pnl_usd = pnl_usd - fee_usd
+    return {
+        "label": label,
+        "fill_count": fill_count,
+        "notional_usd": notional_usd,
+        "pnl_usd": pnl_usd,
+        "fee_usd": fee_usd,
+        "roi_pct": net_pnl_usd / notional_usd if notional_usd > ZERO else None,
+    }
 
 
 async def get_top_coin_stats(

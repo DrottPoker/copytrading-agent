@@ -524,24 +524,25 @@ function StateMetric({
 function PerpPositionsTable({ positions }: { positions: WalletPerpPositionStats[] }) {
   return (
     <div className="overflow-x-auto border-t border-line">
-      <table className="w-full min-w-[900px] border-collapse text-left text-sm">
+      <table className="w-full min-w-[920px] border-collapse text-left text-xs">
         <thead className="border-b border-line bg-[#f7f9fb] text-xs uppercase text-[#526070]">
           <tr>
-            <th className="px-4 py-3 font-semibold">Coin</th>
-            <th className="px-4 py-3 font-semibold">Side</th>
-            <th className="px-4 py-3 font-semibold">Opened</th>
-            <th className="px-4 py-3 font-semibold">Size</th>
-            <th className="px-4 py-3 font-semibold">Entry</th>
-            <th className="px-4 py-3 font-semibold">Notional</th>
-            <th className="px-4 py-3 font-semibold">Unrealized</th>
-            <th className="px-4 py-3 font-semibold">Liq</th>
-            <th className="px-4 py-3 font-semibold">Lev</th>
+            <th className="px-3 py-2 font-semibold">Coin</th>
+            <th className="px-3 py-2 font-semibold">Side</th>
+            <th className="px-3 py-2 font-semibold">Opened</th>
+            <th className="px-3 py-2 font-semibold">Size</th>
+            <th className="px-3 py-2 font-semibold">Entry</th>
+            <th className="px-3 py-2 font-semibold">Notional</th>
+            <th className="px-3 py-2 font-semibold">PnL</th>
+            <th className="px-3 py-2 font-semibold">Fills</th>
+            <th className="px-3 py-2 font-semibold">Liq</th>
+            <th className="px-3 py-2 font-semibold">Lev</th>
           </tr>
         </thead>
         <tbody>
           {positions.length === 0 ? (
             <tr>
-              <td colSpan={9} className="px-4 py-10 text-center text-[#526070]">
+              <td colSpan={10} className="px-4 py-10 text-center text-[#526070]">
                 No open perp positions.
               </td>
             </tr>
@@ -557,19 +558,31 @@ function PerpPositionsTable({ positions }: { positions: WalletPerpPositionStats[
 function PerpPositionRow({ position }: { position: WalletPerpPositionStats }) {
   return (
     <tr className="border-b border-line last:border-b-0">
-      <td className="px-4 py-3 font-semibold">{position.coin}</td>
-      <td className="px-4 py-3">{position.side}</td>
-      <td className="px-4 py-3 text-[#526070]">
+      <td className="px-3 py-2 font-semibold">{position.coin}</td>
+      <td className="px-3 py-2">{position.side}</td>
+      <td className="px-3 py-2 text-[#526070]">
         {position.openedAtMs ? formatMs(position.openedAtMs) : "-"}
       </td>
-      <td className="px-4 py-3 font-mono">{formatCompactNumber(position.size)}</td>
-      <td className="px-4 py-3 font-mono">{formatPrice(position.entryPrice)}</td>
-      <td className="px-4 py-3 font-mono">{formatCurrency(position.positionValueUsd)}</td>
-      <td className={pnlClass(position.unrealizedPnlUsd)}>
-        {position.unrealizedPnlUsd ? formatCurrency(position.unrealizedPnlUsd) : "-"}
+      <td className="px-3 py-2 font-mono">{formatCompactNumber(position.size)}</td>
+      <td className="px-3 py-2 font-mono">{formatPrice(position.entryPrice)}</td>
+      <td className="px-3 py-2 font-mono">{formatCurrency(position.positionValueUsd)}</td>
+      <td className="px-3 py-2 font-mono">
+        <div className={pnlTextClass(position.unrealizedPnlUsd)}>
+          U {position.unrealizedPnlUsd ? formatCurrency(position.unrealizedPnlUsd) : "-"}
+        </div>
+        <div className={pnlTextClass(position.realizedPnlUsd)}>
+          R {formatCurrency(position.realizedPnlUsd)}
+        </div>
       </td>
-      <td className="px-4 py-3 font-mono">{formatPrice(position.liquidationPrice)}</td>
-      <td className="px-4 py-3">
+      <td className="px-3 py-2 font-mono text-[#526070]">
+        <div>add {formatInteger(position.addFillCount)}</div>
+        <div>reduce {formatInteger(position.reduceFillCount)}</div>
+        {position.liquidationFillCount > 0 ? (
+          <div className="text-danger">liq {formatInteger(position.liquidationFillCount)}</div>
+        ) : null}
+      </td>
+      <td className="px-3 py-2 font-mono">{formatPrice(position.liquidationPrice)}</td>
+      <td className="px-3 py-2">
         {position.leverageValue ? `${position.leverageValue}x ${position.leverageType ?? ""}` : "-"}
       </td>
     </tr>
@@ -623,7 +636,7 @@ function WindowStatsSection({ windows }: { windows: WalletWindowStats[] }) {
       <div className="border-b border-line px-4 py-3">
         <h2 className="text-base font-semibold">Time Windows</h2>
       </div>
-      <div className="grid gap-0 divide-y divide-line md:grid-cols-3 md:divide-x md:divide-y-0">
+      <div className="grid gap-0 divide-y divide-line lg:grid-cols-4 lg:divide-x lg:divide-y-0">
         {windows.map((window) => (
           <div key={window.label} className="p-4">
             <p className="text-xs font-medium uppercase text-[#526070]">{window.label}</p>
@@ -1004,6 +1017,13 @@ function pnlClass(value: string | null) {
     return base;
   }
   return numberValue(value) >= 0 ? `${base} text-positive` : `${base} text-danger`;
+}
+
+function pnlTextClass(value: string | null | undefined) {
+  if (!value) {
+    return "";
+  }
+  return numberValue(value) >= 0 ? "text-positive" : "text-danger";
 }
 
 function windowPnlClass(value: string | null) {

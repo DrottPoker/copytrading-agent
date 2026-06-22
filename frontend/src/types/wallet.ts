@@ -235,6 +235,11 @@ export type WalletPerpPositionStats = {
   entryPrice: string | null;
   positionValueUsd: string | null;
   unrealizedPnlUsd: string | null;
+  realizedPnlUsd: string;
+  netPnlUsd: string;
+  addFillCount: number;
+  reduceFillCount: number;
+  liquidationFillCount: number;
   returnOnEquity: string | null;
   marginUsedUsd: string | null;
   liquidationPrice: string | null;

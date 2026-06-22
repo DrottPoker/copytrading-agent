@@ -457,6 +457,9 @@ What it does:
 - Aggregates perp equity, margin, open positions, reconstructed position open
   times when available, and unrealized PnL across those venues. Spot balances
   are shown separately and are not counted as perp equity.
+- Open perp position rows are enriched from open reconstructed source trades
+  with realized PnL, net PnL, add fill count, reduce fill count, and
+  liquidation fill count when available.
 - Shows current unrealized drawdown as the current open perp loss divided by
   perp equity. This is separate from realized score drawdown.
 - For isolated HIP-3 positions, Hyperliquid `marginSummary.accountValue` can be
@@ -485,7 +488,8 @@ What it does:
 - Shows wallet-level statistics.
 - Shows the wallet's current rank in the scored wallet pool.
 - Shows total fills, notional, PnL, fees, win rate, latency, and realtime/snapshot split.
-- Shows 24h, 7d, and 30d windows with PnL, net ROI, notional, fees, and fills.
+- Shows 24h, 7d, 30d, and all-time windows with PnL, net ROI, notional, fees,
+  and fills.
 - Shows top traded coins.
 - Shows reconstructed source trades for the wallet.
 - Shows copy trades associated with the source wallet when paper/live trades exist.

@@ -115,6 +115,8 @@ Dashboard:
 
 - Use `Import fills` in the Wallet Pool row.
 - Open a wallet detail page from the address link to inspect recent fills.
+- Wallet detail pages show 24h, 7d, 30d, and all-time windows for the imported
+  fill history available in the database.
 - Wallet detail pages also show current perp state, open position times when
   reconstructed, unrealized PnL, current unrealized drawdown, and spot balances.
 
@@ -158,6 +160,9 @@ Notes:
   wallet. Callers can still pass `days` to inspect a bounded window.
 - Wallet score values on the same page remain score-window metrics and are
   labeled separately from all-history source trade totals.
+- Wallet detail open perp positions show live unrealized PnL from Hyperliquid
+  plus realized PnL, add fills, reduce fills, and liquidation fills from open
+  reconstructed source trades when available.
 - Score-window realized PnL and Profitability include realized partial closes
   from still-open source trades. Win rate and closed-trade count still only
   count fully closed reconstructed trades.
