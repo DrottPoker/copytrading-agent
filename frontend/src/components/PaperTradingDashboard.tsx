@@ -774,7 +774,7 @@ function ClosedTradeRow({ trade }: { trade: PaperClosedTrade }) {
   const netPnl = numberValue(trade.netPnlUsd);
   return (
     <ListRow>
-      <div className="grid gap-2 xl:grid-cols-[1.05fr_0.85fr_0.75fr_0.85fr_0.85fr_0.75fr] xl:items-center">
+      <div className="grid gap-2 xl:grid-cols-[1.05fr_0.85fr_0.8fr_0.85fr_0.85fr_0.75fr] xl:items-center">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-1">
             <p className="font-semibold text-ink">{trade.coin}</p>
@@ -793,7 +793,7 @@ function ClosedTradeRow({ trade }: { trade: PaperClosedTrade }) {
           </p>
         </div>
         <RowStat label="Net PnL" value={formatCurrency(trade.netPnlUsd)} detail={`${formatCurrency(trade.realizedPnlUsd)} realized`} tone={netPnl >= 0 ? "positive" : "danger"} />
-        <RowStat label="Closed" value={formatDate(trade.closedAt)} />
+        <RowStat label="Closed" value={formatShortDateTime(trade.closedAt)} detail={formatTradeDuration(trade.durationMs)} />
         <RowStat label="Exit" value={formatPrice(trade.exitPrice)} detail={`size ${formatSize(trade.size)}`} />
         <RowStat label="Notional" value={formatCurrency(trade.notionalUsd)} detail={`${formatCurrency(trade.marginUsd)} margin`} />
         <RowStat label="Fee" value={formatCurrency(trade.feeUsd)} detail={formatLeverage(trade.leverage)} />
@@ -1186,6 +1186,36 @@ function formatPrice(value: string | number | null | undefined) {
     maximumFractionDigits: 6,
     minimumFractionDigits: 2,
   }).format(numberValue(value));
+}
+
+function formatShortDateTime(value: string | null | undefined) {
+  if (!value) {
+    return "-";
+  }
+  return new Intl.DateTimeFormat("sv-SE", {
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    month: "2-digit",
+  }).format(new Date(value));
+}
+
+function formatTradeDuration(value: number | null | undefined) {
+  if (value === null || value === undefined) {
+    return "duration -";
+  }
+  const totalMinutes = Math.max(0, Math.round(value / 60_000));
+  if (totalMinutes < 60) {
+    return `duration ${totalMinutes}m`;
+  }
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours < 48) {
+    return minutes > 0 ? `duration ${hours}h ${minutes}m` : `duration ${hours}h`;
+  }
+  const days = Math.floor(hours / 24);
+  const restHours = hours % 24;
+  return restHours > 0 ? `duration ${days}d ${restHours}h` : `duration ${days}d`;
 }
 
 function formatBps(value: string | number | null | undefined) {

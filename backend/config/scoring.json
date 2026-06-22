@@ -119,7 +119,7 @@
       "zero_score_fills_per_trade_at_or_above": 50
     },
     "forced_exit_fill_ratio": {
-      "zero_score_ratio": 0.2
+      "zero_score_ratio": 0.1
     }
   },
   "recency": {

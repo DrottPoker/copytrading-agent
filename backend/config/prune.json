@@ -1,14 +1,14 @@
 {
   "rules": {
     "current_drawdown": {
-      "unrealized_loss_ratio": 0.8,
+      "unrealized_loss_ratio": 0.9,
       "concurrency": 8
     },
     "minimum_closed_trades": {
       "min_closed_trades": 5
     },
     "stale_fills": {
-      "min_days_without_fill": 30
+      "min_days_without_fill": 31
     },
     "realized_drawdown": {
       "max_drawdown_pct": 0.6

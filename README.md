@@ -115,8 +115,8 @@ Dashboard:
 
 - Use `Import fills` in the Wallet Pool row.
 - Open a wallet detail page from the address link to inspect recent fills.
-- Wallet detail pages also show current perp state, unrealized PnL, current
-  unrealized drawdown, and spot balances.
+- Wallet detail pages also show current perp state, open position times when
+  reconstructed, unrealized PnL, current unrealized drawdown, and spot balances.
 
 Notes:
 
@@ -374,6 +374,8 @@ Sizing policy:
   and `history` otherwise.
 - Wallet PnL history, closed trade history, and recent fills show 10 rows per
   page with pagination controls.
+- Closed trade history rows show compact close time and duration when the
+  original paper position open time is available.
 - Account rows include a reset action that restores that account's configured
   starting balance, cash balance, equity, realized PnL, and fee counters while
   leaving open positions, copied fills, and closed trade history intact.

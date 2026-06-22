@@ -230,6 +230,7 @@ export type WalletCoinStats = {
 export type WalletPerpPositionStats = {
   coin: string;
   side: "long" | "short" | "flat";
+  openedAtMs: number | null;
   size: string;
   entryPrice: string | null;
   positionValueUsd: string | null;

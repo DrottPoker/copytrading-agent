@@ -53,12 +53,12 @@
     "batch_size": 10
   },
   "quality": {
-    "min_fills": 20,
+    "min_fills": 10,
     "min_closed_trades": 5,
     "require_positive_net_pnl": true,
     "min_profit_factor": 1.2,
     "min_win_rate": null,
-    "max_drawdown_pct": 0.40,
+    "max_drawdown_pct": 0.50,
     "min_average_trade_notional_usd": 50,
     "max_average_trade_notional_usd": 250000
   },

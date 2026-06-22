@@ -447,9 +447,9 @@ What it does:
 - Queries Hyperliquid `perpDexs`, then fetches `clearinghouseState` for default
   perp plus each known perp dex so wallets with HIP-3 positions are shown
   correctly.
-- Aggregates perp equity, margin, open positions, and unrealized PnL across
-  those venues. Spot balances are shown separately and are not counted as perp
-  equity.
+- Aggregates perp equity, margin, open positions, reconstructed position open
+  times when available, and unrealized PnL across those venues. Spot balances
+  are shown separately and are not counted as perp equity.
 - Shows current unrealized drawdown as the current open perp loss divided by
   perp equity. This is separate from realized score drawdown.
 - For isolated HIP-3 positions, Hyperliquid `marginSummary.accountValue` can be
@@ -592,8 +592,9 @@ What it does:
   wallets made or lost money across accounts.
 - Returns a closed trade history built from paper `close` and `flip_close`
   executions, separate from the raw recent fill and skip log. Closed trade rows
-  include a liquidation flag when the original source close fill had a
-  Hyperliquid liquidation marker.
+  include duration when the original paper position open time is available and
+  a liquidation flag when the original source close fill had a Hyperliquid
+  liquidation marker.
 - Supports manual paper-position closes from the dashboard. Manual closes price
   from the current simulated market price, apply configured adverse slippage and
   fee, update the paper account, delete the open paper position, and record a

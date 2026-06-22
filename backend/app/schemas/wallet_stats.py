@@ -26,6 +26,7 @@ class WalletCoinStats(CamelModel):
 class WalletPerpPositionStats(CamelModel):
     coin: str
     side: str
+    opened_at_ms: int | None
     size: Decimal
     entry_price: Decimal | None
     position_value_usd: Decimal | None

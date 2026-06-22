@@ -231,6 +231,10 @@ async def get_paper_trading_summary(
         session,
         fills=closed_trades,
     )
+    opened_at_by_closed_fill_id = await load_closed_trade_open_times(
+        session,
+        fills=closed_trades,
+    )
 
     if client is None:
         async with HyperliquidClient(resolved_settings) as hyperliquid_client:
@@ -278,6 +282,7 @@ async def get_paper_trading_summary(
             closed_trades,
             source_labels=source_labels,
             liquidation_source_fill_ids=liquidation_source_fill_ids,
+            opened_at_by_closed_fill_id=opened_at_by_closed_fill_id,
         ),
         recent_fills=paper_copy_fill_reads(recent_fills, source_labels=source_labels),
         updated_at=updated_at,
@@ -455,6 +460,7 @@ async def close_paper_position_manually(
             allocation_usd=allocation_usd,
             settings=resolved_settings,
             execution_context=execution_context,
+            opened_at=position.opened_at,
         )
     )
     return PaperCopyBatchResult(
@@ -908,35 +914,107 @@ def paper_closed_trade_reads(
     *,
     source_labels: dict[str, str],
     liquidation_source_fill_ids: set[tuple[str, str]],
+    opened_at_by_closed_fill_id: dict[UUID, datetime],
 ) -> list[dict[str, Any]]:
-    return [
-        {
-            "id": fill.id,
-            "account_key": fill.account_key,
-            "source_wallet": fill.source_wallet,
-            "source_label": source_labels.get(fill.source_wallet.lower()),
-            "source_fill_id": fill.source_fill_id,
-            "coin": fill.coin,
-            "close_type": fill.action,
-            "side": fill.side,
-            "exit_price": fill.price,
-            "size": fill.size,
-            "notional_usd": fill.notional_usd,
-            "leverage": fill.leverage,
-            "margin_usd": fill.margin_usd,
-            "fee_usd": fill.fee_usd,
-            "realized_pnl_usd": fill.realized_pnl_usd,
-            "net_pnl_usd": fill.realized_pnl_usd - fill.fee_usd,
-            "is_source_liquidation": (
-                fill.source_wallet.lower(),
-                fill.source_fill_id,
-            )
-            in liquidation_source_fill_ids,
-            "closed_at": fill.filled_at,
-            "created_at": fill.created_at,
-        }
-        for fill in fills
-    ]
+    rows: list[dict[str, Any]] = []
+    for fill in fills:
+        opened_at = paper_fill_opened_at(fill) or opened_at_by_closed_fill_id.get(fill.id)
+        stored_duration_ms = paper_fill_duration_ms(fill)
+        duration_ms = (
+            stored_duration_ms
+            if stored_duration_ms is not None
+            else duration_between_ms(opened_at, fill.filled_at)
+        )
+        rows.append(
+            {
+                "id": fill.id,
+                "account_key": fill.account_key,
+                "source_wallet": fill.source_wallet,
+                "source_label": source_labels.get(fill.source_wallet.lower()),
+                "source_fill_id": fill.source_fill_id,
+                "coin": fill.coin,
+                "close_type": fill.action,
+                "side": fill.side,
+                "exit_price": fill.price,
+                "size": fill.size,
+                "notional_usd": fill.notional_usd,
+                "leverage": fill.leverage,
+                "margin_usd": fill.margin_usd,
+                "fee_usd": fill.fee_usd,
+                "realized_pnl_usd": fill.realized_pnl_usd,
+                "net_pnl_usd": fill.realized_pnl_usd - fill.fee_usd,
+                "is_source_liquidation": (
+                    fill.source_wallet.lower(),
+                    fill.source_fill_id,
+                )
+                in liquidation_source_fill_ids,
+                "opened_at": opened_at,
+                "closed_at": fill.filled_at,
+                "duration_ms": duration_ms,
+                "created_at": fill.created_at,
+            }
+        )
+    return rows
+
+
+async def load_closed_trade_open_times(
+    session: AsyncSession,
+    *,
+    fills: list[PaperCopyFill],
+) -> dict[UUID, datetime]:
+    close_fills = [fill for fill in fills if fill.side]
+    if not close_fills:
+        return {}
+
+    position_keys = {
+        (fill.account_key, fill.source_wallet, fill.coin, fill.side)
+        for fill in close_fills
+        if fill.side
+    }
+    latest_close_at = max(fill.filled_at for fill in close_fills)
+    result = await session.execute(
+        select(
+            PaperCopyFill.account_key,
+            PaperCopyFill.source_wallet,
+            PaperCopyFill.coin,
+            PaperCopyFill.side,
+            PaperCopyFill.filled_at,
+        )
+        .where(
+            PaperCopyFill.action.in_(("open", "flip_open")),
+            tuple_(
+                PaperCopyFill.account_key,
+                PaperCopyFill.source_wallet,
+                PaperCopyFill.coin,
+                PaperCopyFill.side,
+            ).in_(position_keys),
+            PaperCopyFill.filled_at <= latest_close_at,
+        )
+        .order_by(PaperCopyFill.filled_at.asc(), PaperCopyFill.created_at.asc())
+    )
+    open_times_by_key: dict[tuple[str, str, str, str], list[datetime]] = {}
+    for row in result.mappings().all():
+        key = (
+            str(row["account_key"]),
+            str(row["source_wallet"]),
+            str(row["coin"]),
+            str(row["side"]),
+        )
+        open_times_by_key.setdefault(key, []).append(row["filled_at"])
+
+    opened_at_by_closed_fill_id: dict[UUID, datetime] = {}
+    for fill in close_fills:
+        if not fill.side:
+            continue
+        key = (fill.account_key, fill.source_wallet, fill.coin, fill.side)
+        candidates = [
+            opened_at
+            for opened_at in open_times_by_key.get(key, [])
+            if opened_at <= fill.filled_at
+        ]
+        if candidates:
+            opened_at_by_closed_fill_id[fill.id] = candidates[-1]
+    return opened_at_by_closed_fill_id
 
 
 async def load_liquidation_source_fill_ids(
@@ -1625,6 +1703,7 @@ async def reconcile_closed_source_position(
             allocation_usd=allocation_usd,
             settings=settings,
             execution_context=execution_context,
+            opened_at=position.opened_at,
         )
     )
     return PaperCopyBatchResult(
@@ -2852,6 +2931,7 @@ async def apply_close_part(
             allocation_usd=allocation_usd,
             settings=settings,
             execution_context=execution_context,
+            opened_at=position.opened_at,
         )
     )
     return PaperCopyBatchResult(
@@ -2986,6 +3066,7 @@ def paper_copy_fill(
     settings: Settings,
     skipped_reason: str | None = None,
     execution_context: PaperExecutionContext | None = None,
+    opened_at: datetime | None = None,
 ) -> PaperCopyFill:
     source_exposure_pct = (
         part.source_notional_usd / source_perp_equity if source_perp_equity > ZERO else None
@@ -3020,6 +3101,7 @@ def paper_copy_fill(
             execution_context=execution_context,
             leverage=leverage,
             margin_usd=margin_usd,
+            opened_at=opened_at,
         ),
     )
 
@@ -3468,7 +3550,9 @@ def paper_fill_payload(
     execution_context: PaperExecutionContext | None = None,
     leverage: Decimal | None = None,
     margin_usd: Decimal | None = None,
+    opened_at: datetime | None = None,
 ) -> dict[str, Any]:
+    filled_at = fill_datetime(fill)
     return {
         "sourceFill": {
             "externalFillId": fill.get("externalFillId"),
@@ -3491,8 +3575,46 @@ def paper_fill_payload(
         "paper": {
             "leverage": str(leverage) if leverage is not None else None,
             "marginUsd": str(margin_usd) if margin_usd is not None else None,
+            "openedAt": opened_at.isoformat() if opened_at is not None else None,
+            "durationMs": duration_between_ms(opened_at, filled_at),
         },
     }
+
+
+def paper_fill_opened_at(fill: PaperCopyFill) -> datetime | None:
+    value = paper_payload_value(fill, "openedAt")
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+
+
+def paper_fill_duration_ms(fill: PaperCopyFill) -> int | None:
+    value = paper_payload_value(fill, "durationMs")
+    if value is None:
+        return None
+    parsed = int_or_none(value)
+    if parsed is None:
+        return None
+    return max(0, parsed)
+
+
+def paper_payload_value(fill: PaperCopyFill, key: str) -> Any:
+    payload = fill.raw_payload
+    if not isinstance(payload, dict):
+        return None
+    paper_payload = payload.get("paper")
+    if not isinstance(paper_payload, dict):
+        return None
+    return paper_payload.get(key)
+
+
+def duration_between_ms(opened_at: datetime | None, closed_at: datetime | None) -> int | None:
+    if opened_at is None or closed_at is None:
+        return None
+    return max(0, timestamp_ms(closed_at) - timestamp_ms(opened_at))
 
 
 def execution_payload(context: PaperExecutionContext | None) -> dict[str, Any] | None:

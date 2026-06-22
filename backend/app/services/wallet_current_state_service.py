@@ -9,7 +9,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import WalletFill, WalletPosition
+from app.db.models import SourceTrade, WalletFill, WalletPosition
 from app.integrations.hyperliquid_client import HyperliquidClient
 from app.schemas.wallet_stats import (
     WalletCurrentStateStats,
@@ -80,6 +80,11 @@ async def get_wallet_current_state(
         spot_state = {}
 
     perp_summary = summarize_perp_clearinghouse_states(perp_states)
+    if perp_summary.positions:
+        annotate_open_position_times(
+            perp_summary.positions,
+            await load_open_source_trade_times(session, address=address),
+        )
     spot_balances = parse_spot_balances(spot_state)
     if not perp_errors:
         await sync_wallet_positions(
@@ -332,6 +337,7 @@ def parse_perp_positions(
             WalletPerpPositionStats(
                 coin=str(raw_position.get("coin") or ""),
                 side="long" if size > ZERO else "short",
+                opened_at_ms=None,
                 size=abs(size),
                 entry_price=decimal_or_none(raw_position.get("entryPx")),
                 position_value_usd=decimal_or_none(raw_position.get("positionValue")),
@@ -349,6 +355,40 @@ def parse_perp_positions(
         key=lambda position: position.position_value_usd or ZERO,
         reverse=True,
     )
+
+
+async def load_open_source_trade_times(
+    session: AsyncSession,
+    *,
+    address: str,
+) -> dict[tuple[str, str], int]:
+    result = await session.execute(
+        select(SourceTrade.coin, SourceTrade.side, SourceTrade.opened_at_ms).where(
+            SourceTrade.wallet_address == address.lower(),
+            SourceTrade.status == "open",
+        )
+    )
+    opened_at_by_position: dict[tuple[str, str], int] = {}
+    for row in result.mappings().all():
+        coin = str(row["coin"] or "")
+        side = str(row["side"] or "")
+        opened_at_ms = int(row["opened_at_ms"])
+        key = (coin, side)
+        current_opened_at_ms = opened_at_by_position.get(key)
+        if current_opened_at_ms is None or opened_at_ms < current_opened_at_ms:
+            opened_at_by_position[key] = opened_at_ms
+    return opened_at_by_position
+
+
+def annotate_open_position_times(
+    positions: list[WalletPerpPositionStats],
+    opened_at_by_position: dict[tuple[str, str], int],
+) -> None:
+    if not opened_at_by_position:
+        return
+
+    for position in positions:
+        position.opened_at_ms = opened_at_by_position.get((position.coin, position.side))
 
 
 def normalized_asset_positions(raw_positions: Any, *, dex: str = "") -> list[dict[str, Any]]:

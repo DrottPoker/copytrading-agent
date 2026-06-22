@@ -523,11 +523,12 @@ function StateMetric({
 function PerpPositionsTable({ positions }: { positions: WalletPerpPositionStats[] }) {
   return (
     <div className="overflow-x-auto border-t border-line">
-      <table className="w-full min-w-[820px] border-collapse text-left text-sm">
+      <table className="w-full min-w-[900px] border-collapse text-left text-sm">
         <thead className="border-b border-line bg-[#f7f9fb] text-xs uppercase text-[#526070]">
           <tr>
             <th className="px-4 py-3 font-semibold">Coin</th>
             <th className="px-4 py-3 font-semibold">Side</th>
+            <th className="px-4 py-3 font-semibold">Opened</th>
             <th className="px-4 py-3 font-semibold">Size</th>
             <th className="px-4 py-3 font-semibold">Entry</th>
             <th className="px-4 py-3 font-semibold">Notional</th>
@@ -539,7 +540,7 @@ function PerpPositionsTable({ positions }: { positions: WalletPerpPositionStats[
         <tbody>
           {positions.length === 0 ? (
             <tr>
-              <td colSpan={8} className="px-4 py-10 text-center text-[#526070]">
+              <td colSpan={9} className="px-4 py-10 text-center text-[#526070]">
                 No open perp positions.
               </td>
             </tr>
@@ -557,6 +558,9 @@ function PerpPositionRow({ position }: { position: WalletPerpPositionStats }) {
     <tr className="border-b border-line last:border-b-0">
       <td className="px-4 py-3 font-semibold">{position.coin}</td>
       <td className="px-4 py-3">{position.side}</td>
+      <td className="px-4 py-3 text-[#526070]">
+        {position.openedAtMs ? formatMs(position.openedAtMs) : "-"}
+      </td>
       <td className="px-4 py-3 font-mono">{formatCompactNumber(position.size)}</td>
       <td className="px-4 py-3 font-mono">{formatPrice(position.entryPrice)}</td>
       <td className="px-4 py-3 font-mono">{formatCurrency(position.positionValueUsd)}</td>
