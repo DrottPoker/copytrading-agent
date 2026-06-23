@@ -96,6 +96,13 @@ HYPERTRACKER_SEGMENT_COHORTS = {
     "hypertracker_grinder": "Grinder",
     "hypertracker_humble_earner": "Humble Earner",
 }
+HYPERTRACKER_LEADERBOARD_SOURCES = {
+    "hypertracker_avg_daily_perp_pnl": {
+        "file": "avg_daily_perp_pnl_leaderboard.json",
+        "slug": "avg-daily-perp-pnl",
+        "cohort": "Avg Daily Perp PnL",
+    },
+}
 
 HYPERDASH_GRAPHQL_URL = "https://api.hyperdash.com/graphql"
 HYPERDASH_SYSTEM_GROUP_IDS = {
@@ -201,6 +208,7 @@ SOURCE_LABELS = {
     "hypertracker_smart_money": "HyperTracker Smart Money",
     "hypertracker_grinder": "HyperTracker Grinder",
     "hypertracker_humble_earner": "HyperTracker Humble Earner",
+    "hypertracker_avg_daily_perp_pnl": "HyperTracker avg daily perp PnL",
 }
 
 KNOWN_DISCOVERY_SOURCES = tuple(SOURCE_LABELS.keys())
@@ -292,7 +300,10 @@ async def list_discovery_sources(
         notes = None
         if source in HYPERDASH_URL_SETTINGS and not configured:
             notes = "Set the matching discovery_hyperdash_*_url config before running this source."
-        if source in HYPERTRACKER_SEGMENT_SOURCES and not configured:
+        if (
+            source in HYPERTRACKER_SEGMENT_SOURCES
+            or source in HYPERTRACKER_LEADERBOARD_SOURCES
+        ) and not configured:
             notes = "Set discovery_hypertracker_static_base_url before running this source."
         items.append(
             DiscoverySourceRead(
@@ -978,6 +989,8 @@ async def fetch_discovery_source(
         return await fetch_hyperdash_source(source, limit=limit, settings=settings)
     if source in HYPERTRACKER_SEGMENT_SOURCES:
         return await fetch_hypertracker_segment_source(source, limit=limit, settings=settings)
+    if source in HYPERTRACKER_LEADERBOARD_SOURCES:
+        return await fetch_hypertracker_leaderboard_source(source, limit=limit, settings=settings)
     raise UnknownDiscoverySourceError(f"Unknown discovery source: {source}")
 
 
@@ -1357,6 +1370,61 @@ async def fetch_hypertracker_segment_source(
     )
 
 
+async def fetch_hypertracker_leaderboard_source(
+    source: str,
+    *,
+    limit: int,
+    settings: Settings,
+) -> DiscoverySourceResult:
+    source_config = HYPERTRACKER_LEADERBOARD_SOURCES[source]
+    url = hypertracker_leaderboard_url(source, settings)
+    if not url:
+        raise DiscoverySourceUnavailableError(
+            "hypertracker source is not configured. Set discovery_hypertracker_static_base_url."
+        )
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(url)
+    if response.status_code >= 400:
+        raise DiscoverySourceUnavailableError(
+            f"{source} request failed with status {response.status_code}."
+        )
+
+    payload = response.json()
+    rows = extract_hypertracker_rows(payload)[:limit]
+    candidates: list[DiscoveryCandidate] = []
+    skipped = 0
+    skip_reasons: dict[str, int] = {}
+
+    for index, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            skipped += 1
+            add_count(skip_reasons, "invalid_source_row")
+            continue
+        candidate = hypertracker_leaderboard_candidate(
+            source=source,
+            row=row,
+            fallback_rank=index,
+        )
+        if candidate is None:
+            skipped += 1
+            add_count(skip_reasons, "missing_or_invalid_address")
+            continue
+        candidates.append(candidate)
+
+    return DiscoverySourceResult(
+        fetched=len(rows),
+        skipped=skipped,
+        skip_reasons=skip_reasons,
+        candidates=candidates,
+        metadata={
+            "provider": "hypertracker",
+            "url": url,
+            "leaderboardSlug": source_config["slug"],
+            "sourceType": "leaderboard",
+        },
+    )
+
+
 async def fetch_hyperdash_graphql_source(
     source: str,
     *,
@@ -1621,6 +1689,45 @@ def hypertracker_segment_candidate(
             row,
             segment_id=HYPERTRACKER_SEGMENT_SOURCES[source],
             segment_slug=HYPERTRACKER_SEGMENT_SLUGS[source],
+            rank=rank,
+        ),
+    )
+
+
+def hypertracker_leaderboard_candidate(
+    *,
+    source: str,
+    row: dict[str, Any],
+    fallback_rank: int,
+) -> DiscoveryCandidate | None:
+    address = extract_address(row)
+    if address is None:
+        return None
+
+    source_config = HYPERTRACKER_LEADERBOARD_SOURCES[source]
+    profile = row.get("profile") if isinstance(row.get("profile"), dict) else {}
+    rank = int_or_none(row.get("rank")) or fallback_rank
+    account_value = decimal_or_none(first_present(row, ("perpEquity", "totalEquity")))
+    if account_value is None:
+        account_value = decimal_or_none(first_present(profile, ("perpEquity", "totalEquity")))
+    source_pnl = decimal_or_none(row.get("avgPnl"))
+    display_name = string_or_none(row.get("displayName")) or string_or_none(
+        profile.get("displayName")
+    )
+
+    return DiscoveryCandidate(
+        wallet_address=address,
+        source=source,
+        source_rank=rank,
+        source_label=display_name or f"HyperTracker {source_config['cohort']} #{rank}",
+        source_cohort=source_config["cohort"],
+        account_value=account_value,
+        source_pnl=source_pnl,
+        source_roi=estimate_roi_percent(source_pnl, account_value),
+        account_role="master",
+        raw_payload=compact_hypertracker_leaderboard_payload(
+            row,
+            leaderboard_slug=source_config["slug"],
             rank=rank,
         ),
     )
@@ -2973,6 +3080,14 @@ def hypertracker_segment_wallets_url(source: str, settings: Settings) -> str:
     return f"{base_url}/segment_{segment_id}_wallets.json"
 
 
+def hypertracker_leaderboard_url(source: str, settings: Settings) -> str:
+    base_url = hypertracker_static_base_url(settings)
+    if not base_url:
+        return ""
+    source_config = HYPERTRACKER_LEADERBOARD_SOURCES[source]
+    return f"{base_url}/{source_config['file']}"
+
+
 def extract_path(payload: dict[str, Any], path: tuple[str, ...]) -> Any:
     value: Any = payload
     for part in path:
@@ -3084,6 +3199,39 @@ def compact_hypertracker_segment_payload(
         "closestLiquidationProgress": closest_liq.get("progress") if closest_liq else None,
         "sourceSegmentId": segment_id,
         "sourceSegmentSlug": segment_slug,
+        "sourceRank": rank,
+    }
+
+
+def compact_hypertracker_leaderboard_payload(
+    row: dict[str, Any],
+    *,
+    leaderboard_slug: str,
+    rank: int,
+) -> dict[str, Any]:
+    profile = row.get("profile") if isinstance(row.get("profile"), dict) else {}
+    vault = profile.get("vault") if isinstance(profile.get("vault"), dict) else None
+    return {
+        "address": row.get("address"),
+        "age": row.get("age"),
+        "avgPnl": row.get("avgPnl"),
+        "greenDays": row.get("greenDays"),
+        "volume": row.get("volume"),
+        "highestPnl": row.get("highestPnl"),
+        "perpEquity": row.get("perpEquity"),
+        "exposureRatio": row.get("exposureRatio"),
+        "bias": row.get("bias"),
+        "profileDisplayName": profile.get("displayName"),
+        "profileVerified": profile.get("verified"),
+        "profileSegments": profile.get("segments"),
+        "profileFavoriteCount": profile.get("favoriteCount"),
+        "profileTotalEquity": profile.get("totalEquity"),
+        "profilePerpEquity": profile.get("perpEquity"),
+        "profilePerpPnl": profile.get("perpPnl"),
+        "profileEarliestActivityAt": profile.get("earliestActivityAt"),
+        "vaultLeader": vault.get("leader") if vault else None,
+        "vaultName": vault.get("name") if vault else None,
+        "sourceLeaderboardSlug": leaderboard_slug,
         "sourceRank": rank,
     }
 

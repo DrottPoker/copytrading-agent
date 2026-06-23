@@ -3,8 +3,11 @@ from decimal import Decimal
 from app.core.config import Settings
 from app.services.discovery_service import (
     HYPERDASH_PNL_COHORT_SOURCES,
+    HYPERTRACKER_LEADERBOARD_SOURCES,
     HYPERTRACKER_SEGMENT_SOURCES,
     hyperdash_cohort_id_from_url,
+    hypertracker_leaderboard_candidate,
+    hypertracker_leaderboard_url,
     hypertracker_segment_candidate,
     hypertracker_segment_wallets_url,
     normalize_requested_sources,
@@ -18,12 +21,14 @@ def test_hypertracker_sources_are_known_discovery_sources() -> None:
             "hypertracker_smart_money",
             "hypertracker_grinder",
             "hypertracker_humble_earner",
+            "hypertracker_avg_daily_perp_pnl",
         ]
     ) == [
         "hypertracker_money_printer",
         "hypertracker_smart_money",
         "hypertracker_grinder",
         "hypertracker_humble_earner",
+        "hypertracker_avg_daily_perp_pnl",
     ]
 
 
@@ -100,6 +105,73 @@ def test_hypertracker_segment_candidate_maps_wallet_metrics() -> None:
     }
 
 
+def test_hypertracker_avg_daily_perp_pnl_candidate_maps_wallet_metrics() -> None:
+    row = {
+        "address": "0x2222222222222222222222222222222222222222",
+        "age": "2026-06-21T19:49:54.367Z",
+        "avgPnl": 1200,
+        "greenDays": 18,
+        "volume": 500000,
+        "highestPnl": 8000,
+        "perpEquity": 31200,
+        "exposureRatio": 2.2,
+        "bias": -1.4,
+        "rank": 4,
+        "profile": {
+            "displayName": "Avg Trader",
+            "verified": True,
+            "segments": [7, 8],
+            "favoriteCount": 9,
+            "totalEquity": 45000,
+            "perpEquity": 31200,
+            "perpPnl": 99000,
+            "earliestActivityAt": "2026-01-01T00:00:00.000Z",
+            "vault": {"leader": "0x3333333333333333333333333333333333333333", "name": "Vault"},
+        },
+    }
+
+    candidate = hypertracker_leaderboard_candidate(
+        source="hypertracker_avg_daily_perp_pnl",
+        row=row,
+        fallback_rank=1,
+    )
+
+    assert candidate is not None
+    assert candidate.wallet_address == "0x2222222222222222222222222222222222222222"
+    assert candidate.source == "hypertracker_avg_daily_perp_pnl"
+    assert candidate.source_rank == 4
+    assert candidate.source_label == "Avg Trader"
+    assert candidate.source_cohort == "Avg Daily Perp PnL"
+    assert candidate.account_value == Decimal("31200")
+    assert candidate.source_pnl == Decimal("1200")
+    assert candidate.source_roi == Decimal("4.00")
+    assert candidate.raw_payload == {
+        "address": "0x2222222222222222222222222222222222222222",
+        "age": "2026-06-21T19:49:54.367Z",
+        "avgPnl": 1200,
+        "greenDays": 18,
+        "volume": 500000,
+        "highestPnl": 8000,
+        "perpEquity": 31200,
+        "exposureRatio": 2.2,
+        "bias": -1.4,
+        "profileDisplayName": "Avg Trader",
+        "profileVerified": True,
+        "profileSegments": [7, 8],
+        "profileFavoriteCount": 9,
+        "profileTotalEquity": 45000,
+        "profilePerpEquity": 31200,
+        "profilePerpPnl": 99000,
+        "profileEarliestActivityAt": "2026-01-01T00:00:00.000Z",
+        "vaultLeader": "0x3333333333333333333333333333333333333333",
+        "vaultName": "Vault",
+        "sourceLeaderboardSlug": HYPERTRACKER_LEADERBOARD_SOURCES[
+            "hypertracker_avg_daily_perp_pnl"
+        ]["slug"],
+        "sourceRank": 4,
+    }
+
+
 def test_hypertracker_segment_wallets_url_uses_configured_base_url() -> None:
     settings = Settings(
         discovery_hypertracker_static_base_url="https://example.com/aggregator/"
@@ -108,4 +180,15 @@ def test_hypertracker_segment_wallets_url_uses_configured_base_url() -> None:
     assert (
         hypertracker_segment_wallets_url("hypertracker_humble_earner", settings)
         == "https://example.com/aggregator/segment_11_wallets.json"
+    )
+
+
+def test_hypertracker_leaderboard_url_uses_configured_base_url() -> None:
+    settings = Settings(
+        discovery_hypertracker_static_base_url="https://example.com/aggregator/"
+    )
+
+    assert (
+        hypertracker_leaderboard_url("hypertracker_avg_daily_perp_pnl", settings)
+        == "https://example.com/aggregator/avg_daily_perp_pnl_leaderboard.json"
     )

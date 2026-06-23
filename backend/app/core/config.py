@@ -416,6 +416,7 @@ class Settings(BaseSettings):
             "hypertracker_smart_money",
             "hypertracker_grinder",
             "hypertracker_humble_earner",
+            "hypertracker_avg_daily_perp_pnl",
         ],
         max_length=16,
     )

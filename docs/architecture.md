@@ -123,8 +123,8 @@ Trading worker responsibilities:
 Maintenance worker responsibilities:
 
 - Run configured discovery imports every 6 hours by default.
-- Import candidates from Hyperliquid leaderboard, HyperTracker segment, and
-  Hyperdash discovery sources.
+- Import candidates from Hyperliquid leaderboard, HyperTracker segment,
+  HyperTracker leaderboard, and Hyperdash discovery sources.
 - Prefilter source candidates and store discovery run history.
 - Backfill approved discovery candidates before they enter the pool.
 - Insert candidates that pass backfill quality checks directly into the wallet pool.

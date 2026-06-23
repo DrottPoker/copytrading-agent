@@ -28,8 +28,9 @@ edge in monitor and paper mode before any live execution is added.
 - Coordinates long-running jobs with database-backed locks.
 - Discovers new candidates from Hyperliquid leaderboards, leaderboard
   subaccounts, Hyperliquid 7D and 30D vault leaders, vault addresses, and
-  HyperTracker PnL segments, plus configured Hyperdash profitable cohorts
-  before backfill and scoring decide pool admission.
+  HyperTracker PnL segments, plus the HyperTracker avg daily perp PnL
+  leaderboard and configured Hyperdash profitable cohorts before backfill and
+  scoring decide pool admission.
 - Treats Hyperliquid vault addresses and vault leader addresses as separate
   candidates, because a vault can trade independently from the leader wallet.
 - Skips vault candidates below the discovery `min_account_value_usd` threshold,

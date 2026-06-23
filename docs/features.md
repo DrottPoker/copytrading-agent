@@ -149,7 +149,8 @@ What it does:
 - Supports Hyperliquid 1D, 7D, 30D, and all-time leaderboard sources.
 - Defaults to Hyperliquid 1D, 7D, and 30D leaderboard discovery, Hyperliquid
   7D and 30D vault leaders, leaderboard subaccounts, HyperTracker PnL
-  segments, and configured Hyperdash profitable cohorts.
+  segments, HyperTracker avg daily perp PnL leaderboard, and configured
+  Hyperdash profitable cohorts.
   All-time leaderboard discovery remains available manually, but is not enabled
   by default because current activity is more useful for copy trading.
 - Imports leaderboard subaccounts as candidates by default.
@@ -169,6 +170,8 @@ What it does:
 - Imports public HyperTracker segment wallet snapshots for Money Printer,
   Smart Money, Grinder, and Humble Earner from the configured
   `discovery_hypertracker_static_base_url`.
+- Imports the public HyperTracker avg daily perp PnL leaderboard from the same
+  static base URL.
 - Runs a configurable source-metadata prefilter after import by default.
 - Keeps discovery tunables in organized `backend/config/discovery.json` sections:
   discovery sources, discovery import, prefilter, candidate backfill, quality,
