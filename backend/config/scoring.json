@@ -13,10 +13,10 @@
   },
   "component_weights": {
     "profitability": 0.25,
-    "consistency": 0.22,
-    "risk": 0.28,
+    "consistency": 0.20,
+    "risk": 0.25,
     "copyability": 0.15,
-    "recency": 0.1
+    "recency": 0.15
   },
   "profitability": {
     "weights": {
