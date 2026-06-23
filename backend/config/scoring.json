@@ -12,9 +12,9 @@
     "sample_cap_max_score": 45
   },
   "component_weights": {
-    "profitability": 0.3,
-    "consistency": 0.2,
-    "risk": 0.25,
+    "profitability": 0.25,
+    "consistency": 0.22,
+    "risk": 0.28,
     "copyability": 0.15,
     "recency": 0.1
   },
