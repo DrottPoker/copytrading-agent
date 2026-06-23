@@ -232,6 +232,7 @@ Dashboard:
 - `http://127.0.0.1:3000/live-feed`
 - `http://127.0.0.1:3000/analytics`
 - `http://127.0.0.1:3000/ops`
+- `http://127.0.0.1:3000/accounts`
 - `http://127.0.0.1:3000/paper-trading`
 
 Notes:
@@ -325,6 +326,7 @@ API:
 Dashboard:
 
 - `http://127.0.0.1:3000/paper-trading`
+- `http://127.0.0.1:3000/accounts`
 
 Config:
 
@@ -379,6 +381,10 @@ Sizing policy:
   account cap, missing matching positions, and price safety guards.
 - The paper trading dashboard polls the summary API and separates total,
   realized, and unrealized PnL at the top of the page.
+- The Accounts page stores the last selected paper account in the browser and
+  defaults to that account on the next visit, otherwise the first synced account
+  is selected. It shows account-specific metrics, charts, allocations, market
+  exposure, source performance, open positions, closed trades, and recent fills.
 - The dashboard shows paper accounts, monitored sources, currently trading
   sources, open positions, wallet PnL history, closed trade history, and recent
   fills as compact lists without horizontal scrolling.

@@ -551,9 +551,15 @@ Endpoint:
 - `POST /paper-trading/positions/{position_id}/close`
 - `POST /paper-trading/sources/{source_wallet}/close`
 
+Query parameters:
+
+- `recent_fill_limit`, default 100, max 1000
+- `closed_trade_limit`, default 100, max 1000
+
 Dashboard page:
 
 - `/paper-trading`
+- `/accounts`
 
 What it does:
 
@@ -679,6 +685,11 @@ What it does:
 - The paper trading dashboard polls the summary API and shows account PnL,
   monitored sources, currently trading sources, open position PnL, wallet PnL
   history, closed trade history, and recent fills without a full page refresh.
+- The Accounts page filters the paper summary to one selected paper account.
+  It keeps the last selected account in browser storage and falls back to the
+  first synced account. It shows account KPIs, balance and PnL charts,
+  allocation usage, market exposure, source performance, open positions, closed
+  trades, and recent fills for the selected account.
 - The summary API attaches wallet labels to paper allocation, position,
   wallet-history, closed-trade, and recent-fill rows. The UI shows the label
   when available and falls back to the short address.

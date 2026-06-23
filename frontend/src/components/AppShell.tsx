@@ -9,6 +9,7 @@ import {
   LineChart,
   RadioTower,
   ServerCog,
+  SquareStack,
   WalletCards,
 } from "lucide-react";
 import Link from "next/link";
@@ -39,6 +40,12 @@ const navItems = [
     icon: LineChart,
     label: "Analytics",
     match: (pathname: string) => pathname.startsWith("/analytics"),
+  },
+  {
+    href: "/accounts",
+    icon: SquareStack,
+    label: "Accounts",
+    match: (pathname: string) => pathname.startsWith("/accounts"),
   },
   {
     href: "/live-feed",

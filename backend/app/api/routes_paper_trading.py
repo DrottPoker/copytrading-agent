@@ -1,7 +1,7 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import db_session
@@ -24,8 +24,15 @@ router = APIRouter(prefix="/paper-trading", tags=["paper-trading"])
 async def get_paper_trading_route(
     session: Annotated[AsyncSession, Depends(db_session)],
     settings: Annotated[Settings, Depends(get_settings)],
+    recent_fill_limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+    closed_trade_limit: Annotated[int, Query(ge=1, le=1000)] = 100,
 ) -> PaperTradingSummaryResponse:
-    return await get_paper_trading_summary(session, settings=settings)
+    return await get_paper_trading_summary(
+        session,
+        settings=settings,
+        recent_fill_limit=recent_fill_limit,
+        closed_trade_limit=closed_trade_limit,
+    )
 
 
 @router.post("/positions/{position_id}/close", response_model=PaperTradingSummaryResponse)

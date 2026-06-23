@@ -153,6 +153,8 @@ Current pages:
 - `/wallets/[address]`: wallet details and recent fills.
 - `/live-feed`: realtime system and fill events.
 - `/analytics`: pool, scoring, paper, discovery, and freshness analytics.
+- `/accounts`: selected paper account metrics, charts, allocations, positions,
+  closed trades, and fills.
 - `/paper-trading`: paper accounts, allocations, positions, and recent paper fills.
 
 Important folders:

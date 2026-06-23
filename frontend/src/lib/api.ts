@@ -327,9 +327,23 @@ export async function getOperationStatuses(): Promise<OperationStatusListRespons
   }
 }
 
-export async function getPaperTradingSummary(): Promise<PaperTradingSummaryResponse> {
+type PaperTradingSummaryOptions = {
+  closedTradeLimit?: number;
+  recentFillLimit?: number;
+};
+
+export async function getPaperTradingSummary(
+  options: PaperTradingSummaryOptions = {},
+): Promise<PaperTradingSummaryResponse> {
   try {
-    const response = await backendGet(`${getApiBaseUrl()}/paper-trading`);
+    const url = new URL(`${getApiBaseUrl()}/paper-trading`);
+    if (options.closedTradeLimit) {
+      url.searchParams.set("closed_trade_limit", String(options.closedTradeLimit));
+    }
+    if (options.recentFillLimit) {
+      url.searchParams.set("recent_fill_limit", String(options.recentFillLimit));
+    }
+    const response = await backendGet(url.toString());
 
     if (!response.ok) {
       return emptyPaperTradingSummary();
