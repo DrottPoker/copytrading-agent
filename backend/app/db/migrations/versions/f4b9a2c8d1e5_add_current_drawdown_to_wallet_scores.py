@@ -7,7 +7,6 @@ Create Date: 2026-06-17 11:00:00.000000
 
 from collections.abc import Sequence
 
-import sqlalchemy as sa
 from alembic import op
 
 revision: str = "f4b9a2c8d1e5"
@@ -17,8 +16,8 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.add_column("wallet_scores", sa.Column("current_drawdown_pct", sa.Numeric()))
+    op.execute("alter table wallet_scores add column if not exists current_drawdown_pct numeric")
 
 
 def downgrade() -> None:
-    op.drop_column("wallet_scores", "current_drawdown_pct")
+    op.execute("alter table wallet_scores drop column if exists current_drawdown_pct")

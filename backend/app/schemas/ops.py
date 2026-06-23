@@ -15,6 +15,7 @@ CheckStatus = Literal[
     "not_configured",
     "stale",
     "unknown",
+    "disabled",
 ]
 
 

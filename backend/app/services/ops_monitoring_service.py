@@ -47,6 +47,7 @@ async def get_ops_health(*, settings: Settings) -> OpsHealthResponse:
     memory = get_memory_stats()
     load = get_load_stats()
     backup = get_backup_status(
+        enabled=settings.backup_status_enabled,
         directory=settings.backup_status_directory,
         stale_after_seconds=settings.backup_status_stale_seconds,
         now=measured_at,
@@ -311,10 +312,25 @@ def get_load_stats() -> OpsLoadStats:
 
 def get_backup_status(
     *,
+    enabled: bool,
     directory: str,
     stale_after_seconds: int,
     now: datetime,
 ) -> OpsBackupStatus:
+    if not enabled:
+        return OpsBackupStatus(
+            directory=directory,
+            status="disabled",
+            latest_file=None,
+            latest_modified_at=None,
+            latest_size_bytes=None,
+            latest_age_seconds=None,
+            backup_count=0,
+            total_size_bytes=0,
+            stale_after_seconds=stale_after_seconds,
+            note="Backup status monitoring is disabled.",
+        )
+
     backup_dir = Path(directory)
     if not backup_dir.exists():
         return OpsBackupStatus(
@@ -415,7 +431,7 @@ def aggregate_status(
         disk.status != "ok"
         or memory.status not in {"ok", "unknown"}
         or load.status not in {"ok", "unknown"}
-        or backup.status != "ok"
+        or backup.status not in {"ok", "disabled"}
         or any(worker.status != "ok" for worker in workers)
     ):
         return "warning"

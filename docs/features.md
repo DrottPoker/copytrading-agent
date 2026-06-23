@@ -29,6 +29,8 @@ Behavior:
   `DASHBOARD_AUTH_PASSWORD`.
 - Production startup fails if auth is disabled or the password is still
   `change-me`.
+- The Next.js dashboard uses the same Basic Auth settings before serving
+  dashboard pages or `/api/backend` proxy routes.
 - The Next.js dashboard proxies browser API calls through `/api/backend` and adds
   backend auth on the server side.
 - Server-side dashboard data fetches also add backend auth from environment
@@ -55,7 +57,9 @@ What it does:
 - Checks Postgres and Redis dependency status.
 - Shows disk usage, memory usage, load average, and configured service mode.
 - Reads the latest Postgres backup dump from the read-only mounted backup
-  directory.
+  directory when backup status monitoring is enabled.
+- Backup status monitoring is disabled by default, so `/ops` does not warn on
+  installs that intentionally do not run local backup checks.
 - Shows worker heartbeat freshness for `trading-worker` and
   `maintenance-worker`.
 - Shows recent long-running operation statuses for discovery, pool reimport,
@@ -68,6 +72,7 @@ Config:
 - `WORKER_HEARTBEAT_INTERVAL_SECONDS`
 - `WORKER_HEARTBEAT_STALE_SECONDS`
 - `OPS_DISK_PATH`
+- `BACKUP_STATUS_ENABLED`
 - `BACKUP_STATUS_DIRECTORY`
 - `BACKUP_STATUS_STALE_SECONDS`
 
@@ -225,6 +230,7 @@ What it does:
 - Fill imports stop early when the database is near its configured storage limit.
 - Pool import uses a database-backed job lock and row-level `SKIP LOCKED`
   selection to avoid duplicate refresh work across API and worker processes.
+  Long-running job locks renew their TTL while the owning job is still active.
 
 Config:
 
@@ -594,7 +600,7 @@ What it does:
 - Applies the configured paper fee rate to opens and closes.
 - Waits `paper_copy_latency_ms` before pricing paper execution.
 - Uses live Hyperliquid mids after latency when `paper_copy_use_live_mid_price`
-  is enabled.
+  is enabled. This is enabled in the default paper trading config.
 - Falls back to dex-specific `allMids`, then Hyperliquid `metaAndAssetCtxs`, for
   the fill's perp dex when default `allMids` does not contain a `dex:COIN`
   market key.

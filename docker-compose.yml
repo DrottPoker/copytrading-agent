@@ -62,6 +62,7 @@ services:
       SERVER_API_BASE_URL: http://backend:8000
       DASHBOARD_AUTH_USERNAME: ${DASHBOARD_AUTH_USERNAME:-admin}
       DASHBOARD_AUTH_PASSWORD: ${DASHBOARD_AUTH_PASSWORD:-change-me}
+      DASHBOARD_AUTH_ENABLED: ${DASHBOARD_AUTH_ENABLED:-true}
     ports:
       - "3000:3000"
     depends_on:

@@ -1,6 +1,8 @@
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +28,8 @@ DEFAULT_OPERATION_KEYS = (
     "wallet_scoring",
     "wallet_prune",
 )
+
+OperationValueBuilder = Callable[[dict[str, Any]], dict[str, Any]]
 
 
 async def list_operation_statuses(
@@ -72,21 +76,23 @@ async def mark_operation_started(
     key: str,
     payload: dict[str, Any] | None = None,
 ) -> None:
-    existing = await load_operation_value_for_update(session, key)
     now = now_iso()
-    value = {
-        **existing,
-        "key": key,
-        "label": OPERATION_LABELS.get(key, key),
-        "status": "running",
-        "startedAt": now,
-        "completedAt": None,
-        "updatedAt": now,
-        "lastError": None,
-        "durationMs": None,
-        "payload": payload or {},
-    }
-    await save_operation_value(session, key, value)
+
+    def build_value(existing: dict[str, Any]) -> dict[str, Any]:
+        return {
+            **existing,
+            "key": key,
+            "label": OPERATION_LABELS.get(key, key),
+            "status": "running",
+            "startedAt": now,
+            "completedAt": None,
+            "updatedAt": now,
+            "lastError": None,
+            "durationMs": None,
+            "payload": payload or {},
+        }
+
+    await write_operation_value(session, key, build_value)
 
 
 async def mark_operation_succeeded(
@@ -95,23 +101,25 @@ async def mark_operation_succeeded(
     key: str,
     payload: dict[str, Any] | None = None,
 ) -> None:
-    existing = await load_operation_value_for_update(session, key)
     now = now_iso()
-    started_at = string_or_none(existing.get("startedAt")) or now
-    value = {
-        **existing,
-        "key": key,
-        "label": OPERATION_LABELS.get(key, key),
-        "status": "succeeded",
-        "startedAt": started_at,
-        "completedAt": now,
-        "updatedAt": now,
-        "lastSuccessAt": now,
-        "durationMs": duration_ms(started_at, now),
-        "lastError": None,
-        "payload": payload or {},
-    }
-    await save_operation_value(session, key, value)
+
+    def build_value(existing: dict[str, Any]) -> dict[str, Any]:
+        started_at = string_or_none(existing.get("startedAt")) or now
+        return {
+            **existing,
+            "key": key,
+            "label": OPERATION_LABELS.get(key, key),
+            "status": "succeeded",
+            "startedAt": started_at,
+            "completedAt": now,
+            "updatedAt": now,
+            "lastSuccessAt": now,
+            "durationMs": duration_ms(started_at, now),
+            "lastError": None,
+            "payload": payload or {},
+        }
+
+    await write_operation_value(session, key, build_value)
 
 
 async def mark_operation_progress(
@@ -120,18 +128,20 @@ async def mark_operation_progress(
     key: str,
     payload: dict[str, Any] | None = None,
 ) -> None:
-    existing = await load_operation_value_for_update(session, key)
     now = now_iso()
-    value = {
-        **existing,
-        "key": key,
-        "label": OPERATION_LABELS.get(key, key),
-        "status": "running",
-        "updatedAt": now,
-        "lastError": None,
-        "payload": payload or {},
-    }
-    await save_operation_value(session, key, value)
+
+    def build_value(existing: dict[str, Any]) -> dict[str, Any]:
+        return {
+            **existing,
+            "key": key,
+            "label": OPERATION_LABELS.get(key, key),
+            "status": "running",
+            "updatedAt": now,
+            "lastError": None,
+            "payload": payload or {},
+        }
+
+    await write_operation_value(session, key, build_value)
 
 
 async def mark_operation_failed(
@@ -141,22 +151,24 @@ async def mark_operation_failed(
     error: str,
     payload: dict[str, Any] | None = None,
 ) -> None:
-    existing = await load_operation_value_for_update(session, key)
     now = now_iso()
-    started_at = string_or_none(existing.get("startedAt")) or now
-    value = {
-        **existing,
-        "key": key,
-        "label": OPERATION_LABELS.get(key, key),
-        "status": "failed",
-        "startedAt": started_at,
-        "completedAt": now,
-        "updatedAt": now,
-        "durationMs": duration_ms(started_at, now),
-        "lastError": error,
-        "payload": payload or {},
-    }
-    await save_operation_value(session, key, value)
+
+    def build_value(existing: dict[str, Any]) -> dict[str, Any]:
+        started_at = string_or_none(existing.get("startedAt")) or now
+        return {
+            **existing,
+            "key": key,
+            "label": OPERATION_LABELS.get(key, key),
+            "status": "failed",
+            "startedAt": started_at,
+            "completedAt": now,
+            "updatedAt": now,
+            "durationMs": duration_ms(started_at, now),
+            "lastError": error,
+            "payload": payload or {},
+        }
+
+    await write_operation_value(session, key, build_value)
 
 
 async def load_operation_value(session: AsyncSession, key: str) -> dict[str, Any]:
@@ -167,25 +179,35 @@ async def load_operation_value(session: AsyncSession, key: str) -> dict[str, Any
 
 
 async def load_operation_value_for_update(session: AsyncSession, key: str) -> dict[str, Any]:
-    sessionmaker = get_sessionmaker()
-    if sessionmaker is not None:
-        async with sessionmaker() as status_session:
-            return await load_operation_value(status_session, key)
-    return await load_operation_value(session, key)
+    await session.execute(
+        text("select pg_advisory_xact_lock(hashtext(:setting_key)::bigint)"),
+        {"setting_key": setting_key(key)},
+    )
+    result = await session.execute(
+        select(Setting).where(Setting.key == setting_key(key)).with_for_update()
+    )
+    setting = result.scalar_one_or_none()
+    if setting is None or not isinstance(setting.value, dict):
+        return {}
+    return dict(setting.value)
 
 
-async def save_operation_value(
+async def write_operation_value(
     session: AsyncSession,
     key: str,
-    value: dict[str, Any],
+    build_value: OperationValueBuilder,
 ) -> None:
     sessionmaker = get_sessionmaker()
     if sessionmaker is not None:
         async with sessionmaker() as status_session:
+            existing = await load_operation_value_for_update(status_session, key)
+            value = build_value(existing)
             await upsert_operation_value(status_session, key, value)
             await status_session.commit()
         return
 
+    existing = await load_operation_value_for_update(session, key)
+    value = build_value(existing)
     await upsert_operation_value(session, key, value)
     await session.commit()
 

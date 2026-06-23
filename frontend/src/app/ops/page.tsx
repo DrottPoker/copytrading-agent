@@ -79,11 +79,17 @@ export default async function OpsPage() {
           value={formatPercent(ops.memory.usagePct)}
         />
         <SummaryTile
-          detail={ops.backup.latestFile ?? "No backup file found"}
+          detail={
+            ops.backup.status === "disabled"
+              ? "Backup monitoring disabled"
+              : ops.backup.latestFile ?? "No backup file found"
+          }
           icon={Archive}
           label="Backups"
           status={ops.backup.status}
-          value={formatAge(ops.backup.latestAgeSeconds)}
+          value={
+            ops.backup.status === "disabled" ? "off" : formatAge(ops.backup.latestAgeSeconds)
+          }
         />
       </section>
 
@@ -183,6 +189,8 @@ function SummaryTile({
   const toneClass =
     status === "ok"
       ? "border-[#9ccfc0] bg-[#f2fbf7]"
+      : status === "disabled"
+        ? "border-line bg-panel"
       : status === "degraded" || status === "error"
         ? "border-[#efb1aa] bg-[#fff5f3]"
         : "border-[#e7c174] bg-[#fff9e8]";

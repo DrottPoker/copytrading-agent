@@ -1,10 +1,16 @@
+import asyncio
+import logging
 import os
 import socket
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from uuid import uuid4
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.session import get_sessionmaker
+
+logger = logging.getLogger(__name__)
 
 
 class JobLockAlreadyHeldError(RuntimeError):
@@ -28,12 +34,28 @@ async def job_lock(
     if not acquired:
         raise JobLockAlreadyHeldError(f"Job lock is already held: {key}.")
 
+    stop_event = asyncio.Event()
+    owner_task = asyncio.current_task()
+    renewal_task = asyncio.create_task(
+        renew_job_lock_loop(
+            key=key,
+            owner=owner,
+            ttl_seconds=ttl_seconds,
+            stop_event=stop_event,
+            owner_task=owner_task,
+        )
+    )
+
     try:
         yield
     except BaseException:
         await rollback_session(session)
         raise
     finally:
+        stop_event.set()
+        renewal_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await renewal_task
         await release_job_lock_safely(session, key=key, owner=owner)
 
 
@@ -89,7 +111,73 @@ async def release_job_lock_safely(
         await release_job_lock(session, key=key, owner=owner)
     except Exception:
         await rollback_session(session)
-        await release_job_lock(session, key=key, owner=owner)
+        try:
+            await release_job_lock(session, key=key, owner=owner)
+        except Exception:
+            await rollback_session(session)
+
+
+async def renew_job_lock_loop(
+    *,
+    key: str,
+    owner: str,
+    ttl_seconds: int,
+    stop_event: asyncio.Event,
+    owner_task: asyncio.Task | None,
+) -> None:
+    interval_seconds = job_lock_renewal_interval_seconds(ttl_seconds)
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)
+            return
+        except TimeoutError:
+            pass
+
+        try:
+            renewed = await renew_job_lock(key=key, owner=owner, ttl_seconds=ttl_seconds)
+        except Exception:
+            logger.exception("Failed to renew job lock %s.", key)
+            continue
+
+        if not renewed:
+            logger.warning("Job lock %s is no longer owned by this worker.", key)
+            if not stop_event.is_set() and owner_task is not None:
+                owner_task.cancel()
+            return
+
+
+async def renew_job_lock(
+    *,
+    key: str,
+    owner: str,
+    ttl_seconds: int,
+) -> bool:
+    sessionmaker = get_sessionmaker()
+    if sessionmaker is None:
+        return True
+
+    async with sessionmaker() as session:
+        result = await session.execute(
+            text(
+                """
+                update job_locks
+                set
+                  locked_until = now() + (:ttl_seconds * interval '1 second'),
+                  updated_at = now()
+                where key = :key
+                  and owner = :owner
+                returning key
+                """
+            ),
+            {"key": key, "owner": owner, "ttl_seconds": ttl_seconds},
+        )
+        renewed = result.scalar_one_or_none() is not None
+        await session.commit()
+        return renewed
+
+
+def job_lock_renewal_interval_seconds(ttl_seconds: int) -> int:
+    return max(5, min(300, ttl_seconds // 3))
 
 
 async def rollback_session(session: AsyncSession) -> None:

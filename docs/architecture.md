@@ -99,10 +99,14 @@ The monitor worker supports explicit roles through `WORKER_ROLE`:
 Docker Compose runs `trading-worker` and `maintenance-worker` as separate
 services and sets `WORKER_RUN_IN_API_PROCESS=false` on the backend container.
 Long-running jobs take rows in `job_locks`, so manual API triggers and worker
-services do not run the same long job concurrently.
+services do not run the same long job concurrently. Active jobs renew their lock
+TTL, so a long healthy run does not look expired while it is still working.
 Workers also update lightweight heartbeat rows in `settings`. The Ops Health
 page uses those rows to show whether the trading and maintenance workers are
 fresh, stale, or missing.
+Long-running operation status is also stored in `settings`. Status writes use a
+short transaction with an advisory lock and row-level locking so progress
+updates do not overwrite each other when API and worker activity overlap.
 
 Trading worker responsibilities:
 
@@ -159,10 +163,12 @@ Important folders:
 - `frontend/src/types`: shared TypeScript types.
 - `frontend/config/app.json`: non-secret frontend settings.
 
-Server-side dashboard requests call `serverApiBaseUrl` with a Basic Auth header
-from `DASHBOARD_AUTH_USERNAME` and `DASHBOARD_AUTH_PASSWORD`. Browser requests
-use `/api/backend`, a Next.js proxy route that attaches the same backend auth on
-the server side and streams SSE responses without buffering.
+The dashboard enforces Basic Auth in Next.js middleware before serving pages or
+`/api/backend` proxy routes. Server-side dashboard requests call
+`serverApiBaseUrl` with a Basic Auth header from `DASHBOARD_AUTH_USERNAME` and
+`DASHBOARD_AUTH_PASSWORD`. Browser requests use `/api/backend`, a Next.js proxy
+route that attaches the same backend auth on the server side and streams SSE
+responses without buffering.
 
 The Analytics page reads `GET /analytics`. The endpoint intentionally returns
 pre-aggregated rows so the dashboard can render pool coverage, score buckets,
@@ -251,6 +257,7 @@ Secrets and connection strings live in `.env`:
 - `REDIS_URL`
 - Hyperliquid private key and wallet address
 - dashboard auth credentials
+- optional backup status monitoring settings
 
 Docker Compose builds `DATABASE_URL` and `DATABASE_URL_DIRECT` for app
 containers from `POSTGRES_*` and the local `postgres` service. Direct database
@@ -436,8 +443,9 @@ explanatory only and does not write scoring data.
 Wallet list and wallet detail responses expose `poolRank`, which is calculated
 from the latest stored wallet score ordering and is independent of realtime
 monitor slots.
-The scoring job lock uses a 30 minute TTL so a killed scoring process does not
-block future runs for the longer maintenance lock window.
+The scoring job lock uses a 30 minute TTL and renews while scoring is active, so
+a killed scoring process does not block future runs and a healthy long scoring
+run does not expire mid-run.
 
 ### Source Trade Detail
 

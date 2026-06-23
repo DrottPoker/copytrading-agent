@@ -8,7 +8,8 @@ export type OpsCheckStatus =
   | "missing"
   | "not_configured"
   | "stale"
-  | "unknown";
+  | "unknown"
+  | "disabled";
 
 export type OpsDependencyStatus = {
   status: string;

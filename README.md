@@ -480,6 +480,7 @@ The Ops Health page reads runtime settings from environment variables:
 - `WORKER_HEARTBEAT_INTERVAL_SECONDS`
 - `WORKER_HEARTBEAT_STALE_SECONDS`
 - `OPS_DISK_PATH`
+- `BACKUP_STATUS_ENABLED`
 - `BACKUP_STATUS_DIRECTORY`
 - `BACKUP_STATUS_STALE_SECONDS`
 
@@ -495,9 +496,9 @@ Docker Compose uses local Postgres by default. Set `POSTGRES_DB`,
 
 Change `DASHBOARD_AUTH_PASSWORD` before exposing the dashboard or API. Backend
 auth is enabled by default and protects every route except `/health` and
-`/ready`. The dashboard sends backend credentials from the Next.js server and
-proxies browser API calls through `/api/backend`, so credentials are not placed in
-the client bundle.
+`/ready`. The dashboard also enforces Basic Auth before serving pages or
+`/api/backend` proxy routes. Backend credentials are attached by the Next.js
+server, so they are not placed in the client bundle.
 
 For a fresh local Compose database, start Postgres and run migrations first:
 
@@ -541,10 +542,11 @@ docker compose -f docker-compose.vps.yml up -d
 
 Local VPS Postgres data lives in the `postgres_data` Docker volume. Do not run
 `docker compose -f docker-compose.vps.yml down -v` unless you intentionally want
-to delete the database. Use `bash infra/postgres-backup-local.sh` for manual
-backups or add the cron job from the deployment guide. Set `POSTGRES_DB`,
-`POSTGRES_USER`, and `POSTGRES_PASSWORD` before the first Postgres start because
-changing them later does not alter an existing database volume.
+to delete the database. Local backup scripts are available in `infra/`, but they
+are optional and `/ops` backup status stays disabled unless
+`BACKUP_STATUS_ENABLED=true`. Set `POSTGRES_DB`, `POSTGRES_USER`, and
+`POSTGRES_PASSWORD` before the first Postgres start because changing them later
+does not alter an existing database volume.
 
 Full guide: [docs/deployment.md](docs/deployment.md)
 

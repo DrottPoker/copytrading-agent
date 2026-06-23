@@ -353,6 +353,7 @@ class Settings(BaseSettings):
     worker_heartbeat_interval_seconds: int = Field(default=60, ge=10, le=3600)
     worker_heartbeat_stale_seconds: int = Field(default=180, ge=30, le=7200)
     ops_disk_path: str = "/"
+    backup_status_enabled: bool = False
     backup_status_directory: str = "/app/backups/postgres"
     backup_status_stale_seconds: int = Field(default=129600, ge=3600, le=2592000)
 

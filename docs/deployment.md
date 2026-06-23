@@ -68,6 +68,7 @@ DASHBOARD_AUTH_PASSWORD=replace-with-a-strong-password
 DASHBOARD_AUTH_ENABLED=true
 DASHBOARD_DOMAIN=dashboard.example.com
 SERVER_API_BASE_URL=http://backend:8000
+BACKUP_STATUS_ENABLED=false
 ```
 
 Use a URL-safe Postgres password because Docker Compose builds database URLs
@@ -209,7 +210,10 @@ After the trading worker restarts it reloads open paper positions, replays
 recent source fills, and checks source live perp state so paper positions can
 close if the source exited while the stack was down.
 
-## Backups
+## Optional Backups
+
+Backups are optional. Leave `BACKUP_STATUS_ENABLED=false` if you do not want the
+Ops page to check local backup files.
 
 Create a manual local Postgres backup:
 
@@ -286,9 +290,9 @@ docker compose -f docker-compose.vps.yml down -v
 - Redis data is stored in the `redis_data` Docker volume.
 - Caddy certificates are stored in `caddy_data` and `caddy_config` volumes.
 - The backend mounts `./backups/postgres` read-only so `/ops` can show latest
-  backup status without database maintenance actions.
+  backup status when `BACKUP_STATUS_ENABLED=true`.
 - Backend routes are protected by dashboard Basic Auth except `/health` and
-  `/ready`.
+  `/ready`. The dashboard itself also requires the same Basic Auth.
 - The dashboard calls the backend through the Next.js server-side proxy, so the
   backend does not need a public domain.
 - Keep at least a few GB of free disk space for Postgres WAL, autovacuum, and
