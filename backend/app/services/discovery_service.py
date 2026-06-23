@@ -67,7 +67,34 @@ HYPERLIQUID_VAULT_SOURCES = {
 HYPERDASH_URL_SETTINGS = {
     "hyperdash_copytrading": "discovery_hyperdash_copytrading_url",
     "hyperdash_cohorts": "discovery_hyperdash_cohorts_url",
+    "hyperdash_cohorts_very_profitable": "discovery_hyperdash_very_profitable_url",
+    "hyperdash_cohorts_extremely_profitable": (
+        "discovery_hyperdash_extremely_profitable_url"
+    ),
     "hyperdash_tagged": "discovery_hyperdash_tagged_url",
+}
+HYPERDASH_PNL_COHORT_SOURCES = {
+    "hyperdash_cohorts",
+    "hyperdash_cohorts_very_profitable",
+    "hyperdash_cohorts_extremely_profitable",
+}
+HYPERTRACKER_SEGMENT_SOURCES = {
+    "hypertracker_money_printer": 8,
+    "hypertracker_smart_money": 9,
+    "hypertracker_grinder": 10,
+    "hypertracker_humble_earner": 11,
+}
+HYPERTRACKER_SEGMENT_SLUGS = {
+    "hypertracker_money_printer": "money-printer",
+    "hypertracker_smart_money": "smart-money",
+    "hypertracker_grinder": "grinder",
+    "hypertracker_humble_earner": "humble-earner",
+}
+HYPERTRACKER_SEGMENT_COHORTS = {
+    "hypertracker_money_printer": "Money Printer",
+    "hypertracker_smart_money": "Smart Money",
+    "hypertracker_grinder": "Grinder",
+    "hypertracker_humble_earner": "Humble Earner",
 }
 
 HYPERDASH_GRAPHQL_URL = "https://api.hyperdash.com/graphql"
@@ -166,8 +193,14 @@ SOURCE_LABELS = {
     "hyperliquid_vault_leaders_week": "Hyperliquid 7D vault leaders",
     "hyperliquid_vault_leaders": "Hyperliquid 30D vault leaders",
     "hyperdash_copytrading": "Hyperdash copytrading",
-    "hyperdash_cohorts": "Hyperdash cohorts",
+    "hyperdash_cohorts": "Hyperdash profitable cohort",
+    "hyperdash_cohorts_very_profitable": "Hyperdash very profitable cohort",
+    "hyperdash_cohorts_extremely_profitable": "Hyperdash extremely profitable cohort",
     "hyperdash_tagged": "Hyperdash tagged traders",
+    "hypertracker_money_printer": "HyperTracker Money Printer",
+    "hypertracker_smart_money": "HyperTracker Smart Money",
+    "hypertracker_grinder": "HyperTracker Grinder",
+    "hypertracker_humble_earner": "HyperTracker Humble Earner",
 }
 
 KNOWN_DISCOVERY_SOURCES = tuple(SOURCE_LABELS.keys())
@@ -244,19 +277,23 @@ async def list_discovery_sources(
     items: list[DiscoverySourceRead] = []
 
     for source in KNOWN_DISCOVERY_SOURCES:
-        provider = (
-            "hyperliquid"
-            if source in HYPERLIQUID_LEADERBOARD_SOURCES or source in HYPERLIQUID_VAULT_SOURCES
-            else "hyperdash"
-        )
-        configured = (
-            source in HYPERLIQUID_LEADERBOARD_SOURCES
-            or source in HYPERLIQUID_VAULT_SOURCES
-            or bool(hyperdash_url_for_source(source, resolved_settings))
-        )
+        if source in HYPERLIQUID_LEADERBOARD_SOURCES or source in HYPERLIQUID_VAULT_SOURCES:
+            provider = "hyperliquid"
+        elif source in HYPERDASH_URL_SETTINGS:
+            provider = "hyperdash"
+        else:
+            provider = "hypertracker"
+        if provider == "hyperliquid":
+            configured = True
+        elif provider == "hyperdash":
+            configured = bool(hyperdash_url_for_source(source, resolved_settings))
+        else:
+            configured = bool(hypertracker_static_base_url(resolved_settings))
         notes = None
         if source in HYPERDASH_URL_SETTINGS and not configured:
             notes = "Set the matching discovery_hyperdash_*_url config before running this source."
+        if source in HYPERTRACKER_SEGMENT_SOURCES and not configured:
+            notes = "Set discovery_hypertracker_static_base_url before running this source."
         items.append(
             DiscoverySourceRead(
                 key=source,
@@ -939,6 +976,8 @@ async def fetch_discovery_source(
         )
     if source in HYPERDASH_URL_SETTINGS:
         return await fetch_hyperdash_source(source, limit=limit, settings=settings)
+    if source in HYPERTRACKER_SEGMENT_SOURCES:
+        return await fetch_hypertracker_segment_source(source, limit=limit, settings=settings)
     raise UnknownDiscoverySourceError(f"Unknown discovery source: {source}")
 
 
@@ -1258,6 +1297,66 @@ async def fetch_hyperdash_source(
     )
 
 
+async def fetch_hypertracker_segment_source(
+    source: str,
+    *,
+    limit: int,
+    settings: Settings,
+) -> DiscoverySourceResult:
+    segment_id = HYPERTRACKER_SEGMENT_SOURCES[source]
+    url = hypertracker_segment_wallets_url(source, settings)
+    if not url:
+        raise DiscoverySourceUnavailableError(
+            "hypertracker source is not configured. Set discovery_hypertracker_static_base_url."
+        )
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(url)
+    if response.status_code >= 400:
+        raise DiscoverySourceUnavailableError(
+            f"{source} request failed with status {response.status_code}."
+        )
+
+    payload = response.json()
+    if isinstance(payload, list):
+        rows = payload
+    else:
+        rows = extract_hypertracker_rows(payload)
+    rows = rows[:limit]
+    candidates: list[DiscoveryCandidate] = []
+    skipped = 0
+    skip_reasons: dict[str, int] = {}
+
+    for rank, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            skipped += 1
+            add_count(skip_reasons, "invalid_source_row")
+            continue
+        candidate = hypertracker_segment_candidate(
+            source=source,
+            row=row,
+            rank=rank,
+        )
+        if candidate is None:
+            skipped += 1
+            add_count(skip_reasons, "missing_or_invalid_address")
+            continue
+        candidates.append(candidate)
+
+    return DiscoverySourceResult(
+        fetched=len(rows),
+        skipped=skipped,
+        skip_reasons=skip_reasons,
+        candidates=candidates,
+        metadata={
+            "provider": "hypertracker",
+            "url": url,
+            "segmentId": segment_id,
+            "segmentSlug": HYPERTRACKER_SEGMENT_SLUGS[source],
+            "sourceType": "segment_wallets",
+        },
+    )
+
+
 async def fetch_hyperdash_graphql_source(
     source: str,
     *,
@@ -1266,7 +1365,7 @@ async def fetch_hyperdash_graphql_source(
 ) -> DiscoverySourceResult:
     if source in HYPERDASH_SYSTEM_GROUP_IDS:
         return await fetch_hyperdash_system_group_source(source, url=url, limit=limit)
-    if source == "hyperdash_cohorts":
+    if source in HYPERDASH_PNL_COHORT_SOURCES:
         return await fetch_hyperdash_pnl_cohort_source(source, url=url, limit=limit)
     raise UnknownDiscoverySourceError(f"Unknown Hyperdash source: {source}")
 
@@ -1490,6 +1589,40 @@ def hyperdash_pnl_cohort_candidate(
         source_copy_score=decimal_or_none(row.get("copyScore")),
         account_role="master",
         raw_payload=compact_hyperdash_cohort_payload(row, cohort_id=cohort_id, rank=rank),
+    )
+
+
+def hypertracker_segment_candidate(
+    *,
+    source: str,
+    row: dict[str, Any],
+    rank: int,
+) -> DiscoveryCandidate | None:
+    address = extract_address(row)
+    if address is None:
+        return None
+
+    cohort = HYPERTRACKER_SEGMENT_COHORTS[source]
+    account_value = decimal_or_none(first_present(row, ("perpEquity", "totalEquity")))
+    source_pnl = decimal_or_none(row.get("perpPnl"))
+    display_name = string_or_none(row.get("displayName"))
+
+    return DiscoveryCandidate(
+        wallet_address=address,
+        source=source,
+        source_rank=rank,
+        source_label=display_name or f"HyperTracker {cohort} #{rank}",
+        source_cohort=cohort,
+        account_value=account_value,
+        source_pnl=source_pnl,
+        source_roi=estimate_roi_percent(source_pnl, account_value),
+        account_role="master",
+        raw_payload=compact_hypertracker_segment_payload(
+            row,
+            segment_id=HYPERTRACKER_SEGMENT_SOURCES[source],
+            segment_slug=HYPERTRACKER_SEGMENT_SLUGS[source],
+            rank=rank,
+        ),
     )
 
 
@@ -2792,6 +2925,22 @@ def extract_hyperdash_rows(payload: Any) -> list[Any]:
     return []
 
 
+def extract_hypertracker_rows(payload: Any) -> list[Any]:
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, dict):
+        return []
+    for key in ("items", "wallets", "rows", "data"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            nested = extract_hypertracker_rows(value)
+            if nested:
+                return nested
+    return []
+
+
 def should_use_hyperdash_graphql(url: str) -> bool:
     parsed = urlparse(url)
     host = parsed.netloc.lower()
@@ -2810,6 +2959,18 @@ def hyperdash_cohort_id_from_url(url: str) -> str | None:
     if cohorts_index + 1 >= len(parts):
         return None
     return parts[cohorts_index + 1]
+
+
+def hypertracker_static_base_url(settings: Settings) -> str:
+    return settings.discovery_hypertracker_static_base_url.strip().rstrip("/")
+
+
+def hypertracker_segment_wallets_url(source: str, settings: Settings) -> str:
+    base_url = hypertracker_static_base_url(settings)
+    if not base_url:
+        return ""
+    segment_id = HYPERTRACKER_SEGMENT_SOURCES[source]
+    return f"{base_url}/segment_{segment_id}_wallets.json"
 
 
 def extract_path(payload: dict[str, Any], path: tuple[str, ...]) -> Any:
@@ -2890,6 +3051,39 @@ def compact_hyperdash_cohort_payload(
         "lastTradeAt": row.get("lastTradeAt"),
         "positions": row.get("positions"),
         "sourceCohortId": cohort_id,
+        "sourceRank": rank,
+    }
+
+
+def compact_hypertracker_segment_payload(
+    row: dict[str, Any],
+    *,
+    segment_id: int,
+    segment_slug: str,
+    rank: int,
+) -> dict[str, Any]:
+    vault = row.get("vault") if isinstance(row.get("vault"), dict) else None
+    closest_liq = row.get("closestLiq") if isinstance(row.get("closestLiq"), dict) else None
+    return {
+        "address": row.get("address"),
+        "displayName": row.get("displayName"),
+        "verified": row.get("verified"),
+        "segments": row.get("segments"),
+        "favoriteCount": row.get("favoriteCount"),
+        "totalEquity": row.get("totalEquity"),
+        "perpEquity": row.get("perpEquity"),
+        "perpPnl": row.get("perpPnl"),
+        "exposureRatio": row.get("exposureRatio"),
+        "perpBias": row.get("perpBias"),
+        "openValue": row.get("openValue"),
+        "sumUpnl": row.get("sumUpnl"),
+        "earliestActivityAt": row.get("earliestActivityAt"),
+        "vaultLeader": vault.get("leader") if vault else None,
+        "vaultName": vault.get("name") if vault else None,
+        "closestLiquidationCoin": closest_liq.get("coin") if closest_liq else None,
+        "closestLiquidationProgress": closest_liq.get("progress") if closest_liq else None,
+        "sourceSegmentId": segment_id,
+        "sourceSegmentSlug": segment_slug,
         "sourceRank": rank,
     }
 

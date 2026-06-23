@@ -148,8 +148,8 @@ What it does:
 - Stores discovery import runs so source quality can be measured over time.
 - Supports Hyperliquid 1D, 7D, 30D, and all-time leaderboard sources.
 - Defaults to Hyperliquid 1D, 7D, and 30D leaderboard discovery, Hyperliquid
-  7D and 30D vault leaders, leaderboard subaccounts, and configured Hyperdash
-  sources.
+  7D and 30D vault leaders, leaderboard subaccounts, HyperTracker PnL
+  segments, and configured Hyperdash profitable cohorts.
   All-time leaderboard discovery remains available manually, but is not enabled
   by default because current activity is more useful for copy trading.
 - Imports leaderboard subaccounts as candidates by default.
@@ -164,6 +164,11 @@ What it does:
   window's ROI first, 7D or 30D, and TVL second.
 - Includes configurable Hyperdash source adapters, but they require stable
   `discovery_hyperdash_*_url` config values before use.
+- Imports Hyperdash profitable, very profitable, and extremely profitable
+  cohorts by default.
+- Imports public HyperTracker segment wallet snapshots for Money Printer,
+  Smart Money, Grinder, and Humble Earner from the configured
+  `discovery_hypertracker_static_base_url`.
 - Runs a configurable source-metadata prefilter after import by default.
 - Keeps discovery tunables in organized `backend/config/discovery.json` sections:
   discovery sources, discovery import, prefilter, candidate backfill, quality,

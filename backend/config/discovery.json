@@ -7,8 +7,14 @@
       "hyperliquid_leaderboard_month",
       "hyperliquid_vault_leaders_week",
       "hyperliquid_vault_leaders",
+      "hypertracker_money_printer",
+      "hypertracker_smart_money",
+      "hypertracker_grinder",
+      "hypertracker_humble_earner",
       "hyperdash_tagged",
       "hyperdash_cohorts",
+      "hyperdash_cohorts_very_profitable",
+      "hyperdash_cohorts_extremely_profitable",
       "hyperdash_copytrading"
     ],
     "hyperliquid": {
@@ -20,8 +26,13 @@
       "urls": {
         "copytrading": "https://hyperdash.com/explore/copytraders",
         "cohorts": "https://hyperdash.com/explore/cohorts/profitable",
+        "very_profitable": "https://hyperdash.com/explore/cohorts/very_profitable",
+        "extremely_profitable": "https://hyperdash.com/explore/cohorts/extremely_profitable",
         "tagged": "https://hyperdash.com/explore/tagged"
       }
+    },
+    "hypertracker": {
+      "static_base_url": "https://dw3ji7n7thadj.cloudfront.net/aggregator"
     }
   },
   "import": {

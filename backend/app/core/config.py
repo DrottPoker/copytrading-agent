@@ -28,8 +28,17 @@ DISCOVERY_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("sources", "hyperdash", "urls", "cohorts"): (
         "discovery_hyperdash_cohorts_url"
     ),
+    ("sources", "hyperdash", "urls", "very_profitable"): (
+        "discovery_hyperdash_very_profitable_url"
+    ),
+    ("sources", "hyperdash", "urls", "extremely_profitable"): (
+        "discovery_hyperdash_extremely_profitable_url"
+    ),
     ("sources", "hyperdash", "urls", "tagged"): (
         "discovery_hyperdash_tagged_url"
+    ),
+    ("sources", "hypertracker", "static_base_url"): (
+        "discovery_hypertracker_static_base_url"
     ),
     ("import", "limit"): "discovery_import_limit",
     ("import", "interval_seconds"): "discovery_import_interval_seconds",
@@ -403,6 +412,10 @@ class Settings(BaseSettings):
             "hyperliquid_leaderboard_month",
             "hyperliquid_vault_leaders_week",
             "hyperliquid_vault_leaders",
+            "hypertracker_money_printer",
+            "hypertracker_smart_money",
+            "hypertracker_grinder",
+            "hypertracker_humble_earner",
         ],
         max_length=16,
     )
@@ -416,7 +429,12 @@ class Settings(BaseSettings):
     discovery_import_max_subaccounts_per_wallet: int = Field(default=10, ge=0, le=50)
     discovery_hyperdash_copytrading_url: str | None = None
     discovery_hyperdash_cohorts_url: str | None = None
+    discovery_hyperdash_very_profitable_url: str | None = None
+    discovery_hyperdash_extremely_profitable_url: str | None = None
     discovery_hyperdash_tagged_url: str | None = None
+    discovery_hypertracker_static_base_url: str = (
+        "https://dw3ji7n7thadj.cloudfront.net/aggregator"
+    )
     discovery_prefilter_enabled: bool = True
     discovery_prefilter_run_after_import: bool = True
     discovery_prefilter_reject_missing_source_pnl: bool = False
