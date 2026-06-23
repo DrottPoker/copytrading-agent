@@ -603,6 +603,8 @@ What it does:
   available.
 - Aggregates paper PnL by source wallet so the dashboard can show which copied
   wallets made or lost money across accounts.
+- Sorts wallet PnL history by realized PnL descending, with total PnL and pool
+  rank as tie-breakers.
 - Returns a closed trade history built from paper `close` and `flip_close`
   executions, separate from the raw recent fill and skip log. Closed trade rows
   include duration when the original paper position open time is available and

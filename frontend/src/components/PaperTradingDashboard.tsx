@@ -984,13 +984,15 @@ function buildWalletHistory(wallets: PaperWalletPerformance[]) {
         numberValue(wallet.totalPnlUsd) !== 0,
     )
     .sort((left, right) => {
-      if (left.openPositionCount !== right.openPositionCount) {
-        return right.openPositionCount - left.openPositionCount;
+      const realizedDiff = numberValue(right.realizedPnlUsd) - numberValue(left.realizedPnlUsd);
+      if (realizedDiff !== 0) {
+        return realizedDiff;
       }
-      if (left.poolRank !== right.poolRank) {
-        return (left.poolRank ?? 9999) - (right.poolRank ?? 9999);
+      const totalDiff = numberValue(right.totalPnlUsd) - numberValue(left.totalPnlUsd);
+      if (totalDiff !== 0) {
+        return totalDiff;
       }
-      return numberValue(right.totalPnlUsd) - numberValue(left.totalPnlUsd);
+      return (left.poolRank ?? 9999) - (right.poolRank ?? 9999);
     });
 }
 

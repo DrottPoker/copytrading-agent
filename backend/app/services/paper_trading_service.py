@@ -902,9 +902,9 @@ def paper_wallet_performance_reads(
     return sorted(
         rows,
         key=lambda row: (
-            -row["open_position_count"],
-            row["pool_rank"] or 9999,
+            -row["realized_pnl_usd"],
             -row["total_pnl_usd"],
+            row["pool_rank"] or 9999,
         ),
     )
 
