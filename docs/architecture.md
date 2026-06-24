@@ -259,7 +259,7 @@ Secrets and connection strings live in `.env`:
 - `REDIS_URL`
 - Hyperliquid private key and wallet address
 - dashboard auth credentials
-- optional backup status monitoring settings
+- backup interval, retention, and status monitoring settings
 
 Docker Compose builds `DATABASE_URL` and `DATABASE_URL_DIRECT` for app
 containers from `POSTGRES_*` and the local `postgres` service. Direct database
@@ -267,6 +267,11 @@ URLs remain available for non-Compose runs and external Postgres migrations.
 Environment variables override JSON config. This is important in Docker Compose,
 where the backend container overrides `worker_run_in_api_process` without editing
 `backend/config/app.json`.
+
+Docker Compose also runs `postgres-backup`, a lightweight Postgres container
+that executes `pg_dump` immediately at startup and then every 24 hours by
+default. Dumps are written to `backups/postgres`, and `/ops` reads that mounted
+directory for backup freshness.
 
 ## Data Flows
 
@@ -628,6 +633,9 @@ use `monitorStatus` as `monitored` or `waiting`. Wallet PnL history rows use
 The dashboard aggregates allocation status across paper accounts when rendering
 source rows, so a source is shown as `trading` when at least one account can
 open or manage that source and the source has open paper exposure.
+Paper account `enabled` is runtime state after the account has been synced from
+config. The Accounts page can change that state for one account without
+disabling other accounts.
 The summary also exposes `poolRank` and `sourceStatusReason`. `poolRank` is the
 source wallet's score rank in the wallet pool, while `sourceStatusReason`
 explains why a source is retained or waiting without relying on monitor-slot

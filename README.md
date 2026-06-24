@@ -224,6 +224,8 @@ API:
 - `GET /ops/health`
 - `GET /analytics`
 - `GET /paper-trading`
+- `POST /paper-trading/accounts/{account_key}/start`
+- `POST /paper-trading/accounts/{account_key}/stop`
 - `POST /paper-trading/positions/{position_id}/close`
 - `POST /paper-trading/sources/{source_wallet}/close`
 
@@ -319,6 +321,8 @@ Paper copy simulation is available as the first execution layer.
 API:
 
 - `GET /paper-trading`
+- `POST /paper-trading/accounts/{account_key}/start`
+- `POST /paper-trading/accounts/{account_key}/stop`
 - `POST /paper-trading/accounts/{account_key}/reset`
 - `POST /paper-trading/positions/{position_id}/close`
 - `POST /paper-trading/sources/{source_wallet}/close`
@@ -385,6 +389,10 @@ Sizing policy:
   defaults to that account on the next visit, otherwise the first synced account
   is selected. It shows account-specific metrics, charts, allocations, market
   exposure, source performance, open positions, closed trades, and recent fills.
+- The Accounts page can start or stop trading for the selected paper account.
+  Starting enables new paper copy entries for that account. Stopping disables
+  new entries for that account and attempts to close all of its open paper
+  positions while other paper accounts keep trading.
 - The dashboard shows paper accounts, monitored sources, currently trading
   sources, open positions, wallet PnL history, closed trade history, and recent
   fills as compact lists without horizontal scrolling.
@@ -489,6 +497,8 @@ The Ops Health page reads runtime settings from environment variables:
 - `BACKUP_STATUS_ENABLED`
 - `BACKUP_STATUS_DIRECTORY`
 - `BACKUP_STATUS_STALE_SECONDS`
+- `BACKUP_INTERVAL_SECONDS`
+- `BACKUP_RETENTION_DAYS`
 
 Use `.env` only for secrets and connection strings:
 
@@ -526,6 +536,7 @@ Services:
 - Health: http://localhost:8000/health
 - Ops Health: http://localhost:3000/ops
 - Postgres: localhost:5432
+- Postgres backup worker: `postgres-backup`, writes to `backups/postgres`
 - Caddy dashboard proxy: http://localhost:8080
 - Caddy API proxy: http://localhost:8001
 
@@ -548,11 +559,11 @@ docker compose -f docker-compose.vps.yml up -d
 
 Local VPS Postgres data lives in the `postgres_data` Docker volume. Do not run
 `docker compose -f docker-compose.vps.yml down -v` unless you intentionally want
-to delete the database. Local backup scripts are available in `infra/`, but they
-are optional and `/ops` backup status stays disabled unless
-`BACKUP_STATUS_ENABLED=true`. Set `POSTGRES_DB`, `POSTGRES_USER`, and
-`POSTGRES_PASSWORD` before the first Postgres start because changing them later
-does not alter an existing database volume.
+to delete the database. The `postgres-backup` service runs `pg_dump` every 24
+hours by default and writes dumps to `backups/postgres`. `/ops` checks that
+folder when `BACKUP_STATUS_ENABLED=true`. Set `POSTGRES_DB`, `POSTGRES_USER`,
+and `POSTGRES_PASSWORD` before the first Postgres start because changing them
+later does not alter an existing database volume.
 
 Full guide: [docs/deployment.md](docs/deployment.md)
 

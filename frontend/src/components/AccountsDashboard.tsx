@@ -6,7 +6,10 @@ import {
   Clock,
   Layers,
   LineChart,
+  Loader2,
+  Play,
   RefreshCw,
+  Square,
   Target,
   TrendingDown,
   TrendingUp,
@@ -42,6 +45,7 @@ const ACCOUNT_SUMMARY_LIMIT = 250;
 const SELECTED_ACCOUNT_STORAGE_KEY = "copyagent.accounts.selectedAccountKey";
 
 type Tone = "positive" | "warning" | "danger" | "neutral";
+type TradingAction = "start" | "stop";
 
 type AccountMetrics = {
   allocationUsd: number;
@@ -117,6 +121,8 @@ export function AccountsDashboard({
   const [connectionState, setConnectionState] = useState<"live" | "refreshing" | "offline">(
     "live",
   );
+  const [accountAction, setAccountAction] = useState<TradingAction | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [lastRefreshAt, setLastRefreshAt] = useState<Date | null>(new Date());
 
   useEffect(() => {
@@ -175,6 +181,51 @@ export function AccountsDashboard({
     [selectedAccountKey, summary],
   );
 
+  const handleTradingAction = useCallback(
+    async (action: TradingAction) => {
+      if (!accountView || accountAction) {
+        return;
+      }
+      if (action === "stop" && accountView.positions.length > 0) {
+        const confirmed = window.confirm(
+          `Stop trading for ${accountView.account.label} and close ${formatInteger(
+            accountView.positions.length,
+          )} open paper positions?`,
+        );
+        if (!confirmed) {
+          return;
+        }
+      }
+
+      setAccountAction(action);
+      setActionError(null);
+      try {
+        const response = await fetch(
+          `${getPublicApiBaseUrl()}/paper-trading/accounts/${encodeURIComponent(
+            accountView.account.key,
+          )}/${action}`,
+          { cache: "no-store", method: "POST" },
+        );
+        if (!response.ok) {
+          setActionError(await responseError(response, `${capitalize(action)} trading failed`));
+          await refresh();
+          return;
+        }
+
+        const payload = (await response.json()) as PaperTradingSummaryResponse;
+        setSummary(payload);
+        setLastRefreshAt(new Date());
+        setConnectionState("live");
+      } catch {
+        setConnectionState("offline");
+        setActionError(`${capitalize(action)} trading failed.`);
+      } finally {
+        setAccountAction(null);
+      }
+    },
+    [accountAction, accountView, refresh],
+  );
+
   return (
     <>
       <header className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -198,6 +249,43 @@ export function AccountsDashboard({
               </option>
             ))}
           </select>
+          {accountView ? (
+            <StatusPill
+              label={accountView.account.enabled ? "trading enabled" : "trading stopped"}
+              tone={accountView.account.enabled ? "positive" : "warning"}
+            />
+          ) : null}
+          {accountView ? (
+            accountView.account.enabled ? (
+              <button
+                type="button"
+                onClick={() => void handleTradingAction("stop")}
+                disabled={accountAction !== null}
+                className="inline-flex h-9 items-center gap-2 rounded-md border border-[#efb1aa] bg-[#fff5f3] px-3 text-sm font-semibold text-danger shadow-sm hover:bg-[#ffe9e6] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {accountAction === "stop" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Square className="h-4 w-4" aria-hidden="true" />
+                )}
+                Stop trading
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => void handleTradingAction("start")}
+                disabled={accountAction !== null}
+                className="inline-flex h-9 items-center gap-2 rounded-md border border-[#9ccfc0] bg-[#f2fbf7] px-3 text-sm font-semibold text-positive shadow-sm hover:bg-[#e5f6ee] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {accountAction === "start" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Play className="h-4 w-4" aria-hidden="true" />
+                )}
+                Start trading
+              </button>
+            )
+          ) : null}
           <StatusPill
             label={connectionState}
             tone={connectionState === "offline" ? "danger" : "positive"}
@@ -217,6 +305,12 @@ export function AccountsDashboard({
           </button>
         </div>
       </header>
+
+      {actionError ? (
+        <div className="rounded-md border border-[#f2aaa5] bg-[#fff2f0] px-3 py-2 text-sm font-medium text-danger">
+          {actionError}
+        </div>
+      ) : null}
 
       {accountView ? (
         <AccountContent
@@ -1221,4 +1315,20 @@ function formatDuration(value: number | null | undefined) {
 
 function humanReason(value: string) {
   return value.replaceAll("_", " ");
+}
+
+function capitalize(value: string) {
+  return `${value.slice(0, 1).toUpperCase()}${value.slice(1)}`;
+}
+
+async function responseError(response: Response, fallback: string) {
+  try {
+    const payload = (await response.json()) as { detail?: unknown };
+    if (typeof payload.detail === "string") {
+      return payload.detail;
+    }
+  } catch {
+    return `${fallback} with HTTP ${response.status}.`;
+  }
+  return `${fallback} with HTTP ${response.status}.`;
 }

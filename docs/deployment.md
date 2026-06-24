@@ -68,7 +68,9 @@ DASHBOARD_AUTH_PASSWORD=replace-with-a-strong-password
 DASHBOARD_AUTH_ENABLED=true
 DASHBOARD_DOMAIN=dashboard.example.com
 SERVER_API_BASE_URL=http://backend:8000
-BACKUP_STATUS_ENABLED=false
+BACKUP_STATUS_ENABLED=true
+BACKUP_INTERVAL_SECONDS=86400
+BACKUP_RETENTION_DAYS=7
 ```
 
 Use a URL-safe Postgres password because Docker Compose builds database URLs
@@ -108,7 +110,7 @@ docker compose -f docker-compose.vps.yml up -d
 Follow logs:
 
 ```bash
-docker compose -f docker-compose.vps.yml logs -f backend trading-worker maintenance-worker frontend caddy postgres
+docker compose -f docker-compose.vps.yml logs -f backend trading-worker maintenance-worker frontend caddy postgres postgres-backup
 ```
 
 Open:
@@ -190,7 +192,7 @@ Verify services:
 
 ```bash
 docker compose -f docker-compose.vps.yml ps
-docker compose -f docker-compose.vps.yml logs --tail=100 backend trading-worker maintenance-worker postgres
+docker compose -f docker-compose.vps.yml logs --tail=100 backend trading-worker maintenance-worker postgres postgres-backup
 ```
 
 ## Updates
@@ -210,34 +212,38 @@ After the trading worker restarts it reloads open paper positions, replays
 recent source fills, and checks source live perp state so paper positions can
 close if the source exited while the stack was down.
 
-## Optional Backups
+## Backups
 
-Backups are optional. Leave `BACKUP_STATUS_ENABLED=false` if you do not want the
-Ops page to check local backup files.
+Docker Compose runs a `postgres-backup` service by default. It waits for local
+Postgres to become healthy, writes an immediate dump to `backups/postgres`, then
+repeats every 24 hours. The default retention is 7 days.
 
-Create a manual local Postgres backup:
+Relevant settings:
 
-```bash
-bash infra/postgres-backup-local.sh
+```env
+BACKUP_STATUS_ENABLED=true
+BACKUP_INTERVAL_SECONDS=86400
+BACKUP_RETENTION_DAYS=7
 ```
 
-By default, backups are written to `backups/postgres` and local backup files
-older than 14 days are deleted. Override with:
+Show backup logs:
 
 ```bash
-BACKUP_RETENTION_DAYS=30 bash infra/postgres-backup-local.sh
+docker compose -f docker-compose.vps.yml logs --tail=100 postgres-backup
 ```
 
-Add a daily backup cron job:
+Create an immediate backup by restarting the backup worker. It writes one dump
+at startup and then continues on the 24 hour interval:
 
 ```bash
-sudo crontab -e
+docker compose -f docker-compose.vps.yml restart postgres-backup
 ```
 
-Example:
+By default, backups are written to `backups/postgres` and backup files older
+than 7 days are deleted. Override retention in `.env`:
 
-```cron
-15 3 * * * cd /root/copytrading-agent && bash infra/postgres-backup-local.sh >> /var/log/copyagent-postgres-backup.log 2>&1
+```env
+BACKUP_RETENTION_DAYS=30
 ```
 
 Restore a backup only while app services are stopped:
@@ -259,7 +265,7 @@ docker compose -f docker-compose.vps.yml ps
 Show recent logs:
 
 ```bash
-docker compose -f docker-compose.vps.yml logs --tail=200 backend trading-worker maintenance-worker postgres
+docker compose -f docker-compose.vps.yml logs --tail=200 backend trading-worker maintenance-worker postgres postgres-backup
 ```
 
 Restart workers after config changes:
@@ -291,6 +297,8 @@ docker compose -f docker-compose.vps.yml down -v
 - Caddy certificates are stored in `caddy_data` and `caddy_config` volumes.
 - The backend mounts `./backups/postgres` read-only so `/ops` can show latest
   backup status when `BACKUP_STATUS_ENABLED=true`.
+- The `postgres-backup` service mounts `./backups/postgres` read-write and
+  creates `copyagent-postgres-*.dump` files every 24 hours by default.
 - Backend routes are protected by dashboard Basic Auth except `/health` and
   `/ready`. The dashboard itself also requires the same Basic Auth.
 - The dashboard calls the backend through the Next.js server-side proxy, so the

@@ -9,12 +9,15 @@ from app.core.config import Settings, get_settings
 from app.integrations.hyperliquid_client import HyperliquidClient
 from app.schemas.paper_trading import PaperTradingSummaryResponse
 from app.services.paper_trading_service import (
+    PaperAccountControlError,
     PaperAccountResetError,
     PaperPositionCloseError,
+    close_paper_account_positions_manually,
     close_paper_position_manually,
     close_paper_source_positions_manually,
     get_paper_trading_summary,
     reset_paper_trading_account_balance,
+    set_paper_trading_account_enabled,
 )
 
 router = APIRouter(prefix="/paper-trading", tags=["paper-trading"])
@@ -97,4 +100,63 @@ async def reset_paper_account_balance_route(
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
     async with HyperliquidClient(settings) as client:
+        return await get_paper_trading_summary(session, settings=settings, client=client)
+
+
+@router.post("/accounts/{account_key}/start", response_model=PaperTradingSummaryResponse)
+async def start_paper_account_trading_route(
+    account_key: str,
+    session: Annotated[AsyncSession, Depends(db_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> PaperTradingSummaryResponse:
+    try:
+        await set_paper_trading_account_enabled(
+            session,
+            account_key=account_key,
+            enabled=True,
+            settings=settings,
+        )
+        await session.commit()
+    except PaperAccountControlError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    async with HyperliquidClient(settings) as client:
+        return await get_paper_trading_summary(session, settings=settings, client=client)
+
+
+@router.post("/accounts/{account_key}/stop", response_model=PaperTradingSummaryResponse)
+async def stop_paper_account_trading_route(
+    account_key: str,
+    session: Annotated[AsyncSession, Depends(db_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> PaperTradingSummaryResponse:
+    try:
+        await set_paper_trading_account_enabled(
+            session,
+            account_key=account_key,
+            enabled=False,
+            settings=settings,
+        )
+        await session.commit()
+    except PaperAccountControlError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    async with HyperliquidClient(settings) as client:
+        try:
+            await close_paper_account_positions_manually(
+                session,
+                account_key=account_key,
+                settings=settings,
+                client=client,
+            )
+            await session.commit()
+        except PaperPositionCloseError as exc:
+            await session.rollback()
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail=f"Account trading was stopped, but position close failed: {exc.detail}",
+            ) from exc
+
         return await get_paper_trading_summary(session, settings=settings, client=client)

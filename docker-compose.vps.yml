@@ -121,6 +121,25 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  postgres-backup:
+    image: postgres:18-alpine
+    command: sh /usr/local/bin/postgres-backup-loop.sh
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-copyagent}
+      POSTGRES_USER: ${POSTGRES_USER:-copyagent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-7}
+      BACKUP_DIR: /backups
+      POSTGRES_HOST: postgres
+    volumes:
+      - ./backups/postgres:/backups
+      - ./infra/postgres-backup-loop.sh:/usr/local/bin/postgres-backup-loop.sh:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
   caddy:
     image: caddy:2-alpine
     environment:

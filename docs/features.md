@@ -58,8 +58,9 @@ What it does:
 - Shows disk usage, memory usage, load average, and configured service mode.
 - Reads the latest Postgres backup dump from the read-only mounted backup
   directory when backup status monitoring is enabled.
-- Backup status monitoring is disabled by default, so `/ops` does not warn on
-  installs that intentionally do not run local backup checks.
+- Backup status monitoring is enabled by default. Docker Compose runs the
+  `postgres-backup` service, which writes a Postgres dump every 24 hours by
+  default.
 - Shows worker heartbeat freshness for `trading-worker` and
   `maintenance-worker`.
 - Shows recent long-running operation statuses for discovery, pool reimport,
@@ -75,6 +76,8 @@ Config:
 - `BACKUP_STATUS_ENABLED`
 - `BACKUP_STATUS_DIRECTORY`
 - `BACKUP_STATUS_STALE_SECONDS`
+- `BACKUP_INTERVAL_SECONDS`
+- `BACKUP_RETENTION_DAYS`
 
 ### Analytics
 
@@ -547,6 +550,8 @@ Purpose:
 Endpoint:
 
 - `GET /paper-trading`
+- `POST /paper-trading/accounts/{account_key}/start`
+- `POST /paper-trading/accounts/{account_key}/stop`
 - `POST /paper-trading/accounts/{account_key}/reset`
 - `POST /paper-trading/positions/{position_id}/close`
 - `POST /paper-trading/sources/{source_wallet}/close`
@@ -690,6 +695,10 @@ What it does:
   first synced account. It shows account KPIs, balance and PnL charts,
   allocation usage, market exposure, source performance, open positions, closed
   trades, and recent fills for the selected account.
+- The Accounts page can start or stop trading for the selected paper account.
+  Start trading enables that account for future paper copy entries. Stop trading
+  disables that account first, then attempts to close all open paper positions
+  for that account. Other paper accounts are not disabled or closed.
 - The summary API attaches wallet labels to paper allocation, position,
   wallet-history, closed-trade, and recent-fill rows. The UI shows the label
   when available and falls back to the short address.

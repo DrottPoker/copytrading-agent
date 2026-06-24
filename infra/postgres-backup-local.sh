@@ -3,7 +3,7 @@ set -euo pipefail
 
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.vps.yml}"
 BACKUP_DIR="${BACKUP_DIR:-backups/postgres}"
-RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-14}"
+RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-7}"
 
 if [ ! -f "$COMPOSE_FILE" ]; then
   echo "Run this script from the repository root or set COMPOSE_FILE." >&2

@@ -79,6 +79,18 @@ class PaperAccountResetNotFoundError(PaperAccountResetError):
     status_code = 404
 
 
+class PaperAccountControlError(Exception):
+    status_code = 400
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
+
+
+class PaperAccountControlNotFoundError(PaperAccountControlError):
+    status_code = 404
+
+
 @dataclass(frozen=True)
 class PaperSourceAllocation:
     source_wallet: str
@@ -503,6 +515,41 @@ async def close_paper_source_positions_manually(
     if not position_ids:
         raise PaperPositionNotFoundError("No open paper positions found for this source wallet.")
 
+    total = PaperCopyBatchResult()
+    for position_id in position_ids:
+        close_result = await close_paper_position_manually(
+            session,
+            position_id=position_id,
+            settings=resolved_settings,
+            client=client,
+        )
+        total = combine_batch_results(total, close_result)
+    return total
+
+
+async def close_paper_account_positions_manually(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    settings: Settings | None = None,
+    client: HyperliquidClient | None = None,
+) -> PaperCopyBatchResult:
+    resolved_settings = settings or get_settings()
+    if client is None:
+        async with HyperliquidClient(resolved_settings) as hyperliquid_client:
+            return await close_paper_account_positions_manually(
+                session,
+                account_key=account_key,
+                settings=resolved_settings,
+                client=hyperliquid_client,
+            )
+
+    result = await session.execute(
+        select(PaperPosition.id)
+        .where(PaperPosition.account_key == account_key)
+        .order_by(PaperPosition.source_wallet.asc(), PaperPosition.coin.asc())
+    )
+    position_ids = list(result.scalars().all())
     total = PaperCopyBatchResult()
     for position_id in position_ids:
         close_result = await close_paper_position_manually(
@@ -1849,15 +1896,33 @@ async def sync_paper_trading_accounts(
     *,
     settings: Settings,
 ) -> list[PaperTradingAccount]:
+    account_configs = list(settings.paper_copy_accounts)
+    account_keys = [account.key for account in account_configs]
+    existing_result = await session.execute(
+        select(PaperTradingAccount).where(PaperTradingAccount.key.in_(account_keys))
+    )
+    existing_by_key = {
+        account.key: account
+        for account in existing_result.scalars().all()
+    }
+
     for account_config in settings.paper_copy_accounts:
         config_payload = account_config.model_dump(mode="json")
+        existing_account = existing_by_key.get(account_config.key)
+        account_enabled = account_config.enabled
+        if (
+            existing_account is not None
+            and existing_account.config_payload == config_payload
+        ):
+            account_enabled = existing_account.enabled
+
         stmt = insert(PaperTradingAccount).values(
             key=account_config.key,
             label=account_config.label,
             starting_balance_usd=account_config.starting_balance_usd,
             cash_balance_usd=account_config.starting_balance_usd,
             equity_usd=account_config.starting_balance_usd,
-            enabled=account_config.enabled,
+            enabled=account_enabled,
             config_payload=config_payload,
         )
         await session.execute(
@@ -1873,7 +1938,7 @@ async def sync_paper_trading_accounts(
 
     result = await session.execute(
         select(PaperTradingAccount).where(
-            PaperTradingAccount.key.in_([account.key for account in settings.paper_copy_accounts])
+            PaperTradingAccount.key.in_(account_keys)
         )
     )
     return list(result.scalars().all())
@@ -1936,6 +2001,33 @@ async def reset_paper_trading_account_balance(
     account.fee_usd = ZERO
     account.enabled = account_config.enabled
     account.config_payload = config_payload
+    return account
+
+
+async def set_paper_trading_account_enabled(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    enabled: bool,
+    settings: Settings,
+) -> PaperTradingAccount:
+    account_config = next(
+        (account for account in settings.paper_copy_accounts if account.key == account_key),
+        None,
+    )
+    if account_config is None:
+        raise PaperAccountControlNotFoundError("Paper account is not configured.")
+
+    await sync_paper_trading_accounts(session, settings=settings)
+    account = await session.scalar(
+        select(PaperTradingAccount)
+        .where(PaperTradingAccount.key == account_key)
+        .with_for_update()
+    )
+    if account is None:
+        raise PaperAccountControlNotFoundError("Paper account was not found.")
+
+    account.enabled = enabled
     return account
 
 
