@@ -730,7 +730,9 @@ What it does:
   live account creation for an existing wallet route returns the existing local
   account instead of creating a duplicate.
 - The Accounts page skips scheduled auto-refresh while the create account
-  dialog is open, so partially entered account details are not discarded.
+  dialog is open, stores the in-progress draft in browser session storage, and
+  keeps the dialog open until the user cancels, presses Escape, closes it, or
+  finishes account creation.
 - The Accounts page can start, stop, or close all and stop trading for the
   selected account. Start trading enables new entries again. Stop trading
   disables new entries and adds for that account, but still lets reduce and exit

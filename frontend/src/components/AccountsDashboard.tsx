@@ -49,12 +49,30 @@ import { StatusPill } from "./StatusPill";
 const ACCOUNT_REFRESH_MS = 4000;
 const ACCOUNT_SUMMARY_LIMIT = 250;
 const SELECTED_ACCOUNT_STORAGE_KEY = "copyagent.accounts.selectedAccountKey";
+const CREATE_ACCOUNT_DRAFT_STORAGE_KEY = "copyagent.accounts.createAccountDraft";
 
 type Tone = "positive" | "warning" | "danger" | "neutral";
 type TradingAction = "start" | "stop" | "close-all-and-stop" | "delete";
 type CreateAccountType = "paper" | "live";
 type RefreshOptions = {
   skipIfCreateDialogOpen?: boolean;
+};
+type CreateAccountDraft = {
+  accountType: CreateAccountType;
+  liveLabel: string;
+  liveVaultAddress: string;
+  liveWalletAddress: string;
+  open: boolean;
+  startingBalance: string;
+};
+
+const DEFAULT_CREATE_ACCOUNT_DRAFT: CreateAccountDraft = {
+  accountType: "paper",
+  liveLabel: "Main wallet",
+  liveVaultAddress: "",
+  liveWalletAddress: "",
+  open: false,
+  startingBalance: "1000",
 };
 
 type AccountOption =
@@ -151,18 +169,19 @@ export function AccountsDashboard({
     "live",
   );
   const [accountAction, setAccountAction] = useState<TradingAction | null>(null);
-  const [createAccountOpen, setCreateAccountOpen] = useState(false);
-  const [createAccountType, setCreateAccountType] = useState<CreateAccountType>("paper");
-  const [createStartingBalance, setCreateStartingBalance] = useState("1000");
-  const [createLiveLabel, setCreateLiveLabel] = useState("Main wallet");
-  const [createLiveWalletAddress, setCreateLiveWalletAddress] = useState("");
-  const [createLiveVaultAddress, setCreateLiveVaultAddress] = useState("");
+  const [createDraft, setCreateDraft] = useState<CreateAccountDraft>(readCreateAccountDraft);
   const [createSubmitting, setCreateSubmitting] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [lastRefreshAt, setLastRefreshAt] = useState<Date | null>(new Date());
   const [storedSelectionLoaded, setStoredSelectionLoaded] = useState(false);
-  const createAccountOpenRef = useRef(createAccountOpen);
+  const createAccountOpenRef = useRef(createDraft.open);
+  const createAccountOpen = createDraft.open;
+  const createAccountType = createDraft.accountType;
+  const createStartingBalance = createDraft.startingBalance;
+  const createLiveLabel = createDraft.liveLabel;
+  const createLiveWalletAddress = createDraft.liveWalletAddress;
+  const createLiveVaultAddress = createDraft.liveVaultAddress;
 
   const accountOptions = useMemo(
     () => buildAccountOptions(summary, tradingAccounts),
@@ -206,7 +225,12 @@ export function AccountsDashboard({
 
   useEffect(() => {
     createAccountOpenRef.current = createAccountOpen;
-  }, [createAccountOpen]);
+    if (createAccountOpen) {
+      writeCreateAccountDraft(createDraft);
+    } else {
+      clearCreateAccountDraft();
+    }
+  }, [createAccountOpen, createDraft]);
 
   const refresh = useCallback(async (options: RefreshOptions = {}) => {
     if (options.skipIfCreateDialogOpen && createAccountOpenRef.current) {
@@ -366,13 +390,33 @@ export function AccountsDashboard({
     }
   }, [accountAction, refresh, selectedAccount]);
 
+  const updateCreateDraft = useCallback((patch: Partial<CreateAccountDraft>) => {
+    setCreateDraft((current) => ({ ...current, ...patch }));
+  }, []);
+
+  const setCreateAccountType = useCallback(
+    (accountType: CreateAccountType) => updateCreateDraft({ accountType }),
+    [updateCreateDraft],
+  );
+  const setCreateStartingBalance = useCallback(
+    (startingBalance: string) => updateCreateDraft({ startingBalance }),
+    [updateCreateDraft],
+  );
+  const setCreateLiveLabel = useCallback(
+    (liveLabel: string) => updateCreateDraft({ liveLabel }),
+    [updateCreateDraft],
+  );
+  const setCreateLiveWalletAddress = useCallback(
+    (liveWalletAddress: string) => updateCreateDraft({ liveWalletAddress }),
+    [updateCreateDraft],
+  );
+  const setCreateLiveVaultAddress = useCallback(
+    (liveVaultAddress: string) => updateCreateDraft({ liveVaultAddress }),
+    [updateCreateDraft],
+  );
+
   const openCreateAccount = useCallback(() => {
-    setCreateAccountOpen(true);
-    setCreateAccountType("paper");
-    setCreateStartingBalance("1000");
-    setCreateLiveLabel("Main wallet");
-    setCreateLiveWalletAddress("");
-    setCreateLiveVaultAddress("");
+    setCreateDraft({ ...DEFAULT_CREATE_ACCOUNT_DRAFT, open: true });
     setCreateError(null);
   }, []);
 
@@ -380,9 +424,9 @@ export function AccountsDashboard({
     if (createSubmitting) {
       return;
     }
-    setCreateAccountOpen(false);
+    updateCreateDraft({ open: false });
     setCreateError(null);
-  }, [createSubmitting]);
+  }, [createSubmitting, updateCreateDraft]);
 
   const handleCreateAccount = useCallback(async () => {
     if (createSubmitting) {
@@ -450,7 +494,7 @@ export function AccountsDashboard({
       }
       setLastRefreshAt(new Date());
       setConnectionState("live");
-      setCreateAccountOpen(false);
+      setCreateDraft(DEFAULT_CREATE_ACCOUNT_DRAFT);
     } catch {
       setConnectionState("offline");
       setCreateError("Create account failed.");
@@ -696,7 +740,6 @@ function CreateAccountDialog({
     <div
       className="fixed inset-0 z-50 overflow-y-auto bg-[#071019]/55 px-3 py-6 backdrop-blur-sm sm:px-6"
       role="presentation"
-      onClick={onClose}
     >
       <div
         role="dialog"
@@ -1556,6 +1599,51 @@ function DetailRow({ label, value }: { label: string; value: string }) {
       <p className="break-words font-mono text-sm font-semibold text-ink">{value}</p>
     </div>
   );
+}
+
+function readCreateAccountDraft(): CreateAccountDraft {
+  if (typeof window === "undefined") {
+    return DEFAULT_CREATE_ACCOUNT_DRAFT;
+  }
+  const rawValue = window.sessionStorage.getItem(CREATE_ACCOUNT_DRAFT_STORAGE_KEY);
+  if (!rawValue) {
+    return DEFAULT_CREATE_ACCOUNT_DRAFT;
+  }
+  try {
+    const parsed = JSON.parse(rawValue) as Partial<CreateAccountDraft>;
+    return {
+      accountType: parsed.accountType === "live" ? "live" : "paper",
+      liveLabel:
+        typeof parsed.liveLabel === "string"
+          ? parsed.liveLabel
+          : DEFAULT_CREATE_ACCOUNT_DRAFT.liveLabel,
+      liveVaultAddress:
+        typeof parsed.liveVaultAddress === "string" ? parsed.liveVaultAddress : "",
+      liveWalletAddress:
+        typeof parsed.liveWalletAddress === "string" ? parsed.liveWalletAddress : "",
+      open: parsed.open === true,
+      startingBalance:
+        typeof parsed.startingBalance === "string"
+          ? parsed.startingBalance
+          : DEFAULT_CREATE_ACCOUNT_DRAFT.startingBalance,
+    };
+  } catch {
+    return DEFAULT_CREATE_ACCOUNT_DRAFT;
+  }
+}
+
+function writeCreateAccountDraft(draft: CreateAccountDraft) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.sessionStorage.setItem(CREATE_ACCOUNT_DRAFT_STORAGE_KEY, JSON.stringify(draft));
+}
+
+function clearCreateAccountDraft() {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.sessionStorage.removeItem(CREATE_ACCOUNT_DRAFT_STORAGE_KEY);
 }
 
 function initialAccountKey(
