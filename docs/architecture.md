@@ -118,6 +118,8 @@ Trading worker responsibilities:
   top candidate without a free slot is exposed as `monitorStatus = "waiting"`
   and `sourceStatus = "waiting_for_slot"`.
 - Subscribe to Hyperliquid `userFills` over WebSocket.
+- Subscribe to Hyperliquid `allMids` over WebSocket and maintain a short-lived
+  price cache for paper execution.
 - Store snapshot and realtime fills in Postgres.
 - Simulate paper copies for non-snapshot fills from scored allocation wallets.
 - Run paper-copy recovery on startup, snapshots, and the configured periodic
@@ -541,19 +543,25 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
   participant Worker as Monitor Worker
+  participant PriceCache as Mid Price Cache
   participant HL as Hyperliquid Info API
+  participant WS as Hyperliquid WebSocket
   participant DB as Postgres
   participant Redis as Redis
   participant UI as Dashboard
 
   Worker->>DB: load top scored paper allocation wallets
-  Worker->>HL: subscribe userFills for selected wallets
-  HL-->>Worker: non-snapshot source fill
+  Worker->>WS: subscribe userFills for selected wallets
+  Worker->>WS: subscribe allMids for default and requested dexes
+  WS-->>PriceCache: allMids updates
+  WS-->>Worker: non-snapshot source fill
   Worker->>DB: insert wallet fill with dedupe
   par Fetch source state
     Worker->>HL: clearinghouseState for source perp equity
   and Fetch execution price
-    Worker->>HL: allMids after configured latency
+    Worker->>PriceCache: fresh mid after configured latency
+    PriceCache-->>Worker: websocket_mid or cache miss
+    Worker->>HL: HTTP allMids fallback on cache miss
   end
   Worker->>DB: size paper fill and apply slippage or drift skip
   Worker->>DB: update paper account, position, and fill rows
@@ -588,9 +596,11 @@ When current drawdown scoring is enabled, paper allocation only selects top
 score wallets whose latest `wallet_scores.current_drawdown_status` is `ok`.
 The trading worker reads source per-coin leverage from Hyperliquid `clearinghouseState`
 and uses `notional / leverage` for margin accounting. If leverage is unavailable
-for a coin, paper falls back to 1x. When live mids are enabled, dex-specific
-`allMids` and then `metaAndAssetCtxs` are used as fallbacks for `dex:COIN`
-markets missing from default `allMids`.
+for a coin, paper falls back to 1x. When live mids are enabled, a WebSocket
+`allMids` cache is used first. HTTP `allMids`, dex-specific `allMids`, and then
+`metaAndAssetCtxs` are used as fallbacks for stale or missing cached prices.
+When a `dex:COIN` fill misses cache, the worker requests a matching dex-specific
+WebSocket `allMids` subscription so later fills can use cached prices.
 For isolated HIP-3 positions, Hyperliquid `marginSummary.accountValue` can equal
 isolated position equity and move with `totalMarginUsed`, so it should not be
 read as a stable wallet cash balance.

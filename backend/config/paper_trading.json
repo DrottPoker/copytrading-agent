@@ -25,5 +25,9 @@
   "paper_copy_latency_ms": 250,
   "paper_copy_max_price_drift_bps": 50,
   "paper_copy_use_live_mid_price": true,
+  "paper_copy_market_price_cache_enabled": true,
+  "paper_copy_market_price_cache_stale_seconds": 2,
+  "paper_copy_market_price_cache_refresh_seconds": 1,
+  "paper_copy_market_price_cache_dexes": [],
   "paper_copy_recovery_interval_seconds": 60
 }

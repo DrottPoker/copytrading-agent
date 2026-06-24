@@ -119,6 +119,8 @@ class PaperTradingPolicyRead(CamelModel):
     latency_ms: int
     max_price_drift_bps: Decimal
     use_live_mid_price: bool
+    market_price_cache_enabled: bool
+    market_price_cache_stale_seconds: float
 
 
 class PaperWalletPerformanceRead(CamelModel):

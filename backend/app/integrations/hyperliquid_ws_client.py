@@ -58,3 +58,45 @@ async def stream_user_fills(
         raise
     except Exception as exc:
         raise HyperliquidWebSocketError(str(exc)) from exc
+
+
+async def stream_all_mids(
+    *,
+    settings: Settings,
+    dex: str,
+    on_message: WebSocketMessageHandler,
+    stop_event: asyncio.Event,
+) -> None:
+    subscription = {"type": "allMids"}
+    if dex:
+        subscription["dex"] = dex
+
+    try:
+        async with websockets.connect(settings.hyperliquid_ws_url, ping_interval=None) as websocket:
+            await websocket.send(
+                json.dumps(
+                    {
+                        "method": "subscribe",
+                        "subscription": subscription,
+                    }
+                )
+            )
+
+            while not stop_event.is_set():
+                try:
+                    raw_message = await asyncio.wait_for(websocket.recv(), timeout=30)
+                except TimeoutError:
+                    await websocket.send(json.dumps({"method": "ping"}))
+                    continue
+
+                try:
+                    message = json.loads(raw_message)
+                except json.JSONDecodeError as exc:
+                    raise HyperliquidWebSocketError("Received invalid WebSocket JSON.") from exc
+
+                if isinstance(message, dict):
+                    await on_message(message)
+    except HyperliquidWebSocketError:
+        raise
+    except Exception as exc:
+        raise HyperliquidWebSocketError(str(exc)) from exc

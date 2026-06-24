@@ -370,6 +370,8 @@ function emptyPaperTradingSummary(): PaperTradingSummaryResponse {
       latencyMs: 250,
       maxPriceDriftBps: "50",
       useLiveMidPrice: true,
+      marketPriceCacheEnabled: true,
+      marketPriceCacheStaleSeconds: 2,
     },
     accounts: [],
     allocations: [],

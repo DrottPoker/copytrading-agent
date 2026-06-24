@@ -10,10 +10,15 @@ from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.db.models import PaperPosition, WalletScore, WatchedWallet
 from app.db.session import get_sessionmaker
-from app.integrations.hyperliquid_ws_client import HyperliquidWebSocketError, stream_user_fills
+from app.integrations.hyperliquid_ws_client import (
+    HyperliquidWebSocketError,
+    stream_all_mids,
+    stream_user_fills,
+)
 from app.integrations.redis_client import get_redis
 from app.services.discovery_service import run_discovery_import
 from app.services.job_lock_service import JobLockAlreadyHeldError, job_lock
+from app.services.market_price_cache import MarketPriceCache, dex_from_coin
 from app.services.operation_status_service import (
     mark_operation_failed,
     mark_operation_started,
@@ -98,16 +103,38 @@ async def run_monitor_services(
             "maxRealtimeWallets": settings.max_realtime_wallets,
         },
     )
+    service_started_at = datetime.now(UTC)
+    tasks: list[asyncio.Task[None]] = []
+    price_cache = (
+        MarketPriceCache()
+        if runs_trading
+        and settings.paper_trading_enabled
+        and settings.paper_copy_enabled
+        and settings.paper_copy_use_live_mid_price
+        and settings.paper_copy_market_price_cache_enabled
+        else None
+    )
+    if price_cache is not None:
+        await price_cache.request_dexes(settings.paper_copy_market_price_cache_dexes)
+        tasks.append(
+            asyncio.create_task(
+                run_market_price_cache_loop(
+                    price_cache=price_cache,
+                    redis=redis,
+                    stop_event=stop_event,
+                    settings=settings,
+                )
+            )
+        )
     if runs_trading and settings.paper_trading_enabled and settings.paper_copy_enabled:
         await run_paper_copy_recovery_once(
             sessionmaker=sessionmaker,
             redis=redis,
             settings=settings,
             source_wallet=None,
+            price_cache=price_cache,
         )
 
-    service_started_at = datetime.now(UTC)
-    tasks: list[asyncio.Task[None]] = []
     tasks.append(
         asyncio.create_task(
             run_worker_heartbeat_loop(
@@ -142,6 +169,7 @@ async def run_monitor_services(
                     redis=redis,
                     stop_event=stop_event,
                     settings=settings,
+                    price_cache=price_cache,
                 )
             )
         )
@@ -170,6 +198,7 @@ async def run_monitor_services(
                     redis=redis,
                     stop_event=stop_event,
                     settings=settings,
+                    price_cache=price_cache,
                 )
             )
         )
@@ -182,6 +211,7 @@ async def run_monitor_services(
                     redis=redis,
                     stop_event=stop_event,
                     settings=settings,
+                    price_cache=price_cache,
                 )
             )
         )
@@ -203,6 +233,7 @@ async def run_realtime_monitor_loop(
     redis: Any,
     stop_event: asyncio.Event,
     settings: Any,
+    price_cache: MarketPriceCache | None = None,
 ) -> None:
     while not stop_event.is_set():
         wallet_addresses = await load_realtime_wallets(
@@ -243,6 +274,7 @@ async def run_realtime_monitor_loop(
                 redis=redis,
                 wallet_addresses=wallet_addresses_for_subscription,
                 settings=settings,
+                price_cache=price_cache,
             )
 
         try:
@@ -293,6 +325,87 @@ async def run_worker_heartbeat_loop(
             logger.exception("worker heartbeat update failed role=%s", settings.worker_role)
 
         await sleep_until_stop(stop_event, settings.worker_heartbeat_interval_seconds)
+
+
+async def run_market_price_cache_loop(
+    *,
+    price_cache: MarketPriceCache,
+    redis: Any,
+    stop_event: asyncio.Event,
+    settings: Any,
+) -> None:
+    tasks: dict[str, asyncio.Task[None]] = {}
+    try:
+        while not stop_event.is_set():
+            requested_dexes = await price_cache.requested_dexes()
+            for dex in sorted(requested_dexes):
+                if dex in tasks and not tasks[dex].done():
+                    continue
+                tasks[dex] = asyncio.create_task(
+                    run_market_price_cache_subscription(
+                        price_cache=price_cache,
+                        redis=redis,
+                        stop_event=stop_event,
+                        settings=settings,
+                        dex=dex,
+                    )
+                )
+            await sleep_until_stop(
+                stop_event,
+                settings.paper_copy_market_price_cache_refresh_seconds,
+            )
+    finally:
+        for task in tasks.values():
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks.values(), return_exceptions=True)
+
+
+async def run_market_price_cache_subscription(
+    *,
+    price_cache: MarketPriceCache,
+    redis: Any,
+    stop_event: asyncio.Event,
+    settings: Any,
+    dex: str,
+) -> None:
+    label = dex or "default"
+    while not stop_event.is_set():
+        async def handle_message(message: dict[str, Any]) -> None:
+            channel = message.get("channel")
+            if channel in {"subscriptionResponse", "pong"}:
+                return
+            if channel != "allMids":
+                logger.debug("ignored market price websocket channel=%s", channel)
+                return
+            data = message.get("data")
+            if not isinstance(data, dict):
+                return
+            mids = data.get("mids")
+            if not isinstance(mids, dict):
+                return
+            updated = await price_cache.update_mids(mids, dex=dex)
+            if updated > 0:
+                logger.debug("market price cache updated dex=%s prices=%s", label, updated)
+
+        try:
+            logger.info("subscribing to allMids dex=%s", label)
+            await stream_all_mids(
+                settings=settings,
+                dex=dex,
+                on_message=handle_message,
+                stop_event=stop_event,
+            )
+        except HyperliquidWebSocketError as exc:
+            logger.warning("market price websocket disconnected dex=%s error=%s", label, exc)
+            await publish_event(
+                redis,
+                event_type="system",
+                channel="events:system",
+                message=f"Market price WebSocket disconnected for {label}.",
+                payload={"dex": dex, "error": str(exc)},
+            )
+            await sleep_until_stop(stop_event, settings.realtime_reconnect_seconds)
 
 
 def worker_runs_trading(settings: Any) -> bool:
@@ -461,6 +574,7 @@ async def run_pool_fill_import_loop(
     redis: Any,
     stop_event: asyncio.Event,
     settings: Any,
+    price_cache: MarketPriceCache | None = None,
 ) -> None:
     if not settings.pool_fill_import_run_on_worker_start:
         await sleep_until_stop(stop_event, settings.pool_fill_import_interval_seconds)
@@ -516,6 +630,7 @@ async def run_pool_fill_import_loop(
                     redis=redis,
                     settings=settings,
                     source_wallet=None,
+                    price_cache=price_cache,
                 )
             if settings.scoring_enabled:
                 await run_wallet_scoring_once(
@@ -607,6 +722,7 @@ async def run_paper_copy_recovery_loop(
     redis: Any,
     stop_event: asyncio.Event,
     settings: Any,
+    price_cache: MarketPriceCache | None = None,
 ) -> None:
     while not stop_event.is_set():
         await sleep_until_stop(stop_event, settings.paper_copy_recovery_interval_seconds)
@@ -617,6 +733,7 @@ async def run_paper_copy_recovery_loop(
             redis=redis,
             settings=settings,
             source_wallet=None,
+            price_cache=price_cache,
         )
 
 
@@ -626,6 +743,7 @@ async def run_paper_copy_recovery_once(
     redis: Any,
     settings: Any,
     source_wallet: str | None,
+    price_cache: MarketPriceCache | None = None,
 ) -> PaperCopyBatchResult:
     try:
         async with sessionmaker() as session:
@@ -638,6 +756,7 @@ async def run_paper_copy_recovery_once(
                     session,
                     source_wallet=source_wallet,
                     settings=settings,
+                    price_cache=price_cache,
                 )
         if result.processed_fills > 0 or result.skipped_fills > 0:
             logger.info(
@@ -773,6 +892,7 @@ async def handle_websocket_message(
     redis: Any,
     wallet_addresses: list[str],
     settings: Any,
+    price_cache: MarketPriceCache | None = None,
 ) -> None:
     channel = message.get("channel")
     if channel in {"subscriptionResponse", "pong"}:
@@ -816,6 +936,7 @@ async def handle_websocket_message(
                 redis=redis,
                 settings=settings,
                 source_wallet=stored.wallet_address,
+                price_cache=price_cache,
             )
         await publish_event(
             redis,
@@ -855,12 +976,17 @@ async def handle_websocket_message(
         and stored.inserted_rows
     ):
         try:
+            if price_cache is not None:
+                await price_cache.request_dexes(
+                    dex_from_coin(fill.get("coin")) for fill in stored.inserted_rows
+                )
             async with sessionmaker() as session:
                 paper_result = await process_paper_copy_fills(
                     session,
                     source_wallet=stored.wallet_address,
                     fills=stored.inserted_rows,
                     settings=settings,
+                    price_cache=price_cache,
                 )
             if paper_result.processed_fills > 0 or paper_result.skipped_fills > 0:
                 await publish_event(

@@ -26,6 +26,7 @@ from app.schemas.paper_trading import (
     PaperTradingSummaryResponse,
 )
 from app.schemas.wallet import normalize_wallet_address
+from app.services.market_price_cache import MarketPriceCache
 from app.services.wallet_current_state_service import object_or_empty
 
 logger = logging.getLogger(__name__)
@@ -140,6 +141,12 @@ class PaperExecutionContext:
     slippage_bps: Decimal
     latency_ms: int
     price_source: str
+
+
+@dataclass(frozen=True)
+class ExecutionMarketPrices:
+    prices: dict[str, Decimal]
+    sources: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -1191,6 +1198,7 @@ async def process_paper_copy_fills(
     fills: list[dict[str, Any]],
     settings: Settings | None = None,
     client: HyperliquidClient | None = None,
+    price_cache: MarketPriceCache | None = None,
 ) -> PaperCopyBatchResult:
     resolved_settings = settings or get_settings()
     if (
@@ -1218,6 +1226,7 @@ async def process_paper_copy_fills(
                 fills=fills,
                 settings=resolved_settings,
                 client=hyperliquid_client,
+                price_cache=price_cache,
             )
 
     source_account_states_task = asyncio.create_task(
@@ -1232,6 +1241,7 @@ async def process_paper_copy_fills(
             client=client,
             fills=fills,
             settings=resolved_settings,
+            price_cache=price_cache,
         )
     )
     source_account_states, market_prices = await asyncio.gather(
@@ -1324,6 +1334,7 @@ async def process_paper_copy_recovery(
     source_wallet: str | None = None,
     settings: Settings | None = None,
     client: HyperliquidClient | None = None,
+    price_cache: MarketPriceCache | None = None,
     max_sources: int = 100,
     fill_limit_per_source: int = 1000,
 ) -> PaperCopyBatchResult:
@@ -1341,6 +1352,7 @@ async def process_paper_copy_recovery(
                 source_wallet=source_wallet,
                 settings=resolved_settings,
                 client=hyperliquid_client,
+                price_cache=price_cache,
                 max_sources=max_sources,
                 fill_limit_per_source=fill_limit_per_source,
             )
@@ -1361,6 +1373,7 @@ async def process_paper_copy_recovery(
             source_wallet=wallet,
             settings=resolved_settings,
             client=client,
+            price_cache=price_cache,
             fill_limit=fill_limit_per_source,
         )
         total = combine_batch_results(total, result)
@@ -1426,6 +1439,7 @@ async def process_paper_copy_recovery_for_source(
     settings: Settings,
     client: HyperliquidClient,
     fill_limit: int,
+    price_cache: MarketPriceCache | None = None,
 ) -> PaperCopyBatchResult:
     start_time_ms = await paper_copy_recovery_start_time_ms(
         session,
@@ -1448,6 +1462,7 @@ async def process_paper_copy_recovery_for_source(
             fills=fills,
             settings=settings,
             client=client,
+            price_cache=price_cache,
         )
     reconcile_result = await reconcile_open_paper_positions_for_source(
         session,
@@ -2405,16 +2420,32 @@ async def load_execution_market_prices(
     client: HyperliquidClient,
     fills: list[dict[str, Any]],
     settings: Settings,
-) -> dict[str, Decimal]:
+    price_cache: MarketPriceCache | None = None,
+) -> ExecutionMarketPrices:
     if not settings.paper_copy_use_live_mid_price:
-        return {}
+        return ExecutionMarketPrices(prices={}, sources={})
     if settings.paper_copy_latency_ms > 0:
         await asyncio.sleep(settings.paper_copy_latency_ms / 1000)
 
     coins = {str(fill.get("coin") or "") for fill in fills}
     coins.discard("")
     if not coins:
-        return {}
+        return ExecutionMarketPrices(prices={}, sources={})
+
+    market_prices: dict[str, Decimal] = {}
+    price_sources: dict[str, str] = {}
+    missing_coins = set(coins)
+    if price_cache is not None and settings.paper_copy_market_price_cache_enabled:
+        cached = await price_cache.get_many(
+            missing_coins,
+            max_age_seconds=settings.paper_copy_market_price_cache_stale_seconds,
+        )
+        market_prices.update(cached.prices)
+        price_sources.update(cached.sources)
+        missing_coins = cached.missing_coins
+
+    if not missing_coins:
+        return ExecutionMarketPrices(prices=market_prices, sources=price_sources)
 
     try:
         mids = await client.all_mids()
@@ -2422,26 +2453,29 @@ async def load_execution_market_prices(
         logger.warning("paper copy allMids fetch failed error=%s", exc)
         mids = {}
 
-    market_prices: dict[str, Decimal] = {}
-    for coin in coins:
+    for coin in missing_coins:
         price = resolve_coin_decimal(mids, coin)
         if price is not None and price > ZERO:
             market_prices[coin] = price
+            price_sources[coin] = "http_mid"
 
     missing_dexes = {
         dex_from_coin(coin)
-        for coin in coins
+        for coin in missing_coins
         if coin not in market_prices and dex_from_coin(coin)
     }
+    if price_cache is not None and settings.paper_copy_market_price_cache_enabled:
+        await price_cache.request_dexes(missing_dexes)
     for dex in sorted(missing_dexes):
         dex_prices = await load_dex_market_prices(client=client, dex=dex)
-        for coin in coins:
+        for coin in missing_coins:
             if coin in market_prices or dex_from_coin(coin) != dex:
                 continue
             price = resolve_coin_decimal(dex_prices, coin)
             if price is not None and price > ZERO:
                 market_prices[coin] = price
-    return market_prices
+                price_sources[coin] = "http_mid"
+    return ExecutionMarketPrices(prices=market_prices, sources=price_sources)
 
 
 async def load_dex_market_prices(
@@ -2647,7 +2681,7 @@ async def apply_paper_fill_part(
     part: SourceFillPart,
     source_perp_equity: Decimal,
     source_leverages: dict[str, Decimal],
-    market_prices: dict[str, Decimal],
+    market_prices: ExecutionMarketPrices,
     settings: Settings,
 ) -> PaperCopyBatchResult:
     source_fill_id = str(fill.get("externalFillId") or "")
@@ -2700,7 +2734,7 @@ async def apply_open_part(
     part: SourceFillPart,
     source_perp_equity: Decimal,
     source_leverages: dict[str, Decimal],
-    market_prices: dict[str, Decimal],
+    market_prices: ExecutionMarketPrices,
     settings: Settings,
 ) -> PaperCopyBatchResult:
     source_leverage = leverage_for_fill(fill=fill, source_leverages=source_leverages)
@@ -2918,7 +2952,7 @@ async def apply_close_part(
     part: SourceFillPart,
     source_perp_equity: Decimal,
     source_leverages: dict[str, Decimal],
-    market_prices: dict[str, Decimal],
+    market_prices: ExecutionMarketPrices,
     settings: Settings,
 ) -> PaperCopyBatchResult:
     source_price = decimal_or_zero(fill.get("price"))
@@ -3485,6 +3519,8 @@ def paper_trading_policy(settings: Settings) -> PaperTradingPolicyRead:
         latency_ms=settings.paper_copy_latency_ms,
         max_price_drift_bps=settings.paper_copy_max_price_drift_bps,
         use_live_mid_price=settings.paper_copy_use_live_mid_price,
+        market_price_cache_enabled=settings.paper_copy_market_price_cache_enabled,
+        market_price_cache_stale_seconds=settings.paper_copy_market_price_cache_stale_seconds,
     )
 
 
@@ -3583,7 +3619,7 @@ def build_execution_context(
     *,
     fill: dict[str, Any],
     part: SourceFillPart,
-    market_prices: dict[str, Decimal],
+    market_prices: ExecutionMarketPrices,
     settings: Settings,
 ) -> PaperExecutionContext | None:
     source_price = decimal_or_zero(fill.get("price"))
@@ -3591,7 +3627,9 @@ def build_execution_context(
         return None
 
     coin = str(fill.get("coin") or "")
-    observed_price = market_prices.get(coin) if settings.paper_copy_use_live_mid_price else None
+    observed_price = (
+        market_prices.prices.get(coin) if settings.paper_copy_use_live_mid_price else None
+    )
     if observed_price is None:
         if settings.paper_copy_use_live_mid_price:
             return None
@@ -3615,7 +3653,11 @@ def build_execution_context(
         price_drift_bps=price_drift_bps(source_price=source_price, observed_price=observed_price),
         slippage_bps=settings.paper_copy_slippage_bps,
         latency_ms=settings.paper_copy_latency_ms,
-        price_source="live_mid" if settings.paper_copy_use_live_mid_price else "source_fill",
+        price_source=(
+            market_prices.sources.get(coin, "live_mid")
+            if settings.paper_copy_use_live_mid_price
+            else "source_fill"
+        ),
     )
 
 
@@ -3703,6 +3745,8 @@ def paper_fill_payload(
             "latencyMs": settings.paper_copy_latency_ms,
             "maxPriceDriftBps": str(settings.paper_copy_max_price_drift_bps),
             "useLiveMidPrice": settings.paper_copy_use_live_mid_price,
+            "marketPriceCacheEnabled": settings.paper_copy_market_price_cache_enabled,
+            "marketPriceCacheStaleSeconds": settings.paper_copy_market_price_cache_stale_seconds,
         },
         "execution": execution_payload(execution_context),
         "paper": {

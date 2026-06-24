@@ -614,9 +614,11 @@ What it does:
   250 ms.
 - Uses live Hyperliquid mids after latency when `paper_copy_use_live_mid_price`
   is enabled. This is enabled in the default paper trading config.
-- Falls back to dex-specific `allMids`, then Hyperliquid `metaAndAssetCtxs`, for
-  the fill's perp dex when default `allMids` does not contain a `dex:COIN`
-  market key.
+- Uses the trading worker's WebSocket `allMids` cache before HTTP when
+  `paper_copy_market_price_cache_enabled` is enabled. The default stale window is
+  2 seconds.
+- Falls back to HTTP `allMids`, then dex-specific `allMids`, then Hyperliquid
+  `metaAndAssetCtxs`, for missing or stale cache prices.
 - Applies adverse slippage from `paper_copy_slippage_bps` to the observed price.
 - Skips paper fills when the observed price has moved more than
   `paper_copy_max_price_drift_bps` from the source fill price. The default
@@ -746,6 +748,10 @@ Config:
 - `paper_copy_latency_ms`
 - `paper_copy_max_price_drift_bps`, defaults to 50 bps
 - `paper_copy_use_live_mid_price`
+- `paper_copy_market_price_cache_enabled`
+- `paper_copy_market_price_cache_stale_seconds`
+- `paper_copy_market_price_cache_refresh_seconds`
+- `paper_copy_market_price_cache_dexes`
 - `paper_copy_recovery_interval_seconds`
 
 Current limitations:

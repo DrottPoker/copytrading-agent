@@ -594,6 +594,13 @@ function PolicyRow({
         <RowStat label="Min order" value={formatCurrency(summary.policy.minOrderNotionalUsd)} />
         <RowStat label="Fee" value={formatPercent(summary.policy.feeRate)} />
         <RowStat label="Slippage" value={formatBps(summary.policy.slippageBps)} />
+        <RowStat label="Latency" value={`${formatInteger(summary.policy.latencyMs)} ms`} />
+        <RowStat label="Max drift" value={formatBps(summary.policy.maxPriceDriftBps)} />
+        <RowStat
+          label="Price cache"
+          value={summary.policy.marketPriceCacheEnabled ? "enabled" : "disabled"}
+          detail={`${formatInteger(summary.policy.marketPriceCacheStaleSeconds)}s stale`}
+        />
       </div>
       <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[#5b6770]">
         <Clock className="h-3.5 w-3.5" aria-hidden="true" />

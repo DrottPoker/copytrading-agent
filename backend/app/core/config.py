@@ -399,6 +399,10 @@ class Settings(BaseSettings):
     paper_copy_latency_ms: int = Field(default=250, ge=0, le=60000)
     paper_copy_max_price_drift_bps: Decimal = Field(default=Decimal("50"), ge=0, le=10000)
     paper_copy_use_live_mid_price: bool = True
+    paper_copy_market_price_cache_enabled: bool = True
+    paper_copy_market_price_cache_stale_seconds: float = Field(default=2.0, ge=0.1, le=60)
+    paper_copy_market_price_cache_refresh_seconds: int = Field(default=1, ge=1, le=60)
+    paper_copy_market_price_cache_dexes: list[str] = Field(default_factory=list, max_length=20)
     paper_copy_recovery_interval_seconds: int = Field(default=60, ge=10, le=3600)
 
     active_copy_wallets: int = Field(default=10, ge=1, le=10)

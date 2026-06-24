@@ -112,6 +112,8 @@ export type PaperTradingPolicy = {
   latencyMs: number;
   maxPriceDriftBps: string;
   useLiveMidPrice: boolean;
+  marketPriceCacheEnabled: boolean;
+  marketPriceCacheStaleSeconds: number;
 };
 
 export type PaperWalletPerformance = {
