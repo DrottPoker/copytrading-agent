@@ -634,26 +634,46 @@ function SourceRow({
   const sourceDetail = sourceStatusDetail(source);
   return (
     <ListRow>
-      <div className="grid gap-2 lg:grid-cols-[minmax(180px,0.85fr)_minmax(280px,1.4fr)_auto] lg:items-center">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5">
-            <Link
-              href={`/wallets/${source.sourceWallet}`}
-              className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold leading-5 text-ink hover:text-[#297c73]"
-            >
-              {sourceDisplayName(source.sourceLabel, source.sourceWallet)}
-            </Link>
-            <CompactSourcePill label={source.monitorStatus} tone={monitorTone} />
-            <CompactSourcePill label={formatSourceStatus(source.sourceStatus)} tone={sourceTone} />
+      <div className="grid gap-2 py-0.5">
+        <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5">
+              <Link
+                href={`/wallets/${source.sourceWallet}`}
+                className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold leading-5 text-ink hover:text-[#297c73]"
+              >
+                {sourceDisplayName(source.sourceLabel, source.sourceWallet)}
+              </Link>
+              <CompactSourcePill label={source.monitorStatus} tone={monitorTone} />
+              <CompactSourcePill label={formatSourceStatus(source.sourceStatus)} tone={sourceTone} />
+            </div>
+            <p className="mt-0.5 whitespace-normal break-words font-mono text-[11px] leading-4 text-[#5b6770]">
+              {shortAddress(source.sourceWallet)} | {sourceMeta}
+            </p>
+            {sourceDetail !== "active slot" ? (
+              <p className="mt-0.5 whitespace-normal break-words text-[11px] leading-4 text-[#5b6770]">
+                {sourceDetail}
+              </p>
+            ) : null}
           </div>
-          <p className="mt-0.5 truncate font-mono text-[11px] leading-4 text-[#5b6770]">
-            {shortAddress(source.sourceWallet)} | {sourceMeta}
-          </p>
-          {sourceDetail !== "active slot" ? (
-            <p className="mt-0.5 text-[11px] leading-4 text-[#5b6770]">{sourceDetail}</p>
+          {source.openPositionCount > 0 ? (
+            <button
+              type="button"
+              onClick={() => onCloseSource(source)}
+              disabled={isClosing}
+              title="Close all open paper positions for this source"
+              className="inline-flex min-h-7 shrink-0 items-center justify-center gap-1.5 rounded-md border border-[#f2aaa5] bg-[#fff2f0] px-2 py-1 text-xs font-semibold text-danger shadow-sm hover:bg-[#ffe6e2] disabled:cursor-not-allowed disabled:border-line disabled:bg-[#f7f9fb] disabled:text-[#98a2b3]"
+            >
+              {isClosing ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              ) : (
+                <XCircle className="h-3.5 w-3.5" aria-hidden="true" />
+              )}
+              Close all
+            </button>
           ) : null}
         </div>
-        <div className="grid min-w-0 grid-cols-2 gap-x-3 gap-y-1 xl:grid-cols-4">
+        <div className="grid min-w-0 gap-x-4 gap-y-1 sm:grid-cols-2 xl:grid-cols-4">
           <CompactSourceStat
             label="Realized"
             value={formatCurrency(source.realizedPnlUsd)}
@@ -678,22 +698,6 @@ function SourceRow({
             detail={`${formatPercent(source.allocationPct)} pocket, ${formatInteger(source.openPositionCount)} open`}
           />
         </div>
-        {source.openPositionCount > 0 ? (
-          <button
-            type="button"
-            onClick={() => onCloseSource(source)}
-            disabled={isClosing}
-            title="Close all open paper positions for this source"
-            className="inline-flex min-h-7 items-center justify-center gap-1.5 rounded-md border border-[#f2aaa5] bg-[#fff2f0] px-2 py-1 text-xs font-semibold text-danger shadow-sm hover:bg-[#ffe6e2] disabled:cursor-not-allowed disabled:border-line disabled:bg-[#f7f9fb] disabled:text-[#98a2b3]"
-          >
-            {isClosing ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-            ) : (
-              <XCircle className="h-3.5 w-3.5" aria-hidden="true" />
-            )}
-            Close all
-          </button>
-        ) : null}
       </div>
     </ListRow>
   );
@@ -733,13 +737,19 @@ function CompactSourceStat({
     tone === "positive" ? "text-positive" : tone === "danger" ? "text-danger" : "text-ink";
   return (
     <div className="min-w-0">
-      <div className="flex items-baseline justify-between gap-1">
-        <p className="truncate text-[10px] font-medium uppercase leading-4 text-[#5b6770]">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5">
+        <p className="text-[10px] font-medium uppercase leading-4 text-[#5b6770]">
           {label}
         </p>
-        <p className={`truncate font-mono text-xs font-semibold leading-4 ${valueClass}`}>{value}</p>
+        <p className={`whitespace-normal break-words font-mono text-xs font-semibold leading-4 ${valueClass}`}>
+          {value}
+        </p>
       </div>
-      {detail ? <p className="truncate text-[11px] leading-4 text-[#5b6770]">{detail}</p> : null}
+      {detail ? (
+        <p className="whitespace-normal break-words text-[11px] leading-4 text-[#5b6770]">
+          {detail}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -761,11 +771,13 @@ function SourcePocketStat({
     tone === "danger" ? "bg-danger" : tone === "warning" ? "bg-warning" : "bg-positive";
   return (
     <div className="min-w-0">
-      <div className="flex items-baseline justify-between gap-1">
-        <p className="truncate text-[10px] font-medium uppercase leading-4 text-[#5b6770]">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5">
+        <p className="text-[10px] font-medium uppercase leading-4 text-[#5b6770]">
           Pocket
         </p>
-        <p className="truncate font-mono text-xs font-semibold leading-4 text-ink">{value}</p>
+        <p className="whitespace-normal break-words font-mono text-xs font-semibold leading-4 text-ink">
+          {value}
+        </p>
       </div>
       <div className="h-1.5 overflow-hidden rounded-full bg-[#e8edf2]">
         <div
@@ -773,7 +785,7 @@ function SourcePocketStat({
           style={{ width: `${Math.min(usedPct * 100, 100)}%` }}
         />
       </div>
-      <p className="truncate text-[11px] leading-4 text-[#5b6770]">
+      <p className="whitespace-normal break-words text-[11px] leading-4 text-[#5b6770]">
         {used} used, {remaining} free
       </p>
     </div>
