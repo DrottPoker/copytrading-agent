@@ -2,6 +2,9 @@
   "enabled": true,
   "acknowledged": true,
   "mainnet_acknowledged": true,
+  "account": {
+    "capital_mode": "unified"
+  },
   "execution": {
     "max_slippage_bps": 50,
     "order_expires_after_ms": 10000

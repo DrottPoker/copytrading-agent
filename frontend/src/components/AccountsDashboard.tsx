@@ -40,7 +40,11 @@ import type {
   PaperTradingAccount,
   PaperTradingSummaryResponse,
 } from "@/types/paper";
-import type { TradingAccount, TradingAccountsResponse } from "@/types/trading";
+import type {
+  TradingAccount,
+  TradingAccountsResponse,
+  TradingCapitalBalance,
+} from "@/types/trading";
 
 import { HeaderRefreshButton, HeaderUpdatedLabel } from "./HeaderRefresh";
 import { PageTopPanel } from "./PageTopPanel";
@@ -1036,15 +1040,22 @@ function LiveAccountContent({
 }) {
   const realizedPnl = decimal(account.realizedPnlUsd);
   const feeUsd = decimal(account.feeUsd);
+  const capitalMode = formatCapitalMode(account.capitalMode);
 
   return (
     <>
-      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
         <MetricTile
-          detail={`${formatLiveAccountStatus(account.status)} on ${account.network}`}
+          detail={`${formatLiveAccountStatus(account.status)} on ${account.network}, ${capitalMode}`}
           icon={WalletCards}
           label="Equity"
           value={formatCurrency(account.equityUsd)}
+        />
+        <MetricTile
+          detail="Sizing capital"
+          icon={Target}
+          label="Tradable"
+          value={formatCurrency(account.tradableEquityUsd)}
         />
         <MetricTile
           detail="Available balance"
@@ -1079,6 +1090,10 @@ function LiveAccountContent({
           <div className="grid gap-2 sm:grid-cols-2">
             <SmallMetric label="Status" value={formatLiveAccountStatus(account.status)} />
             <SmallMetric label="Network" value={account.network} />
+            <SmallMetric label="Capital mode" value={capitalMode} />
+            <SmallMetric label="Abstraction" value={account.userAbstraction ?? "unknown"} />
+            <SmallMetric label="Perp equity" value={formatCurrency(account.perpEquityUsd)} />
+            <SmallMetric label="Spot USDC" value={formatCurrency(account.spotUsdcBalanceUsd)} />
             <SmallMetric label="Created" value={formatDate(account.createdAt)} />
             <SmallMetric label="Updated" value={formatDate(account.updatedAt)} />
             <SmallMetric
@@ -1097,7 +1112,41 @@ function LiveAccountContent({
           </div>
         </Panel>
       </section>
+
+      <section>
+        <Panel icon={Layers} title="Capital Balances">
+          <CapitalBalanceRows balances={account.capitalBalances} />
+        </Panel>
+      </section>
     </>
+  );
+}
+
+function CapitalBalanceRows({ balances }: { balances: TradingCapitalBalance[] }) {
+  if (balances.length === 0) {
+    return <EmptyState text="No capital snapshot has been reconciled yet." />;
+  }
+
+  return (
+    <div className="grid gap-2">
+      {balances.map((balance) => (
+        <div
+          key={balance.key}
+          className="grid gap-2 rounded-md border border-line bg-[#f8fafb] px-3 py-2 sm:grid-cols-[minmax(180px,1fr)_150px_150px_110px] sm:items-center"
+        >
+          <div className="min-w-0">
+            <p className="break-words text-sm font-semibold text-ink">{balance.label}</p>
+            <p className="break-words font-mono text-xs text-[#5b6770]">{balance.key}</p>
+          </div>
+          <SmallMetric label="Equity" value={formatCurrency(balance.equityUsd)} />
+          <SmallMetric label="Available" value={formatCurrency(balance.availableUsd)} />
+          <StatusPill
+            label={balance.tradable ? "tradable" : "not tradable"}
+            tone={balance.tradable ? "positive" : "neutral"}
+          />
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -1709,6 +1758,16 @@ function formatLiveAccountStatus(status: TradingAccount["status"]) {
     return "exit only";
   }
   return status;
+}
+
+function formatCapitalMode(mode: TradingAccount["capitalMode"]) {
+  if (mode === "standard_per_dex") {
+    return "standard per DEX";
+  }
+  if (mode === "unified") {
+    return "unified";
+  }
+  return "unknown";
 }
 
 function lastUpdatedAt(

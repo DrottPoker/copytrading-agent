@@ -275,6 +275,7 @@ LIVE_TRADING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("enabled",): "live_trading_enabled",
     ("acknowledged",): "live_trading_acknowledged",
     ("mainnet_acknowledged",): "live_trading_mainnet_acknowledged",
+    ("account", "capital_mode"): "live_trading_capital_mode",
     ("execution", "max_slippage_bps"): "live_trading_max_slippage_bps",
     ("execution", "order_expires_after_ms"): "live_trading_order_expires_after_ms",
     ("reconciliation", "enabled"): "live_trading_reconciliation_enabled",
@@ -332,6 +333,7 @@ class Settings(BaseSettings):
     live_trading_enabled: bool = False
     live_trading_acknowledged: bool = False
     live_trading_mainnet_acknowledged: bool = False
+    live_trading_capital_mode: Literal["unified", "standard_per_dex"] = "unified"
     live_trading_max_slippage_bps: Decimal = Field(default=Decimal("50"), ge=0, le=10000)
     live_trading_order_expires_after_ms: int = Field(default=10000, ge=0, le=60000)
     live_trading_reconciliation_enabled: bool = True

@@ -195,6 +195,9 @@ class HyperliquidClient:
             )
         return result
 
+    async def user_abstraction(self, *, user: str) -> Any:
+        return await self.post_info({"type": "userAbstraction", "user": user})
+
 
 def parse_retry_after_seconds(value: str | None) -> float | None:
     if not value:

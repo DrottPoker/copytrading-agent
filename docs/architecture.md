@@ -610,7 +610,9 @@ each top 10 rank, with an 80% total open copied-margin cap per paper account.
 Valid source perp equity is required for opens and adds only. Reduce, close, and
 flip-close parts are processed against existing paper positions even when the
 current Hyperliquid source state reports zero or unavailable perp equity after
-the source has exited.
+the source has exited. If a source wallet reports zero per-dex perp equity and
+Hyperliquid `userAbstraction` reports a unified account, source sizing uses
+unified USDC from `spotClearinghouseState`.
 When current drawdown scoring is enabled, paper allocation only selects top
 score wallets whose latest `wallet_scores.current_drawdown_status` is `ok`.
 The trading worker reads source per-coin leverage from Hyperliquid `clearinghouseState`
@@ -759,6 +761,11 @@ account. Mainnet also requires `live_trading_mainnet_acknowledged=true`.
 Automatic copied live entries also pass account-level guardrails for max order
 notional, max account open notional, max open positions, max daily loss, max
 orders per minute, and market allow/block lists.
+Live capital mode is config-driven. `unified` uses Hyperliquid
+`spotClearinghouseState` as the balance source of truth for equity, cash, Start
+trading validation, and live copy sizing. `standard_per_dex` keeps separate
+default and HIP-3 perp capital, and copied entries size from the same perp dex
+as the copied market.
 
 Live order lifecycle is persisted in `trading_orders`. Orders move from
 `planned` to `submitted`, then to `accepted`, `rejected`, `filled`,

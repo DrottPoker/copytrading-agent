@@ -89,7 +89,11 @@ Live trading is configured in `backend/config/live_trading.json` and requires
 `mainnet_acknowledged=true`. The key is read from environment or config only and
 is not stored in Postgres. Live reconciliation settings live in the same file
 under `reconciliation`; the worker reads Hyperliquid order status, fills, and
-clearinghouse state for enabled live accounts. Automatic live copy also requires
+clearinghouse state for enabled live accounts. `account.capital_mode` defaults
+to `unified`, which expects the Hyperliquid wallet to run Unified account mode
+and reads trading capital from `spotClearinghouseState`. Set it to
+`standard_per_dex` only when the wallet intentionally keeps separate default and
+HIP-3 perp balances. Automatic live copy also requires
 `copy_execution.enabled=true` in the same file. Use testnet and the
 `POST /trading/testnet/orders` endpoint before any mainnet enablement.
 

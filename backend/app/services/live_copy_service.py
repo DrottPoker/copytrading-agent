@@ -19,7 +19,7 @@ from app.integrations.hyperliquid_live_client import HyperliquidLiveTradingClien
 from app.services.live_trading_service import (
     LIVE_EXCHANGE_SOURCE,
     LiveOrderSubmitError,
-    live_perp_equity_usd,
+    live_tradable_equity_usd,
     load_live_source_position,
     reconcile_live_trading_account,
     submit_live_trade_intent,
@@ -319,7 +319,12 @@ async def apply_live_open_part(
         return PaperCopyBatchResult(skipped_fills=1)
     if source_perp_equity <= ZERO:
         return PaperCopyBatchResult(skipped_fills=1)
-    tradable_equity_usd = live_perp_equity_usd(account)
+    coin = str(fill.get("coin") or "")
+    tradable_equity_usd = live_tradable_equity_usd(
+        account,
+        dex=dex_from_coin(coin),
+        settings=settings,
+    )
     if tradable_equity_usd <= ZERO:
         return PaperCopyBatchResult(skipped_fills=1)
 
@@ -327,7 +332,7 @@ async def apply_live_open_part(
         session,
         account_key=account.key,
         source_wallet=allocation.source_wallet,
-        coin=str(fill.get("coin") or ""),
+        coin=coin,
     )
     if position is None and is_preexisting_source_add(part.start_position, side=part.side):
         return PaperCopyBatchResult(skipped_fills=1)
@@ -378,7 +383,7 @@ async def apply_live_open_part(
         source_wallet=allocation.source_wallet,
         source_fill_id=str(fill.get("externalFillId") or ""),
         sequence_index=part.sequence_index,
-        coin=str(fill.get("coin") or ""),
+        coin=coin,
         action=action,
         side=part.side,
         size=notional_usd / price,

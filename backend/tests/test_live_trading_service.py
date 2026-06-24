@@ -7,12 +7,14 @@ from app.core.config import Settings
 from app.db.models import TradingAccount, TradingOrder
 from app.services import live_trading_service
 from app.services.live_trading_service import (
+    LivePerpState,
     apply_order_status_response,
     build_testnet_live_trade_intent,
     create_live_trading_account,
     fetch_live_fills_by_time,
     live_account_key_for_route,
     live_perp_equity_usd,
+    live_tradable_equity_usd,
     parse_live_fill,
     parse_live_position,
     resolve_live_account_wallet_address,
@@ -144,6 +146,8 @@ def test_resolve_live_account_wallet_address_uses_config_fallback() -> None:
 
 
 def test_update_live_account_from_state_includes_spot_usdc() -> None:
+    settings = Settings()
+    settings.live_trading_capital_mode = "unified"
     account = TradingAccount(
         key="live_test",
         account_type="live",
@@ -156,11 +160,16 @@ def test_update_live_account_from_state_includes_spot_usdc() -> None:
 
     update_live_account_from_state(
         account,
-        state={
-            "marginSummary": {"accountValue": "0.0"},
-            "withdrawable": "0.0",
-            "time": 1,
-        },
+        perp_states=[
+            LivePerpState(
+                dex="",
+                payload={
+                    "marginSummary": {"accountValue": "0.0"},
+                    "withdrawable": "0.0",
+                    "time": 1,
+                },
+            )
+        ],
         spot_state={
             "balances": [
                 {"coin": "USDC", "total": "199.8", "hold": "0.0"},
@@ -168,12 +177,103 @@ def test_update_live_account_from_state_includes_spot_usdc() -> None:
             ],
             "tokenToAvailableAfterMaintenance": [[0, "199.8"]],
         },
+        user_abstraction="unifiedAccount",
         reconciled_at=datetime(2026, 1, 1, tzinfo=UTC),
+        settings=settings,
     )
 
     assert account.equity_usd == Decimal("199.8")
     assert account.cash_balance_usd == Decimal("199.8")
     assert live_perp_equity_usd(account) == Decimal("0.0")
+    assert live_tradable_equity_usd(account, settings=settings, dex="xyz") == Decimal("199.8")
+    assert account.config_payload["lastReconciliation"]["capitalMode"] == "unified"
+    assert account.config_payload["lastReconciliation"]["userAbstraction"] == "unifiedAccount"
+
+
+def test_unified_tradable_equity_respects_available_after_maintenance() -> None:
+    settings = Settings()
+    settings.live_trading_capital_mode = "unified"
+    account = TradingAccount(
+        key="live_test",
+        account_type="live",
+        label="Live Test",
+        status="disabled",
+        network="mainnet",
+        realized_pnl_usd=Decimal("0"),
+        fee_usd=Decimal("0"),
+    )
+
+    update_live_account_from_state(
+        account,
+        perp_states=[
+            LivePerpState(
+                dex="",
+                payload={
+                    "marginSummary": {"accountValue": "0.0"},
+                    "withdrawable": "0.0",
+                    "time": 1,
+                },
+            )
+        ],
+        spot_state={
+            "balances": [{"coin": "USDC", "total": "200", "hold": "0"}],
+            "tokenToAvailableAfterMaintenance": [[0, "0"]],
+        },
+        user_abstraction="unifiedAccount",
+        reconciled_at=datetime(2026, 1, 1, tzinfo=UTC),
+        settings=settings,
+    )
+
+    assert account.equity_usd == Decimal("200")
+    assert account.cash_balance_usd == Decimal("0")
+    assert live_tradable_equity_usd(account, settings=settings) == Decimal("0")
+
+
+def test_update_live_account_from_state_includes_hip3_perp_equity() -> None:
+    settings = Settings()
+    settings.live_trading_capital_mode = "standard_per_dex"
+    account = TradingAccount(
+        key="live_test",
+        account_type="live",
+        label="Live Test",
+        status="disabled",
+        network="mainnet",
+        realized_pnl_usd=Decimal("0"),
+        fee_usd=Decimal("0"),
+    )
+
+    update_live_account_from_state(
+        account,
+        perp_states=[
+            LivePerpState(
+                dex="",
+                payload={
+                    "marginSummary": {"accountValue": "0.0"},
+                    "withdrawable": "0.0",
+                    "time": 1,
+                },
+            ),
+            LivePerpState(
+                dex="xyz",
+                payload={
+                    "marginSummary": {"accountValue": "199.8"},
+                    "withdrawable": "199.8",
+                    "time": 2,
+                },
+            ),
+        ],
+        spot_state={"balances": []},
+        reconciled_at=datetime(2026, 1, 1, tzinfo=UTC),
+        settings=settings,
+    )
+
+    assert account.equity_usd == Decimal("199.8")
+    assert account.cash_balance_usd == Decimal("199.8")
+    assert live_perp_equity_usd(account) == Decimal("199.8")
+    assert live_perp_equity_usd(account, dex="") == Decimal("0.0")
+    assert live_perp_equity_usd(account, dex="xyz") == Decimal("199.8")
+    assert live_tradable_equity_usd(account, settings=settings, dex="") == Decimal("0.0")
+    assert live_tradable_equity_usd(account, settings=settings, dex="xyz") == Decimal("199.8")
 
 
 @pytest.mark.asyncio

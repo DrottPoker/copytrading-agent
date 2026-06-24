@@ -30,6 +30,11 @@ from app.schemas.paper_trading import (
     PaperTradingSummaryResponse,
 )
 from app.schemas.wallet import normalize_wallet_address
+from app.services.live_trading_service import (
+    live_spot_usdc_available,
+    live_spot_usdc_total,
+    user_abstraction_is_unified,
+)
 from app.services.market_price_cache import MarketPriceCache
 from app.services.trading_account_service import sync_paper_trading_account_mirrors
 from app.services.trading_core import (
@@ -1812,11 +1817,13 @@ async def load_source_account_states_for_positions(
     positions: list[PaperPosition],
 ) -> dict[str, PaperSourceAccountState]:
     states: dict[str, PaperSourceAccountState] = {}
+    unified_equity_cache: dict[str, Decimal | None] = {}
     for dex in sorted({dex_from_coin(position.coin) for position in positions}):
         states[dex] = await load_source_account_state(
             client=client,
             source_wallet=source_wallet,
             dex=dex,
+            unified_equity_cache=unified_equity_cache,
         )
     return states
 
@@ -2568,11 +2575,13 @@ async def load_source_account_states(
         dexes.add("")
 
     states: dict[str, PaperSourceAccountState] = {}
+    unified_equity_cache: dict[str, Decimal | None] = {}
     for dex in sorted(dexes):
         states[dex] = await load_source_account_state(
             client=client,
             source_wallet=source_wallet,
             dex=dex,
+            unified_equity_cache=unified_equity_cache,
         )
     return states
 
@@ -2582,6 +2591,7 @@ async def load_source_account_state(
     client: HyperliquidClient,
     source_wallet: str,
     dex: str,
+    unified_equity_cache: dict[str, Decimal | None] | None = None,
 ) -> PaperSourceAccountState:
     try:
         clearinghouse_state = await client.clearinghouse_state(
@@ -2625,6 +2635,18 @@ async def load_source_account_state(
             skip_reason="source_perp_equity_missing",
         )
     if perp_equity <= ZERO:
+        unified_equity = await load_source_unified_equity_cached(
+            client=client,
+            source_wallet=source_wallet,
+            cache=unified_equity_cache,
+        )
+        if unified_equity is not None and unified_equity > ZERO:
+            return PaperSourceAccountState(
+                dex=dex,
+                perp_equity=unified_equity,
+                leverage_by_coin=leverage_by_coin,
+                positions_by_coin=positions_by_coin,
+            )
         return PaperSourceAccountState(
             dex=dex,
             perp_equity=ZERO,
@@ -2639,6 +2661,56 @@ async def load_source_account_state(
         leverage_by_coin=leverage_by_coin,
         positions_by_coin=positions_by_coin,
     )
+
+
+async def load_source_unified_equity_cached(
+    *,
+    client: HyperliquidClient,
+    source_wallet: str,
+    cache: dict[str, Decimal | None] | None,
+) -> Decimal | None:
+    key = source_wallet.lower()
+    if cache is not None and key in cache:
+        return cache[key]
+    equity = await load_source_unified_equity(
+        client=client,
+        source_wallet=source_wallet,
+    )
+    if cache is not None:
+        cache[key] = equity
+    return equity
+
+
+async def load_source_unified_equity(
+    *,
+    client: HyperliquidClient,
+    source_wallet: str,
+) -> Decimal | None:
+    try:
+        user_abstraction = await client.user_abstraction(user=source_wallet)
+    except Exception as exc:
+        logger.warning(
+            "paper copy source abstraction fetch failed wallet=%s error=%s",
+            source_wallet,
+            exc,
+        )
+        return None
+    if not user_abstraction_is_unified(user_abstraction):
+        return None
+    try:
+        spot_state = await client.spot_clearinghouse_state(user=source_wallet)
+    except Exception as exc:
+        logger.warning(
+            "paper copy source spot state fetch failed wallet=%s error=%s",
+            source_wallet,
+            exc,
+        )
+        return None
+    total = live_spot_usdc_total(spot_state)
+    if total > ZERO:
+        return total
+    available = live_spot_usdc_available(spot_state)
+    return available if available > ZERO else None
 
 
 def parse_source_leverages(payload: dict[str, Any]) -> dict[str, Decimal]:

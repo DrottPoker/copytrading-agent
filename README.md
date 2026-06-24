@@ -547,8 +547,11 @@ the shared fill-import storage and market-filter settings.
 fill retention days, batch size, max rows, and protected top scored wallets.
 
 `backend/config/live_trading.json` owns live trading enablement,
-acknowledgements, copy execution, execution limits, risk guardrails, and market
-allow/block lists.
+acknowledgements, account capital mode, copy execution, execution limits, risk
+guardrails, and market allow/block lists. `account.capital_mode` defaults to
+`unified`, where Hyperliquid `spotClearinghouseState` is the balance source of
+truth for live trading capital. Set it to `standard_per_dex` only when the live
+wallet is intentionally using separate default and HIP-3 perp balances.
 
 The Ops Health page reads runtime settings from environment variables:
 
@@ -638,6 +641,9 @@ enablement and acknowledgement flags are explicitly set:
   "enabled": true,
   "acknowledged": true,
   "mainnet_acknowledged": false,
+  "account": {
+    "capital_mode": "unified"
+  },
   "copy_execution": {
     "enabled": false
   }
@@ -656,11 +662,19 @@ slippage, and exit behavior.
 The live backend has a shared `TradeIntent` core, generic trading
 account/order/fill tables, and a Hyperliquid SDK adapter for IOC reduce-only or
 entry orders. The trading worker can reconcile enabled live accounts by reading
-Hyperliquid order status, fills, clearinghouse state, and spot/core USDC
-balances. Spot/core USDC is shown in account equity, but live copy sizing and
-Start trading require positive tradable perp equity. It can also execute live
-copy orders when global live trading, copy execution, and account-level trading
-are all enabled.
+Hyperliquid order status, fills, default perp state, all discovered perp dex
+states, `userAbstraction`, and spot/core USDC balances. In unified mode, live
+account equity, cash, Start trading validation, and live copy sizing use unified
+USDC from `spotClearinghouseState`. In `standard_per_dex` mode, live copy sizing
+uses tradable perp equity on the same perp dex as the copied market, while spot
+USDC remains visible but not used for opening perp entries. It can also execute
+live copy orders when global live trading, copy execution, and account-level
+trading are all enabled.
+
+Source wallets can also be unified. When their per-dex `clearinghouseState`
+reports zero perp equity, paper and live copy check `userAbstraction` and use
+unified USDC from `spotClearinghouseState` for source exposure sizing if the
+source account is in unified mode.
 
 Manual live test orders are only available through `POST /trading/testnet/orders`
 when `hyperliquid_network` is `testnet`. Use them with small notional values and

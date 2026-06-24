@@ -32,6 +32,14 @@ class TradingAccountStatusRequest(CamelModel):
     status: Literal["disabled", "enabled", "exit_only"]
 
 
+class TradingCapitalBalanceRead(CamelModel):
+    key: str
+    label: str
+    equity_usd: Decimal
+    available_usd: Decimal | None = None
+    tradable: bool = False
+
+
 class TradingAccountRead(CamelModel):
     key: str
     account_type: Literal["paper", "live"]
@@ -46,6 +54,13 @@ class TradingAccountRead(CamelModel):
     realized_pnl_usd: Decimal
     fee_usd: Decimal
     last_reconciled_at: datetime | None
+    capital_mode: Literal["unified", "standard_per_dex"] | None = None
+    user_abstraction: str | None = None
+    tradable_equity_usd: Decimal | None = None
+    perp_equity_usd: Decimal | None = None
+    spot_usdc_balance_usd: Decimal | None = None
+    spot_usdc_available_usd: Decimal | None = None
+    capital_balances: list[TradingCapitalBalanceRead] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 

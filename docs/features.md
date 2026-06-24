@@ -601,7 +601,9 @@ What it does:
 - Stores the source perp equity snapshot for each paper fill in
   `paper_copy_fills.source_perp_equity_usd`.
 - Fetches source perp equity from Hyperliquid `clearinghouseState`, which is
-  perp account state. Spot balances are not used for paper copy sizing.
+  perp account state. If the per-dex perp equity is zero and Hyperliquid
+  `userAbstraction` reports a unified account, copy sizing falls back to unified
+  USDC from `spotClearinghouseState`.
 - Fetches `clearinghouseState` per perp dex when fills use prefixed coins such
   as `dex:COIN`, so perp equity, leverage, and open positions are read from
   the matching perp venue.
@@ -839,9 +841,15 @@ What it does:
 - Reconciles live account equity and available cash from perp state plus
   Hyperliquid spot/core USDC balances, so wallets that hold deposited USDC
   outside perp margin still show their account value.
-- Live copy sizing and Start trading use tradable perp equity only. Spot/core
-  USDC is visible in the account view, but it must be transferred to the
-  Hyperliquid perps account before live perp orders can be opened.
+- Reconciles default perps plus all discovered Hyperliquid perp dex accounts,
+  including HIP-3 venues such as `xyz`, so balances transferred to a specific
+  perp dex are included in live account equity and cash.
+- Reads Hyperliquid `userAbstraction` and supports two live capital modes.
+  `unified` is the default and uses unified USDC from `spotClearinghouseState`
+  for live account equity, cash, Start trading validation, and live copy sizing
+  across default and HIP-3 perp markets. `standard_per_dex` keeps separate
+  default and HIP-3 perp balances, and live copy sizing uses tradable perp
+  equity on the same perp dex as the copied market.
 - Stores live exchange fills idempotently in `trading_fills` and syncs aggregate
   account-level live positions in `trading_positions`.
 - Blocks live order submission unless global live trading flags are enabled,
@@ -868,6 +876,7 @@ Config:
 - `live_trading_enabled`
 - `live_trading_acknowledged`
 - `live_trading_mainnet_acknowledged`
+- `live_trading_capital_mode`
 - `live_trading_max_slippage_bps`
 - `live_trading_order_expires_after_ms`
 - `live_trading_reconciliation_enabled`

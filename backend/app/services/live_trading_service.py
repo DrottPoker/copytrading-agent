@@ -32,6 +32,24 @@ TERMINAL_ORDER_STATUSES = {"filled", "rejected", "canceled", "failed"}
 ACTIVE_ORDER_STATUSES = {"planned", "submitted", "accepted", "partially_filled"}
 MAX_LIVE_FILL_RECONCILIATION_PAGES = 10
 LIVE_ACCOUNT_KEY_MAX_LENGTH = 64
+LIVE_CAPITAL_MODE_UNIFIED = "unified"
+LIVE_CAPITAL_MODE_STANDARD_PER_DEX = "standard_per_dex"
+LIVE_CAPITAL_MODES = {LIVE_CAPITAL_MODE_UNIFIED, LIVE_CAPITAL_MODE_STANDARD_PER_DEX}
+UNIFIED_USER_ABSTRACTION_KEYS = {
+    "portfolio",
+    "portfolioaccount",
+    "portfoliomargin",
+    "unified",
+    "unifiedaccount",
+}
+STANDARD_USER_ABSTRACTION_KEYS = {
+    "classic",
+    "default",
+    "disabled",
+    "none",
+    "standard",
+    "standardaccount",
+}
 
 
 class LiveTradingServiceError(Exception):
@@ -105,6 +123,12 @@ class LivePositionSnapshot:
     raw_payload: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class LivePerpState:
+    dex: str
+    payload: dict[str, Any]
+
+
 def validate_live_trading_configuration(settings: Settings) -> None:
     try:
         HyperliquidLiveTradingClient(settings=settings).validate_live_configuration()
@@ -112,18 +136,122 @@ def validate_live_trading_configuration(settings: Settings) -> None:
         raise LiveTradingServiceError(str(exc) or exc.__class__.__name__) from exc
 
 
-def live_perp_equity_usd(account: TradingAccount) -> Decimal:
+def live_capital_mode(settings: Settings) -> str:
+    value = str(settings.live_trading_capital_mode or "").strip()
+    if value in LIVE_CAPITAL_MODES:
+        return value
+    return LIVE_CAPITAL_MODE_UNIFIED
+
+
+def account_last_reconciliation(account: TradingAccount) -> dict[str, Any]:
     payload = account.config_payload if isinstance(account.config_payload, dict) else {}
     last_reconciliation = payload.get("lastReconciliation")
-    if isinstance(last_reconciliation, dict) and "perpEquityUsd" in last_reconciliation:
+    return last_reconciliation if isinstance(last_reconciliation, dict) else {}
+
+
+def normalize_user_abstraction(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        normalized = value.strip()
+        return normalized or None
+    if isinstance(value, dict):
+        for key in (
+            "accountAbstraction",
+            "abstraction",
+            "mode",
+            "type",
+            "userAbstraction",
+            "value",
+        ):
+            normalized = normalize_user_abstraction(value.get(key))
+            if normalized is not None:
+                return normalized
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def user_abstraction_key(value: Any) -> str | None:
+    normalized = normalize_user_abstraction(value)
+    if normalized is None:
+        return None
+    key = re.sub(r"[^a-z0-9]", "", normalized.lower())
+    return key or None
+
+
+def user_abstraction_is_unified(value: Any) -> bool:
+    key = user_abstraction_key(value)
+    return key in UNIFIED_USER_ABSTRACTION_KEYS if key is not None else False
+
+
+def user_abstraction_is_standard(value: Any) -> bool:
+    key = user_abstraction_key(value)
+    return key in STANDARD_USER_ABSTRACTION_KEYS if key is not None else False
+
+
+def live_perp_equity_usd(account: TradingAccount, *, dex: str | None = None) -> Decimal:
+    last_reconciliation = account_last_reconciliation(account)
+    if dex is not None:
+        normalized_dex = dex or "default"
+        states = last_reconciliation.get("perpStates")
+        if isinstance(states, list):
+            for state in states:
+                if not isinstance(state, dict):
+                    continue
+                if str(state.get("dex") or "default") == normalized_dex:
+                    return decimal_or_none(state.get("accountValue")) or ZERO
+        return ZERO
+    if "perpEquityUsd" in last_reconciliation:
         return decimal_or_none(last_reconciliation.get("perpEquityUsd")) or ZERO
     return account.equity_usd or ZERO
 
 
-def validate_live_account_can_start(account: TradingAccount) -> None:
-    if live_perp_equity_usd(account) <= ZERO:
+def live_unified_equity_usd(account: TradingAccount) -> Decimal:
+    last_reconciliation = account_last_reconciliation(account)
+    return decimal_or_none(last_reconciliation.get("unifiedEquityUsd")) or ZERO
+
+
+def live_unified_available_usd(account: TradingAccount) -> Decimal:
+    last_reconciliation = account_last_reconciliation(account)
+    return decimal_or_none(last_reconciliation.get("unifiedAvailableUsd")) or ZERO
+
+
+def live_spot_balance_usd(account: TradingAccount) -> Decimal:
+    last_reconciliation = account_last_reconciliation(account)
+    return decimal_or_none(last_reconciliation.get("spotUsdcTotalUsd")) or ZERO
+
+
+def live_spot_available_usd(account: TradingAccount) -> Decimal:
+    last_reconciliation = account_last_reconciliation(account)
+    return decimal_or_none(last_reconciliation.get("spotUsdcAvailableUsd")) or ZERO
+
+
+def live_tradable_equity_usd(
+    account: TradingAccount,
+    *,
+    settings: Settings,
+    dex: str | None = None,
+) -> Decimal:
+    if live_capital_mode(settings) == LIVE_CAPITAL_MODE_UNIFIED:
+        return live_unified_available_usd(account)
+    return live_perp_equity_usd(account, dex=dex)
+
+
+def validate_live_account_can_start(account: TradingAccount, *, settings: Settings) -> None:
+    last_reconciliation = account_last_reconciliation(account)
+    if (
+        live_capital_mode(settings) == LIVE_CAPITAL_MODE_UNIFIED
+        and user_abstraction_is_standard(last_reconciliation.get("userAbstraction"))
+    ):
         raise LiveTradingServiceError(
-            "Transfer USDC to the Hyperliquid perps account before starting live trading.",
+            "Hyperliquid account is not in Unified account mode.",
+            status_code=409,
+        )
+    if live_tradable_equity_usd(account, settings=settings) <= ZERO:
+        raise LiveTradingServiceError(
+            "Transfer USDC to the configured Hyperliquid trading account before "
+            "starting live trading.",
             status_code=409,
         )
 
@@ -338,7 +466,7 @@ async def close_all_live_account_positions(
                 status=account.status,
             )
 
-        mids = await client.all_mids()
+        mids = await load_live_close_mids(client, positions=positions)
         submitted = 0
         failed = 0
         live_client = trading_client or HyperliquidLiveTradingClient(settings=settings)
@@ -393,6 +521,25 @@ async def close_all_live_account_positions(
     finally:
         if client_created:
             await client.__aexit__(None, None, None)
+
+
+async def load_live_close_mids(
+    client: HyperliquidClient,
+    *,
+    positions: list[TradingPosition],
+) -> dict[str, Any]:
+    dexes = sorted({live_dex_from_coin(position.coin) for position in positions})
+    mids_by_coin: dict[str, Any] = {}
+    for dex in dexes:
+        mids = await client.all_mids(dex=dex or None)
+        for raw_coin, raw_price in mids.items():
+            coin = str(raw_coin or "").strip()
+            if not coin:
+                continue
+            mids_by_coin[live_coin_with_dex(coin=coin, dex=dex)] = raw_price
+            if not dex:
+                mids_by_coin[coin] = raw_price
+    return mids_by_coin
 
 
 async def load_live_account_for_update(
@@ -710,12 +857,16 @@ async def reconcile_live_trading_account(
             session,
             account_key=account.key,
         )
-        state = await client.clearinghouse_state(user=user_address)
+        perp_states = await fetch_live_perp_states(client, user_address=user_address)
         spot_state = await fetch_live_spot_state(client, user_address=user_address)
+        user_abstraction = await fetch_live_user_abstraction(
+            client,
+            user_address=user_address,
+        )
         position_result = await reconcile_live_positions(
             session,
             account=account,
-            state=state,
+            perp_states=perp_states,
             reconciled_at=reconciled_at,
         )
     except LiveTradingServiceError:
@@ -731,9 +882,11 @@ async def reconcile_live_trading_account(
 
     update_live_account_from_state(
         account,
-        state=state,
+        perp_states=perp_states,
         spot_state=spot_state,
+        user_abstraction=user_abstraction,
         reconciled_at=reconciled_at,
+        settings=settings,
     )
     await session.flush()
     return LiveReconciliationResult(
@@ -815,6 +968,41 @@ async def fetch_live_fills_by_time(
     return fills
 
 
+async def fetch_live_perp_states(
+    client: HyperliquidClient,
+    *,
+    user_address: str,
+) -> list[LivePerpState]:
+    states = [
+        LivePerpState(
+            dex="",
+            payload=await client.clearinghouse_state(user=user_address),
+        )
+    ]
+    for dex in await fetch_live_perp_dex_names(client):
+        try:
+            payload = await client.clearinghouse_state(user=user_address, dex=dex)
+        except Exception:
+            continue
+        states.append(LivePerpState(dex=dex, payload=payload))
+    return states
+
+
+async def fetch_live_perp_dex_names(client: HyperliquidClient) -> list[str]:
+    try:
+        payload = await client.perp_dexs()
+    except Exception:
+        return []
+    names: list[str] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if name:
+            names.append(name)
+    return sorted(set(names))
+
+
 async def fetch_live_spot_state(
     client: HyperliquidClient,
     *,
@@ -822,6 +1010,17 @@ async def fetch_live_spot_state(
 ) -> dict[str, Any]:
     try:
         return await client.spot_clearinghouse_state(user=user_address)
+    except Exception as exc:
+        return {"error": {"message": str(exc), "type": exc.__class__.__name__}}
+
+
+async def fetch_live_user_abstraction(
+    client: HyperliquidClient,
+    *,
+    user_address: str,
+) -> Any:
+    try:
+        return await client.user_abstraction(user=user_address)
     except Exception as exc:
         return {"error": {"message": str(exc), "type": exc.__class__.__name__}}
 
@@ -1119,12 +1318,16 @@ async def reconcile_live_positions(
     session: AsyncSession,
     *,
     account: TradingAccount,
-    state: dict[str, Any],
+    perp_states: list[LivePerpState],
     reconciled_at: datetime,
 ) -> LivePositionReconciliationResult:
     snapshots = [
         snapshot
-        for payload in state.get("assetPositions", [])
+        for perp_state in perp_states
+        for payload in normalized_live_asset_positions(
+            perp_state.payload.get("assetPositions"),
+            dex=perp_state.dex,
+        )
         if isinstance(payload, dict)
         for snapshot in [parse_live_position(payload)]
         if snapshot is not None
@@ -1182,6 +1385,48 @@ async def reconcile_live_positions(
         open_positions=len(active_coins),
         removed_positions=int(delete_result.rowcount or 0),
     )
+
+
+def normalized_live_asset_positions(raw_positions: Any, *, dex: str) -> list[dict[str, Any]]:
+    if not isinstance(raw_positions, list):
+        return []
+
+    positions: list[dict[str, Any]] = []
+    for item in raw_positions:
+        if not isinstance(item, dict):
+            continue
+        raw_position = item.get("position")
+        if not isinstance(raw_position, dict):
+            positions.append(item)
+            continue
+
+        coin = str(raw_position.get("coin") or "")
+        normalized_coin = live_coin_with_dex(coin=coin, dex=dex)
+        if normalized_coin == coin and not dex:
+            positions.append(item)
+            continue
+
+        normalized_position = {**raw_position, "coin": normalized_coin}
+        normalized_item = {**item, "position": normalized_position}
+        if dex:
+            normalized_item["dex"] = dex
+        positions.append(normalized_item)
+    return positions
+
+
+def live_coin_with_dex(*, coin: str, dex: str) -> str:
+    resolved_coin = str(coin or "").strip()
+    resolved_dex = str(dex or "").strip()
+    if not resolved_coin or not resolved_dex or ":" in resolved_coin:
+        return resolved_coin
+    return f"{resolved_dex}:{resolved_coin}"
+
+
+def live_dex_from_coin(coin: str) -> str:
+    value = str(coin or "").strip()
+    if ":" not in value:
+        return ""
+    return value.split(":", maxsplit=1)[0].strip()
 
 
 async def live_fill_reconciliation_start_time_ms(
@@ -1325,36 +1570,68 @@ def effective_leverage(
 def update_live_account_from_state(
     account: TradingAccount,
     *,
-    state: dict[str, Any],
+    perp_states: list[LivePerpState],
     spot_state: dict[str, Any] | None = None,
+    user_abstraction: Any = None,
     reconciled_at: datetime,
+    settings: Settings,
 ) -> None:
-    margin_summary = state.get("marginSummary")
-    if not isinstance(margin_summary, dict):
-        margin_summary = state.get("crossMarginSummary")
-    perp_equity = None
-    if isinstance(margin_summary, dict):
-        perp_equity = decimal_or_none(margin_summary.get("accountValue"))
+    perp_equity = ZERO
+    perp_withdrawable = ZERO
+    state_time: Any = None
+    state_summaries: list[dict[str, Any]] = []
+    for perp_state in perp_states:
+        payload = perp_state.payload
+        margin_summary = payload.get("marginSummary")
+        if not isinstance(margin_summary, dict):
+            margin_summary = payload.get("crossMarginSummary")
+        state_equity = (
+            decimal_or_none(margin_summary.get("accountValue"))
+            if isinstance(margin_summary, dict)
+            else ZERO
+        )
+        state_withdrawable = decimal_or_none(payload.get("withdrawable")) or ZERO
+        perp_equity += state_equity or ZERO
+        perp_withdrawable += state_withdrawable
+        state_time = max_optional_numeric(state_time, payload.get("time"))
+        state_summaries.append(
+            {
+                "accountValue": str(state_equity or ZERO),
+                "dex": perp_state.dex or "default",
+                "marginSummary": margin_summary if isinstance(margin_summary, dict) else None,
+                "withdrawable": str(state_withdrawable),
+            }
+        )
+
     spot_usdc_total = live_spot_usdc_total(spot_state or {})
     spot_usdc_available = live_spot_usdc_available(spot_state or {})
-    if perp_equity is not None:
-        account.equity_usd = perp_equity + spot_usdc_total
-    elif spot_usdc_total > ZERO:
+    capital_mode = live_capital_mode(settings)
+    if capital_mode == LIVE_CAPITAL_MODE_UNIFIED:
         account.equity_usd = spot_usdc_total
-    account.cash_balance_usd = (
-        (decimal_or_none(state.get("withdrawable")) or ZERO) + spot_usdc_available
-    )
+        account.cash_balance_usd = spot_usdc_available
+        tradable_equity = spot_usdc_available
+    else:
+        account.equity_usd = perp_equity + spot_usdc_total
+        account.cash_balance_usd = perp_withdrawable + spot_usdc_available
+        tradable_equity = perp_equity
     account.last_reconciled_at = reconciled_at
     account.config_payload = merge_raw_payload(
         account.config_payload,
         {
             "lastReconciliation": {
-                "time": state.get("time"),
-                "marginSummary": margin_summary if isinstance(margin_summary, dict) else None,
-                "perpEquityUsd": str(perp_equity) if perp_equity is not None else None,
+                "capitalMode": capital_mode,
+                "perpEquityUsd": str(perp_equity),
+                "perpStates": state_summaries,
+                "perpWithdrawableUsd": str(perp_withdrawable),
                 "spotState": spot_state,
                 "spotUsdcAvailableUsd": str(spot_usdc_available),
                 "spotUsdcTotalUsd": str(spot_usdc_total),
+                "tradableEquityUsd": str(tradable_equity),
+                "time": state_time,
+                "unifiedAvailableUsd": str(spot_usdc_available),
+                "unifiedEquityUsd": str(spot_usdc_total),
+                "userAbstraction": normalize_user_abstraction(user_abstraction),
+                "userAbstractionRaw": user_abstraction,
             }
         },
     )
@@ -1377,13 +1654,15 @@ def live_spot_usdc_available(spot_state: dict[str, Any]) -> Decimal:
     values = spot_state.get("tokenToAvailableAfterMaintenance")
     if isinstance(values, list):
         total = ZERO
+        matched_usdc = False
         for item in values:
             if not isinstance(item, (list, tuple)) or len(item) < 2:
                 continue
             token_id = decimal_or_none(item[0])
             if token_id == ZERO:
+                matched_usdc = True
                 total += decimal_or_none(item[1]) or ZERO
-        if total > ZERO:
+        if matched_usdc:
             return total
 
     balances = spot_state.get("balances")
@@ -1601,6 +1880,16 @@ def decimal_or_none(value: Any) -> Decimal | None:
         return Decimal(str(value))
     except (InvalidOperation, TypeError, ValueError):
         return None
+
+
+def max_optional_numeric(current: Any, candidate: Any) -> Any:
+    current_value = decimal_or_none(current)
+    candidate_value = decimal_or_none(candidate)
+    if candidate_value is None:
+        return current
+    if current_value is None or candidate_value > current_value:
+        return candidate
+    return current
 
 
 def string_or_none(value: Any) -> str | None:
