@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-import { HeaderRefresh } from "@/components/HeaderRefresh";
+import { HeaderRefreshButton, HeaderUpdatedLabel } from "@/components/HeaderRefresh";
 import { ImportFillsButton } from "@/components/ImportFillsButton";
 import { PageTopPanel } from "@/components/PageTopPanel";
 import { ScoreDetailsModal } from "@/components/ScoreDetailsModal";
@@ -64,10 +64,7 @@ export default async function WalletDetailPage({
         }
         actions={
           <>
-            <HeaderRefresh
-              label={`Updated ${formatDate(wallet.updatedAt)}`}
-              title="Refresh wallet data"
-            />
+            <HeaderUpdatedLabel label={`Updated ${formatDate(wallet.updatedAt)}`} />
             <StatusPill
               label={wallet.enabled ? "enabled" : "disabled"}
               tone={wallet.enabled ? "positive" : "warning"}
@@ -77,6 +74,7 @@ export default async function WalletDetailPage({
             {wallet.copyEnabled ? <StatusPill label="copy enabled" tone="positive" /> : null}
           </>
         }
+        refresh={<HeaderRefreshButton title="Refresh wallet data" />}
       />
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">

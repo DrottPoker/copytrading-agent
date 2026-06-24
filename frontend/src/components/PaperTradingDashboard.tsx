@@ -36,7 +36,7 @@ import type {
   PaperWalletPerformance,
 } from "@/types/paper";
 
-import { HeaderRefresh } from "./HeaderRefresh";
+import { HeaderRefreshButton, HeaderUpdatedLabel } from "./HeaderRefresh";
 import { PageTopPanel } from "./PageTopPanel";
 import { StatusPill } from "./StatusPill";
 
@@ -234,12 +234,7 @@ export function PaperTradingDashboard({
         title="Paper Trading"
         actions={
           <>
-            <HeaderRefresh
-              isRefreshing={connectionState === "refreshing"}
-              label={`Updated ${formatDate(summary.updatedAt)}`}
-              onRefresh={refresh}
-              title="Refresh paper trading data"
-            />
+            <HeaderUpdatedLabel label={`Updated ${formatDate(summary.updatedAt)}`} />
             <StatusPill
               label={summary.policy.enabled ? "paper copy enabled" : "paper copy disabled"}
               tone={summary.policy.enabled ? "positive" : "warning"}
@@ -247,6 +242,13 @@ export function PaperTradingDashboard({
             <StatusPill label={marketStatusLabel(summary.marketDataStatus)} tone={marketStatusTone(summary.marketDataStatus)} />
             {connectionState === "offline" ? <StatusPill label="offline" tone="danger" /> : null}
           </>
+        }
+        refresh={
+          <HeaderRefreshButton
+            isRefreshing={connectionState === "refreshing"}
+            onRefresh={refresh}
+            title="Refresh paper trading data"
+          />
         }
       />
 

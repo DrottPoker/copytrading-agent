@@ -16,7 +16,7 @@ import { DatabaseFillCompactPanel } from "@/components/DatabaseFillCompactPanel"
 import { DatabaseIgnoredFillCleanupPanel } from "@/components/DatabaseIgnoredFillCleanupPanel";
 import { DatabaseFillRetentionPanel } from "@/components/DatabaseFillRetentionPanel";
 import { DatabasePrunePanel } from "@/components/DatabasePrunePanel";
-import { HeaderRefresh } from "@/components/HeaderRefresh";
+import { HeaderRefreshButton, HeaderUpdatedLabel } from "@/components/HeaderRefresh";
 import { PageTopPanel } from "@/components/PageTopPanel";
 import { StatusPill } from "@/components/StatusPill";
 import { getDatabaseStats, getHealth } from "@/lib/api";
@@ -267,12 +267,10 @@ function PageTitle({ updatedAt }: { updatedAt?: string }) {
       title="Database"
       actions={
         updatedAt ? (
-          <HeaderRefresh
-            label={`Updated ${formatDate(updatedAt)}`}
-            title="Refresh database data"
-          />
+          <HeaderUpdatedLabel label={`Updated ${formatDate(updatedAt)}`} />
         ) : null
       }
+      refresh={<HeaderRefreshButton title="Refresh database data" />}
     />
   );
 }

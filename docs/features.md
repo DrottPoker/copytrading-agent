@@ -552,6 +552,7 @@ Purpose:
 Endpoint:
 
 - `GET /paper-trading`
+- `POST /paper-trading/accounts`
 - `POST /paper-trading/accounts/{account_key}/start`
 - `POST /paper-trading/accounts/{account_key}/stop`
 - `POST /paper-trading/accounts/{account_key}/close-all-and-stop`
@@ -573,6 +574,8 @@ What it does:
 
 - Syncs configured paper trading accounts from `backend/config/paper_trading.json`.
 - Defaults to two paper accounts, 1,000 USD and 10,000 USD.
+- Stores dashboard-created paper accounts in Postgres. New dashboard-created
+  paper accounts start with trading disabled and must be started manually.
 - Builds allocations from the top 10 positive wallet scores in the enabled wallet pool.
 - When current drawdown scoring is enabled, allocation only uses wallets whose
   latest score has `current_drawdown_status = "ok"`.
@@ -707,6 +710,9 @@ What it does:
   first synced account. It shows account KPIs, balance and PnL charts,
   allocation usage, market exposure, source performance, open positions, closed
   trades, and recent fills for the selected account.
+- The Accounts page can create new paper accounts from the dashboard. The modal
+  includes a live account option for the future, but only paper accounts can be
+  created now.
 - The Accounts page can start, stop, or close all and stop trading for the
   selected paper account. Start trading enables new entries again. Stop trading
   disables new entries and adds for that account, but still lets source reduce
@@ -719,8 +725,8 @@ What it does:
 - Dashboard wallet and source labels wrap instead of using ellipsis so full
   labels stay visible in list rows and detail headers.
 - Account rows include a reset action that restores the account to its
-  configured starting balance and clears account-level realized PnL and fees
-  without deleting open paper positions, copied fills, or closed trade history.
+  starting balance and clears account-level realized PnL and fees without
+  deleting open paper positions, copied fills, or closed trade history.
 - Source rows show a primary monitor status and a source substatus. Primary
   status is `monitored` when the source has a realtime slot and `waiting` when
   it does not. Substatus is `trading`, `retained`, `waiting for trades`, or
@@ -737,8 +743,9 @@ What it does:
 - The dashboard separates total, realized, and unrealized PnL and uses compact
   responsive list rows instead of wide tables or large cards.
 - Dashboard pages use a shared top panel with page context first, followed by a
-  left-aligned action row. Updated state sits directly before the refresh button,
-  and auto-refresh uses icon motion instead of visible refreshing text.
+  left-aligned action row for updated state, controls, filters, and status
+  pills. The refresh button is anchored to the right, and auto-refresh uses icon
+  motion instead of visible refreshing text.
 - Wallet PnL history rows show `monitored` when the source has a realtime slot
   and `history` otherwise.
 - Wallet PnL history, closed trade history, and recent fills are paginated at
@@ -773,7 +780,7 @@ Current limitations:
   latency, configured adverse slippage, and a max drift guard, but it does not
   simulate order book depth or partial fills yet.
 - Paper accounts are not backfilled from historical fills. They start recording
-  only from new non-snapshot realtime fills after the migration is applied.
+  only from new non-snapshot realtime fills after they exist.
 - Editing `starting_balance_usd` does not reset existing account state by
   itself. Use the account reset action in the paper trading dashboard to apply
   configured starting capital to an existing paper account.

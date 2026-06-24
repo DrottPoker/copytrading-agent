@@ -4,16 +4,14 @@ import { RefreshCw } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useTransition } from "react";
 
-export function HeaderRefresh({
+export function HeaderRefreshButton({
   intervalMs,
   isRefreshing,
-  label,
   onRefresh,
   title,
 }: {
   intervalMs?: number;
   isRefreshing?: boolean;
-  label: string;
   onRefresh?: () => void | Promise<void>;
   title: string;
 }) {
@@ -52,17 +50,22 @@ export function HeaderRefresh({
   const controlTitle = intervalSeconds ? `${title}, every ${intervalSeconds}s` : title;
 
   return (
-    <span className="inline-flex min-h-8 items-center gap-2 whitespace-nowrap text-xs font-medium text-[#5b6770]">
-      <span>{label}</span>
-      <button
-        type="button"
-        onClick={refresh}
-        title={controlTitle}
-        className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-line bg-white text-[#344054] shadow-sm hover:bg-[#f7f9fb]"
-      >
-        <RefreshCw className={`h-3.5 w-3.5 ${active ? "animate-spin" : ""}`} aria-hidden="true" />
-        <span className="sr-only">Refresh</span>
-      </button>
+    <button
+      type="button"
+      onClick={refresh}
+      title={controlTitle}
+      className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-line bg-white text-[#344054] shadow-sm hover:bg-[#f7f9fb]"
+    >
+      <RefreshCw className={`h-3.5 w-3.5 ${active ? "animate-spin" : ""}`} aria-hidden="true" />
+      <span className="sr-only">Refresh</span>
+    </button>
+  );
+}
+
+export function HeaderUpdatedLabel({ label }: { label: string }) {
+  return (
+    <span className="inline-flex min-h-8 items-center whitespace-nowrap text-xs font-medium text-[#5b6770]">
+      {label}
     </span>
   );
 }

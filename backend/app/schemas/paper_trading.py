@@ -1,8 +1,16 @@
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 from uuid import UUID
 
+from pydantic import Field
+
 from app.schemas.base import CamelModel
+
+
+class PaperTradingAccountCreateRequest(CamelModel):
+    account_type: Literal["paper", "live"] = "paper"
+    starting_balance_usd: Decimal = Field(gt=0, le=Decimal("1000000000"))
 
 
 class PaperTradingAccountRead(CamelModel):

@@ -7,14 +7,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import db_session
 from app.core.config import Settings, get_settings
 from app.integrations.hyperliquid_client import HyperliquidClient
-from app.schemas.paper_trading import PaperTradingSummaryResponse
+from app.schemas.paper_trading import (
+    PaperTradingAccountCreateRequest,
+    PaperTradingSummaryResponse,
+)
 from app.services.paper_trading_service import (
     PaperAccountControlError,
+    PaperAccountCreateError,
     PaperAccountResetError,
     PaperPositionCloseError,
     close_paper_account_positions_manually,
     close_paper_position_manually,
     close_paper_source_positions_manually,
+    create_paper_trading_account,
     get_paper_trading_summary,
     reset_paper_trading_account_balance,
     set_paper_trading_account_enabled,
@@ -36,6 +41,28 @@ async def get_paper_trading_route(
         recent_fill_limit=recent_fill_limit,
         closed_trade_limit=closed_trade_limit,
     )
+
+
+@router.post("/accounts", response_model=PaperTradingSummaryResponse)
+async def create_paper_account_route(
+    payload: PaperTradingAccountCreateRequest,
+    session: Annotated[AsyncSession, Depends(db_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> PaperTradingSummaryResponse:
+    try:
+        await create_paper_trading_account(
+            session,
+            account_type=payload.account_type,
+            starting_balance_usd=payload.starting_balance_usd,
+            settings=settings,
+        )
+        await session.commit()
+    except PaperAccountCreateError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    async with HyperliquidClient(settings) as client:
+        return await get_paper_trading_summary(session, settings=settings, client=client)
 
 
 @router.post("/positions/{position_id}/close", response_model=PaperTradingSummaryResponse)

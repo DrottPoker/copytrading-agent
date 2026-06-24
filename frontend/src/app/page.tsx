@@ -10,7 +10,7 @@ import {
 import Link from "next/link";
 import type { ReactNode } from "react";
 
-import { HeaderRefresh } from "@/components/HeaderRefresh";
+import { HeaderRefreshButton, HeaderUpdatedLabel } from "@/components/HeaderRefresh";
 import { OperationStatusStrip } from "@/components/OperationStatusStrip";
 import { PageTopPanel } from "@/components/PageTopPanel";
 import { StatusPill } from "@/components/StatusPill";
@@ -60,10 +60,7 @@ export default async function DashboardPage() {
         actions={
           <>
             {databaseStats ? (
-              <HeaderRefresh
-                label={`Updated ${formatDate(databaseStats.measuredAt)}`}
-                title="Refresh dashboard data"
-              />
+              <HeaderUpdatedLabel label={`Updated ${formatDate(databaseStats.measuredAt)}`} />
             ) : null}
             <StatusPill
               label={apiReady ? "api online" : "api offline"}
@@ -76,6 +73,7 @@ export default async function DashboardPage() {
             />
           </>
         }
+        refresh={<HeaderRefreshButton title="Refresh dashboard data" />}
       />
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">

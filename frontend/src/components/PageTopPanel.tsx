@@ -6,12 +6,14 @@ export function PageTopPanel({
   eyebrow,
   icon: Icon,
   meta,
+  refresh,
   title,
 }: {
   actions?: ReactNode;
   eyebrow?: string;
   icon?: LucideIcon;
   meta?: ReactNode;
+  refresh?: ReactNode;
   title: string;
 }) {
   return (
@@ -30,6 +32,7 @@ export function PageTopPanel({
             {actions}
           </div>
         ) : null}
+        {refresh ? <div className="flex shrink-0 self-end lg:ml-auto lg:self-start">{refresh}</div> : null}
       </div>
     </header>
   );

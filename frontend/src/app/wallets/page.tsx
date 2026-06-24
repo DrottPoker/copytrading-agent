@@ -11,7 +11,7 @@ import {
 import Link from "next/link";
 
 import { AddWalletForm } from "@/components/AddWalletForm";
-import { HeaderRefresh } from "@/components/HeaderRefresh";
+import { HeaderRefreshButton, HeaderUpdatedLabel } from "@/components/HeaderRefresh";
 import { PageTopPanel } from "@/components/PageTopPanel";
 import { ScoreWalletsButton } from "@/components/ScoreWalletsButton";
 import { StatusPill } from "@/components/StatusPill";
@@ -54,10 +54,7 @@ export default async function WalletsPage({ searchParams }: WalletsPageProps) {
         actions={
           <>
             {databaseStats ? (
-              <HeaderRefresh
-                label={`Updated ${formatDate(databaseStats.measuredAt)}`}
-                title="Refresh wallet pool data"
-              />
+              <HeaderUpdatedLabel label={`Updated ${formatDate(databaseStats.measuredAt)}`} />
             ) : null}
             <ScoreWalletsButton />
             <StatusPill
@@ -72,6 +69,7 @@ export default async function WalletsPage({ searchParams }: WalletsPageProps) {
             <StatusPill label={`${eligibleCount} eligible`} tone="neutral" />
           </>
         }
+        refresh={<HeaderRefreshButton title="Refresh wallet pool data" />}
       />
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">

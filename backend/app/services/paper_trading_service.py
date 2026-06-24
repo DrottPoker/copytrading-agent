@@ -2,7 +2,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
 
@@ -90,6 +90,18 @@ class PaperAccountControlError(Exception):
 
 class PaperAccountControlNotFoundError(PaperAccountControlError):
     status_code = 404
+
+
+class PaperAccountCreateError(Exception):
+    status_code = 400
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
+
+
+class PaperAccountCreateUnavailableError(PaperAccountCreateError):
+    status_code = 501
 
 
 @dataclass(frozen=True)
@@ -2019,11 +2031,91 @@ async def sync_paper_trading_accounts(
         )
 
     result = await session.execute(
-        select(PaperTradingAccount).where(
-            PaperTradingAccount.key.in_(account_keys)
+        select(PaperTradingAccount).order_by(
+            PaperTradingAccount.created_at.asc(),
+            PaperTradingAccount.key.asc(),
         )
     )
     return list(result.scalars().all())
+
+
+async def create_paper_trading_account(
+    session: AsyncSession,
+    *,
+    account_type: str,
+    starting_balance_usd: Decimal,
+    settings: Settings,
+) -> PaperTradingAccount:
+    if account_type == "live":
+        raise PaperAccountCreateUnavailableError("Live accounts are not available yet.")
+    if account_type != "paper":
+        raise PaperAccountCreateError("Unsupported account type.")
+
+    starting_balance = normalize_paper_account_starting_balance(starting_balance_usd)
+    await sync_paper_trading_accounts(session, settings=settings)
+    key, label = await next_paper_account_identity(
+        session,
+        starting_balance_usd=starting_balance,
+    )
+    account = PaperTradingAccount(
+        key=key,
+        label=label,
+        starting_balance_usd=starting_balance,
+        cash_balance_usd=starting_balance,
+        equity_usd=starting_balance,
+        realized_pnl_usd=ZERO,
+        fee_usd=ZERO,
+        enabled=False,
+        config_payload={
+            "account_type": "paper",
+            "source": "dashboard",
+        },
+    )
+    session.add(account)
+    await session.flush()
+    return account
+
+
+async def next_paper_account_identity(
+    session: AsyncSession,
+    *,
+    starting_balance_usd: Decimal,
+) -> tuple[str, str]:
+    amount_label = format_paper_account_amount(starting_balance_usd)
+    base_key = f"paper_{paper_account_amount_slug(starting_balance_usd)}"
+    existing_result = await session.execute(
+        select(PaperTradingAccount.key).where(PaperTradingAccount.key.like(f"{base_key}%"))
+    )
+    existing_keys = {str(key) for key in existing_result.scalars().all()}
+    if base_key not in existing_keys:
+        return base_key, f"Paper {amount_label} USD"
+
+    suffix = 2
+    while f"{base_key}_{suffix}" in existing_keys:
+        suffix += 1
+    return f"{base_key}_{suffix}", f"Paper {amount_label} USD #{suffix}"
+
+
+def normalize_paper_account_starting_balance(value: Decimal) -> Decimal:
+    try:
+        normalized = value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except InvalidOperation as exc:
+        raise PaperAccountCreateError("Starting balance is invalid.") from exc
+    if normalized <= ZERO:
+        raise PaperAccountCreateError("Starting balance must be at least 0.01 USD.")
+    return normalized
+
+
+def format_paper_account_amount(value: Decimal) -> str:
+    normalized = value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    formatted = f"{normalized:,.2f}"
+    return formatted[:-3] if formatted.endswith(".00") else formatted
+
+
+def paper_account_amount_slug(value: Decimal) -> str:
+    normalized = value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    slug = format(normalized, "f").rstrip("0").rstrip(".").replace(".", "_")
+    return slug or "0"
 
 
 async def load_paper_source_label(session: AsyncSession, source_wallet: str) -> str | None:
@@ -2058,13 +2150,6 @@ async def reset_paper_trading_account_balance(
     account_key: str,
     settings: Settings,
 ) -> PaperTradingAccount:
-    account_config = next(
-        (account for account in settings.paper_copy_accounts if account.key == account_key),
-        None,
-    )
-    if account_config is None:
-        raise PaperAccountResetNotFoundError("Paper account is not configured.")
-
     await sync_paper_trading_accounts(session, settings=settings)
     account = await session.scalar(
         select(PaperTradingAccount)
@@ -2074,15 +2159,21 @@ async def reset_paper_trading_account_balance(
     if account is None:
         raise PaperAccountResetNotFoundError("Paper account was not found.")
 
-    config_payload = account_config.model_dump(mode="json")
-    account.label = account_config.label
-    account.starting_balance_usd = account_config.starting_balance_usd
-    account.cash_balance_usd = account_config.starting_balance_usd
-    account.equity_usd = account_config.starting_balance_usd
+    account_config = next(
+        (config for config in settings.paper_copy_accounts if config.key == account_key),
+        None,
+    )
+    if account_config is not None:
+        config_payload = account_config.model_dump(mode="json")
+        account.label = account_config.label
+        account.starting_balance_usd = account_config.starting_balance_usd
+        account.enabled = account_config.enabled
+        account.config_payload = config_payload
+
+    account.cash_balance_usd = account.starting_balance_usd
+    account.equity_usd = account.starting_balance_usd
     account.realized_pnl_usd = ZERO
     account.fee_usd = ZERO
-    account.enabled = account_config.enabled
-    account.config_payload = config_payload
     return account
 
 
@@ -2093,13 +2184,6 @@ async def set_paper_trading_account_enabled(
     enabled: bool,
     settings: Settings,
 ) -> PaperTradingAccount:
-    account_config = next(
-        (account for account in settings.paper_copy_accounts if account.key == account_key),
-        None,
-    )
-    if account_config is None:
-        raise PaperAccountControlNotFoundError("Paper account is not configured.")
-
     await sync_paper_trading_accounts(session, settings=settings)
     account = await session.scalar(
         select(PaperTradingAccount)

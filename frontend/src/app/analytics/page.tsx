@@ -15,7 +15,7 @@ import {
 import Link from "next/link";
 import type { ReactNode } from "react";
 
-import { HeaderRefresh } from "@/components/HeaderRefresh";
+import { HeaderRefreshButton, HeaderUpdatedLabel } from "@/components/HeaderRefresh";
 import { PageTopPanel } from "@/components/PageTopPanel";
 import { StatusPill } from "@/components/StatusPill";
 import { getAnalytics } from "@/lib/api";
@@ -144,11 +144,7 @@ function PageHeader({ analytics }: { analytics?: AnalyticsResponse }) {
       actions={
         analytics ? (
           <>
-            <HeaderRefresh
-              intervalMs={30000}
-              label={`Updated ${formatDate(analytics.freshness.generatedAt)}`}
-              title="Refresh analytics data"
-            />
+            <HeaderUpdatedLabel label={`Updated ${formatDate(analytics.freshness.generatedAt)}`} />
             <StatusPill
               label={`${formatInteger(analytics.overview.scoredWalletCount)} scored`}
               tone="positive"
@@ -160,6 +156,7 @@ function PageHeader({ analytics }: { analytics?: AnalyticsResponse }) {
           </>
         ) : null
       }
+      refresh={<HeaderRefreshButton intervalMs={30000} title="Refresh analytics data" />}
     />
   );
 }

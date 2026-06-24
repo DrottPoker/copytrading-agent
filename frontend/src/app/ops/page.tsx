@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 
-import { HeaderRefresh } from "@/components/HeaderRefresh";
+import { HeaderRefreshButton, HeaderUpdatedLabel } from "@/components/HeaderRefresh";
 import { PageTopPanel } from "@/components/PageTopPanel";
 import { StatusPill } from "@/components/StatusPill";
 import { getOpsHealth } from "@/lib/api";
@@ -160,11 +160,7 @@ function PageTitle({ ops }: { ops?: OpsHealthResponse }) {
       actions={
         ops ? (
           <>
-            <HeaderRefresh
-              intervalMs={15000}
-              label={`Updated ${formatDate(ops.measuredAt)}`}
-              title="Refresh ops data"
-            />
+            <HeaderUpdatedLabel label={`Updated ${formatDate(ops.measuredAt)}`} />
             <StatusPill label={ops.status} tone={toneForStatus(ops.status)} />
             <StatusPill
               label={ops.config.liveTradingEnabled ? "live enabled" : "paper mode"}
@@ -174,6 +170,7 @@ function PageTitle({ ops }: { ops?: OpsHealthResponse }) {
           </>
         ) : null
       }
+      refresh={<HeaderRefreshButton intervalMs={15000} title="Refresh ops data" />}
     />
   );
 }

@@ -14,7 +14,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 
 import { DiscoveryPipelineActions } from "@/components/DiscoveryPipelineActions";
-import { HeaderRefresh } from "@/components/HeaderRefresh";
+import { HeaderRefreshButton, HeaderUpdatedLabel } from "@/components/HeaderRefresh";
 import { PageTopPanel } from "@/components/PageTopPanel";
 import { StatusPill } from "@/components/StatusPill";
 import {
@@ -81,9 +81,8 @@ export default async function DiscoveryPage({ searchParams }: DiscoveryPageProps
         title="Discovery"
         actions={
           <>
-            <HeaderRefresh
+            <HeaderUpdatedLabel
               label={lastRun ? `Updated ${formatDate(lastRun.startedAt)}` : "No discovery run yet"}
-              title="Refresh discovery data"
             />
             <StatusPill label={`${formatInteger(overviewCandidates.total)} candidates`} />
             <StatusPill label={`${formatInteger(overview.accepted)} accepted`} tone="positive" />
@@ -93,6 +92,7 @@ export default async function DiscoveryPage({ searchParams }: DiscoveryPageProps
             />
           </>
         }
+        refresh={<HeaderRefreshButton title="Refresh discovery data" />}
       />
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">

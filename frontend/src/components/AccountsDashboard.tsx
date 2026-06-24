@@ -8,16 +8,18 @@ import {
   LineChart,
   Loader2,
   Play,
+  Plus,
   Square,
   Target,
   TrendingDown,
   TrendingUp,
   WalletCards,
+  X,
   XCircle,
   type LucideIcon,
 } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 
 import { getPublicApiBaseUrl } from "@/lib/config";
@@ -38,7 +40,7 @@ import type {
   PaperTradingSummaryResponse,
 } from "@/types/paper";
 
-import { HeaderRefresh } from "./HeaderRefresh";
+import { HeaderRefreshButton, HeaderUpdatedLabel } from "./HeaderRefresh";
 import { PageTopPanel } from "./PageTopPanel";
 import { StatusPill } from "./StatusPill";
 
@@ -48,6 +50,7 @@ const SELECTED_ACCOUNT_STORAGE_KEY = "copyagent.accounts.selectedAccountKey";
 
 type Tone = "positive" | "warning" | "danger" | "neutral";
 type TradingAction = "start" | "stop" | "close-all-and-stop";
+type CreateAccountType = "paper" | "live";
 
 type AccountMetrics = {
   allocationUsd: number;
@@ -124,15 +127,25 @@ export function AccountsDashboard({
     "live",
   );
   const [accountAction, setAccountAction] = useState<TradingAction | null>(null);
+  const [createAccountOpen, setCreateAccountOpen] = useState(false);
+  const [createAccountType, setCreateAccountType] = useState<CreateAccountType>("paper");
+  const [createStartingBalance, setCreateStartingBalance] = useState("1000");
+  const [createSubmitting, setCreateSubmitting] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [lastRefreshAt, setLastRefreshAt] = useState<Date | null>(new Date());
+  const [storedSelectionLoaded, setStoredSelectionLoaded] = useState(false);
 
   useEffect(() => {
+    if (storedSelectionLoaded) {
+      return;
+    }
     const storedAccountKey = window.localStorage.getItem(SELECTED_ACCOUNT_STORAGE_KEY);
     if (storedAccountKey && summary.accounts.some((account) => account.key === storedAccountKey)) {
       setSelectedAccountKey(storedAccountKey);
     }
-  }, [summary.accounts]);
+    setStoredSelectionLoaded(true);
+  }, [storedSelectionLoaded, summary.accounts]);
 
   useEffect(() => {
     if (!selectedAccountKey) {
@@ -228,6 +241,82 @@ export function AccountsDashboard({
     [accountAction, accountView, refresh],
   );
 
+  const openCreateAccount = useCallback(() => {
+    setCreateAccountOpen(true);
+    setCreateAccountType("paper");
+    setCreateStartingBalance("1000");
+    setCreateError(null);
+  }, []);
+
+  const closeCreateAccount = useCallback(() => {
+    if (createSubmitting) {
+      return;
+    }
+    setCreateAccountOpen(false);
+    setCreateError(null);
+  }, [createSubmitting]);
+
+  const handleCreateAccount = useCallback(async () => {
+    if (createSubmitting) {
+      return;
+    }
+
+    const startingBalance = Number(createStartingBalance);
+    if (createAccountType !== "paper") {
+      setCreateError("Live accounts are not available yet.");
+      return;
+    }
+    if (!Number.isFinite(startingBalance) || startingBalance <= 0) {
+      setCreateError("Enter a starting balance greater than 0.");
+      return;
+    }
+
+    setCreateSubmitting(true);
+    setCreateError(null);
+    try {
+      const previousKeys = new Set(summary.accounts.map((account) => account.key));
+      const response = await fetch(`${getPublicApiBaseUrl()}/paper-trading/accounts`, {
+        body: JSON.stringify({
+          accountType: createAccountType,
+          startingBalanceUsd: createStartingBalance,
+        }),
+        cache: "no-store",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        method: "POST",
+      });
+      if (!response.ok) {
+        setCreateError(await responseError(response, "Create account failed"));
+        await refresh();
+        return;
+      }
+
+      const payload = (await response.json()) as PaperTradingSummaryResponse;
+      const createdAccount =
+        payload.accounts.find((account) => !previousKeys.has(account.key)) ??
+        payload.accounts[payload.accounts.length - 1];
+      setSummary(payload);
+      if (createdAccount) {
+        setSelectedAccountKey(createdAccount.key);
+      }
+      setLastRefreshAt(new Date());
+      setConnectionState("live");
+      setCreateAccountOpen(false);
+    } catch {
+      setConnectionState("offline");
+      setCreateError("Create account failed.");
+    } finally {
+      setCreateSubmitting(false);
+    }
+  }, [
+    createAccountType,
+    createStartingBalance,
+    createSubmitting,
+    refresh,
+    summary.accounts,
+  ]);
+
   return (
     <>
       <PageTopPanel
@@ -236,12 +325,15 @@ export function AccountsDashboard({
         title="Accounts"
         actions={
           <>
-            <HeaderRefresh
-              isRefreshing={connectionState === "refreshing"}
-              label={`Updated ${formatDate(summary.updatedAt)}`}
-              onRefresh={refresh}
-              title="Refresh account data"
-            />
+            <HeaderUpdatedLabel label={`Updated ${formatDate(summary.updatedAt)}`} />
+            <button
+              type="button"
+              onClick={openCreateAccount}
+              className="inline-flex min-h-9 items-center gap-2 rounded-md border border-line bg-white px-3 py-1.5 text-sm font-semibold text-ink shadow-sm hover:bg-[#f7f9fb]"
+            >
+              <Plus className="h-4 w-4" aria-hidden="true" />
+              Create account
+            </button>
             <select
               aria-label="Select account"
               className="h-9 min-w-[190px] rounded-md border border-line bg-white px-3 text-sm font-medium text-ink shadow-sm"
@@ -309,6 +401,25 @@ export function AccountsDashboard({
             {connectionState === "offline" ? <StatusPill label="offline" tone="danger" /> : null}
           </>
         }
+        refresh={
+          <HeaderRefreshButton
+            isRefreshing={connectionState === "refreshing"}
+            onRefresh={refresh}
+            title="Refresh account data"
+          />
+        }
+      />
+
+      <CreateAccountDialog
+        accountType={createAccountType}
+        balance={createStartingBalance}
+        error={createError}
+        isSubmitting={createSubmitting}
+        onAccountTypeChange={setCreateAccountType}
+        onBalanceChange={setCreateStartingBalance}
+        onClose={closeCreateAccount}
+        onSubmit={handleCreateAccount}
+        open={createAccountOpen}
       />
 
       {actionError ? (
@@ -329,6 +440,209 @@ export function AccountsDashboard({
         </section>
       )}
     </>
+  );
+}
+
+function CreateAccountDialog({
+  accountType,
+  balance,
+  error,
+  isSubmitting,
+  onAccountTypeChange,
+  onBalanceChange,
+  onClose,
+  onSubmit,
+  open,
+}: {
+  accountType: CreateAccountType;
+  balance: string;
+  error: string | null;
+  isSubmitting: boolean;
+  onAccountTypeChange: (accountType: CreateAccountType) => void;
+  onBalanceChange: (balance: string) => void;
+  onClose: () => void;
+  onSubmit: () => void;
+  open: boolean;
+}) {
+  const titleId = useId();
+  const parsedBalance = Number(balance);
+  const canCreate =
+    accountType === "paper" &&
+    Number.isFinite(parsedBalance) &&
+    parsedBalance > 0 &&
+    !isSubmitting;
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    const previousOverflow = document.body.style.overflow;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    };
+
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [onClose, open]);
+
+  if (!open) {
+    return null;
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 overflow-y-auto bg-[#071019]/55 px-3 py-6 backdrop-blur-sm sm:px-6"
+      role="presentation"
+      onClick={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        className="mx-auto flex min-h-full w-full max-w-xl items-center"
+      >
+        <form
+          className="w-full overflow-hidden rounded-lg border border-line bg-panel shadow-xl"
+          onClick={(event) => event.stopPropagation()}
+          onSubmit={(event) => {
+            event.preventDefault();
+            onSubmit();
+          }}
+        >
+          <div className="flex items-start justify-between gap-4 border-b border-line px-4 py-4 sm:px-5">
+            <div>
+              <p className="text-xs font-medium uppercase text-[#526070]">Accounts</p>
+              <h2 id={titleId} className="mt-1 text-xl font-semibold">
+                Create account
+              </h2>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-line bg-white text-[#526070] transition hover:border-[#9eb1c1] hover:text-ink"
+              aria-label="Close create account"
+            >
+              <X className="h-4 w-4" aria-hidden="true" />
+            </button>
+          </div>
+
+          <div className="grid gap-4 px-4 py-4 sm:px-5">
+            <div className="grid gap-2 sm:grid-cols-2">
+              <AccountTypeOption
+                active={accountType === "paper"}
+                detail="Paper balance"
+                icon={WalletCards}
+                label="Paper account"
+                onClick={() => onAccountTypeChange("paper")}
+              />
+              <AccountTypeOption
+                active={accountType === "live"}
+                detail="Coming later"
+                icon={Activity}
+                label="Live account"
+                onClick={() => onAccountTypeChange("live")}
+              />
+            </div>
+
+            {accountType === "paper" ? (
+              <label className="grid gap-2">
+                <span className="text-sm font-semibold text-ink">Starting balance</span>
+                <div className="flex items-center rounded-md border border-line bg-white shadow-sm focus-within:border-[#9eb1c1]">
+                  <span className="border-r border-line px-3 text-sm font-semibold text-[#5b6770]">
+                    USD
+                  </span>
+                  <input
+                    min="0.01"
+                    step="0.01"
+                    type="number"
+                    value={balance}
+                    onChange={(event) => onBalanceChange(event.target.value)}
+                    className="h-10 min-w-0 flex-1 rounded-r-md px-3 text-sm font-medium text-ink outline-none"
+                  />
+                </div>
+                <span className="text-xs font-medium text-[#5b6770]">
+                  Starts disabled with {formatCurrency(parsedBalance || 0)}
+                </span>
+              </label>
+            ) : (
+              <div className="rounded-md border border-line bg-[#f7f9fb] px-3 py-3 text-sm font-medium text-[#5b6770]">
+                Live accounts are not available yet.
+              </div>
+            )}
+
+            {error ? (
+              <div className="rounded-md border border-[#f2aaa5] bg-[#fff2f0] px-3 py-2 text-sm font-medium text-danger">
+                {error}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="flex flex-wrap justify-end gap-2 border-t border-line bg-[#f7f9fb] px-4 py-3 sm:px-5">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={isSubmitting}
+              className="inline-flex min-h-9 items-center rounded-md border border-line bg-white px-3 py-1.5 text-sm font-semibold text-ink hover:bg-[#f7f9fb] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={!canCreate}
+              className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[#9ccfc0] bg-[#f2fbf7] px-3 py-1.5 text-sm font-semibold text-positive shadow-sm hover:bg-[#e5f6ee] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isSubmitting ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <Plus className="h-4 w-4" aria-hidden="true" />
+              )}
+              Create paper account
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function AccountTypeOption({
+  active,
+  detail,
+  icon: Icon,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  detail: string;
+  icon: LucideIcon;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex min-h-20 items-center gap-3 rounded-md border px-3 py-3 text-left transition ${
+        active
+          ? "border-[#9ccfc0] bg-[#f2fbf7] text-ink"
+          : "border-line bg-white text-[#344054] hover:bg-[#f7f9fb]"
+      }`}
+    >
+      <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-line bg-white">
+        <Icon className="h-4 w-4" aria-hidden="true" />
+      </span>
+      <span className="min-w-0">
+        <span className="block text-sm font-semibold">{label}</span>
+        <span className="mt-0.5 block text-xs font-medium text-[#5b6770]">{detail}</span>
+      </span>
+    </button>
   );
 }
 

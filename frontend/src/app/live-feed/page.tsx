@@ -1,6 +1,6 @@
 import { RadioTower } from "lucide-react";
 
-import { HeaderRefresh } from "@/components/HeaderRefresh";
+import { HeaderRefreshButton, HeaderUpdatedLabel } from "@/components/HeaderRefresh";
 import { LiveFeed } from "@/components/LiveFeed";
 import { PageTopPanel } from "@/components/PageTopPanel";
 import { StatusPill } from "@/components/StatusPill";
@@ -19,14 +19,12 @@ export default async function LiveFeedPage() {
         actions={
           <>
             {events.items[0]?.createdAt ? (
-              <HeaderRefresh
-                label={`Updated ${formatDate(events.items[0].createdAt)}`}
-                title="Refresh live feed data"
-              />
+              <HeaderUpdatedLabel label={`Updated ${formatDate(events.items[0].createdAt)}`} />
             ) : null}
             <StatusPill label={`${events.total} stored events`} tone="neutral" />
           </>
         }
+        refresh={<HeaderRefreshButton title="Refresh live feed data" />}
       />
 
       <LiveFeed initialEvents={events.items} />

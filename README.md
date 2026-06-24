@@ -224,6 +224,7 @@ API:
 - `GET /ops/health`
 - `GET /analytics`
 - `GET /paper-trading`
+- `POST /paper-trading/accounts`
 - `POST /paper-trading/accounts/{account_key}/start`
 - `POST /paper-trading/accounts/{account_key}/stop`
 - `POST /paper-trading/accounts/{account_key}/close-all-and-stop`
@@ -322,6 +323,7 @@ Paper copy simulation is available as the first execution layer.
 API:
 
 - `GET /paper-trading`
+- `POST /paper-trading/accounts`
 - `POST /paper-trading/accounts/{account_key}/start`
 - `POST /paper-trading/accounts/{account_key}/stop`
 - `POST /paper-trading/accounts/{account_key}/close-all-and-stop`
@@ -399,6 +401,8 @@ Sizing policy:
   defaults to that account on the next visit, otherwise the first synced account
   is selected. It shows account-specific metrics, charts, allocations, market
   exposure, source performance, open positions, closed trades, and recent fills.
+- The Accounts page can create dashboard-managed paper accounts with a selected
+  USD starting balance. New paper accounts start with trading disabled.
 - The Accounts page can start, stop, or close all and stop trading for the
   selected paper account. Starting enables new paper copy entries for that
   account. Stopping disables new entries and adds while still allowing source
@@ -418,9 +422,9 @@ Sizing policy:
   page with pagination controls.
 - Closed trade history rows show compact close time and duration when the
   original paper position open time is available.
-- Account rows include a reset action that restores that account's configured
-  starting balance, cash balance, equity, realized PnL, and fee counters while
-  leaving open positions, copied fills, and closed trade history intact.
+- Account rows include a reset action that restores that account's starting
+  balance, cash balance, equity, realized PnL, and fee counters while leaving
+  open positions, copied fills, and closed trade history intact.
 - Source rows show a primary monitor status and a source substatus. Primary
   status is `monitored` when the source has a realtime slot and `waiting` when
   it does not. Substatus is `trading`, `retained`, `waiting for trades`, or
