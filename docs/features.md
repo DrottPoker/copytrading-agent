@@ -727,6 +727,8 @@ What it does:
   account key is generated from the wallet route, so changing the display name
   cannot create a duplicate account for the same route. New accounts start
   disabled and immediately reconcile the exchange wallet snapshot.
+- The Accounts page skips scheduled auto-refresh while the create account
+  dialog is open, so partially entered account details are not discarded.
 - The Accounts page can start, stop, or close all and stop trading for the
   selected account. Start trading enables new entries again. Stop trading
   disables new entries and adds for that account, but still lets reduce and exit

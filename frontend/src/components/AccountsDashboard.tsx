@@ -20,7 +20,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useId, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import { getPublicApiBaseUrl } from "@/lib/config";
@@ -53,6 +53,9 @@ const SELECTED_ACCOUNT_STORAGE_KEY = "copyagent.accounts.selectedAccountKey";
 type Tone = "positive" | "warning" | "danger" | "neutral";
 type TradingAction = "start" | "stop" | "close-all-and-stop" | "delete";
 type CreateAccountType = "paper" | "live";
+type RefreshOptions = {
+  skipIfCreateDialogOpen?: boolean;
+};
 
 type AccountOption =
   | {
@@ -159,6 +162,7 @@ export function AccountsDashboard({
   const [actionError, setActionError] = useState<string | null>(null);
   const [lastRefreshAt, setLastRefreshAt] = useState<Date | null>(new Date());
   const [storedSelectionLoaded, setStoredSelectionLoaded] = useState(false);
+  const createAccountOpenRef = useRef(createAccountOpen);
 
   const accountOptions = useMemo(
     () => buildAccountOptions(summary, tradingAccounts),
@@ -200,7 +204,15 @@ export function AccountsDashboard({
     setSelectedAccountKey(accountOptions[0]?.key ?? "");
   }, [accountOptions, selectedAccountKey]);
 
-  const refresh = useCallback(async () => {
+  useEffect(() => {
+    createAccountOpenRef.current = createAccountOpen;
+  }, [createAccountOpen]);
+
+  const refresh = useCallback(async (options: RefreshOptions = {}) => {
+    if (options.skipIfCreateDialogOpen && createAccountOpenRef.current) {
+      return;
+    }
+
     setConnectionState("refreshing");
     try {
       const url = new URL(`${getPublicApiBaseUrl()}/paper-trading`, window.location.origin);
@@ -218,18 +230,24 @@ export function AccountsDashboard({
         paperResponse.json() as Promise<PaperTradingSummaryResponse>,
         tradingResponse.json() as Promise<TradingAccountsResponse>,
       ]);
+      if (options.skipIfCreateDialogOpen && createAccountOpenRef.current) {
+        setConnectionState("live");
+        return;
+      }
       setSummary(paperPayload);
       setTradingAccounts(tradingPayload);
       setLastRefreshAt(new Date());
       setConnectionState("live");
     } catch {
-      setConnectionState("offline");
+      if (!options.skipIfCreateDialogOpen || !createAccountOpenRef.current) {
+        setConnectionState("offline");
+      }
     }
   }, []);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
-      void refresh();
+      void refresh({ skipIfCreateDialogOpen: true });
     }, ACCOUNT_REFRESH_MS);
     return () => window.clearInterval(intervalId);
   }, [refresh]);

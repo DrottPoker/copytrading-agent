@@ -432,6 +432,8 @@ Sizing policy:
   route. New accounts start with trading disabled, and creation immediately
   reconciles the exchange wallet snapshot so equity, balance, and open live
   positions are visible before trading is started.
+- The Accounts page skips scheduled auto-refresh while the create account
+  dialog is open, so partially entered account details are not discarded.
 - The Accounts page can start, stop, or close all and stop trading for the
   selected account. Starting enables new copy entries for that account.
   Stopping disables new entries and adds while still allowing reduce and exit
