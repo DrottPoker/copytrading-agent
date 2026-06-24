@@ -60,6 +60,7 @@ export type PaperPosition = {
   priceUpdatedAt: string | null;
   feeUsd: string;
   openedAt: string;
+  entryExecutionDelayMs: number;
   createdAt: string;
   updatedAt: string;
 };

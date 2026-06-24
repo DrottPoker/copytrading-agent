@@ -614,6 +614,9 @@ Stored paper position notional and margin represent simulated entry exposure.
 Adds increase stored margin by the new fill margin, and partial closes reduce
 stored margin proportionally. Current notional is calculated separately from mark
 price for live unrealized PnL.
+Open position summaries expose entry execution delay as `created_at - opened_at`,
+where `opened_at` is the source fill timestamp and `created_at` is when the
+paper position row was created.
 When multiple source fills have the same timestamp, paper-copy processing orders
 close and flip-close fills first by descending source `startPosition` before
 falling back to the fill id. This keeps large split exits deterministic.

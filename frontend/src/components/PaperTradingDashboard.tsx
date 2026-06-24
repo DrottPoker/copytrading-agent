@@ -705,7 +705,7 @@ function PositionRow({
   const unrealizedPnl = numberValue(position.unrealizedPnlUsd ?? 0);
   return (
     <ListRow>
-      <div className="grid gap-2 xl:grid-cols-[1.15fr_0.7fr_0.85fr_0.85fr_0.85fr_auto] xl:items-center">
+      <div className="grid gap-2 xl:grid-cols-[1.15fr_0.7fr_0.8fr_0.8fr_0.75fr_0.8fr_auto] xl:items-center">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-1">
             <p className="font-semibold text-ink">{position.coin}</p>
@@ -725,6 +725,7 @@ function PositionRow({
         <RowStat label="Unrealized" value={formatCurrency(position.unrealizedPnlUsd)} detail={formatPercent(position.unrealizedPnlPct)} tone={unrealizedPnl >= 0 ? "positive" : "danger"} />
         <RowStat label="Margin" value={formatCurrency(position.marginUsd)} detail={`${formatCurrency(position.currentNotionalUsd ?? position.notionalUsd)} notional`} />
         <RowStat label="Entry" value={formatPrice(position.entryPrice)} detail={`size ${formatSize(position.size)}`} />
+        <RowStat label="Execution" value={formatExecutionMs(position.entryExecutionDelayMs)} detail="source to open" />
         <RowStat label="Mark" value={formatPrice(position.markPrice)} detail={formatDate(position.priceUpdatedAt)} />
         <button
           type="button"
@@ -1243,6 +1244,18 @@ function formatTradeDuration(value: number | null | undefined) {
   const days = Math.floor(hours / 24);
   const restHours = hours % 24;
   return restHours > 0 ? `duration ${days}d ${restHours}h` : `duration ${days}d`;
+}
+
+function formatExecutionMs(value: number | null | undefined) {
+  if (value === null || value === undefined) {
+    return "-";
+  }
+  if (value < 1000) {
+    return `${formatInteger(value)} ms`;
+  }
+  return `${new Intl.NumberFormat("sv-SE", { maximumFractionDigits: 2 }).format(
+    value / 1000,
+  )} s`;
 }
 
 function formatBps(value: string | number | null | undefined) {

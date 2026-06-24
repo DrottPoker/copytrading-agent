@@ -384,6 +384,8 @@ Sizing policy:
   is above `paper_copy_max_price_drift_bps`, which defaults to 50 bps.
 - Recent paper fill rows show source price, live mid, drift bps, and the
   per-fill drift limit when execution details are available.
+- Open paper position rows show entry execution delay in milliseconds, measured
+  from the source fill timestamp to when the paper position was created.
 - Same-timestamp source fills are processed with close and flip-close fills first
   by descending source `startPosition`, so split source exits reduce paper
   positions in a stable order.

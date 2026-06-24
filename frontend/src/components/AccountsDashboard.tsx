@@ -723,7 +723,7 @@ function PositionRows({ positions }: { positions: PaperPosition[] }) {
       {positions.map((position) => {
         const unrealized = decimal(position.unrealizedPnlUsd);
         return (
-          <div key={position.id} className="grid gap-3 py-3 xl:grid-cols-[1fr_120px_120px_120px]">
+          <div key={position.id} className="grid gap-3 py-3 xl:grid-cols-[1fr_120px_120px_120px_120px]">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-1">
                 <p className="font-mono text-sm font-semibold text-ink">{position.coin}</p>
@@ -745,6 +745,7 @@ function PositionRows({ positions }: { positions: PaperPosition[] }) {
             <RowMetric label="Unrealized" tone={unrealized >= 0 ? "positive" : "danger"} value={formatCurrency(unrealized)} />
             <RowMetric label="Notional" detail={`${formatLeverage(position.leverage)} leverage`} value={formatCurrency(position.currentNotionalUsd ?? position.notionalUsd)} />
             <RowMetric label="Entry" detail={`mark ${formatPrice(position.markPrice)}`} value={formatPrice(position.entryPrice)} />
+            <RowMetric label="Execution" detail="source to open" value={formatExecutionMs(position.entryExecutionDelayMs)} />
           </div>
         );
       })}
@@ -1333,6 +1334,18 @@ function formatDuration(value: number | null | undefined) {
   const days = Math.floor(hours / 24);
   const restHours = hours % 24;
   return restHours > 0 ? `duration ${days}d ${restHours}h` : `duration ${days}d`;
+}
+
+function formatExecutionMs(value: number | null | undefined) {
+  if (value === null || value === undefined) {
+    return "-";
+  }
+  if (value < 1000) {
+    return `${formatInteger(value)} ms`;
+  }
+  return `${new Intl.NumberFormat("sv-SE", { maximumFractionDigits: 2 }).format(
+    value / 1000,
+  )} s`;
 }
 
 function humanReason(value: string) {

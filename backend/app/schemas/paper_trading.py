@@ -67,6 +67,7 @@ class PaperPositionRead(CamelModel):
     price_updated_at: datetime | None = None
     fee_usd: Decimal
     opened_at: datetime
+    entry_execution_delay_ms: int
     created_at: datetime
     updated_at: datetime
 

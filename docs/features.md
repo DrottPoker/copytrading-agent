@@ -625,6 +625,8 @@ What it does:
   drift guard is 50 bps.
 - Shows source price, live mid, drift bps, and the per-fill drift limit in
   Recent Fills when execution details are available.
+- Shows entry execution delay on open paper position rows. The delay is measured
+  from the source fill timestamp to when the paper position was created.
 - Tracks open paper positions by account, source wallet, and coin.
 - Keeps stored paper position notional and margin as simulated entry exposure.
   Adds increase stored margin by the new fill margin, and partial closes reduce

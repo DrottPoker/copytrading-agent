@@ -671,6 +671,7 @@ def paper_position_read(
         "price_updated_at": price_updated_at,
         "fee_usd": position.fee_usd,
         "opened_at": position.opened_at,
+        "entry_execution_delay_ms": duration_between_ms(position.opened_at, position.created_at),
         "created_at": position.created_at,
         "updated_at": position.updated_at,
     }
