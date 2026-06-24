@@ -613,7 +613,8 @@ What it does:
   matching `dex:COIN` fills against `COIN` market keys when the exact key is not
   present.
 - Skips opens below `paper_copy_min_order_notional_usd` before any paper position
-  is created.
+  is created. The default is 10 USD to match Hyperliquid's live perp minimum
+  order value.
 - Applies the configured paper fee rate to opens and closes.
 - Starts `paper_copy_latency_ms` immediately while source account state is
   fetched in parallel, then prices paper execution. The default latency is

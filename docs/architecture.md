@@ -616,7 +616,8 @@ For isolated HIP-3 positions, Hyperliquid `marginSummary.accountValue` can equal
 isolated position equity and move with `totalMarginUsed`, so it should not be
 read as a stable wallet cash balance.
 Opens below the configured minimum notional are skipped before any paper position
-is created. Paper execution starts the configured latency while source account
+is created. The default is 10 USD to match Hyperliquid's live perp minimum
+order value. Paper execution starts the configured latency while source account
 state is fetched in parallel, then prices from live mids when enabled, applies
 adverse slippage, and skips fills whose observed drift exceeds the configured
 max drift limit. The default latency is 250 ms and the default max drift limit

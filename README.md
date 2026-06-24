@@ -375,7 +375,8 @@ Sizing policy:
   is unavailable for a coin, paper falls back to 1x.
 - A configurable fee rate is applied to paper fills.
 - Paper opens below `paper_copy_min_order_notional_usd` are skipped before any
-  position is created.
+  position is created. The default is 10 USD to match Hyperliquid's live perp
+  minimum order value.
 - Paper execution starts the configured simulated latency immediately while
   source account state is fetched in parallel. The default latency is 250 ms.
   It then reads live mids and applies adverse slippage to the execution price.
