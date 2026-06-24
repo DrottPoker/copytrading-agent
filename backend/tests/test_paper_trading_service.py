@@ -1,9 +1,11 @@
 from decimal import Decimal
 
 from app.core.config import Settings
-from app.services.paper_trading_service import (
+from app.services.trading_core import (
     adjust_open_sizing_to_min_order,
+    build_client_order_id,
     open_notional_skip_reason,
+    trade_is_buy,
 )
 
 
@@ -80,3 +82,31 @@ def test_adjust_open_sizing_to_min_order_respects_caps() -> None:
         )
         == "source_allocation_cap_reached"
     )
+
+
+def test_build_client_order_id_is_deterministic_hyperliquid_cloid() -> None:
+    first = build_client_order_id(
+        account_key="live_1",
+        source_wallet="0xABC",
+        source_fill_id="123",
+        sequence_index=0,
+        action="open",
+    )
+    second = build_client_order_id(
+        account_key="LIVE_1",
+        source_wallet="0xabc",
+        source_fill_id="123",
+        sequence_index=0,
+        action="open",
+    )
+
+    assert first == second
+    assert first.startswith("0x")
+    assert len(first) == 34
+
+
+def test_trade_is_buy_matches_side_and_reduce_only() -> None:
+    assert trade_is_buy(side="long", reduce_only=False) is True
+    assert trade_is_buy(side="long", reduce_only=True) is False
+    assert trade_is_buy(side="short", reduce_only=False) is False
+    assert trade_is_buy(side="short", reduce_only=True) is True

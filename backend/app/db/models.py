@@ -598,6 +598,178 @@ class JobLock(Base):
     )
 
 
+class TradingAccount(Base, TimestampMixin, UpdatedAtMixin):
+    __tablename__ = "trading_accounts"
+    __table_args__ = (
+        CheckConstraint("account_type in ('paper', 'live')", name="ck_trading_accounts_type"),
+        CheckConstraint(
+            "status in ('disabled', 'enabled', 'exit_only')",
+            name="ck_trading_accounts_status",
+        ),
+        CheckConstraint(
+            "network in ('mainnet', 'testnet')",
+            name="ck_trading_accounts_network",
+        ),
+        Index("ix_trading_accounts_type_status", "account_type", "status"),
+    )
+
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    account_type: Mapped[str] = mapped_column(Text, nullable=False)
+    label: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'disabled'"))
+    network: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'testnet'"))
+    wallet_address: Mapped[str | None] = mapped_column(Text)
+    vault_address: Mapped[str | None] = mapped_column(Text)
+    starting_balance_usd: Mapped[Decimal | None] = mapped_column(Numeric)
+    cash_balance_usd: Mapped[Decimal | None] = mapped_column(Numeric)
+    equity_usd: Mapped[Decimal | None] = mapped_column(Numeric)
+    realized_pnl_usd: Mapped[Decimal] = mapped_column(
+        Numeric, nullable=False, server_default=text("0")
+    )
+    fee_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False, server_default=text("0"))
+    last_reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    config_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+
+
+class TradingPosition(Base, TimestampMixin, UpdatedAtMixin):
+    __tablename__ = "trading_positions"
+    __table_args__ = (
+        CheckConstraint("account_type in ('paper', 'live')", name="ck_trading_positions_type"),
+        CheckConstraint("side in ('long', 'short')", name="ck_trading_positions_side"),
+        UniqueConstraint(
+            "account_key",
+            "source_wallet",
+            "coin",
+            name="ux_trading_positions_account_source_coin",
+        ),
+        Index("ix_trading_positions_account", "account_key"),
+        Index("ix_trading_positions_source", "source_wallet"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    account_key: Mapped[str] = mapped_column(Text, nullable=False)
+    account_type: Mapped[str] = mapped_column(Text, nullable=False)
+    source_wallet: Mapped[str] = mapped_column(Text, nullable=False)
+    coin: Mapped[str] = mapped_column(Text, nullable=False)
+    side: Mapped[str] = mapped_column(Text, nullable=False)
+    size: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    entry_price: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    notional_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    leverage: Mapped[Decimal] = mapped_column(Numeric, nullable=False, server_default=text("1"))
+    margin_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False, server_default=text("0"))
+    realized_pnl_usd: Mapped[Decimal] = mapped_column(
+        Numeric, nullable=False, server_default=text("0")
+    )
+    fee_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False, server_default=text("0"))
+    raw_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class TradingOrder(Base, TimestampMixin, UpdatedAtMixin):
+    __tablename__ = "trading_orders"
+    __table_args__ = (
+        CheckConstraint("account_type in ('paper', 'live')", name="ck_trading_orders_type"),
+        CheckConstraint(
+            "action in ('open', 'add', 'reduce', 'close', 'flip_close', 'flip_open')",
+            name="ck_trading_orders_action",
+        ),
+        CheckConstraint("side in ('long', 'short')", name="ck_trading_orders_side"),
+        CheckConstraint(
+            "status in ("
+            "'planned', 'submitted', 'accepted', 'rejected', 'partially_filled', "
+            "'filled', 'canceled', 'failed'"
+            ")",
+            name="ck_trading_orders_status",
+        ),
+        UniqueConstraint("client_order_id", name="ux_trading_orders_client_order_id"),
+        UniqueConstraint(
+            "account_key",
+            "source_wallet",
+            "source_fill_id",
+            "sequence_index",
+            name="ux_trading_orders_account_source_fill_sequence",
+        ),
+        Index("ix_trading_orders_account_created", "account_key", "created_at"),
+        Index("ix_trading_orders_source_created", "source_wallet", "created_at"),
+        Index("ix_trading_orders_status", "status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    account_key: Mapped[str] = mapped_column(Text, nullable=False)
+    account_type: Mapped[str] = mapped_column(Text, nullable=False)
+    source_wallet: Mapped[str] = mapped_column(Text, nullable=False)
+    source_fill_id: Mapped[str] = mapped_column(Text, nullable=False)
+    sequence_index: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    client_order_id: Mapped[str] = mapped_column(Text, nullable=False)
+    exchange_order_id: Mapped[str | None] = mapped_column(Text)
+    coin: Mapped[str] = mapped_column(Text, nullable=False)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    side: Mapped[str] = mapped_column(Text, nullable=False)
+    is_buy: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    reduce_only: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    order_type: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'ioc'"))
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'planned'"))
+    requested_size: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    requested_notional_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    margin_usd: Mapped[Decimal | None] = mapped_column(Numeric)
+    leverage: Mapped[Decimal | None] = mapped_column(Numeric)
+    limit_price: Mapped[Decimal | None] = mapped_column(Numeric)
+    average_fill_price: Mapped[Decimal | None] = mapped_column(Numeric)
+    filled_size: Mapped[Decimal] = mapped_column(Numeric, nullable=False, server_default=text("0"))
+    filled_notional_usd: Mapped[Decimal] = mapped_column(
+        Numeric, nullable=False, server_default=text("0")
+    )
+    fee_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False, server_default=text("0"))
+    error: Mapped[str | None] = mapped_column(Text)
+    raw_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    filled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class TradingFill(Base, TimestampMixin):
+    __tablename__ = "trading_fills"
+    __table_args__ = (
+        CheckConstraint("account_type in ('paper', 'live')", name="ck_trading_fills_type"),
+        CheckConstraint(
+            "action in ('open', 'add', 'reduce', 'close', 'flip_close', 'flip_open')",
+            name="ck_trading_fills_action",
+        ),
+        CheckConstraint("side in ('long', 'short')", name="ck_trading_fills_side"),
+        UniqueConstraint("exchange_fill_id", name="ux_trading_fills_exchange_fill_id"),
+        Index("ix_trading_fills_account_filled", "account_key", "filled_at"),
+        Index("ix_trading_fills_source_filled", "source_wallet", "filled_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    order_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    account_key: Mapped[str] = mapped_column(Text, nullable=False)
+    account_type: Mapped[str] = mapped_column(Text, nullable=False)
+    source_wallet: Mapped[str] = mapped_column(Text, nullable=False)
+    source_fill_id: Mapped[str | None] = mapped_column(Text)
+    sequence_index: Mapped[int | None] = mapped_column(Integer)
+    exchange_fill_id: Mapped[str | None] = mapped_column(Text)
+    coin: Mapped[str] = mapped_column(Text, nullable=False)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    side: Mapped[str] = mapped_column(Text, nullable=False)
+    price: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    size: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    notional_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    fee_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False, server_default=text("0"))
+    realized_pnl_usd: Mapped[Decimal] = mapped_column(
+        Numeric, nullable=False, server_default=text("0")
+    )
+    raw_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    filled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class PaperTradingAccount(Base, TimestampMixin, UpdatedAtMixin):
     __tablename__ = "paper_trading_accounts"
 

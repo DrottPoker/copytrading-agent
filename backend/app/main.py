@@ -15,6 +15,7 @@ from app.api.routes_operations import router as operations_router
 from app.api.routes_ops import router as ops_router
 from app.api.routes_paper_trading import router as paper_trading_router
 from app.api.routes_scores import router as scores_router
+from app.api.routes_trading import router as trading_router
 from app.api.routes_wallets import router as wallets_router
 from app.core.auth import DashboardAuthMiddleware
 from app.core.config import get_settings
@@ -91,6 +92,7 @@ app.include_router(operations_router)
 app.include_router(ops_router)
 app.include_router(scores_router)
 app.include_router(paper_trading_router)
+app.include_router(trading_router)
 
 
 @app.exception_handler(JobLockAlreadyHeldError)

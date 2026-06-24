@@ -38,6 +38,10 @@ Current schema includes:
 - `risk_events`
 - `settings`
 - `job_locks`
+- `trading_accounts`, generic paper and live account registry
+- `trading_positions`, live-ready account/source/coin position state
+- `trading_orders`, idempotent order intent and exchange status records
+- `trading_fills`, reconciled paper or live execution fills
 - `paper_trading_accounts`
 - `paper_copy_allocations`
 - `paper_positions`
@@ -223,6 +227,7 @@ API:
 - `GET /events` Server-Sent Events stream
 - `GET /ops/health`
 - `GET /analytics`
+- `GET /trading/accounts`
 - `GET /paper-trading`
 - `POST /paper-trading/accounts`
 - `POST /paper-trading/accounts/{account_key}/start`
@@ -596,12 +601,23 @@ Live trading is disabled in `backend/config/app.json` unless both flags are expl
 ```json
 {
   "live_trading_enabled": true,
-  "live_trading_acknowledged": true
+  "live_trading_acknowledged": true,
+  "live_trading_mainnet_acknowledged": false
 }
 ```
 
+Mainnet live trading also requires `live_trading_mainnet_acknowledged=true`.
+When live trading is enabled, startup requires `HYPERLIQUID_PRIVATE_KEY` and
+`HYPERLIQUID_WALLET_ADDRESS`. The private key is read from environment/config
+only and is not stored in Postgres.
+
 Do not enable live trading before paper trading proves edge after delay, fees,
 slippage, and exit behavior.
+
+The live-ready backend now has a shared `TradeIntent` core, generic trading
+account/order/fill tables, and a Hyperliquid SDK adapter for IOC reduce-only or
+entry orders. The trading worker still only executes paper copy until the live
+executor is wired into worker processing in a later phase.
 
 Current wallet scoring feeds paper copy allocation, but it is still a research
 ranking signal. Do not use it for live allocation until paper performance has

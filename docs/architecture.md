@@ -70,6 +70,7 @@ Current responsibilities:
 - Historical fill import.
 - Fill listing.
 - Paper trading summary.
+- Live-ready generic trading account registry.
 - Realtime event streaming through Server-Sent Events.
 - Redis and Postgres integration.
 - Dashboard Basic Auth for every route except `/health` and `/ready`.
@@ -653,6 +654,10 @@ wallet. That serializes realtime fill processing, recovery reconciliation, and
 manual closes for the same source exposure.
 Paper account rows are locked before copied fills are written, so different
 source wallets cannot concurrently update the same paper account balance.
+Successful paper fills also store a `raw_payload.tradeIntent` object from the
+shared trading core. That intent contains side, action, size, notional, limit
+price, reduce-only state, and deterministic client order id, so future live
+execution can consume the same planned order shape that paper simulation used.
 Allocation refresh also restores open paper-position sources into
 `watched_wallets` as neutral `pool` rows if an earlier prune removed the pool
 row.
@@ -701,6 +706,36 @@ Paper copy fill rows store source wallet sizing context in
 position snapshots store Hyperliquid `positionValue` in
 `wallet_positions.position_value_usd`, while historical fill notional remains in
 `wallet_fills.notional_usd`.
+
+### Live-Ready Trading Core
+
+The backend separates copied order planning from execution. The shared
+`trading_core` module produces `TradeIntent` objects and shared sizing helpers.
+Paper execution consumes those intents through the existing paper simulator.
+Live execution has a separate Hyperliquid adapter, but the trading worker does
+not call it yet.
+
+Generic live-ready tables sit beside the legacy paper tables:
+
+- `trading_accounts`: paper and live account registry with status, network,
+  wallet address, vault address, and account PnL fields.
+- `trading_positions`: account/source/coin position state for future live
+  reconciliation.
+- `trading_orders`: idempotent order records keyed by deterministic client order
+  id and source fill sequence.
+- `trading_fills`: reconciled exchange fill records.
+
+Existing paper accounts are mirrored into `trading_accounts`. A stopped paper
+account is mirrored as `exit_only` because copied exits and reductions are still
+allowed after new entries are disabled.
+
+The Hyperliquid live adapter uses the official Python SDK at execution time. It
+submits IOC limit orders with deterministic client order ids and supports
+reduce-only orders. It refuses to submit unless live trading is enabled,
+acknowledged, account status allows the requested intent, and the intent is a
+live intent for that account. Mainnet also requires
+`live_trading_mainnet_acknowledged=true`.
+
 The paper summary exposes closed trade history separately from raw recent fills.
 Closed trade rows are derived from paper `close` and `flip_close` executions,
 so dashboard trade history is not a skip or fill activity log. The summary also

@@ -82,6 +82,11 @@ openssl rand -hex 24
 
 For paper trading, Hyperliquid private key settings can remain empty. Do not
 enable live trading on the VPS until the paper trading system has been validated.
+Live trading requires `LIVE_TRADING_ENABLED=true`,
+`LIVE_TRADING_ACKNOWLEDGED=true`, a configured `HYPERLIQUID_PRIVATE_KEY`, and
+`HYPERLIQUID_WALLET_ADDRESS`. Mainnet also requires
+`LIVE_TRADING_MAINNET_ACKNOWLEDGED=true`. The key is read from environment or
+config only and is not stored in Postgres.
 
 Build the images:
 

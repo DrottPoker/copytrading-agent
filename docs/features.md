@@ -792,6 +792,47 @@ Current limitations:
   itself. Use the account reset action in the Trading page to apply
   configured starting capital to an existing paper account.
 
+### Live-Ready Trading Foundation
+
+API:
+
+- `GET /trading/accounts`
+
+What it does:
+
+- Adds generic trading tables for paper and live account state:
+  `trading_accounts`, `trading_positions`, `trading_orders`, and
+  `trading_fills`.
+- Mirrors existing paper accounts into `trading_accounts` so the Accounts page
+  can later move from paper-only data to mixed paper/live account data.
+- Uses account `status` values of `enabled`, `exit_only`, and `disabled`.
+  Disabled paper accounts are mirrored as `exit_only` because source exits and
+  reductions remain allowed after Stop trading.
+- Adds a shared `TradeIntent` contract for copied orders. Successful paper
+  fills now store the planned intent in `raw_payload.tradeIntent`.
+- Adds deterministic Hyperliquid client order ids from account, source wallet,
+  source fill id, sequence index, and action.
+- Adds a Hyperliquid live trading adapter that can submit IOC limit orders
+  through the official Python SDK when explicitly called by future live worker
+  code.
+- Blocks live order submission unless global live trading flags are enabled,
+  acknowledgements are present, the live account is enabled or exit-only, and
+  the intent is a live intent for that account.
+- Allows exit-only live accounts to submit reduce-only exits, but blocks new
+  entries and adds.
+- Keeps live execution disconnected from the trading worker for now. Realtime
+  copy processing still writes paper fills only.
+
+Config:
+
+- `live_trading_enabled`
+- `live_trading_acknowledged`
+- `live_trading_mainnet_acknowledged`
+- `live_trading_max_slippage_bps`
+- `live_trading_order_expires_after_ms`
+- `hyperliquid_private_key`
+- `hyperliquid_wallet_address`
+
 ### Live Feed
 
 Endpoints:

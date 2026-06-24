@@ -372,6 +372,9 @@ class Settings(BaseSettings):
     paper_trading_enabled: bool = True
     live_trading_enabled: bool = False
     live_trading_acknowledged: bool = False
+    live_trading_mainnet_acknowledged: bool = False
+    live_trading_max_slippage_bps: Decimal = Field(default=Decimal("50"), ge=0, le=10000)
+    live_trading_order_expires_after_ms: int = Field(default=10000, ge=0, le=60000)
     paper_copy_enabled: bool = True
     paper_copy_accounts: list[PaperTradingAccountConfig] = Field(
         default_factory=lambda: [
@@ -908,6 +911,19 @@ class Settings(BaseSettings):
                 "LIVE_TRADING_ENABLED requires LIVE_TRADING_ACKNOWLEDGED=true. "
                 "Live trading must never be enabled accidentally."
             )
+        if (
+            self.live_trading_enabled
+            and self.hyperliquid_network == "mainnet"
+            and not self.live_trading_mainnet_acknowledged
+        ):
+            raise ValueError(
+                "LIVE_TRADING_ENABLED on mainnet requires "
+                "LIVE_TRADING_MAINNET_ACKNOWLEDGED=true."
+            )
+        if self.live_trading_enabled and not self.hyperliquid_private_key:
+            raise ValueError("LIVE_TRADING_ENABLED requires HYPERLIQUID_PRIVATE_KEY.")
+        if self.live_trading_enabled and not self.hyperliquid_wallet_address:
+            raise ValueError("LIVE_TRADING_ENABLED requires HYPERLIQUID_WALLET_ADDRESS.")
         if (
             self.app_env == "production"
             and self.dashboard_auth_enabled

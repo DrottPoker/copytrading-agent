@@ -10,7 +10,7 @@ The current research focus is perp trading, so spot-only wallet history is filte
 out of imports and can be pruned from the pool.
 
 Live trading is intentionally disabled by default. The system is built to prove
-edge in monitor and paper mode before any live execution is added.
+edge in monitor and paper mode before any live execution is activated.
 
 ## What It Does Today
 
@@ -24,6 +24,8 @@ edge in monitor and paper mode before any live execution is added.
 - Publishes system and fill events through Redis.
 - Shows wallet data, imported fills, and live events in the dashboard.
 - Shows paper accounts, allocations, positions, and recent paper fills.
+- Provides a live-ready trading account and order foundation while keeping the
+  trading worker on paper execution only.
 - Protects backend routes with dashboard Basic Auth by default.
 - Coordinates long-running jobs with database-backed locks.
 - Discovers new candidates from Hyperliquid leaderboards, leaderboard

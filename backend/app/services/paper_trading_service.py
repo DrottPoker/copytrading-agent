@@ -27,6 +27,19 @@ from app.schemas.paper_trading import (
 )
 from app.schemas.wallet import normalize_wallet_address
 from app.services.market_price_cache import MarketPriceCache
+from app.services.trading_account_service import sync_paper_trading_account_mirrors
+from app.services.trading_core import (
+    MinOrderAdjustment as PaperMinOrderAdjustment,
+)
+from app.services.trading_core import (
+    TradeIntent,
+    adjust_open_sizing_to_min_order,
+    build_copy_trade_intent,
+    margin_from_notional,
+    open_notional_skip_reason,
+    safe_leverage,
+    trade_intent_payload,
+)
 from app.services.wallet_current_state_service import object_or_empty
 
 logger = logging.getLogger(__name__)
@@ -168,13 +181,6 @@ class PaperCopyBatchResult:
     accounts_updated: int = 0
     realized_pnl_usd: Decimal = ZERO
     fee_usd: Decimal = ZERO
-
-
-@dataclass(frozen=True)
-class PaperMinOrderAdjustment:
-    original_notional_usd: Decimal
-    adjusted_notional_usd: Decimal
-    min_order_notional_usd: Decimal
 
 
 async def get_paper_trading_summary(
@@ -2077,7 +2083,13 @@ async def sync_paper_trading_accounts(
             PaperTradingAccount.key.asc(),
         )
     )
-    return list(result.scalars().all())
+    accounts = list(result.scalars().all())
+    await sync_paper_trading_account_mirrors(
+        session,
+        accounts=accounts,
+        network=settings.hyperliquid_network,
+    )
+    return accounts
 
 
 async def create_paper_trading_account(
@@ -2114,6 +2126,11 @@ async def create_paper_trading_account(
     )
     session.add(account)
     await session.flush()
+    await sync_paper_trading_account_mirrors(
+        session,
+        accounts=[account],
+        network=settings.hyperliquid_network,
+    )
     return account
 
 
@@ -2215,6 +2232,11 @@ async def reset_paper_trading_account_balance(
     account.equity_usd = account.starting_balance_usd
     account.realized_pnl_usd = ZERO
     account.fee_usd = ZERO
+    await sync_paper_trading_account_mirrors(
+        session,
+        accounts=[account],
+        network=settings.hyperliquid_network,
+    )
     return account
 
 
@@ -2235,6 +2257,11 @@ async def set_paper_trading_account_enabled(
         raise PaperAccountControlNotFoundError("Paper account was not found.")
 
     account.enabled = enabled
+    await sync_paper_trading_account_mirrors(
+        session,
+        accounts=[account],
+        network=settings.hyperliquid_network,
+    )
     return account
 
 
@@ -3082,6 +3109,30 @@ async def apply_open_part(
     fee = notional_usd * settings.paper_copy_fee_rate
     filled_at = fill_datetime(fill)
     action = "add" if position is not None and part.action == "open" else part.action
+    trade_intent = build_copy_trade_intent(
+        account_key=account.key,
+        account_type="paper",
+        source_wallet=allocation.source_wallet,
+        source_fill_id=str(fill.get("externalFillId") or ""),
+        sequence_index=part.sequence_index,
+        coin=str(fill.get("coin") or ""),
+        action=action,
+        side=part.side,
+        size=paper_size,
+        notional_usd=notional_usd,
+        margin_usd=margin_usd,
+        leverage=source_leverage,
+        limit_price=price,
+        source_price=execution_context.source_price,
+        observed_price=execution_context.observed_price,
+        price_drift_bps=execution_context.price_drift_bps,
+        price_source=execution_context.price_source,
+        allocation_pct=allocation.allocation_pct,
+        allocation_usd=allocation_usd,
+        source_perp_equity_usd=source_perp_equity,
+        source_exposure_pct=source_exposure_pct,
+        created_at=filled_at,
+    )
 
     if position is None:
         position = PaperPosition(
@@ -3137,6 +3188,7 @@ async def apply_open_part(
             allocation_usd=allocation_usd,
             settings=settings,
             execution_context=execution_context,
+            trade_intent=trade_intent,
             min_order_adjustment=min_order_adjustment,
         )
     )
@@ -3250,6 +3302,9 @@ async def apply_close_part(
 
     notional_usd = close_size * price
     margin_usd = margin_from_notional(notional_usd, leverage)
+    source_exposure_pct = (
+        part.source_notional_usd / source_perp_equity if source_perp_equity > ZERO else None
+    )
     realized_pnl = realized_pnl_for_close(
         side=position.side,
         entry_price=position.entry_price,
@@ -3258,6 +3313,8 @@ async def apply_close_part(
     )
     fee = notional_usd * settings.paper_copy_fee_rate
     allocation_usd = max(account.equity_usd, ZERO) * allocation.allocation_pct
+    filled_at = fill_datetime(fill)
+    opened_at = position.opened_at
     position.realized_pnl_usd += realized_pnl
     position.fee_usd += fee
     previous_size = position.size
@@ -3279,6 +3336,30 @@ async def apply_close_part(
         )
         action = "reduce" if part.action == "close" else part.action
 
+    trade_intent = build_copy_trade_intent(
+        account_key=account.key,
+        account_type="paper",
+        source_wallet=allocation.source_wallet,
+        source_fill_id=str(fill.get("externalFillId") or ""),
+        sequence_index=part.sequence_index,
+        coin=str(fill.get("coin") or ""),
+        action=action,
+        side=part.side,
+        size=close_size,
+        notional_usd=notional_usd,
+        margin_usd=margin_usd,
+        leverage=leverage,
+        limit_price=price,
+        source_price=execution_context.source_price,
+        observed_price=execution_context.observed_price,
+        price_drift_bps=execution_context.price_drift_bps,
+        price_source=execution_context.price_source,
+        allocation_pct=allocation.allocation_pct,
+        allocation_usd=allocation_usd,
+        source_perp_equity_usd=source_perp_equity if source_perp_equity > ZERO else None,
+        source_exposure_pct=source_exposure_pct,
+        created_at=filled_at,
+    )
     apply_account_realized_result(account, pnl_usd=realized_pnl, fee_usd=fee)
     session.add(
         paper_copy_fill(
@@ -3298,7 +3379,8 @@ async def apply_close_part(
             allocation_usd=allocation_usd,
             settings=settings,
             execution_context=execution_context,
-            opened_at=position.opened_at,
+            trade_intent=trade_intent,
+            opened_at=opened_at,
         )
     )
     return PaperCopyBatchResult(
@@ -3433,6 +3515,7 @@ def paper_copy_fill(
     settings: Settings,
     skipped_reason: str | None = None,
     execution_context: PaperExecutionContext | None = None,
+    trade_intent: TradeIntent | None = None,
     min_order_adjustment: PaperMinOrderAdjustment | None = None,
     opened_at: datetime | None = None,
 ) -> PaperCopyFill:
@@ -3467,6 +3550,7 @@ def paper_copy_fill(
             fill=fill,
             settings=settings,
             execution_context=execution_context,
+            trade_intent=trade_intent,
             leverage=leverage,
             margin_usd=margin_usd,
             min_order_adjustment=min_order_adjustment,
@@ -3662,54 +3746,6 @@ def unique_strings(values: list[str]) -> list[str]:
     return unique
 
 
-def safe_leverage(value: Decimal | None) -> Decimal:
-    if value is None or value <= ZERO:
-        return Decimal("1")
-    return value
-
-
-def margin_from_notional(notional_usd: Decimal, leverage: Decimal) -> Decimal:
-    resolved_leverage = safe_leverage(leverage)
-    if notional_usd <= ZERO:
-        return ZERO
-    return notional_usd / resolved_leverage
-
-
-def adjust_open_sizing_to_min_order(
-    *,
-    target_notional: Decimal,
-    margin_usd: Decimal,
-    notional_usd: Decimal,
-    source_remaining: Decimal,
-    global_remaining: Decimal,
-    source_leverage: Decimal,
-    settings: Settings,
-) -> tuple[Decimal, Decimal, PaperMinOrderAdjustment | None]:
-    min_order_notional = settings.paper_copy_min_order_notional_usd
-    if notional_usd >= min_order_notional:
-        return margin_usd, notional_usd, None
-
-    min_order_margin = margin_from_notional(min_order_notional, source_leverage)
-    can_adjust_to_min_order = (
-        settings.paper_copy_adjust_small_orders_to_min_order
-        and target_notional < min_order_notional
-        and source_remaining >= min_order_margin
-        and global_remaining >= min_order_margin
-    )
-    if not can_adjust_to_min_order:
-        return margin_usd, notional_usd, None
-
-    return (
-        min_order_margin,
-        min_order_notional,
-        PaperMinOrderAdjustment(
-            original_notional_usd=notional_usd,
-            adjusted_notional_usd=min_order_notional,
-            min_order_notional_usd=min_order_notional,
-        ),
-    )
-
-
 def effective_leverage(
     *,
     notional_usd: Decimal,
@@ -3719,26 +3755,6 @@ def effective_leverage(
     if notional_usd <= ZERO or margin_usd <= ZERO:
         return safe_leverage(fallback)
     return safe_leverage(notional_usd / margin_usd)
-
-
-def open_notional_skip_reason(
-    *,
-    target_notional: Decimal,
-    source_remaining: Decimal,
-    global_remaining: Decimal,
-    min_order_notional: Decimal,
-) -> str:
-    source_cap_blocked = source_remaining < min_order_notional
-    total_cap_blocked = global_remaining < min_order_notional
-    if source_cap_blocked and total_cap_blocked:
-        return "source_and_total_allocation_caps_reached"
-    if source_cap_blocked:
-        return "source_allocation_cap_reached"
-    if total_cap_blocked:
-        return "total_allocation_cap_reached"
-    if target_notional < min_order_notional:
-        return "below_min_order_notional"
-    return "below_min_order_notional"
 
 
 def paper_trading_policy(settings: Settings) -> PaperTradingPolicyRead:
@@ -3960,6 +3976,7 @@ def paper_fill_payload(
     fill: dict[str, Any],
     settings: Settings,
     execution_context: PaperExecutionContext | None = None,
+    trade_intent: TradeIntent | None = None,
     leverage: Decimal | None = None,
     margin_usd: Decimal | None = None,
     min_order_adjustment: PaperMinOrderAdjustment | None = None,
@@ -3991,6 +4008,7 @@ def paper_fill_payload(
             "marketPriceCacheStaleSeconds": settings.paper_copy_market_price_cache_stale_seconds,
         },
         "execution": execution_payload(execution_context),
+        "tradeIntent": trade_intent_payload(trade_intent),
         "paper": {
             "leverage": str(leverage) if leverage is not None else None,
             "marginUsd": str(margin_usd) if margin_usd is not None else None,
