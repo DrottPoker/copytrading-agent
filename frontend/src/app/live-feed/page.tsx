@@ -1,24 +1,33 @@
 import { RadioTower } from "lucide-react";
 
+import { HeaderRefresh } from "@/components/HeaderRefresh";
 import { LiveFeed } from "@/components/LiveFeed";
+import { PageTopPanel } from "@/components/PageTopPanel";
 import { StatusPill } from "@/components/StatusPill";
 import { getLiveEvents } from "@/lib/api";
+import { formatDate } from "@/lib/format";
 
 export default async function LiveFeedPage() {
   const events = await getLiveEvents();
 
   return (
     <>
-      <header className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div>
-          <p className="text-sm font-medium text-[#5b6770]">Realtime monitor</p>
-          <h1 className="mt-1 flex items-center gap-2 text-2xl font-semibold tracking-normal">
-            <RadioTower className="h-6 w-6 text-[#5b6770]" aria-hidden="true" />
-            Live Feed
-          </h1>
-        </div>
-        <StatusPill label={`${events.total} stored events`} tone="neutral" />
-      </header>
+      <PageTopPanel
+        eyebrow="Realtime monitor"
+        icon={RadioTower}
+        title="Live Feed"
+        actions={
+          <>
+            {events.items[0]?.createdAt ? (
+              <HeaderRefresh
+                label={`Updated ${formatDate(events.items[0].createdAt)}`}
+                title="Refresh live feed data"
+              />
+            ) : null}
+            <StatusPill label={`${events.total} stored events`} tone="neutral" />
+          </>
+        }
+      />
 
       <LiveFeed initialEvents={events.items} />
     </>

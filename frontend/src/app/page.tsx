@@ -10,7 +10,9 @@ import {
 import Link from "next/link";
 import type { ReactNode } from "react";
 
+import { HeaderRefresh } from "@/components/HeaderRefresh";
 import { OperationStatusStrip } from "@/components/OperationStatusStrip";
+import { PageTopPanel } from "@/components/PageTopPanel";
 import { StatusPill } from "@/components/StatusPill";
 import {
   getDatabaseStats,
@@ -52,25 +54,29 @@ export default async function DashboardPage() {
 
   return (
     <>
-      <header className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div>
-          <p className="text-sm font-medium text-[#5b6770]">Control dashboard</p>
-          <h1 className="mt-1 text-2xl font-semibold tracking-normal text-ink">
-            Hyperliquid Copy Agent
-          </h1>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <StatusPill
-            label={apiReady ? "api online" : "api offline"}
-            tone={apiReady ? "positive" : "danger"}
-          />
-          <StatusPill label={health?.hyperliquidNetwork ?? "network unknown"} tone="neutral" />
-          <StatusPill
-            label={health?.liveTradingEnabled ? "live enabled" : "paper mode"}
-            tone={health?.liveTradingEnabled ? "danger" : "positive"}
-          />
-        </div>
-      </header>
+      <PageTopPanel
+        eyebrow="Control dashboard"
+        title="Hyperliquid Copy Agent"
+        actions={
+          <>
+            {databaseStats ? (
+              <HeaderRefresh
+                label={`Updated ${formatDate(databaseStats.measuredAt)}`}
+                title="Refresh dashboard data"
+              />
+            ) : null}
+            <StatusPill
+              label={apiReady ? "api online" : "api offline"}
+              tone={apiReady ? "positive" : "danger"}
+            />
+            <StatusPill label={health?.hyperliquidNetwork ?? "network unknown"} tone="neutral" />
+            <StatusPill
+              label={health?.liveTradingEnabled ? "live enabled" : "paper mode"}
+              tone={health?.liveTradingEnabled ? "danger" : "positive"}
+            />
+          </>
+        }
+      />
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <HeroMetric

@@ -8,7 +8,6 @@ import {
   LineChart,
   Loader2,
   Play,
-  RefreshCw,
   Square,
   Target,
   TrendingDown,
@@ -39,6 +38,8 @@ import type {
   PaperTradingSummaryResponse,
 } from "@/types/paper";
 
+import { HeaderRefresh } from "./HeaderRefresh";
+import { PageTopPanel } from "./PageTopPanel";
 import { StatusPill } from "./StatusPill";
 
 const ACCOUNT_REFRESH_MS = 4000;
@@ -229,98 +230,86 @@ export function AccountsDashboard({
 
   return (
     <>
-      <header className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div>
-          <p className="text-sm font-medium text-[#5b6770]">Paper account performance</p>
-          <h1 className="mt-1 flex items-center gap-2 text-2xl font-semibold tracking-normal text-ink">
-            <WalletCards className="h-6 w-6 text-[#5b6770]" aria-hidden="true" />
-            Accounts
-          </h1>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <select
-            aria-label="Select account"
-            className="h-9 min-w-[190px] rounded-md border border-line bg-white px-3 text-sm font-medium text-ink shadow-sm"
-            value={selectedAccountKey}
-            onChange={(event) => setSelectedAccountKey(event.target.value)}
-          >
-            {summary.accounts.map((account) => (
-              <option key={account.key} value={account.key}>
-                {account.label}
-              </option>
-            ))}
-          </select>
-          {accountView ? (
-            <StatusPill
-              label={accountView.account.enabled ? "trading enabled" : "trading stopped"}
-              tone={accountView.account.enabled ? "positive" : "warning"}
+      <PageTopPanel
+        eyebrow="Paper account performance"
+        icon={WalletCards}
+        title="Accounts"
+        actions={
+          <>
+            <HeaderRefresh
+              isRefreshing={connectionState === "refreshing"}
+              label={`Updated ${formatDate(summary.updatedAt)}`}
+              onRefresh={refresh}
+              title="Refresh account data"
             />
-          ) : null}
-          {accountView ? (
-            accountView.account.enabled ? (
-              <>
+            <select
+              aria-label="Select account"
+              className="h-9 min-w-[190px] rounded-md border border-line bg-white px-3 text-sm font-medium text-ink shadow-sm"
+              value={selectedAccountKey}
+              onChange={(event) => setSelectedAccountKey(event.target.value)}
+            >
+              {summary.accounts.map((account) => (
+                <option key={account.key} value={account.key}>
+                  {account.label}
+                </option>
+              ))}
+            </select>
+            {accountView ? (
+              <StatusPill
+                label={accountView.account.enabled ? "trading enabled" : "trading stopped"}
+                tone={accountView.account.enabled ? "positive" : "warning"}
+              />
+            ) : null}
+            {accountView ? (
+              accountView.account.enabled ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => void handleTradingAction("stop")}
+                    disabled={accountAction !== null}
+                    className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[#f0c36d] bg-[#fff8e8] px-3 py-1.5 text-sm font-semibold text-warning shadow-sm hover:bg-[#fff2d2] disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {accountAction === "stop" ? (
+                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                    ) : (
+                      <Square className="h-4 w-4" aria-hidden="true" />
+                    )}
+                    Stop trading
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleTradingAction("close-all-and-stop")}
+                    disabled={accountAction !== null}
+                    className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[#efb1aa] bg-[#fff5f3] px-3 py-1.5 text-sm font-semibold text-danger shadow-sm hover:bg-[#ffe9e6] disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {accountAction === "close-all-and-stop" ? (
+                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                    ) : (
+                      <XCircle className="h-4 w-4" aria-hidden="true" />
+                    )}
+                    Close all and stop trading
+                  </button>
+                </>
+              ) : (
                 <button
                   type="button"
-                  onClick={() => void handleTradingAction("stop")}
+                  onClick={() => void handleTradingAction("start")}
                   disabled={accountAction !== null}
-                  className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[#f0c36d] bg-[#fff8e8] px-3 py-1.5 text-sm font-semibold text-warning shadow-sm hover:bg-[#fff2d2] disabled:cursor-not-allowed disabled:opacity-60"
+                  className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[#9ccfc0] bg-[#f2fbf7] px-3 py-1.5 text-sm font-semibold text-positive shadow-sm hover:bg-[#e5f6ee] disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {accountAction === "stop" ? (
+                  {accountAction === "start" ? (
                     <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
                   ) : (
-                    <Square className="h-4 w-4" aria-hidden="true" />
+                    <Play className="h-4 w-4" aria-hidden="true" />
                   )}
-                  Stop trading
+                  Start trading
                 </button>
-                <button
-                  type="button"
-                  onClick={() => void handleTradingAction("close-all-and-stop")}
-                  disabled={accountAction !== null}
-                  className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[#efb1aa] bg-[#fff5f3] px-3 py-1.5 text-sm font-semibold text-danger shadow-sm hover:bg-[#ffe9e6] disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {accountAction === "close-all-and-stop" ? (
-                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                  ) : (
-                    <XCircle className="h-4 w-4" aria-hidden="true" />
-                  )}
-                  Close all and stop trading
-                </button>
-              </>
-            ) : (
-              <button
-                type="button"
-                onClick={() => void handleTradingAction("start")}
-                disabled={accountAction !== null}
-                className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[#9ccfc0] bg-[#f2fbf7] px-3 py-1.5 text-sm font-semibold text-positive shadow-sm hover:bg-[#e5f6ee] disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {accountAction === "start" ? (
-                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                ) : (
-                  <Play className="h-4 w-4" aria-hidden="true" />
-                )}
-                Start trading
-              </button>
-            )
-          ) : null}
-          <StatusPill
-            label={connectionState}
-            tone={connectionState === "offline" ? "danger" : "positive"}
-          />
-          <StatusPill label={`Updated ${formatDate(summary.updatedAt)}`} />
-          <button
-            type="button"
-            onClick={() => void refresh()}
-            title="Refresh account data"
-            className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-line bg-white text-[#344054] shadow-sm hover:bg-[#f7f9fb]"
-          >
-            <RefreshCw
-              className={`h-4 w-4 ${connectionState === "refreshing" ? "animate-spin" : ""}`}
-              aria-hidden="true"
-            />
-            <span className="sr-only">Refresh</span>
-          </button>
-        </div>
-      </header>
+              )
+            ) : null}
+            {connectionState === "offline" ? <StatusPill label="offline" tone="danger" /> : null}
+          </>
+        }
+      />
 
       {actionError ? (
         <div className="rounded-md border border-[#f2aaa5] bg-[#fff2f0] px-3 py-2 text-sm font-medium text-danger">

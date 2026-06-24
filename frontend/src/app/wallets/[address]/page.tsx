@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
+import { HeaderRefresh } from "@/components/HeaderRefresh";
 import { ImportFillsButton } from "@/components/ImportFillsButton";
+import { PageTopPanel } from "@/components/PageTopPanel";
 import { ScoreDetailsModal } from "@/components/ScoreDetailsModal";
 import { StatusPill } from "@/components/StatusPill";
 import {
@@ -49,55 +51,60 @@ export default async function WalletDetailPage({
 
   return (
     <>
-      <header className="rounded-lg border border-line bg-panel p-5 shadow-sm">
-        <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
-          <div className="min-w-0">
-            <Link href="/wallets" className="text-sm font-medium text-[#5b6770] hover:text-ink">
-              Wallet Pool
+      <PageTopPanel
+        eyebrow="Wallet Pool"
+        title={wallet.label || shortAddress(wallet.address)}
+        meta={
+          <>
+            <Link href="/wallets" className="text-xs font-medium text-[#5b6770] hover:text-ink">
+              Back to Wallet Pool
             </Link>
-            <h1 className="mt-1 min-w-0 max-w-full whitespace-normal break-words text-2xl font-semibold tracking-normal">
-              {wallet.label || shortAddress(wallet.address)}
-            </h1>
-            <p className="mt-2 break-all font-mono text-sm text-[#5b6770]">{wallet.address}</p>
-            <div className="mt-3 flex flex-wrap gap-1">
-              <StatusPill
-                label={wallet.enabled ? "enabled" : "disabled"}
-                tone={wallet.enabled ? "positive" : "warning"}
-              />
-              <StatusPill label={wallet.pollingTier} tone="neutral" />
-              <StatusPill label={`${stats?.fillCount ?? fills.total} fills`} tone="neutral" />
-              {wallet.copyEnabled ? <StatusPill label="copy enabled" tone="positive" /> : null}
-            </div>
-          </div>
+            <span className="break-all font-mono text-xs text-[#5b6770]">{wallet.address}</span>
+          </>
+        }
+        actions={
+          <>
+            <HeaderRefresh
+              label={`Updated ${formatDate(wallet.updatedAt)}`}
+              title="Refresh wallet data"
+            />
+            <StatusPill
+              label={wallet.enabled ? "enabled" : "disabled"}
+              tone={wallet.enabled ? "positive" : "warning"}
+            />
+            <StatusPill label={wallet.pollingTier} tone="neutral" />
+            <StatusPill label={`${stats?.fillCount ?? fills.total} fills`} tone="neutral" />
+            {wallet.copyEnabled ? <StatusPill label="copy enabled" tone="positive" /> : null}
+          </>
+        }
+      />
 
-          <div className="grid gap-3 sm:grid-cols-4 xl:min-w-[660px]">
-            <HeaderMetric
-              label="Pool rank"
-              value={wallet.poolRank ? `#${formatInteger(wallet.poolRank)}` : "Unranked"}
-            />
-            <HeaderMetric
-              label="Final score"
-              value={wallet.score ? formatScore(wallet.score.score) : "-"}
-              tone={scoreTone(wallet.score?.score)}
-            />
-            <HeaderMetric
-              label="Score PnL"
-              value={wallet.score ? formatCurrency(wallet.score.copyablePnlUsd) : "-"}
-              detail={
-                wallet.score
-                  ? `${formatInteger(scoreDetail?.windowDays ?? 60)}D score window`
-                  : undefined
-              }
-              tone={numberValue(wallet.score?.copyablePnlUsd ?? 0) >= 0 ? "positive" : "danger"}
-            />
-            <HeaderMetric
-              label="Source trades"
-              value={`${sourceTrades.summary.closedTradeCount}/${sourceTrades.summary.openTradeCount}`}
-              detail="closed / open"
-            />
-          </div>
-        </div>
-      </header>
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <HeaderMetric
+          label="Pool rank"
+          value={wallet.poolRank ? `#${formatInteger(wallet.poolRank)}` : "Unranked"}
+        />
+        <HeaderMetric
+          label="Final score"
+          value={wallet.score ? formatScore(wallet.score.score) : "-"}
+          tone={scoreTone(wallet.score?.score)}
+        />
+        <HeaderMetric
+          label="Score PnL"
+          value={wallet.score ? formatCurrency(wallet.score.copyablePnlUsd) : "-"}
+          detail={
+            wallet.score
+              ? `${formatInteger(scoreDetail?.windowDays ?? 60)}D score window`
+              : undefined
+          }
+          tone={numberValue(wallet.score?.copyablePnlUsd ?? 0) >= 0 ? "positive" : "danger"}
+        />
+        <HeaderMetric
+          label="Source trades"
+          value={`${sourceTrades.summary.closedTradeCount}/${sourceTrades.summary.openTradeCount}`}
+          detail="closed / open"
+        />
+      </section>
 
       <section className="grid gap-4 lg:grid-cols-[0.8fr_1.2fr]">
         <div className="rounded-lg border border-line bg-panel p-4 shadow-sm">

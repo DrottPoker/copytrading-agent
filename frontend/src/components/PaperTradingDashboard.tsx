@@ -36,6 +36,8 @@ import type {
   PaperWalletPerformance,
 } from "@/types/paper";
 
+import { HeaderRefresh } from "./HeaderRefresh";
+import { PageTopPanel } from "./PageTopPanel";
 import { StatusPill } from "./StatusPill";
 
 const PAPER_REFRESH_MS = 4000;
@@ -226,32 +228,27 @@ export function PaperTradingDashboard({
 
   return (
     <>
-      <header className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-        <div>
-          <p className="text-sm font-medium text-[#5b6770]">Paper execution cockpit</p>
-          <h1 className="mt-1 flex items-center gap-2 text-2xl font-semibold tracking-normal text-ink">
-            <BarChart3 className="h-6 w-6 text-[#5b6770]" aria-hidden="true" />
-            Paper Trading
-          </h1>
-        </div>
-        <div className="flex flex-wrap items-center gap-1">
-          <StatusPill
-            label={summary.policy.enabled ? "paper copy enabled" : "paper copy disabled"}
-            tone={summary.policy.enabled ? "positive" : "warning"}
-          />
-          <StatusPill label={marketStatusLabel(summary.marketDataStatus)} tone={marketStatusTone(summary.marketDataStatus)} />
-          <StatusPill label={connectionState} tone={connectionState === "offline" ? "danger" : "positive"} />
-          <button
-            type="button"
-            onClick={() => void refresh()}
-            title="Refresh paper trading data"
-            className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-line bg-white text-[#344054] shadow-sm hover:bg-[#f7f9fb]"
-          >
-            <RefreshCw className={`h-4 w-4 ${connectionState === "refreshing" ? "animate-spin" : ""}`} aria-hidden="true" />
-            <span className="sr-only">Refresh</span>
-          </button>
-        </div>
-      </header>
+      <PageTopPanel
+        eyebrow="Paper execution cockpit"
+        icon={BarChart3}
+        title="Paper Trading"
+        actions={
+          <>
+            <HeaderRefresh
+              isRefreshing={connectionState === "refreshing"}
+              label={`Updated ${formatDate(summary.updatedAt)}`}
+              onRefresh={refresh}
+              title="Refresh paper trading data"
+            />
+            <StatusPill
+              label={summary.policy.enabled ? "paper copy enabled" : "paper copy disabled"}
+              tone={summary.policy.enabled ? "positive" : "warning"}
+            />
+            <StatusPill label={marketStatusLabel(summary.marketDataStatus)} tone={marketStatusTone(summary.marketDataStatus)} />
+            {connectionState === "offline" ? <StatusPill label="offline" tone="danger" /> : null}
+          </>
+        }
+      />
 
       {actionError ? (
         <div className="rounded-md border border-[#f2aaa5] bg-[#fff2f0] px-3 py-2 text-sm font-medium text-danger">

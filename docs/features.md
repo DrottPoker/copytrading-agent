@@ -736,6 +736,10 @@ What it does:
   PnL shown as supporting context.
 - The dashboard separates total, realized, and unrealized PnL and uses compact
   responsive list rows instead of wide tables or large cards.
+- Dashboard pages use a shared top panel with page context on the left, while
+  refresh, updated state, page actions, filters, and status pills stay grouped
+  on the right. Auto-refresh uses icon motion instead of visible refreshing
+  text.
 - Wallet PnL history rows show `monitored` when the source has a realtime slot
   and `history` otherwise.
 - Wallet PnL history, closed trade history, and recent fills are paginated at

@@ -14,6 +14,8 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 
 import { DiscoveryPipelineActions } from "@/components/DiscoveryPipelineActions";
+import { HeaderRefresh } from "@/components/HeaderRefresh";
+import { PageTopPanel } from "@/components/PageTopPanel";
 import { StatusPill } from "@/components/StatusPill";
 import {
   getDiscoveryCandidates,
@@ -74,20 +76,24 @@ export default async function DiscoveryPage({ searchParams }: DiscoveryPageProps
 
   return (
     <>
-      <header className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div>
-          <p className="text-sm font-medium text-[#5b6770]">Trader sourcing</p>
-          <h1 className="mt-1 text-2xl font-semibold tracking-normal text-ink">Discovery</h1>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <StatusPill label={`${formatInteger(overviewCandidates.total)} candidates`} />
-          <StatusPill label={`${formatInteger(overview.accepted)} accepted`} tone="positive" />
-          <StatusPill
-            label={`${formatInteger(overview.promoted)} in pool`}
-            tone={overview.promoted > 0 ? "positive" : "neutral"}
-          />
-        </div>
-      </header>
+      <PageTopPanel
+        eyebrow="Trader sourcing"
+        title="Discovery"
+        actions={
+          <>
+            <HeaderRefresh
+              label={lastRun ? `Updated ${formatDate(lastRun.startedAt)}` : "No discovery run yet"}
+              title="Refresh discovery data"
+            />
+            <StatusPill label={`${formatInteger(overviewCandidates.total)} candidates`} />
+            <StatusPill label={`${formatInteger(overview.accepted)} accepted`} tone="positive" />
+            <StatusPill
+              label={`${formatInteger(overview.promoted)} in pool`}
+              tone={overview.promoted > 0 ? "positive" : "neutral"}
+            />
+          </>
+        }
+      />
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         <MetricTile

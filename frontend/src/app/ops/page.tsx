@@ -14,7 +14,8 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 
-import { AutoRefresh } from "@/components/AutoRefresh";
+import { HeaderRefresh } from "@/components/HeaderRefresh";
+import { PageTopPanel } from "@/components/PageTopPanel";
 import { StatusPill } from "@/components/StatusPill";
 import { getOpsHealth } from "@/lib/api";
 import {
@@ -153,23 +154,27 @@ export default async function OpsPage() {
 
 function PageTitle({ ops }: { ops?: OpsHealthResponse }) {
   return (
-    <header className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-      <div>
-        <p className="text-sm font-medium text-[#5b6770]">VPS health and monitoring</p>
-        <h1 className="mt-1 text-2xl font-semibold tracking-normal text-ink">Ops Health</h1>
-      </div>
-      {ops ? (
-        <div className="flex flex-wrap gap-2">
-          <AutoRefresh intervalMs={15000} />
-          <StatusPill label={ops.status} tone={toneForStatus(ops.status)} />
-          <StatusPill
-            label={ops.config.liveTradingEnabled ? "live enabled" : "paper mode"}
-            tone={ops.config.liveTradingEnabled ? "danger" : "positive"}
-          />
-          <StatusPill label={`v${ops.version}`} />
-        </div>
-      ) : null}
-    </header>
+    <PageTopPanel
+      eyebrow="VPS health and monitoring"
+      title="Ops Health"
+      actions={
+        ops ? (
+          <>
+            <HeaderRefresh
+              intervalMs={15000}
+              label={`Updated ${formatDate(ops.measuredAt)}`}
+              title="Refresh ops data"
+            />
+            <StatusPill label={ops.status} tone={toneForStatus(ops.status)} />
+            <StatusPill
+              label={ops.config.liveTradingEnabled ? "live enabled" : "paper mode"}
+              tone={ops.config.liveTradingEnabled ? "danger" : "positive"}
+            />
+            <StatusPill label={`v${ops.version}`} />
+          </>
+        ) : null
+      }
+    />
   );
 }
 

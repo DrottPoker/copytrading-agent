@@ -11,6 +11,8 @@ import {
 import Link from "next/link";
 
 import { AddWalletForm } from "@/components/AddWalletForm";
+import { HeaderRefresh } from "@/components/HeaderRefresh";
+import { PageTopPanel } from "@/components/PageTopPanel";
 import { ScoreWalletsButton } from "@/components/ScoreWalletsButton";
 import { StatusPill } from "@/components/StatusPill";
 import { WalletActions } from "@/components/WalletActions";
@@ -46,25 +48,31 @@ export default async function WalletsPage({ searchParams }: WalletsPageProps) {
 
   return (
     <>
-      <header className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div>
-          <p className="text-sm font-medium text-[#5b6770]">Research pool</p>
-          <h1 className="mt-1 text-2xl font-semibold tracking-normal">Wallet Pool</h1>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <ScoreWalletsButton />
-          <StatusPill
-            label={
-              isSearching
-                ? `${formatInteger(wallets.total)} matching`
-                : `${formatInteger(wallets.total)} monitored`
-            }
-            tone="neutral"
-          />
-          <StatusPill label={`${enabledCount} enabled`} tone="positive" />
-          <StatusPill label={`${eligibleCount} eligible`} tone="neutral" />
-        </div>
-      </header>
+      <PageTopPanel
+        eyebrow="Research pool"
+        title="Wallet Pool"
+        actions={
+          <>
+            {databaseStats ? (
+              <HeaderRefresh
+                label={`Updated ${formatDate(databaseStats.measuredAt)}`}
+                title="Refresh wallet pool data"
+              />
+            ) : null}
+            <ScoreWalletsButton />
+            <StatusPill
+              label={
+                isSearching
+                  ? `${formatInteger(wallets.total)} matching`
+                  : `${formatInteger(wallets.total)} monitored`
+              }
+              tone="neutral"
+            />
+            <StatusPill label={`${enabledCount} enabled`} tone="positive" />
+            <StatusPill label={`${eligibleCount} eligible`} tone="neutral" />
+          </>
+        }
+      />
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         <PoolMetric

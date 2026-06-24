@@ -15,7 +15,8 @@ import {
 import Link from "next/link";
 import type { ReactNode } from "react";
 
-import { AutoRefresh } from "@/components/AutoRefresh";
+import { HeaderRefresh } from "@/components/HeaderRefresh";
+import { PageTopPanel } from "@/components/PageTopPanel";
 import { StatusPill } from "@/components/StatusPill";
 import { getAnalytics } from "@/lib/api";
 import {
@@ -136,29 +137,30 @@ export default async function AnalyticsPage() {
 
 function PageHeader({ analytics }: { analytics?: AnalyticsResponse }) {
   return (
-    <header className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-      <div>
-        <p className="text-sm font-medium text-[#5b6770]">Pool, scoring, copy, and discovery analytics</p>
-        <h1 className="mt-1 flex items-center gap-2 text-2xl font-semibold tracking-normal text-ink">
-          <LineChart className="h-6 w-6 text-[#5b6770]" aria-hidden="true" />
-          Analytics
-        </h1>
-      </div>
-      {analytics ? (
-        <div className="flex flex-wrap gap-2">
-          <AutoRefresh intervalMs={30000} />
-          <StatusPill label={`Generated ${formatDate(analytics.freshness.generatedAt)}`} />
-          <StatusPill
-            label={`${formatInteger(analytics.overview.scoredWalletCount)} scored`}
-            tone="positive"
-          />
-          <StatusPill
-            label={`${formatPercent(analytics.overview.paperSkipRatePct)} paper skip rate`}
-            tone={numberValue(analytics.overview.paperSkipRatePct ?? 0) > 0.5 ? "warning" : "neutral"}
-          />
-        </div>
-      ) : null}
-    </header>
+    <PageTopPanel
+      eyebrow="Pool, scoring, copy, and discovery analytics"
+      icon={LineChart}
+      title="Analytics"
+      actions={
+        analytics ? (
+          <>
+            <HeaderRefresh
+              intervalMs={30000}
+              label={`Updated ${formatDate(analytics.freshness.generatedAt)}`}
+              title="Refresh analytics data"
+            />
+            <StatusPill
+              label={`${formatInteger(analytics.overview.scoredWalletCount)} scored`}
+              tone="positive"
+            />
+            <StatusPill
+              label={`${formatPercent(analytics.overview.paperSkipRatePct)} paper skip rate`}
+              tone={numberValue(analytics.overview.paperSkipRatePct ?? 0) > 0.5 ? "warning" : "neutral"}
+            />
+          </>
+        ) : null
+      }
+    />
   );
 }
 

@@ -16,6 +16,8 @@ import { DatabaseFillCompactPanel } from "@/components/DatabaseFillCompactPanel"
 import { DatabaseIgnoredFillCleanupPanel } from "@/components/DatabaseIgnoredFillCleanupPanel";
 import { DatabaseFillRetentionPanel } from "@/components/DatabaseFillRetentionPanel";
 import { DatabasePrunePanel } from "@/components/DatabasePrunePanel";
+import { HeaderRefresh } from "@/components/HeaderRefresh";
+import { PageTopPanel } from "@/components/PageTopPanel";
 import { StatusPill } from "@/components/StatusPill";
 import { getDatabaseStats, getHealth } from "@/lib/api";
 import {
@@ -53,7 +55,7 @@ export default async function DatabasePage() {
 
   return (
     <>
-      <PageTitle />
+      <PageTitle updatedAt={stats.measuredAt} />
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <MetricTile
@@ -258,14 +260,20 @@ export default async function DatabasePage() {
   );
 }
 
-function PageTitle() {
+function PageTitle({ updatedAt }: { updatedAt?: string }) {
   return (
-    <header className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-      <div>
-        <p className="text-sm font-medium text-[#5b6770]">Database monitor</p>
-        <h1 className="mt-1 text-2xl font-semibold tracking-normal text-ink">Database</h1>
-      </div>
-    </header>
+    <PageTopPanel
+      eyebrow="Database monitor"
+      title="Database"
+      actions={
+        updatedAt ? (
+          <HeaderRefresh
+            label={`Updated ${formatDate(updatedAt)}`}
+            title="Refresh database data"
+          />
+        ) : null
+      }
+    />
   );
 }
 
