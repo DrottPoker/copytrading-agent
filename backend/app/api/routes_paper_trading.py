@@ -1,7 +1,7 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import db_session
@@ -14,12 +14,14 @@ from app.schemas.paper_trading import (
 from app.services.paper_trading_service import (
     PaperAccountControlError,
     PaperAccountCreateError,
+    PaperAccountDeleteError,
     PaperAccountResetError,
     PaperPositionCloseError,
     close_paper_account_positions_manually,
     close_paper_position_manually,
     close_paper_source_positions_manually,
     create_paper_trading_account,
+    delete_paper_trading_account,
     get_paper_trading_summary,
     reset_paper_trading_account_balance,
     set_paper_trading_account_enabled,
@@ -63,6 +65,24 @@ async def create_paper_account_route(
 
     async with HyperliquidClient(settings) as client:
         return await get_paper_trading_summary(session, settings=settings, client=client)
+
+
+@router.delete("/accounts/{account_key}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_paper_account_route(
+    account_key: str,
+    session: Annotated[AsyncSession, Depends(db_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> None:
+    try:
+        await delete_paper_trading_account(
+            session,
+            account_key=account_key,
+            settings=settings,
+        )
+        await session.commit()
+    except PaperAccountDeleteError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 @router.post("/positions/{position_id}/close", response_model=PaperTradingSummaryResponse)

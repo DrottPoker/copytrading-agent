@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import db_session
@@ -22,6 +22,7 @@ from app.services.live_trading_service import (
     build_testnet_live_trade_intent,
     close_all_live_account_positions,
     create_live_trading_account,
+    delete_live_trading_account,
     load_live_account_for_update,
     reconcile_live_trading_account,
     set_live_trading_account_status,
@@ -57,8 +58,29 @@ async def create_live_account_route(
             status=payload.status,
             settings=settings,
         )
+        await reconcile_live_trading_account(
+            session,
+            account=account,
+            settings=settings,
+        )
         await session.commit()
         return account
+    except LiveTradingServiceError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.delete("/accounts/{account_key}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_live_account_route(
+    account_key: str,
+    session: Annotated[AsyncSession, Depends(db_session)],
+) -> None:
+    try:
+        await delete_live_trading_account(
+            session,
+            account_key=account_key,
+        )
+        await session.commit()
     except LiveTradingServiceError as exc:
         await session.rollback()
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
@@ -79,6 +101,12 @@ async def set_trading_account_status_route(
             account_key=account_key,
             status=payload.status,
         )
+        if account.status == "enabled":
+            await reconcile_live_trading_account(
+                session,
+                account=account,
+                settings=settings,
+            )
         await session.commit()
         return account
     except LiveTradingServiceError as exc:
@@ -98,6 +126,11 @@ async def start_live_account_route(
             session,
             account_key=account_key,
             status="enabled",
+        )
+        await reconcile_live_trading_account(
+            session,
+            account=account,
+            settings=settings,
         )
         await session.commit()
         return account

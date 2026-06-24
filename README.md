@@ -231,6 +231,7 @@ API:
 - `GET /trading/accounts`
 - `POST /trading/accounts/live`
 - `PATCH /trading/accounts/{account_key}/status`
+- `DELETE /trading/accounts/{account_key}`
 - `POST /trading/accounts/{account_key}/start`
 - `POST /trading/accounts/{account_key}/stop`
 - `POST /trading/accounts/{account_key}/close-all-and-stop`
@@ -238,6 +239,7 @@ API:
 - `POST /trading/testnet/orders`
 - `GET /paper-trading`
 - `POST /paper-trading/accounts`
+- `DELETE /paper-trading/accounts/{account_key}`
 - `POST /paper-trading/accounts/{account_key}/start`
 - `POST /paper-trading/accounts/{account_key}/stop`
 - `POST /paper-trading/accounts/{account_key}/close-all-and-stop`
@@ -427,13 +429,20 @@ Sizing policy:
   address, and optional vault address. Empty wallet address fields use and save
   `HYPERLIQUID_WALLET_ADDRESS`. Live account keys are generated internally from
   the wallet route, so the display name can change without creating a duplicate
-  route. New accounts start with trading disabled.
+  route. New accounts start with trading disabled, and creation immediately
+  reconciles the exchange wallet snapshot so equity, balance, and open live
+  positions are visible before trading is started.
 - The Accounts page can start, stop, or close all and stop trading for the
   selected account. Starting enables new copy entries for that account.
   Stopping disables new entries and adds while still allowing reduce and exit
   fills to manage existing positions. Close all and stop trading disables the
   account and closes all open positions for that account while other accounts
   keep trading.
+- The Accounts page can delete the selected account from local database state.
+  Paper delete removes local account positions, fills, allocations, and history.
+  Live delete removes local account, order, fill, and position snapshots only,
+  and requires live trading to be stopped first. It does not close exchange
+  positions.
 - The dashboard shows paper accounts, monitored sources, currently trading
   sources, open positions, wallet PnL history, closed trade history, and recent
   fills as compact lists without horizontal scrolling.

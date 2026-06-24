@@ -11,6 +11,7 @@ import {
   Plus,
   Square,
   Target,
+  Trash2,
   TrendingDown,
   TrendingUp,
   WalletCards,
@@ -50,7 +51,7 @@ const ACCOUNT_SUMMARY_LIMIT = 250;
 const SELECTED_ACCOUNT_STORAGE_KEY = "copyagent.accounts.selectedAccountKey";
 
 type Tone = "positive" | "warning" | "danger" | "neutral";
-type TradingAction = "start" | "stop" | "close-all-and-stop";
+type TradingAction = "start" | "stop" | "close-all-and-stop" | "delete";
 type CreateAccountType = "paper" | "live";
 
 type AccountOption =
@@ -303,6 +304,50 @@ export function AccountsDashboard({
     [accountAction, accountView, refresh, selectedAccount],
   );
 
+  const handleDeleteAccount = useCallback(async () => {
+    if (!selectedAccount || accountAction) {
+      return;
+    }
+    if (selectedAccount.accountType === "live" && selectedAccount.live.status === "enabled") {
+      setActionError("Stop live trading before deleting this account.");
+      return;
+    }
+
+    const warning =
+      selectedAccount.accountType === "live"
+        ? "This deletes local database state only. It does not close exchange positions."
+        : "This deletes local paper positions, fills, allocations, and account history.";
+    const confirmed = window.confirm(
+      `Delete ${selectedAccount.label}? ${warning} This cannot be undone.`,
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setAccountAction("delete");
+    setActionError(null);
+    try {
+      const basePath =
+        selectedAccount.accountType === "paper" ? "paper-trading/accounts" : "trading/accounts";
+      const response = await fetch(
+        `${getPublicApiBaseUrl()}/${basePath}/${encodeURIComponent(selectedAccount.key)}`,
+        { cache: "no-store", method: "DELETE" },
+      );
+      if (!response.ok) {
+        setActionError(await responseError(response, "Delete account failed"));
+        await refresh();
+        return;
+      }
+      setSelectedAccountKey("");
+      await refresh();
+    } catch {
+      setConnectionState("offline");
+      setActionError("Delete account failed.");
+    } finally {
+      setAccountAction(null);
+    }
+  }, [accountAction, refresh, selectedAccount]);
+
   const openCreateAccount = useCallback(() => {
     setCreateAccountOpen(true);
     setCreateAccountType("paper");
@@ -485,6 +530,31 @@ export function AccountsDashboard({
                   Start trading
                 </button>
               )
+            ) : null}
+            {selectedAccount ? (
+              <button
+                type="button"
+                onClick={() => void handleDeleteAccount()}
+                disabled={
+                  accountAction !== null ||
+                  (selectedAccount.accountType === "live" &&
+                    selectedAccount.live.status === "enabled")
+                }
+                title={
+                  selectedAccount.accountType === "live" &&
+                  selectedAccount.live.status === "enabled"
+                    ? "Stop live trading before deleting this account"
+                    : "Delete selected account"
+                }
+                className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[#efb1aa] bg-white px-3 py-1.5 text-sm font-semibold text-danger shadow-sm hover:bg-[#fff5f3] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {accountAction === "delete" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Trash2 className="h-4 w-4" aria-hidden="true" />
+                )}
+                Delete account
+              </button>
             ) : null}
             {connectionState === "offline" ? <StatusPill label="offline" tone="danger" /> : null}
           </>
@@ -1982,6 +2052,9 @@ function tradingActionLabel(action: TradingAction) {
   }
   if (action === "stop") {
     return "Stop trading";
+  }
+  if (action === "delete") {
+    return "Delete account";
   }
   return "Close all and stop trading";
 }

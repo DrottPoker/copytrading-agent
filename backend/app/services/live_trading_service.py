@@ -54,6 +54,10 @@ class LiveAccountCreateError(LiveTradingServiceError):
     detail = "Live account could not be created."
 
 
+class LiveAccountDeleteError(LiveTradingServiceError):
+    detail = "Live account could not be deleted."
+
+
 class LiveOrderSubmitError(LiveTradingServiceError):
     detail = "Live order could not be submitted."
 
@@ -168,6 +172,40 @@ async def create_live_trading_account(
     session.add(account)
     await session.flush()
     return account
+
+
+async def delete_live_trading_account(
+    session: AsyncSession,
+    *,
+    account_key: str,
+) -> None:
+    account = await load_live_account_for_update(session, account_key=account_key)
+    if account.status == "enabled":
+        raise LiveAccountDeleteError(
+            "Stop live trading before deleting this account.",
+            status_code=409,
+        )
+
+    await session.execute(
+        delete(TradingFill).where(
+            TradingFill.account_key == account.key,
+            TradingFill.account_type == "live",
+        )
+    )
+    await session.execute(
+        delete(TradingOrder).where(
+            TradingOrder.account_key == account.key,
+            TradingOrder.account_type == "live",
+        )
+    )
+    await session.execute(
+        delete(TradingPosition).where(
+            TradingPosition.account_key == account.key,
+            TradingPosition.account_type == "live",
+        )
+    )
+    await session.delete(account)
+    await session.flush()
 
 
 async def find_existing_live_account_for_route(

@@ -6,7 +6,7 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, literal, or_, select, text, tuple_, update
+from sqlalchemy import delete, func, literal, or_, select, text, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +16,10 @@ from app.db.models import (
     PaperCopyFill,
     PaperPosition,
     PaperTradingAccount,
+    TradingAccount,
+    TradingFill,
+    TradingOrder,
+    TradingPosition,
     WalletFill,
     WalletScore,
     WatchedWallet,
@@ -115,6 +119,18 @@ class PaperAccountCreateError(Exception):
 
 class PaperAccountCreateUnavailableError(PaperAccountCreateError):
     status_code = 501
+
+
+class PaperAccountDeleteError(Exception):
+    status_code = 400
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
+
+
+class PaperAccountDeleteNotFoundError(PaperAccountDeleteError):
+    status_code = 404
 
 
 @dataclass(frozen=True)
@@ -2132,6 +2148,54 @@ async def create_paper_trading_account(
         network=settings.hyperliquid_network,
     )
     return account
+
+
+async def delete_paper_trading_account(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    settings: Settings,
+) -> None:
+    await sync_paper_trading_accounts(session, settings=settings)
+    account = await session.scalar(
+        select(PaperTradingAccount)
+        .where(PaperTradingAccount.key == account_key)
+        .with_for_update()
+    )
+    if account is None:
+        raise PaperAccountDeleteNotFoundError("Paper account was not found.")
+
+    await session.execute(
+        delete(PaperCopyAllocation).where(PaperCopyAllocation.account_key == account_key)
+    )
+    await session.execute(delete(PaperPosition).where(PaperPosition.account_key == account_key))
+    await session.execute(delete(PaperCopyFill).where(PaperCopyFill.account_key == account_key))
+    await session.execute(
+        delete(TradingFill).where(
+            TradingFill.account_key == account_key,
+            TradingFill.account_type == "paper",
+        )
+    )
+    await session.execute(
+        delete(TradingOrder).where(
+            TradingOrder.account_key == account_key,
+            TradingOrder.account_type == "paper",
+        )
+    )
+    await session.execute(
+        delete(TradingPosition).where(
+            TradingPosition.account_key == account_key,
+            TradingPosition.account_type == "paper",
+        )
+    )
+    await session.execute(
+        delete(TradingAccount).where(
+            TradingAccount.key == account_key,
+            TradingAccount.account_type == "paper",
+        )
+    )
+    await session.delete(account)
+    await session.flush()
 
 
 async def next_paper_account_identity(

@@ -726,13 +726,18 @@ What it does:
   address fields use and save `HYPERLIQUID_WALLET_ADDRESS`. The internal live
   account key is generated from the wallet route, so changing the display name
   cannot create a duplicate account for the same route. New accounts start
-  disabled.
+  disabled and immediately reconcile the exchange wallet snapshot.
 - The Accounts page can start, stop, or close all and stop trading for the
   selected account. Start trading enables new entries again. Stop trading
   disables new entries and adds for that account, but still lets reduce and exit
   fills manage existing positions. Close all and stop trading disables the
   account and closes every open position for that account. Other accounts are
   not disabled or closed.
+- The Accounts page can delete the selected account from local database state.
+  Paper account deletion removes local positions, fills, allocations, and
+  account history. Live account deletion removes local account, order, fill, and
+  position snapshots only, requires live trading to be stopped first, and does
+  not close exchange positions.
 - The summary API attaches wallet labels to paper allocation, position,
   wallet-history, closed-trade, and recent-fill rows. The UI shows the label
   when available and falls back to the short address.
