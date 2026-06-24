@@ -628,56 +628,63 @@ function SourceRow({
       : source.sourceStatus === "retained"
         ? "warning"
         : "neutral";
+  const sourceMeta = `${formatPoolRank(source.poolRank)}, ${formatScore(source.score)} score, ${formatInteger(
+    source.accountCount,
+  )} accounts`;
+  const sourceDetail = sourceStatusDetail(source);
   return (
     <ListRow>
-      <div className="grid gap-2 lg:grid-cols-[1.05fr_0.7fr_0.7fr_1fr_0.85fr_auto] lg:items-center">
+      <div className="grid gap-2 lg:grid-cols-[minmax(180px,0.85fr)_minmax(280px,1.4fr)_auto] lg:items-center">
         <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-1">
+          <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5">
             <Link
               href={`/wallets/${source.sourceWallet}`}
-              className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold text-ink hover:text-[#297c73]"
+              className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold leading-5 text-ink hover:text-[#297c73]"
             >
               {sourceDisplayName(source.sourceLabel, source.sourceWallet)}
             </Link>
-            <StatusPill label={source.monitorStatus} tone={monitorTone} />
-            <StatusPill label={formatSourceStatus(source.sourceStatus)} tone={sourceTone} />
+            <CompactSourcePill label={source.monitorStatus} tone={monitorTone} />
+            <CompactSourcePill label={formatSourceStatus(source.sourceStatus)} tone={sourceTone} />
           </div>
-          <p className="mt-1 truncate font-mono text-xs text-[#5b6770]">
-            {shortAddress(source.sourceWallet)}
+          <p className="mt-0.5 truncate font-mono text-[11px] leading-4 text-[#5b6770]">
+            {shortAddress(source.sourceWallet)} | {sourceMeta}
           </p>
-          <p className="mt-1 text-xs text-[#5b6770]">
-            {formatPoolRank(source.poolRank)}, {formatScore(source.score)} score, {formatInteger(source.accountCount)} accounts, {sourceStatusDetail(source)}
-          </p>
+          {sourceDetail !== "active slot" ? (
+            <p className="mt-0.5 text-[11px] leading-4 text-[#5b6770]">{sourceDetail}</p>
+          ) : null}
         </div>
-        <RowStat label="Realized" value={formatCurrency(source.realizedPnlUsd)} tone={numberValue(source.realizedPnlUsd) >= 0 ? "positive" : "danger"} />
-        <RowStat label="Unrealized" value={formatCurrency(source.unrealizedPnlUsd)} detail={`Total ${formatCurrency(source.totalPnlUsd)}`} tone={numberValue(source.unrealizedPnlUsd) >= 0 ? "positive" : "danger"} />
-        <div className="min-w-0">
-          <div className="flex items-center justify-between gap-2 text-xs">
-            <span className="font-medium uppercase text-[#5b6770]">Pocket</span>
-            <span className="font-mono text-ink">{formatPercent(source.pocketUsedPct)}</span>
-          </div>
-          <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-[#e8edf2]">
-            <div
-              className={`h-full ${usedPct >= 0.9 ? "bg-danger" : usedPct >= 0.7 ? "bg-warning" : "bg-positive"}`}
-              style={{ width: `${Math.min(usedPct * 100, 100)}%` }}
-            />
-          </div>
-          <p className="mt-1 truncate text-xs text-[#5b6770]">
-            {formatCurrency(source.openMarginUsd)} used, {formatCurrency(source.remainingAllocationUsd)} free
-          </p>
+        <div className="grid min-w-0 grid-cols-2 gap-x-3 gap-y-1 xl:grid-cols-4">
+          <CompactSourceStat
+            label="Realized"
+            value={formatCurrency(source.realizedPnlUsd)}
+            tone={numberValue(source.realizedPnlUsd) >= 0 ? "positive" : "danger"}
+          />
+          <CompactSourceStat
+            label="Unrealized"
+            value={formatCurrency(source.unrealizedPnlUsd)}
+            detail={`Total ${formatCurrency(source.totalPnlUsd)}`}
+            tone={numberValue(source.unrealizedPnlUsd) >= 0 ? "positive" : "danger"}
+          />
+          <SourcePocketStat
+            remaining={formatCurrency(source.remainingAllocationUsd)}
+            tone={usedPct >= 0.9 ? "danger" : usedPct >= 0.7 ? "warning" : "positive"}
+            used={formatCurrency(source.openMarginUsd)}
+            usedPct={usedPct}
+            value={formatPercent(source.pocketUsedPct)}
+          />
+          <CompactSourceStat
+            label="Allocation"
+            value={formatCurrency(source.allocationUsd)}
+            detail={`${formatPercent(source.allocationPct)} pocket, ${formatInteger(source.openPositionCount)} open`}
+          />
         </div>
-        <RowStat
-          label="Allocation"
-          value={formatCurrency(source.allocationUsd)}
-          detail={`${formatPercent(source.allocationPct)} pocket, ${formatInteger(source.openPositionCount)} open`}
-        />
         {source.openPositionCount > 0 ? (
           <button
             type="button"
             onClick={() => onCloseSource(source)}
             disabled={isClosing}
             title="Close all open paper positions for this source"
-            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-[#f2aaa5] bg-[#fff2f0] px-2 text-xs font-semibold text-danger shadow-sm hover:bg-[#ffe6e2] disabled:cursor-not-allowed disabled:border-line disabled:bg-[#f7f9fb] disabled:text-[#98a2b3]"
+            className="inline-flex min-h-7 items-center justify-center gap-1.5 rounded-md border border-[#f2aaa5] bg-[#fff2f0] px-2 py-1 text-xs font-semibold text-danger shadow-sm hover:bg-[#ffe6e2] disabled:cursor-not-allowed disabled:border-line disabled:bg-[#f7f9fb] disabled:text-[#98a2b3]"
           >
             {isClosing ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
@@ -689,6 +696,87 @@ function SourceRow({
         ) : null}
       </div>
     </ListRow>
+  );
+}
+
+const compactSourcePillClasses: Record<Tone, string> = {
+  positive: "border-[#a7d8c4] bg-[#eefaf5] text-positive",
+  warning: "border-[#f0c36d] bg-[#fff8e8] text-warning",
+  danger: "border-[#f2aaa5] bg-[#fff2f0] text-danger",
+  neutral: "border-line bg-[#f7f9fb] text-[#344054]",
+};
+
+function CompactSourcePill({ label, tone = "neutral" }: { label: string; tone?: Tone }) {
+  return (
+    <span
+      className={`inline-flex h-5 max-w-full items-center whitespace-nowrap rounded-md border px-1.5 text-[11px] font-medium leading-none ${
+        compactSourcePillClasses[tone]
+      }`}
+    >
+      {label}
+    </span>
+  );
+}
+
+function CompactSourceStat({
+  detail,
+  label,
+  tone = "neutral",
+  value,
+}: {
+  detail?: string;
+  label: string;
+  tone?: Tone;
+  value: string;
+}) {
+  const valueClass =
+    tone === "positive" ? "text-positive" : tone === "danger" ? "text-danger" : "text-ink";
+  return (
+    <div className="min-w-0">
+      <div className="flex items-baseline justify-between gap-1">
+        <p className="truncate text-[10px] font-medium uppercase leading-4 text-[#5b6770]">
+          {label}
+        </p>
+        <p className={`truncate font-mono text-xs font-semibold leading-4 ${valueClass}`}>{value}</p>
+      </div>
+      {detail ? <p className="truncate text-[11px] leading-4 text-[#5b6770]">{detail}</p> : null}
+    </div>
+  );
+}
+
+function SourcePocketStat({
+  remaining,
+  tone,
+  used,
+  usedPct,
+  value,
+}: {
+  remaining: string;
+  tone: "positive" | "warning" | "danger";
+  used: string;
+  usedPct: number;
+  value: string;
+}) {
+  const barClass =
+    tone === "danger" ? "bg-danger" : tone === "warning" ? "bg-warning" : "bg-positive";
+  return (
+    <div className="min-w-0">
+      <div className="flex items-baseline justify-between gap-1">
+        <p className="truncate text-[10px] font-medium uppercase leading-4 text-[#5b6770]">
+          Pocket
+        </p>
+        <p className="truncate font-mono text-xs font-semibold leading-4 text-ink">{value}</p>
+      </div>
+      <div className="h-1.5 overflow-hidden rounded-full bg-[#e8edf2]">
+        <div
+          className={`h-full ${barClass}`}
+          style={{ width: `${Math.min(usedPct * 100, 100)}%` }}
+        />
+      </div>
+      <p className="truncate text-[11px] leading-4 text-[#5b6770]">
+        {used} used, {remaining} free
+      </p>
+    </div>
   );
 }
 
