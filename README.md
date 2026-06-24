@@ -377,7 +377,9 @@ Sizing policy:
 - If live mids are enabled and default `allMids` lacks a `dex:COIN` market,
   paper copy falls back to dex-specific `allMids`, then `metaAndAssetCtxs`.
 - Paper fills are skipped when live mid price drift from the source fill price
-  is above the configured drift limit.
+  is above `paper_copy_max_price_drift_bps`, which defaults to 50 bps.
+- Recent paper fill rows show source price, live mid, drift bps, and the
+  per-fill drift limit when execution details are available.
 - Same-timestamp source fills are processed with close and flip-close fills first
   by descending source `startPosition`, so split source exits reduce paper
   positions in a stable order.

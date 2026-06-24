@@ -617,7 +617,10 @@ What it does:
   market key.
 - Applies adverse slippage from `paper_copy_slippage_bps` to the observed price.
 - Skips paper fills when the observed price has moved more than
-  `paper_copy_max_price_drift_bps` from the source fill price.
+  `paper_copy_max_price_drift_bps` from the source fill price. The default
+  drift guard is 50 bps.
+- Shows source price, live mid, drift bps, and the per-fill drift limit in
+  Recent Fills when execution details are available.
 - Tracks open paper positions by account, source wallet, and coin.
 - Keeps stored paper position notional and margin as simulated entry exposure.
   Adds increase stored margin by the new fill margin, and partial closes reduce
@@ -739,7 +742,7 @@ Config:
 - `paper_copy_fee_rate`
 - `paper_copy_slippage_bps`
 - `paper_copy_latency_ms`
-- `paper_copy_max_price_drift_bps`
+- `paper_copy_max_price_drift_bps`, defaults to 50 bps
 - `paper_copy_use_live_mid_price`
 - `paper_copy_recovery_interval_seconds`
 

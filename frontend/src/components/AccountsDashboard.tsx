@@ -825,7 +825,7 @@ function FillRows({ fills }: { fills: PaperCopyFill[] }) {
             </div>
             <RowMetric label="Realized" tone={realizedPnl >= 0 ? "positive" : "danger"} value={formatCurrency(realizedPnl)} />
             <RowMetric label="Notional" value={formatCurrency(fill.notionalUsd)} />
-            <RowMetric label="Price" detail={`fee ${formatCurrency(fill.feeUsd)}`} value={formatPrice(fill.price)} />
+            <RowMetric label="Price" detail={fillPriceDetail(fill)} value={formatPrice(fill.price)} />
           </div>
         );
       })}
@@ -1281,6 +1281,28 @@ function formatLeverage(value: string | number | null | undefined) {
   return `${new Intl.NumberFormat("sv-SE", { maximumFractionDigits: 2 }).format(
     decimal(value),
   )}x`;
+}
+
+function formatBps(value: string | number | null | undefined) {
+  if (value === null || value === undefined) {
+    return "-";
+  }
+  return `${new Intl.NumberFormat("sv-SE", { maximumFractionDigits: 2 }).format(
+    decimal(value),
+  )} bps`;
+}
+
+function fillPriceDetail(fill: PaperCopyFill) {
+  if (fill.skippedReason && fill.priceDriftBps) {
+    const maxDrift = fill.maxPriceDriftBps ? ` | max ${formatBps(fill.maxPriceDriftBps)}` : "";
+    return `drift ${formatBps(fill.priceDriftBps)}${maxDrift} | live ${formatPrice(fill.observedPrice)}`;
+  }
+  const parts = [
+    fill.sourcePrice ? `src ${formatPrice(fill.sourcePrice)}` : null,
+    fill.observedPrice ? `live ${formatPrice(fill.observedPrice)}` : null,
+    `fee ${formatCurrency(fill.feeUsd)}`,
+  ].filter(Boolean);
+  return parts.join(" | ");
 }
 
 function formatShortDateTime(value: string | null | undefined) {

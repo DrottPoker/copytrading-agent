@@ -830,15 +830,33 @@ function PaperFillRow({ fill }: { fill: PaperCopyFill }) {
         <RowStat label="Market" value={fill.coin} detail={formatDate(fill.filledAt)} />
         <RowStat label="Notional" value={formatCurrency(fill.notionalUsd)} detail={`${formatCurrency(fill.marginUsd)} margin`} />
         <RowStat label="Realized" value={formatCurrency(fill.realizedPnlUsd)} tone={realizedPnl >= 0 ? "positive" : "danger"} />
-        <RowStat label="Price" value={formatPrice(fill.price)} detail={`size ${formatSize(fill.size)}`} />
+        <RowStat label="Price" value={formatPrice(fill.price)} detail={fillPriceDetail(fill)} />
         <RowStat
           label={fill.skippedReason ? "Skip reason" : "Fee"}
           value={fill.skippedReason ? reasonLabel(fill.skippedReason) : formatCurrency(fill.feeUsd)}
-          detail={formatLeverage(fill.leverage)}
+          detail={fill.skippedReason ? fillSkipDetail(fill) : formatLeverage(fill.leverage)}
         />
       </div>
     </ListRow>
   );
+}
+
+function fillPriceDetail(fill: PaperCopyFill) {
+  const parts = [
+    fill.sourcePrice ? `src ${formatPrice(fill.sourcePrice)}` : null,
+    fill.observedPrice ? `live ${formatPrice(fill.observedPrice)}` : null,
+    fill.size ? `size ${formatSize(fill.size)}` : null,
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(" | ") : "size -";
+}
+
+function fillSkipDetail(fill: PaperCopyFill) {
+  const parts = [
+    fill.priceDriftBps ? `drift ${formatBps(fill.priceDriftBps)}` : null,
+    fill.maxPriceDriftBps ? `max ${formatBps(fill.maxPriceDriftBps)}` : null,
+    formatLeverage(fill.leverage),
+  ].filter((item) => item && item !== "-");
+  return parts.length > 0 ? parts.join(" | ") : "-";
 }
 
 function ListRow({ children }: { children: ReactNode }) {

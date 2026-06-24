@@ -1113,6 +1113,11 @@ def paper_copy_fill_reads(
             "fee_usd": fill.fee_usd,
             "realized_pnl_usd": fill.realized_pnl_usd,
             "source_price": fill.source_price,
+            "observed_price": paper_execution_decimal(fill, "observedPrice"),
+            "execution_price": paper_execution_decimal(fill, "executionPrice"),
+            "price_drift_bps": paper_execution_decimal(fill, "priceDriftBps"),
+            "price_source": paper_execution_string(fill, "priceSource"),
+            "max_price_drift_bps": paper_policy_decimal(fill, "maxPriceDriftBps"),
             "source_size": fill.source_size,
             "source_notional_usd": fill.source_notional_usd,
             "source_perp_equity_usd": fill.source_perp_equity_usd,
@@ -1126,6 +1131,35 @@ def paper_copy_fill_reads(
         }
         for fill in fills
     ]
+
+
+def paper_execution_payload(fill: PaperCopyFill) -> dict[str, Any]:
+    payload = fill.raw_payload
+    if not isinstance(payload, dict):
+        return {}
+    execution = payload.get("execution")
+    return execution if isinstance(execution, dict) else {}
+
+
+def paper_execution_decimal(fill: PaperCopyFill, key: str) -> Decimal | None:
+    return decimal_or_none(paper_execution_payload(fill).get(key))
+
+
+def paper_execution_string(fill: PaperCopyFill, key: str) -> str | None:
+    value = paper_execution_payload(fill).get(key)
+    return str(value) if value is not None else None
+
+
+def paper_policy_payload(fill: PaperCopyFill) -> dict[str, Any]:
+    payload = fill.raw_payload
+    if not isinstance(payload, dict):
+        return {}
+    policy = payload.get("policy")
+    return policy if isinstance(policy, dict) else {}
+
+
+def paper_policy_decimal(fill: PaperCopyFill, key: str) -> Decimal | None:
+    return decimal_or_none(paper_policy_payload(fill).get(key))
 
 
 def first_decimal(values: Any) -> Decimal | None:

@@ -82,6 +82,11 @@ export type PaperCopyFill = {
   feeUsd: string;
   realizedPnlUsd: string;
   sourcePrice: string | null;
+  observedPrice: string | null;
+  executionPrice: string | null;
+  priceDriftBps: string | null;
+  priceSource: string | null;
+  maxPriceDriftBps: string | null;
   sourceSize: string | null;
   sourceNotionalUsd: string | null;
   sourcePerpEquityUsd: string | null;

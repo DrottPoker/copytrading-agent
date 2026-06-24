@@ -89,6 +89,11 @@ class PaperCopyFillRead(CamelModel):
     fee_usd: Decimal
     realized_pnl_usd: Decimal
     source_price: Decimal | None
+    observed_price: Decimal | None
+    execution_price: Decimal | None
+    price_drift_bps: Decimal | None
+    price_source: str | None
+    max_price_drift_bps: Decimal | None
     source_size: Decimal | None
     source_notional_usd: Decimal | None
     source_perp_equity_usd: Decimal | None

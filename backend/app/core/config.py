@@ -397,7 +397,7 @@ class Settings(BaseSettings):
     paper_copy_fee_rate: Decimal = Field(default=Decimal("0.0004"), ge=0, le=1)
     paper_copy_slippage_bps: Decimal = Field(default=Decimal("5"), ge=0, le=10000)
     paper_copy_latency_ms: int = Field(default=750, ge=0, le=60000)
-    paper_copy_max_price_drift_bps: Decimal = Field(default=Decimal("20"), ge=0, le=10000)
+    paper_copy_max_price_drift_bps: Decimal = Field(default=Decimal("50"), ge=0, le=10000)
     paper_copy_use_live_mid_price: bool = True
     paper_copy_recovery_interval_seconds: int = Field(default=60, ge=10, le=3600)
 

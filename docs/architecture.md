@@ -594,7 +594,7 @@ read as a stable wallet cash balance.
 Opens below the configured minimum notional are skipped before any paper position
 is created. Paper execution then waits the configured latency, prices from live
 mids when enabled, applies adverse slippage, and skips fills whose observed drift
-exceeds the configured max drift limit.
+exceeds the configured max drift limit. The default max drift limit is 50 bps.
 Stored paper position notional and margin represent simulated entry exposure.
 Adds increase stored margin by the new fill margin, and partial closes reduce
 stored margin proportionally. Current notional is calculated separately from mark
