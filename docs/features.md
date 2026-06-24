@@ -836,6 +836,12 @@ What it does:
 - Persists live order intents before submission and reconciles active live
   orders from Hyperliquid `orderStatus`, `userFillsByTime`, and
   `clearinghouseState`.
+- Reconciles live account equity and available cash from perp state plus
+  Hyperliquid spot/core USDC balances, so wallets that hold deposited USDC
+  outside perp margin still show their account value.
+- Live copy sizing and Start trading use tradable perp equity only. Spot/core
+  USDC is visible in the account view, but it must be transferred to the
+  Hyperliquid perps account before live perp orders can be opened.
 - Stores live exchange fills idempotently in `trading_fills` and syncs aggregate
   account-level live positions in `trading_positions`.
 - Blocks live order submission unless global live trading flags are enabled,

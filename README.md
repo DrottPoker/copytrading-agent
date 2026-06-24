@@ -656,9 +656,11 @@ slippage, and exit behavior.
 The live backend has a shared `TradeIntent` core, generic trading
 account/order/fill tables, and a Hyperliquid SDK adapter for IOC reduce-only or
 entry orders. The trading worker can reconcile enabled live accounts by reading
-Hyperliquid order status, fills, and clearinghouse state. It can also execute
-live copy orders when global live trading, copy execution, and account-level
-trading are all enabled.
+Hyperliquid order status, fills, clearinghouse state, and spot/core USDC
+balances. Spot/core USDC is shown in account equity, but live copy sizing and
+Start trading require positive tradable perp equity. It can also execute live
+copy orders when global live trading, copy execution, and account-level trading
+are all enabled.
 
 Manual live test orders are only available through `POST /trading/testnet/orders`
 when `hyperliquid_network` is `testnet`. Use them with small notional values and

@@ -27,6 +27,7 @@ from app.services.live_trading_service import (
     reconcile_live_trading_account,
     set_live_trading_account_status,
     submit_live_trade_intent,
+    validate_live_account_can_start,
     validate_live_trading_configuration,
 )
 from app.services.trading_account_service import list_trading_accounts
@@ -117,6 +118,7 @@ async def set_trading_account_status_route(
                 account=account,
                 settings=settings,
             )
+            validate_live_account_can_start(account)
         response = await trading_account_read(session, account)
         await session.commit()
         return response
@@ -143,6 +145,7 @@ async def start_live_account_route(
             account=account,
             settings=settings,
         )
+        validate_live_account_can_start(account)
         response = await trading_account_read(session, account)
         await session.commit()
         return response

@@ -12,9 +12,11 @@ from app.services.live_trading_service import (
     create_live_trading_account,
     fetch_live_fills_by_time,
     live_account_key_for_route,
+    live_perp_equity_usd,
     parse_live_fill,
     parse_live_position,
     resolve_live_account_wallet_address,
+    update_live_account_from_state,
 )
 
 
@@ -139,6 +141,39 @@ def test_resolve_live_account_wallet_address_uses_config_fallback() -> None:
     assert resolve_live_account_wallet_address(wallet_address=None, settings=settings) == (
         "0x" + "2" * 40
     )
+
+
+def test_update_live_account_from_state_includes_spot_usdc() -> None:
+    account = TradingAccount(
+        key="live_test",
+        account_type="live",
+        label="Live Test",
+        status="disabled",
+        network="mainnet",
+        realized_pnl_usd=Decimal("0"),
+        fee_usd=Decimal("0"),
+    )
+
+    update_live_account_from_state(
+        account,
+        state={
+            "marginSummary": {"accountValue": "0.0"},
+            "withdrawable": "0.0",
+            "time": 1,
+        },
+        spot_state={
+            "balances": [
+                {"coin": "USDC", "total": "199.8", "hold": "0.0"},
+                {"coin": "USDE", "total": "3", "hold": "0.0"},
+            ],
+            "tokenToAvailableAfterMaintenance": [[0, "199.8"]],
+        },
+        reconciled_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+    assert account.equity_usd == Decimal("199.8")
+    assert account.cash_balance_usd == Decimal("199.8")
+    assert live_perp_equity_usd(account) == Decimal("0.0")
 
 
 @pytest.mark.asyncio

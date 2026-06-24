@@ -19,6 +19,7 @@ from app.integrations.hyperliquid_live_client import HyperliquidLiveTradingClien
 from app.services.live_trading_service import (
     LIVE_EXCHANGE_SOURCE,
     LiveOrderSubmitError,
+    live_perp_equity_usd,
     load_live_source_position,
     reconcile_live_trading_account,
     submit_live_trade_intent,
@@ -318,7 +319,8 @@ async def apply_live_open_part(
         return PaperCopyBatchResult(skipped_fills=1)
     if source_perp_equity <= ZERO:
         return PaperCopyBatchResult(skipped_fills=1)
-    if account.equity_usd is None or account.equity_usd <= ZERO:
+    tradable_equity_usd = live_perp_equity_usd(account)
+    if tradable_equity_usd <= ZERO:
         return PaperCopyBatchResult(skipped_fills=1)
 
     position = await load_live_source_position(
@@ -346,7 +348,7 @@ async def apply_live_open_part(
         return PaperCopyBatchResult(skipped_fills=1)
 
     price = execution_context.execution_price
-    allocation_usd = max(account.equity_usd, ZERO) * allocation.allocation_pct
+    allocation_usd = tradable_equity_usd * allocation.allocation_pct
     source_exposure_pct = part.source_notional_usd / source_perp_equity
     target_notional = allocation_usd * source_exposure_pct
     target_margin = margin_from_notional(target_notional, source_leverage)
@@ -360,7 +362,7 @@ async def apply_live_open_part(
         ZERO,
     )
     global_remaining = max(
-        max(account.equity_usd, ZERO) * settings.paper_copy_max_total_allocation_pct
+        tradable_equity_usd * settings.paper_copy_max_total_allocation_pct
         - await live_open_margin_for_account(session, account_key=account.key),
         ZERO,
     )
