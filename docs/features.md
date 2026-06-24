@@ -612,9 +612,11 @@ What it does:
 - Resolves common Hyperliquid coin aliases for live mids and leverage, including
   matching `dex:COIN` fills against `COIN` market keys when the exact key is not
   present.
-- Skips opens below `paper_copy_min_order_notional_usd` before any paper position
-  is created. The default is 10 USD to match Hyperliquid's live perp minimum
-  order value.
+- Opens or adds below `paper_copy_min_order_notional_usd` are adjusted up to the
+  minimum when `paper_copy_adjust_small_orders_to_min_order` is enabled and the
+  source and account caps can fit the adjusted margin. Otherwise they are
+  skipped before any paper position is created. The default minimum is 10 USD to
+  match Hyperliquid's live perp minimum order value.
 - Applies the configured paper fee rate to opens and closes. The default is
   0.045% to match Hyperliquid's base perp taker fee because paper fills model
   immediate taker-style execution.
@@ -632,8 +634,9 @@ What it does:
 - Skips paper fills when the observed price has moved more than
   `paper_copy_max_price_drift_bps` from the source fill price. The default
   drift guard is 50 bps.
-- Shows source price, live mid, drift bps, and the per-fill drift limit in
-  Recent Fills when execution details are available.
+- Shows source price, live mid, drift bps, the per-fill drift limit, and
+  min-order adjustment markers in Recent Fills when execution details are
+  available.
 - Shows entry execution delay on open paper position rows. The delay is measured
   from the source fill timestamp to when the paper position was created.
 - Tracks open paper positions by account, source wallet, and coin.
@@ -765,6 +768,7 @@ Config:
 - `paper_copy_standard_allocation_pct`
 - `paper_copy_max_total_allocation_pct`
 - `paper_copy_min_order_notional_usd`
+- `paper_copy_adjust_small_orders_to_min_order`
 - `paper_copy_fee_rate`
 - `paper_copy_slippage_bps`
 - `paper_copy_latency_ms`

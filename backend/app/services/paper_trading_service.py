@@ -170,6 +170,13 @@ class PaperCopyBatchResult:
     fee_usd: Decimal = ZERO
 
 
+@dataclass(frozen=True)
+class PaperMinOrderAdjustment:
+    original_notional_usd: Decimal
+    adjusted_notional_usd: Decimal
+    min_order_notional_usd: Decimal
+
+
 async def get_paper_trading_summary(
     session: AsyncSession,
     *,
@@ -1146,6 +1153,19 @@ def paper_copy_fill_reads(
             "allocation_pct": fill.allocation_pct,
             "allocation_usd": fill.allocation_usd,
             "skipped_reason": fill.skipped_reason,
+            "min_order_adjusted": paper_min_order_adjusted(fill),
+            "original_notional_usd": paper_min_order_adjustment_decimal(
+                fill,
+                "originalNotionalUsd",
+            ),
+            "adjusted_notional_usd": paper_min_order_adjustment_decimal(
+                fill,
+                "adjustedNotionalUsd",
+            ),
+            "min_order_notional_usd": paper_min_order_adjustment_decimal(
+                fill,
+                "minOrderNotionalUsd",
+            ),
             "filled_at": fill.filled_at,
             "created_at": fill.created_at,
         }
@@ -1180,6 +1200,27 @@ def paper_policy_payload(fill: PaperCopyFill) -> dict[str, Any]:
 
 def paper_policy_decimal(fill: PaperCopyFill, key: str) -> Decimal | None:
     return decimal_or_none(paper_policy_payload(fill).get(key))
+
+
+def paper_detail_payload(fill: PaperCopyFill) -> dict[str, Any]:
+    payload = fill.raw_payload
+    if not isinstance(payload, dict):
+        return {}
+    paper = payload.get("paper")
+    return paper if isinstance(paper, dict) else {}
+
+
+def paper_min_order_adjustment_payload(fill: PaperCopyFill) -> dict[str, Any]:
+    adjustment = paper_detail_payload(fill).get("minOrderAdjustment")
+    return adjustment if isinstance(adjustment, dict) else {}
+
+
+def paper_min_order_adjusted(fill: PaperCopyFill) -> bool:
+    return bool(paper_min_order_adjustment_payload(fill))
+
+
+def paper_min_order_adjustment_decimal(fill: PaperCopyFill, key: str) -> Decimal | None:
+    return decimal_or_none(paper_min_order_adjustment_payload(fill).get(key))
 
 
 def first_decimal(values: Any) -> Decimal | None:
@@ -3009,6 +3050,15 @@ async def apply_open_part(
     )
     margin_usd = min(target_margin, source_remaining, global_remaining)
     notional_usd = margin_usd * source_leverage
+    margin_usd, notional_usd, min_order_adjustment = adjust_open_sizing_to_min_order(
+        target_notional=target_notional,
+        margin_usd=margin_usd,
+        notional_usd=notional_usd,
+        source_remaining=source_remaining,
+        global_remaining=global_remaining,
+        source_leverage=source_leverage,
+        settings=settings,
+    )
     if notional_usd < settings.paper_copy_min_order_notional_usd:
         reason = open_notional_skip_reason(
             target_notional=target_notional,
@@ -3087,6 +3137,7 @@ async def apply_open_part(
             allocation_usd=allocation_usd,
             settings=settings,
             execution_context=execution_context,
+            min_order_adjustment=min_order_adjustment,
         )
     )
     return PaperCopyBatchResult(processed_fills=1, accounts_updated=1, fee_usd=fee)
@@ -3382,6 +3433,7 @@ def paper_copy_fill(
     settings: Settings,
     skipped_reason: str | None = None,
     execution_context: PaperExecutionContext | None = None,
+    min_order_adjustment: PaperMinOrderAdjustment | None = None,
     opened_at: datetime | None = None,
 ) -> PaperCopyFill:
     source_exposure_pct = (
@@ -3417,6 +3469,7 @@ def paper_copy_fill(
             execution_context=execution_context,
             leverage=leverage,
             margin_usd=margin_usd,
+            min_order_adjustment=min_order_adjustment,
             opened_at=opened_at,
         ),
     )
@@ -3622,6 +3675,41 @@ def margin_from_notional(notional_usd: Decimal, leverage: Decimal) -> Decimal:
     return notional_usd / resolved_leverage
 
 
+def adjust_open_sizing_to_min_order(
+    *,
+    target_notional: Decimal,
+    margin_usd: Decimal,
+    notional_usd: Decimal,
+    source_remaining: Decimal,
+    global_remaining: Decimal,
+    source_leverage: Decimal,
+    settings: Settings,
+) -> tuple[Decimal, Decimal, PaperMinOrderAdjustment | None]:
+    min_order_notional = settings.paper_copy_min_order_notional_usd
+    if notional_usd >= min_order_notional:
+        return margin_usd, notional_usd, None
+
+    min_order_margin = margin_from_notional(min_order_notional, source_leverage)
+    can_adjust_to_min_order = (
+        settings.paper_copy_adjust_small_orders_to_min_order
+        and target_notional < min_order_notional
+        and source_remaining >= min_order_margin
+        and global_remaining >= min_order_margin
+    )
+    if not can_adjust_to_min_order:
+        return margin_usd, notional_usd, None
+
+    return (
+        min_order_margin,
+        min_order_notional,
+        PaperMinOrderAdjustment(
+            original_notional_usd=notional_usd,
+            adjusted_notional_usd=min_order_notional,
+            min_order_notional_usd=min_order_notional,
+        ),
+    )
+
+
 def effective_leverage(
     *,
     notional_usd: Decimal,
@@ -3640,9 +3728,6 @@ def open_notional_skip_reason(
     global_remaining: Decimal,
     min_order_notional: Decimal,
 ) -> str:
-    if target_notional < min_order_notional:
-        return "below_min_order_notional"
-
     source_cap_blocked = source_remaining < min_order_notional
     total_cap_blocked = global_remaining < min_order_notional
     if source_cap_blocked and total_cap_blocked:
@@ -3651,6 +3736,8 @@ def open_notional_skip_reason(
         return "source_allocation_cap_reached"
     if total_cap_blocked:
         return "total_allocation_cap_reached"
+    if target_notional < min_order_notional:
+        return "below_min_order_notional"
     return "below_min_order_notional"
 
 
@@ -3663,6 +3750,7 @@ def paper_trading_policy(settings: Settings) -> PaperTradingPolicyRead:
         standard_allocation_pct=settings.paper_copy_standard_allocation_pct,
         max_total_allocation_pct=settings.paper_copy_max_total_allocation_pct,
         min_order_notional_usd=settings.paper_copy_min_order_notional_usd,
+        adjust_small_orders_to_min_order=settings.paper_copy_adjust_small_orders_to_min_order,
         fee_rate=settings.paper_copy_fee_rate,
         slippage_bps=settings.paper_copy_slippage_bps,
         latency_ms=settings.paper_copy_latency_ms,
@@ -3874,6 +3962,7 @@ def paper_fill_payload(
     execution_context: PaperExecutionContext | None = None,
     leverage: Decimal | None = None,
     margin_usd: Decimal | None = None,
+    min_order_adjustment: PaperMinOrderAdjustment | None = None,
     opened_at: datetime | None = None,
 ) -> dict[str, Any]:
     filled_at = fill_datetime(fill)
@@ -3890,6 +3979,10 @@ def paper_fill_payload(
         "policy": {
             "feeRate": str(settings.paper_copy_fee_rate),
             "maxTotalAllocationPct": str(settings.paper_copy_max_total_allocation_pct),
+            "minOrderNotionalUsd": str(settings.paper_copy_min_order_notional_usd),
+            "adjustSmallOrdersToMinOrder": (
+                settings.paper_copy_adjust_small_orders_to_min_order
+            ),
             "slippageBps": str(settings.paper_copy_slippage_bps),
             "latencyMs": settings.paper_copy_latency_ms,
             "maxPriceDriftBps": str(settings.paper_copy_max_price_drift_bps),
@@ -3901,9 +3994,22 @@ def paper_fill_payload(
         "paper": {
             "leverage": str(leverage) if leverage is not None else None,
             "marginUsd": str(margin_usd) if margin_usd is not None else None,
+            "minOrderAdjustment": min_order_adjustment_payload(min_order_adjustment),
             "openedAt": opened_at.isoformat() if opened_at is not None else None,
             "durationMs": duration_between_ms(opened_at, filled_at),
         },
+    }
+
+
+def min_order_adjustment_payload(
+    adjustment: PaperMinOrderAdjustment | None,
+) -> dict[str, str] | None:
+    if adjustment is None:
+        return None
+    return {
+        "originalNotionalUsd": str(adjustment.original_notional_usd),
+        "adjustedNotionalUsd": str(adjustment.adjusted_notional_usd),
+        "minOrderNotionalUsd": str(adjustment.min_order_notional_usd),
     }
 
 

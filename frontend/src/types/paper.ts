@@ -96,6 +96,10 @@ export type PaperCopyFill = {
   allocationPct: string | null;
   allocationUsd: string | null;
   skippedReason: string | null;
+  minOrderAdjusted: boolean;
+  originalNotionalUsd: string | null;
+  adjustedNotionalUsd: string | null;
+  minOrderNotionalUsd: string | null;
   filledAt: string;
   createdAt: string;
 };
@@ -108,6 +112,7 @@ export type PaperTradingPolicy = {
   standardAllocationPct: string;
   maxTotalAllocationPct: string;
   minOrderNotionalUsd: string;
+  adjustSmallOrdersToMinOrder: boolean;
   feeRate: string;
   slippageBps: string;
   latencyMs: number;

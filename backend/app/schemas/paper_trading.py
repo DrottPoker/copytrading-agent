@@ -111,6 +111,10 @@ class PaperCopyFillRead(CamelModel):
     allocation_pct: Decimal | None
     allocation_usd: Decimal | None
     skipped_reason: str | None
+    min_order_adjusted: bool = False
+    original_notional_usd: Decimal | None = None
+    adjusted_notional_usd: Decimal | None = None
+    min_order_notional_usd: Decimal | None = None
     filled_at: datetime
     created_at: datetime
 
@@ -123,6 +127,7 @@ class PaperTradingPolicyRead(CamelModel):
     standard_allocation_pct: Decimal
     max_total_allocation_pct: Decimal
     min_order_notional_usd: Decimal
+    adjust_small_orders_to_min_order: bool
     fee_rate: Decimal
     slippage_bps: Decimal
     latency_ms: int

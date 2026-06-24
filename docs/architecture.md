@@ -615,15 +615,17 @@ WebSocket `allMids` subscription so later fills can use cached prices.
 For isolated HIP-3 positions, Hyperliquid `marginSummary.accountValue` can equal
 isolated position equity and move with `totalMarginUsed`, so it should not be
 read as a stable wallet cash balance.
-Opens below the configured minimum notional are skipped before any paper position
-is created. The default is 10 USD to match Hyperliquid's live perp minimum
-order value. Paper execution starts the configured latency while source account
-state is fetched in parallel, then prices from live mids when enabled, applies
-adverse slippage, and skips fills whose observed drift exceeds the configured
-max drift limit. The default latency is 250 ms and the default max drift limit
-is 50 bps. Paper fees use Hyperliquid's base perp taker fee by default, 0.045%,
-because paper execution models immediate taker-style fills rather than resting
-maker orders.
+Opens or adds below the configured minimum notional are adjusted up to the
+minimum when `paper_copy_adjust_small_orders_to_min_order` is enabled and the
+source and account caps can fit the adjusted margin. Otherwise they are skipped
+before any paper position is created. The default minimum is 10 USD to match
+Hyperliquid's live perp minimum order value. Paper execution starts the
+configured latency while source account state is fetched in parallel, then
+prices from live mids when enabled, applies adverse slippage, and skips fills
+whose observed drift exceeds the configured max drift limit. The default latency
+is 250 ms and the default max drift limit is 50 bps. Paper fees use Hyperliquid's
+base perp taker fee by default, 0.045%, because paper execution models immediate
+taker-style fills rather than resting maker orders.
 Stored paper position notional and margin represent simulated entry exposure.
 Adds increase stored margin by the new fill margin, and partial closes reduce
 stored margin proportionally. Current notional is calculated separately from mark

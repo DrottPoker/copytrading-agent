@@ -1,0 +1,82 @@
+from decimal import Decimal
+
+from app.core.config import Settings
+from app.services.paper_trading_service import (
+    adjust_open_sizing_to_min_order,
+    open_notional_skip_reason,
+)
+
+
+def test_adjust_open_sizing_to_min_order_when_enabled() -> None:
+    settings = Settings(
+        paper_copy_min_order_notional_usd=Decimal("10"),
+        paper_copy_adjust_small_orders_to_min_order=True,
+    )
+
+    margin_usd, notional_usd, adjustment = adjust_open_sizing_to_min_order(
+        target_notional=Decimal("5"),
+        margin_usd=Decimal("1"),
+        notional_usd=Decimal("5"),
+        source_remaining=Decimal("20"),
+        global_remaining=Decimal("20"),
+        source_leverage=Decimal("5"),
+        settings=settings,
+    )
+
+    assert margin_usd == Decimal("2")
+    assert notional_usd == Decimal("10")
+    assert adjustment is not None
+    assert adjustment.original_notional_usd == Decimal("5")
+    assert adjustment.adjusted_notional_usd == Decimal("10")
+    assert adjustment.min_order_notional_usd == Decimal("10")
+
+
+def test_adjust_open_sizing_to_min_order_when_disabled() -> None:
+    settings = Settings(
+        paper_copy_min_order_notional_usd=Decimal("10"),
+        paper_copy_adjust_small_orders_to_min_order=False,
+    )
+
+    margin_usd, notional_usd, adjustment = adjust_open_sizing_to_min_order(
+        target_notional=Decimal("5"),
+        margin_usd=Decimal("1"),
+        notional_usd=Decimal("5"),
+        source_remaining=Decimal("20"),
+        global_remaining=Decimal("20"),
+        source_leverage=Decimal("5"),
+        settings=settings,
+    )
+
+    assert margin_usd == Decimal("1")
+    assert notional_usd == Decimal("5")
+    assert adjustment is None
+
+
+def test_adjust_open_sizing_to_min_order_respects_caps() -> None:
+    settings = Settings(
+        paper_copy_min_order_notional_usd=Decimal("10"),
+        paper_copy_adjust_small_orders_to_min_order=True,
+    )
+
+    margin_usd, notional_usd, adjustment = adjust_open_sizing_to_min_order(
+        target_notional=Decimal("5"),
+        margin_usd=Decimal("1"),
+        notional_usd=Decimal("5"),
+        source_remaining=Decimal("1.5"),
+        global_remaining=Decimal("20"),
+        source_leverage=Decimal("5"),
+        settings=settings,
+    )
+
+    assert margin_usd == Decimal("1")
+    assert notional_usd == Decimal("5")
+    assert adjustment is None
+    assert (
+        open_notional_skip_reason(
+            target_notional=Decimal("5"),
+            source_remaining=Decimal("7.5"),
+            global_remaining=Decimal("100"),
+            min_order_notional=Decimal("10"),
+        )
+        == "source_allocation_cap_reached"
+    )

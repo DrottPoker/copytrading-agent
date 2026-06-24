@@ -1132,6 +1132,9 @@ function FillRows({ fills }: { fills: PaperCopyFill[] }) {
                 {fill.side ? (
                   <StatusPill label={fill.side} tone={fill.side === "long" ? "positive" : "warning"} />
                 ) : null}
+                {fill.minOrderAdjusted ? (
+                  <StatusPill label="min order adjusted" tone="warning" />
+                ) : null}
               </div>
               <Link
                 href={`/wallets/${fill.sourceWallet}`}
@@ -1144,7 +1147,7 @@ function FillRows({ fills }: { fills: PaperCopyFill[] }) {
               </p>
             </div>
             <RowMetric label="Realized" tone={realizedPnl >= 0 ? "positive" : "danger"} value={formatCurrency(realizedPnl)} />
-            <RowMetric label="Notional" value={formatCurrency(fill.notionalUsd)} />
+            <RowMetric label="Notional" detail={fillNotionalDetail(fill)} value={formatCurrency(fill.notionalUsd)} />
             <RowMetric label="Price" detail={fillPriceDetail(fill)} value={formatPrice(fill.price)} />
           </div>
         );
@@ -1623,6 +1626,13 @@ function fillPriceDetail(fill: PaperCopyFill) {
     `fee ${formatCurrency(fill.feeUsd)}`,
   ].filter(Boolean);
   return parts.join(" | ");
+}
+
+function fillNotionalDetail(fill: PaperCopyFill) {
+  if (!fill.minOrderAdjusted || !fill.originalNotionalUsd) {
+    return undefined;
+  }
+  return `adjusted from ${formatCurrency(fill.originalNotionalUsd)}`;
 }
 
 function formatShortDateTime(value: string | null | undefined) {

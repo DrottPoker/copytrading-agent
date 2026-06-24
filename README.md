@@ -376,9 +376,11 @@ Sizing policy:
 - A configurable fee rate is applied to paper fills. The default is 0.045%,
   matching Hyperliquid's base perp taker fee because paper fills model immediate
   taker-style execution.
-- Paper opens below `paper_copy_min_order_notional_usd` are skipped before any
-  position is created. The default is 10 USD to match Hyperliquid's live perp
-  minimum order value.
+- Paper opens or adds below `paper_copy_min_order_notional_usd` are adjusted up
+  to the minimum when `paper_copy_adjust_small_orders_to_min_order` is enabled
+  and the source and account caps can fit the adjusted margin. Otherwise they
+  are skipped before any position is created. The default minimum is 10 USD to
+  match Hyperliquid's live perp minimum order value.
 - Paper execution starts the configured simulated latency immediately while
   source account state is fetched in parallel. The default latency is 250 ms.
   It then reads live mids and applies adverse slippage to the execution price.
@@ -389,8 +391,9 @@ Sizing policy:
   `allMids`, then dex-specific `allMids`, then `metaAndAssetCtxs`.
 - Paper fills are skipped when live mid price drift from the source fill price
   is above `paper_copy_max_price_drift_bps`, which defaults to 50 bps.
-- Recent paper fill rows show source price, live mid, drift bps, and the
-  per-fill drift limit when execution details are available.
+- Recent paper fill rows show source price, live mid, drift bps, the per-fill
+  drift limit, and min-order adjustment markers when execution details are
+  available.
 - Open paper position rows show entry execution delay in milliseconds, measured
   from the source fill timestamp to when the paper position was created.
 - Same-timestamp source fills are processed with close and flip-close fills first

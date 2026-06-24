@@ -591,6 +591,10 @@ function PolicyRow({
         <RowStat label="Pocket" value={formatPercent(summary.policy.standardAllocationPct)} />
         <RowStat label="Total cap" value={formatPercent(summary.policy.maxTotalAllocationPct)} />
         <RowStat label="Min order" value={formatCurrency(summary.policy.minOrderNotionalUsd)} />
+        <RowStat
+          label="Min adjust"
+          value={summary.policy.adjustSmallOrdersToMinOrder ? "enabled" : "disabled"}
+        />
         <RowStat label="Fee" value={formatPercent(summary.policy.feeRate)} />
         <RowStat label="Slippage" value={formatBps(summary.policy.slippageBps)} />
         <RowStat label="Latency" value={`${formatInteger(summary.policy.latencyMs)} ms`} />
@@ -929,13 +933,16 @@ function PaperFillRow({ fill }: { fill: PaperCopyFill }) {
             {fill.side ? (
               <StatusPill label={fill.side} tone={fill.side === "long" ? "positive" : "warning"} />
             ) : null}
+            {fill.minOrderAdjusted ? (
+              <StatusPill label="min order adjusted" tone="warning" />
+            ) : null}
           </div>
           <p className="mt-1 truncate font-mono text-xs text-[#5b6770]">
             {shortAddress(fill.sourceWallet)} | {fill.accountKey}
           </p>
         </div>
         <RowStat label="Market" value={fill.coin} detail={formatDate(fill.filledAt)} />
-        <RowStat label="Notional" value={formatCurrency(fill.notionalUsd)} detail={`${formatCurrency(fill.marginUsd)} margin`} />
+        <RowStat label="Notional" value={formatCurrency(fill.notionalUsd)} detail={fillNotionalDetail(fill)} />
         <RowStat label="Realized" value={formatCurrency(fill.realizedPnlUsd)} tone={realizedPnl >= 0 ? "positive" : "danger"} />
         <RowStat label="Price" value={formatPrice(fill.price)} detail={fillPriceDetail(fill)} />
         <RowStat
@@ -955,6 +962,16 @@ function fillPriceDetail(fill: PaperCopyFill) {
     fill.size ? `size ${formatSize(fill.size)}` : null,
   ].filter(Boolean);
   return parts.length > 0 ? parts.join(" | ") : "size -";
+}
+
+function fillNotionalDetail(fill: PaperCopyFill) {
+  const parts = [
+    fill.minOrderAdjusted && fill.originalNotionalUsd
+      ? `adjusted from ${formatCurrency(fill.originalNotionalUsd)}`
+      : null,
+    `${formatCurrency(fill.marginUsd)} margin`,
+  ].filter(Boolean);
+  return parts.join(" | ");
 }
 
 function fillSkipDetail(fill: PaperCopyFill) {
