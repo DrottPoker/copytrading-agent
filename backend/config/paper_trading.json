@@ -22,7 +22,7 @@
   "paper_copy_min_order_notional_usd": 1,
   "paper_copy_fee_rate": 0.0004,
   "paper_copy_slippage_bps": 5,
-  "paper_copy_latency_ms": 750,
+  "paper_copy_latency_ms": 250,
   "paper_copy_max_price_drift_bps": 50,
   "paper_copy_use_live_mid_price": true,
   "paper_copy_recovery_interval_seconds": 60

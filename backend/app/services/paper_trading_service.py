@@ -1220,16 +1220,23 @@ async def process_paper_copy_fills(
                 client=hyperliquid_client,
             )
 
-    source_account_states = await load_source_account_states(
-        client=client,
-        source_wallet=normalized_source_wallet,
-        fills=fills,
+    source_account_states_task = asyncio.create_task(
+        load_source_account_states(
+            client=client,
+            source_wallet=normalized_source_wallet,
+            fills=fills,
+        )
     )
-
-    market_prices = await load_execution_market_prices(
-        client=client,
-        fills=fills,
-        settings=resolved_settings,
+    market_prices_task = asyncio.create_task(
+        load_execution_market_prices(
+            client=client,
+            fills=fills,
+            settings=resolved_settings,
+        )
+    )
+    source_account_states, market_prices = await asyncio.gather(
+        source_account_states_task,
+        market_prices_task,
     )
 
     await lock_paper_source_mutation(session, source_wallet=normalized_source_wallet)
@@ -2399,10 +2406,10 @@ async def load_execution_market_prices(
     fills: list[dict[str, Any]],
     settings: Settings,
 ) -> dict[str, Decimal]:
-    if settings.paper_copy_latency_ms > 0:
-        await asyncio.sleep(settings.paper_copy_latency_ms / 1000)
     if not settings.paper_copy_use_live_mid_price:
         return {}
+    if settings.paper_copy_latency_ms > 0:
+        await asyncio.sleep(settings.paper_copy_latency_ms / 1000)
 
     coins = {str(fill.get("coin") or "") for fill in fills}
     coins.discard("")

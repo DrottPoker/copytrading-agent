@@ -372,8 +372,9 @@ Sizing policy:
 - A configurable fee rate is applied to paper fills.
 - Paper opens below `paper_copy_min_order_notional_usd` are skipped before any
   position is created.
-- Paper execution waits the configured simulated latency, reads live mids, and
-  applies adverse slippage to the execution price.
+- Paper execution starts the configured simulated latency immediately while
+  source account state is fetched in parallel. The default latency is 250 ms.
+  It then reads live mids and applies adverse slippage to the execution price.
 - If live mids are enabled and default `allMids` lacks a `dex:COIN` market,
   paper copy falls back to dex-specific `allMids`, then `metaAndAssetCtxs`.
 - Paper fills are skipped when live mid price drift from the source fill price

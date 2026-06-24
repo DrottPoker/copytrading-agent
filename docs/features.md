@@ -609,7 +609,9 @@ What it does:
 - Skips opens below `paper_copy_min_order_notional_usd` before any paper position
   is created.
 - Applies the configured paper fee rate to opens and closes.
-- Waits `paper_copy_latency_ms` before pricing paper execution.
+- Starts `paper_copy_latency_ms` immediately while source account state is
+  fetched in parallel, then prices paper execution. The default latency is
+  250 ms.
 - Uses live Hyperliquid mids after latency when `paper_copy_use_live_mid_price`
   is enabled. This is enabled in the default paper trading config.
 - Falls back to dex-specific `allMids`, then Hyperliquid `metaAndAssetCtxs`, for

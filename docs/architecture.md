@@ -550,8 +550,11 @@ sequenceDiagram
   Worker->>HL: subscribe userFills for selected wallets
   HL-->>Worker: non-snapshot source fill
   Worker->>DB: insert wallet fill with dedupe
-  Worker->>HL: clearinghouseState for source perp equity
-  Worker->>HL: allMids after configured latency
+  par Fetch source state
+    Worker->>HL: clearinghouseState for source perp equity
+  and Fetch execution price
+    Worker->>HL: allMids after configured latency
+  end
   Worker->>DB: size paper fill and apply slippage or drift skip
   Worker->>DB: update paper account, position, and fill rows
   Worker->>Redis: publish paper_copy event
@@ -592,9 +595,11 @@ For isolated HIP-3 positions, Hyperliquid `marginSummary.accountValue` can equal
 isolated position equity and move with `totalMarginUsed`, so it should not be
 read as a stable wallet cash balance.
 Opens below the configured minimum notional are skipped before any paper position
-is created. Paper execution then waits the configured latency, prices from live
-mids when enabled, applies adverse slippage, and skips fills whose observed drift
-exceeds the configured max drift limit. The default max drift limit is 50 bps.
+is created. Paper execution starts the configured latency while source account
+state is fetched in parallel, then prices from live mids when enabled, applies
+adverse slippage, and skips fills whose observed drift exceeds the configured
+max drift limit. The default latency is 250 ms and the default max drift limit
+is 50 bps.
 Stored paper position notional and margin represent simulated entry exposure.
 Adds increase stored margin by the new fill margin, and partial closes reduce
 stored margin proportionally. Current notional is calculated separately from mark

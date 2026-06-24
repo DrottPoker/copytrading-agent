@@ -367,7 +367,7 @@ function emptyPaperTradingSummary(): PaperTradingSummaryResponse {
       minOrderNotionalUsd: "10",
       feeRate: "0.0004",
       slippageBps: "5",
-      latencyMs: 750,
+      latencyMs: 250,
       maxPriceDriftBps: "50",
       useLiveMidPrice: true,
     },
