@@ -5,9 +5,11 @@ import pytest
 
 from app.core.config import Settings
 from app.db.models import TradingAccount, TradingOrder
+from app.services import live_trading_service
 from app.services.live_trading_service import (
     apply_order_status_response,
     build_testnet_live_trade_intent,
+    create_live_trading_account,
     fetch_live_fills_by_time,
     live_account_key_for_route,
     parse_live_fill,
@@ -137,6 +139,48 @@ def test_resolve_live_account_wallet_address_uses_config_fallback() -> None:
     assert resolve_live_account_wallet_address(wallet_address=None, settings=settings) == (
         "0x" + "2" * 40
     )
+
+
+@pytest.mark.asyncio
+async def test_create_live_trading_account_returns_existing_wallet_route(monkeypatch) -> None:
+    settings = Settings()
+    settings.hyperliquid_wallet_address = "0x" + "2" * 40
+    existing = TradingAccount(
+        key="live_existing",
+        account_type="live",
+        label="Existing",
+        status="disabled",
+        network="mainnet",
+        wallet_address=None,
+        vault_address=None,
+        realized_pnl_usd=Decimal("0"),
+        fee_usd=Decimal("0"),
+    )
+
+    async def fake_find_existing_live_account_for_route(_session, **kwargs):
+        assert kwargs["wallet_address"] == "0x" + "2" * 40
+        assert kwargs["vault_address"] is None
+        assert kwargs["include_config_wallet_fallback"] is True
+        return existing
+
+    monkeypatch.setattr(
+        live_trading_service,
+        "find_existing_live_account_for_route",
+        fake_find_existing_live_account_for_route,
+    )
+
+    account = await create_live_trading_account(
+        object(),
+        key=None,
+        label="New Label",
+        wallet_address=None,
+        vault_address=None,
+        status="disabled",
+        settings=settings,
+    )
+
+    assert account is existing
+    assert account.wallet_address == "0x" + "2" * 40
 
 
 @pytest.mark.asyncio

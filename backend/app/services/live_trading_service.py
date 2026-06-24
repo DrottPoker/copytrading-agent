@@ -139,10 +139,9 @@ async def create_live_trading_account(
         include_config_wallet_fallback=not normalize_optional_address(wallet_address),
     )
     if existing_route is not None:
-        raise LiveAccountCreateError(
-            "A live account already exists for this wallet route.",
-            status_code=409,
-        )
+        existing_route.wallet_address = existing_route.wallet_address or resolved_wallet_address
+        existing_route.vault_address = existing_route.vault_address or resolved_vault_address
+        return existing_route
     account_key = live_account_key_for_route(
         wallet_address=resolved_wallet_address,
         vault_address=resolved_vault_address,
@@ -702,6 +701,13 @@ async def reconcile_live_trading_account(
             state=state,
             reconciled_at=reconciled_at,
         )
+    except LiveTradingServiceError:
+        raise
+    except Exception as exc:
+        raise LiveReconciliationError(
+            f"Live reconciliation failed: {exc.__class__.__name__}.",
+            status_code=502,
+        ) from exc
     finally:
         if client_created:
             await client.__aexit__(None, None, None)

@@ -431,7 +431,9 @@ Sizing policy:
   the wallet route, so the display name can change without creating a duplicate
   route. New accounts start with trading disabled, and creation immediately
   reconciles the exchange wallet snapshot so equity, balance, and open live
-  positions are visible before trading is started.
+  positions are visible before trading is started. Repeating live account
+  creation for an existing wallet route returns the existing local account
+  instead of creating a duplicate.
 - The Accounts page skips scheduled auto-refresh while the create account
   dialog is open, so partially entered account details are not discarded.
 - The Accounts page can start, stop, or close all and stop trading for the

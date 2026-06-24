@@ -34,6 +34,15 @@ from app.services.trading_account_service import list_trading_accounts
 router = APIRouter(prefix="/trading", tags=["trading"])
 
 
+async def trading_account_read(
+    session: AsyncSession,
+    account: TradingAccount,
+) -> TradingAccountRead:
+    await session.flush()
+    await session.refresh(account)
+    return TradingAccountRead.model_validate(account)
+
+
 @router.get("/accounts", response_model=TradingAccountsResponse)
 async def list_trading_accounts_route(
     session: Annotated[AsyncSession, Depends(db_session)],
@@ -47,7 +56,7 @@ async def create_live_account_route(
     payload: LiveTradingAccountCreateRequest,
     session: Annotated[AsyncSession, Depends(db_session)],
     settings: Annotated[Settings, Depends(get_settings)],
-) -> TradingAccount:
+) -> TradingAccountRead:
     try:
         account = await create_live_trading_account(
             session,
@@ -63,8 +72,9 @@ async def create_live_account_route(
             account=account,
             settings=settings,
         )
+        response = await trading_account_read(session, account)
         await session.commit()
-        return account
+        return response
     except LiveTradingServiceError as exc:
         await session.rollback()
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
@@ -92,7 +102,7 @@ async def set_trading_account_status_route(
     payload: TradingAccountStatusRequest,
     session: Annotated[AsyncSession, Depends(db_session)],
     settings: Annotated[Settings, Depends(get_settings)],
-) -> TradingAccount:
+) -> TradingAccountRead:
     try:
         if payload.status == "enabled":
             validate_live_trading_configuration(settings)
@@ -107,8 +117,9 @@ async def set_trading_account_status_route(
                 account=account,
                 settings=settings,
             )
+        response = await trading_account_read(session, account)
         await session.commit()
-        return account
+        return response
     except LiveTradingServiceError as exc:
         await session.rollback()
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
@@ -119,7 +130,7 @@ async def start_live_account_route(
     account_key: str,
     session: Annotated[AsyncSession, Depends(db_session)],
     settings: Annotated[Settings, Depends(get_settings)],
-) -> TradingAccount:
+) -> TradingAccountRead:
     try:
         validate_live_trading_configuration(settings)
         account = await set_live_trading_account_status(
@@ -132,8 +143,9 @@ async def start_live_account_route(
             account=account,
             settings=settings,
         )
+        response = await trading_account_read(session, account)
         await session.commit()
-        return account
+        return response
     except LiveTradingServiceError as exc:
         await session.rollback()
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
@@ -143,15 +155,16 @@ async def start_live_account_route(
 async def stop_live_account_route(
     account_key: str,
     session: Annotated[AsyncSession, Depends(db_session)],
-) -> TradingAccount:
+) -> TradingAccountRead:
     try:
         account = await set_live_trading_account_status(
             session,
             account_key=account_key,
             status="exit_only",
         )
+        response = await trading_account_read(session, account)
         await session.commit()
-        return account
+        return response
     except LiveTradingServiceError as exc:
         await session.rollback()
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc

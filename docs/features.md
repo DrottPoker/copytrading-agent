@@ -726,7 +726,9 @@ What it does:
   address fields use and save `HYPERLIQUID_WALLET_ADDRESS`. The internal live
   account key is generated from the wallet route, so changing the display name
   cannot create a duplicate account for the same route. New accounts start
-  disabled and immediately reconcile the exchange wallet snapshot.
+  disabled and immediately reconcile the exchange wallet snapshot. Repeating
+  live account creation for an existing wallet route returns the existing local
+  account instead of creating a duplicate.
 - The Accounts page skips scheduled auto-refresh while the create account
   dialog is open, so partially entered account details are not discarded.
 - The Accounts page can start, stop, or close all and stop trading for the
