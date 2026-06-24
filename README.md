@@ -226,6 +226,7 @@ API:
 - `GET /paper-trading`
 - `POST /paper-trading/accounts/{account_key}/start`
 - `POST /paper-trading/accounts/{account_key}/stop`
+- `POST /paper-trading/accounts/{account_key}/close-all-and-stop`
 - `POST /paper-trading/positions/{position_id}/close`
 - `POST /paper-trading/sources/{source_wallet}/close`
 
@@ -323,6 +324,7 @@ API:
 - `GET /paper-trading`
 - `POST /paper-trading/accounts/{account_key}/start`
 - `POST /paper-trading/accounts/{account_key}/stop`
+- `POST /paper-trading/accounts/{account_key}/close-all-and-stop`
 - `POST /paper-trading/accounts/{account_key}/reset`
 - `POST /paper-trading/positions/{position_id}/close`
 - `POST /paper-trading/sources/{source_wallet}/close`
@@ -397,10 +399,12 @@ Sizing policy:
   defaults to that account on the next visit, otherwise the first synced account
   is selected. It shows account-specific metrics, charts, allocations, market
   exposure, source performance, open positions, closed trades, and recent fills.
-- The Accounts page can start or stop trading for the selected paper account.
-  Starting enables new paper copy entries for that account. Stopping disables
-  new entries for that account and attempts to close all of its open paper
-  positions while other paper accounts keep trading.
+- The Accounts page can start, stop, or close all and stop trading for the
+  selected paper account. Starting enables new paper copy entries for that
+  account. Stopping disables new entries and adds while still allowing source
+  reduce and exit fills to manage existing positions. Close all and stop
+  trading disables the account and closes all open positions for that account
+  while other paper accounts keep trading.
 - The dashboard shows paper accounts, monitored sources, currently trading
   sources, open positions, wallet PnL history, closed trade history, and recent
   fills as compact lists without horizontal scrolling.

@@ -144,6 +144,31 @@ async def stop_paper_account_trading_route(
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
     async with HyperliquidClient(settings) as client:
+        return await get_paper_trading_summary(session, settings=settings, client=client)
+
+
+@router.post(
+    "/accounts/{account_key}/close-all-and-stop",
+    response_model=PaperTradingSummaryResponse,
+)
+async def close_all_and_stop_paper_account_trading_route(
+    account_key: str,
+    session: Annotated[AsyncSession, Depends(db_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> PaperTradingSummaryResponse:
+    try:
+        await set_paper_trading_account_enabled(
+            session,
+            account_key=account_key,
+            enabled=False,
+            settings=settings,
+        )
+        await session.commit()
+    except PaperAccountControlError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    async with HyperliquidClient(settings) as client:
         try:
             await close_paper_account_positions_manually(
                 session,

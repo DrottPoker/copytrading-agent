@@ -6,7 +6,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, literal, select, text, tuple_, update
+from sqlalchemy import func, literal, or_, select, text, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1215,7 +1215,10 @@ async def process_paper_copy_fills(
     if allocation is None:
         return PaperCopyBatchResult(skipped_fills=len(fills))
 
-    accounts = await load_enabled_paper_accounts(session)
+    accounts = await load_paper_accounts_for_source_copy(
+        session,
+        source_wallet=normalized_source_wallet,
+    )
     if not accounts:
         return PaperCopyBatchResult(skipped_fills=len(fills))
 
@@ -1251,7 +1254,11 @@ async def process_paper_copy_fills(
     )
 
     await lock_paper_source_mutation(session, source_wallet=normalized_source_wallet)
-    accounts = await load_enabled_paper_accounts(session, for_update=True)
+    accounts = await load_paper_accounts_for_source_copy(
+        session,
+        source_wallet=normalized_source_wallet,
+        for_update=True,
+    )
     if not accounts:
         return PaperCopyBatchResult(skipped_fills=len(fills))
 
@@ -1287,6 +1294,20 @@ async def process_paper_copy_fills(
 
         for account in accounts:
             for part in parts:
+                if not account.enabled and part_requires_source_equity(part):
+                    fill_result = await record_skip(
+                        session,
+                        account=account,
+                        allocation=allocation,
+                        fill=fill,
+                        part=part,
+                        source_perp_equity=source_perp_equity,
+                        reason="paper_account_disabled",
+                        settings=resolved_settings,
+                    )
+                    skipped += fill_result.skipped_fills
+                    continue
+
                 if source_state_skip_reason is not None and part_requires_source_equity(part):
                     fill_result = await record_skip(
                         session,
@@ -1570,7 +1591,11 @@ async def reconcile_open_paper_positions_for_source(
     await lock_paper_source_mutation(session, source_wallet=source_wallet)
     accounts = {
         account.key: account
-        for account in await load_enabled_paper_accounts(session, for_update=True)
+        for account in await load_paper_accounts_for_source_copy(
+            session,
+            source_wallet=source_wallet,
+            for_update=True,
+        )
     }
     positions = await load_open_paper_positions_for_source(
         session,
@@ -2290,6 +2315,32 @@ async def load_enabled_paper_accounts(
     return list(result.scalars().all())
 
 
+async def load_paper_accounts_for_source_copy(
+    session: AsyncSession,
+    *,
+    source_wallet: str,
+    for_update: bool = False,
+) -> list[PaperTradingAccount]:
+    normalized_source_wallet = source_wallet.lower()
+    open_exposure_exists = (
+        select(PaperPosition.id)
+        .where(
+            PaperPosition.account_key == PaperTradingAccount.key,
+            PaperPosition.source_wallet == normalized_source_wallet,
+        )
+        .exists()
+    )
+    stmt = (
+        select(PaperTradingAccount)
+        .where(or_(PaperTradingAccount.enabled.is_(True), open_exposure_exists))
+        .order_by(PaperTradingAccount.key.asc())
+    )
+    if for_update:
+        stmt = stmt.with_for_update()
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
 async def load_source_account_states(
     *,
     client: HyperliquidClient,
@@ -2739,6 +2790,19 @@ async def apply_open_part(
     settings: Settings,
 ) -> PaperCopyBatchResult:
     source_leverage = leverage_for_fill(fill=fill, source_leverages=source_leverages)
+    if not account.enabled:
+        return await record_skip(
+            session,
+            account=account,
+            allocation=allocation,
+            fill=fill,
+            part=part,
+            source_perp_equity=source_perp_equity,
+            reason="paper_account_disabled",
+            settings=settings,
+            leverage=source_leverage,
+        )
+
     source_price = decimal_or_zero(fill.get("price"))
     if source_price <= ZERO:
         return await record_skip(

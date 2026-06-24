@@ -554,6 +554,7 @@ Endpoint:
 - `GET /paper-trading`
 - `POST /paper-trading/accounts/{account_key}/start`
 - `POST /paper-trading/accounts/{account_key}/stop`
+- `POST /paper-trading/accounts/{account_key}/close-all-and-stop`
 - `POST /paper-trading/accounts/{account_key}/reset`
 - `POST /paper-trading/positions/{position_id}/close`
 - `POST /paper-trading/sources/{source_wallet}/close`
@@ -706,10 +707,12 @@ What it does:
   first synced account. It shows account KPIs, balance and PnL charts,
   allocation usage, market exposure, source performance, open positions, closed
   trades, and recent fills for the selected account.
-- The Accounts page can start or stop trading for the selected paper account.
-  Start trading enables that account for future paper copy entries. Stop trading
-  disables that account first, then attempts to close all open paper positions
-  for that account. Other paper accounts are not disabled or closed.
+- The Accounts page can start, stop, or close all and stop trading for the
+  selected paper account. Start trading enables new entries again. Stop trading
+  disables new entries and adds for that account, but still lets source reduce
+  and exit fills manage existing positions. Close all and stop trading disables
+  the account and manually closes every open paper position for that account.
+  Other paper accounts are not disabled or closed.
 - The summary API attaches wallet labels to paper allocation, position,
   wallet-history, closed-trade, and recent-fill rows. The UI shows the label
   when available and falls back to the short address.

@@ -575,6 +575,14 @@ sequenceDiagram
   UI->>API: POST /paper-trading/accounts/{account_key}/reset
   API->>DB: reset configured account balance counters only
   API-->>UI: refreshed paper trading summary
+  UI->>API: POST /paper-trading/accounts/{account_key}/stop
+  API->>DB: disable new entries and adds for that account
+  API-->>UI: refreshed paper trading summary
+  UI->>API: POST /paper-trading/accounts/{account_key}/close-all-and-stop
+  API->>DB: disable new entries and adds for that account
+  API->>HL: current market prices for that account's open paper positions
+  API->>DB: close every open paper position for that account
+  API-->>UI: refreshed paper trading summary
   UI->>API: POST /paper-trading/positions/{position_id}/close
   API->>HL: current market price for that paper position
   API->>DB: apply slippage, fee, realized PnL, and close fill
@@ -653,7 +661,10 @@ source rows, so a source is shown as `trading` when at least one account can
 open or manage that source and the source has open paper exposure.
 Paper account `enabled` is runtime state after the account has been synced from
 config. The Accounts page can change that state for one account without
-disabling other accounts.
+disabling other accounts. Disabled paper accounts are excluded from new entries
+and adds, but are still included when an existing open position for the source
+needs a reduce or exit fill. The close-all-and-stop route disables the account
+first, then manually closes its open paper positions.
 The summary also exposes `poolRank` and `sourceStatusReason`. `poolRank` is the
 source wallet's score rank in the wallet pool, while `sourceStatusReason`
 explains why a source is retained or waiting without relying on monitor-slot

@@ -14,6 +14,7 @@ import {
   TrendingDown,
   TrendingUp,
   WalletCards,
+  XCircle,
   type LucideIcon,
 } from "lucide-react";
 import Link from "next/link";
@@ -45,7 +46,7 @@ const ACCOUNT_SUMMARY_LIMIT = 250;
 const SELECTED_ACCOUNT_STORAGE_KEY = "copyagent.accounts.selectedAccountKey";
 
 type Tone = "positive" | "warning" | "danger" | "neutral";
-type TradingAction = "start" | "stop";
+type TradingAction = "start" | "stop" | "close-all-and-stop";
 
 type AccountMetrics = {
   allocationUsd: number;
@@ -186,11 +187,11 @@ export function AccountsDashboard({
       if (!accountView || accountAction) {
         return;
       }
-      if (action === "stop" && accountView.positions.length > 0) {
+      if (action === "close-all-and-stop" && accountView.positions.length > 0) {
         const confirmed = window.confirm(
-          `Stop trading for ${accountView.account.label} and close ${formatInteger(
+          `Close ${formatInteger(
             accountView.positions.length,
-          )} open paper positions?`,
+          )} open paper positions for ${accountView.account.label} and stop trading?`,
         );
         if (!confirmed) {
           return;
@@ -207,7 +208,7 @@ export function AccountsDashboard({
           { cache: "no-store", method: "POST" },
         );
         if (!response.ok) {
-          setActionError(await responseError(response, `${capitalize(action)} trading failed`));
+          setActionError(await responseError(response, `${tradingActionLabel(action)} failed`));
           await refresh();
           return;
         }
@@ -218,7 +219,7 @@ export function AccountsDashboard({
         setConnectionState("live");
       } catch {
         setConnectionState("offline");
-        setActionError(`${capitalize(action)} trading failed.`);
+        setActionError(`${tradingActionLabel(action)} failed.`);
       } finally {
         setAccountAction(null);
       }
@@ -257,25 +258,40 @@ export function AccountsDashboard({
           ) : null}
           {accountView ? (
             accountView.account.enabled ? (
-              <button
-                type="button"
-                onClick={() => void handleTradingAction("stop")}
-                disabled={accountAction !== null}
-                className="inline-flex h-9 items-center gap-2 rounded-md border border-[#efb1aa] bg-[#fff5f3] px-3 text-sm font-semibold text-danger shadow-sm hover:bg-[#ffe9e6] disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {accountAction === "stop" ? (
-                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                ) : (
-                  <Square className="h-4 w-4" aria-hidden="true" />
-                )}
-                Stop trading
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={() => void handleTradingAction("stop")}
+                  disabled={accountAction !== null}
+                  className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[#f0c36d] bg-[#fff8e8] px-3 py-1.5 text-sm font-semibold text-warning shadow-sm hover:bg-[#fff2d2] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {accountAction === "stop" ? (
+                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <Square className="h-4 w-4" aria-hidden="true" />
+                  )}
+                  Stop trading
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleTradingAction("close-all-and-stop")}
+                  disabled={accountAction !== null}
+                  className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[#efb1aa] bg-[#fff5f3] px-3 py-1.5 text-sm font-semibold text-danger shadow-sm hover:bg-[#ffe9e6] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {accountAction === "close-all-and-stop" ? (
+                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <XCircle className="h-4 w-4" aria-hidden="true" />
+                  )}
+                  Close all and stop trading
+                </button>
+              </>
             ) : (
               <button
                 type="button"
                 onClick={() => void handleTradingAction("start")}
                 disabled={accountAction !== null}
-                className="inline-flex h-9 items-center gap-2 rounded-md border border-[#9ccfc0] bg-[#f2fbf7] px-3 text-sm font-semibold text-positive shadow-sm hover:bg-[#e5f6ee] disabled:cursor-not-allowed disabled:opacity-60"
+                className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[#9ccfc0] bg-[#f2fbf7] px-3 py-1.5 text-sm font-semibold text-positive shadow-sm hover:bg-[#e5f6ee] disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {accountAction === "start" ? (
                   <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
@@ -1352,8 +1368,14 @@ function humanReason(value: string) {
   return value.replaceAll("_", " ");
 }
 
-function capitalize(value: string) {
-  return `${value.slice(0, 1).toUpperCase()}${value.slice(1)}`;
+function tradingActionLabel(action: TradingAction) {
+  if (action === "start") {
+    return "Start trading";
+  }
+  if (action === "stop") {
+    return "Stop trading";
+  }
+  return "Close all and stop trading";
 }
 
 async function responseError(response: Response, fallback: string) {
