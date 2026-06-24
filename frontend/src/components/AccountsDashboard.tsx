@@ -39,6 +39,7 @@ import type {
   PaperTradingAccount,
   PaperTradingSummaryResponse,
 } from "@/types/paper";
+import type { TradingAccount, TradingAccountsResponse } from "@/types/trading";
 
 import { HeaderRefreshButton, HeaderUpdatedLabel } from "./HeaderRefresh";
 import { PageTopPanel } from "./PageTopPanel";
@@ -51,6 +52,22 @@ const SELECTED_ACCOUNT_STORAGE_KEY = "copyagent.accounts.selectedAccountKey";
 type Tone = "positive" | "warning" | "danger" | "neutral";
 type TradingAction = "start" | "stop" | "close-all-and-stop";
 type CreateAccountType = "paper" | "live";
+
+type AccountOption =
+  | {
+      accountType: "paper";
+      key: string;
+      label: string;
+      paper: PaperTradingAccount;
+      live?: never;
+    }
+  | {
+      accountType: "live";
+      key: string;
+      label: string;
+      live: TradingAccount;
+      paper?: never;
+    };
 
 type AccountMetrics = {
   allocationUsd: number;
@@ -116,12 +133,15 @@ type AccountView = {
 
 export function AccountsDashboard({
   initialSummary,
+  initialTradingAccounts,
 }: {
   initialSummary: PaperTradingSummaryResponse;
+  initialTradingAccounts: TradingAccountsResponse;
 }) {
   const [summary, setSummary] = useState(initialSummary);
+  const [tradingAccounts, setTradingAccounts] = useState(initialTradingAccounts);
   const [selectedAccountKey, setSelectedAccountKey] = useState(
-    initialSummary.accounts[0]?.key ?? "",
+    initialAccountKey(initialSummary, initialTradingAccounts),
   );
   const [connectionState, setConnectionState] = useState<"live" | "refreshing" | "offline">(
     "live",
@@ -130,22 +150,38 @@ export function AccountsDashboard({
   const [createAccountOpen, setCreateAccountOpen] = useState(false);
   const [createAccountType, setCreateAccountType] = useState<CreateAccountType>("paper");
   const [createStartingBalance, setCreateStartingBalance] = useState("1000");
+  const [createLiveKey, setCreateLiveKey] = useState("live_main");
+  const [createLiveLabel, setCreateLiveLabel] = useState("Live Main");
+  const [createLiveWalletAddress, setCreateLiveWalletAddress] = useState("");
+  const [createLiveVaultAddress, setCreateLiveVaultAddress] = useState("");
   const [createSubmitting, setCreateSubmitting] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [lastRefreshAt, setLastRefreshAt] = useState<Date | null>(new Date());
   const [storedSelectionLoaded, setStoredSelectionLoaded] = useState(false);
 
+  const accountOptions = useMemo(
+    () => buildAccountOptions(summary, tradingAccounts),
+    [summary, tradingAccounts],
+  );
+  const selectedAccount = useMemo(
+    () =>
+      accountOptions.find((account) => account.key === selectedAccountKey) ??
+      accountOptions[0] ??
+      null,
+    [accountOptions, selectedAccountKey],
+  );
+
   useEffect(() => {
     if (storedSelectionLoaded) {
       return;
     }
     const storedAccountKey = window.localStorage.getItem(SELECTED_ACCOUNT_STORAGE_KEY);
-    if (storedAccountKey && summary.accounts.some((account) => account.key === storedAccountKey)) {
+    if (storedAccountKey && accountOptions.some((account) => account.key === storedAccountKey)) {
       setSelectedAccountKey(storedAccountKey);
     }
     setStoredSelectionLoaded(true);
-  }, [storedSelectionLoaded, summary.accounts]);
+  }, [accountOptions, storedSelectionLoaded]);
 
   useEffect(() => {
     if (!selectedAccountKey) {
@@ -157,12 +193,12 @@ export function AccountsDashboard({
   useEffect(() => {
     if (
       selectedAccountKey &&
-      summary.accounts.some((account) => account.key === selectedAccountKey)
+      accountOptions.some((account) => account.key === selectedAccountKey)
     ) {
       return;
     }
-    setSelectedAccountKey(summary.accounts[0]?.key ?? "");
-  }, [selectedAccountKey, summary.accounts]);
+    setSelectedAccountKey(accountOptions[0]?.key ?? "");
+  }, [accountOptions, selectedAccountKey]);
 
   const refresh = useCallback(async () => {
     setConnectionState("refreshing");
@@ -170,13 +206,20 @@ export function AccountsDashboard({
       const url = new URL(`${getPublicApiBaseUrl()}/paper-trading`, window.location.origin);
       url.searchParams.set("closed_trade_limit", String(ACCOUNT_SUMMARY_LIMIT));
       url.searchParams.set("recent_fill_limit", String(ACCOUNT_SUMMARY_LIMIT));
-      const response = await fetch(url.toString(), { cache: "no-store" });
-      if (!response.ok) {
+      const [paperResponse, tradingResponse] = await Promise.all([
+        fetch(url.toString(), { cache: "no-store" }),
+        fetch(`${getPublicApiBaseUrl()}/trading/accounts`, { cache: "no-store" }),
+      ]);
+      if (!paperResponse.ok || !tradingResponse.ok) {
         setConnectionState("offline");
         return;
       }
-      const payload = (await response.json()) as PaperTradingSummaryResponse;
-      setSummary(payload);
+      const [paperPayload, tradingPayload] = await Promise.all([
+        paperResponse.json() as Promise<PaperTradingSummaryResponse>,
+        tradingResponse.json() as Promise<TradingAccountsResponse>,
+      ]);
+      setSummary(paperPayload);
+      setTradingAccounts(tradingPayload);
       setLastRefreshAt(new Date());
       setConnectionState("live");
     } catch {
@@ -192,16 +235,24 @@ export function AccountsDashboard({
   }, [refresh]);
 
   const accountView = useMemo(
-    () => buildAccountView(summary, selectedAccountKey),
-    [selectedAccountKey, summary],
+    () =>
+      selectedAccount?.accountType === "paper"
+        ? buildAccountView(summary, selectedAccount.key)
+        : null,
+    [selectedAccount, summary],
   );
 
   const handleTradingAction = useCallback(
     async (action: TradingAction) => {
-      if (!accountView || accountAction) {
+      if (!selectedAccount || accountAction) {
         return;
       }
-      if (action === "close-all-and-stop" && accountView.positions.length > 0) {
+      if (
+        selectedAccount.accountType === "paper" &&
+        accountView &&
+        action === "close-all-and-stop" &&
+        accountView.positions.length > 0
+      ) {
         const confirmed = window.confirm(
           `Close ${formatInteger(
             accountView.positions.length,
@@ -211,14 +262,22 @@ export function AccountsDashboard({
           return;
         }
       }
+      if (selectedAccount.accountType === "live" && action === "close-all-and-stop") {
+        const confirmed = window.confirm(
+          `Close all open live positions for ${selectedAccount.label} and stop trading?`,
+        );
+        if (!confirmed) {
+          return;
+        }
+      }
 
       setAccountAction(action);
       setActionError(null);
       try {
+        const basePath =
+          selectedAccount.accountType === "paper" ? "paper-trading/accounts" : "trading/accounts";
         const response = await fetch(
-          `${getPublicApiBaseUrl()}/paper-trading/accounts/${encodeURIComponent(
-            accountView.account.key,
-          )}/${action}`,
+          `${getPublicApiBaseUrl()}/${basePath}/${encodeURIComponent(selectedAccount.key)}/${action}`,
           { cache: "no-store", method: "POST" },
         );
         if (!response.ok) {
@@ -227,10 +286,14 @@ export function AccountsDashboard({
           return;
         }
 
-        const payload = (await response.json()) as PaperTradingSummaryResponse;
-        setSummary(payload);
-        setLastRefreshAt(new Date());
-        setConnectionState("live");
+        if (selectedAccount.accountType === "paper") {
+          const payload = (await response.json()) as PaperTradingSummaryResponse;
+          setSummary(payload);
+          setLastRefreshAt(new Date());
+          setConnectionState("live");
+        } else {
+          await refresh();
+        }
       } catch {
         setConnectionState("offline");
         setActionError(`${tradingActionLabel(action)} failed.`);
@@ -238,13 +301,17 @@ export function AccountsDashboard({
         setAccountAction(null);
       }
     },
-    [accountAction, accountView, refresh],
+    [accountAction, accountView, refresh, selectedAccount],
   );
 
   const openCreateAccount = useCallback(() => {
     setCreateAccountOpen(true);
     setCreateAccountType("paper");
     setCreateStartingBalance("1000");
+    setCreateLiveKey("live_main");
+    setCreateLiveLabel("Live Main");
+    setCreateLiveWalletAddress("");
+    setCreateLiveVaultAddress("");
     setCreateError(null);
   }, []);
 
@@ -262,24 +329,43 @@ export function AccountsDashboard({
     }
 
     const startingBalance = Number(createStartingBalance);
-    if (createAccountType !== "paper") {
-      setCreateError("Live accounts are not available yet.");
+    if (
+      createAccountType === "paper" &&
+      (!Number.isFinite(startingBalance) || startingBalance <= 0)
+    ) {
+      setCreateError("Enter a starting balance greater than 0.");
       return;
     }
-    if (!Number.isFinite(startingBalance) || startingBalance <= 0) {
-      setCreateError("Enter a starting balance greater than 0.");
+    if (createAccountType === "live" && !createLiveKey.trim()) {
+      setCreateError("Enter a live account key.");
+      return;
+    }
+    if (createAccountType === "live" && !createLiveLabel.trim()) {
+      setCreateError("Enter a live account label.");
       return;
     }
 
     setCreateSubmitting(true);
     setCreateError(null);
     try {
-      const previousKeys = new Set(summary.accounts.map((account) => account.key));
-      const response = await fetch(`${getPublicApiBaseUrl()}/paper-trading/accounts`, {
-        body: JSON.stringify({
-          accountType: createAccountType,
-          startingBalanceUsd: createStartingBalance,
-        }),
+      const previousKeys = new Set(accountOptions.map((account) => account.key));
+      const endpoint =
+        createAccountType === "paper" ? "/paper-trading/accounts" : "/trading/accounts/live";
+      const body =
+        createAccountType === "paper"
+          ? {
+              accountType: "paper",
+              startingBalanceUsd: createStartingBalance,
+            }
+          : {
+              key: createLiveKey.trim(),
+              label: createLiveLabel.trim(),
+              walletAddress: createLiveWalletAddress.trim() || null,
+              vaultAddress: createLiveVaultAddress.trim() || null,
+              status: "disabled",
+            };
+      const response = await fetch(`${getPublicApiBaseUrl()}${endpoint}`, {
+        body: JSON.stringify(body),
         cache: "no-store",
         headers: {
           "Content-Type": "application/json",
@@ -292,13 +378,19 @@ export function AccountsDashboard({
         return;
       }
 
-      const payload = (await response.json()) as PaperTradingSummaryResponse;
-      const createdAccount =
-        payload.accounts.find((account) => !previousKeys.has(account.key)) ??
-        payload.accounts[payload.accounts.length - 1];
-      setSummary(payload);
-      if (createdAccount) {
+      if (createAccountType === "paper") {
+        const payload = (await response.json()) as PaperTradingSummaryResponse;
+        const createdAccount =
+          payload.accounts.find((account) => !previousKeys.has(account.key)) ??
+          payload.accounts[payload.accounts.length - 1];
+        setSummary(payload);
+        if (createdAccount) {
+          setSelectedAccountKey(createdAccount.key);
+        }
+      } else {
+        const createdAccount = (await response.json()) as TradingAccount;
         setSelectedAccountKey(createdAccount.key);
+        await refresh();
       }
       setLastRefreshAt(new Date());
       setConnectionState("live");
@@ -310,22 +402,26 @@ export function AccountsDashboard({
       setCreateSubmitting(false);
     }
   }, [
+    accountOptions,
     createAccountType,
+    createLiveKey,
+    createLiveLabel,
+    createLiveVaultAddress,
+    createLiveWalletAddress,
     createStartingBalance,
     createSubmitting,
     refresh,
-    summary.accounts,
   ]);
 
   return (
     <>
       <PageTopPanel
-        eyebrow="Paper account performance"
+        eyebrow="Account performance"
         icon={WalletCards}
         title="Accounts"
         actions={
           <>
-            <HeaderUpdatedLabel label={`Updated ${formatDate(summary.updatedAt)}`} />
+            <HeaderUpdatedLabel label={`Updated ${formatDate(lastUpdatedAt(summary, tradingAccounts))}`} />
             <button
               type="button"
               onClick={openCreateAccount}
@@ -340,20 +436,20 @@ export function AccountsDashboard({
               value={selectedAccountKey}
               onChange={(event) => setSelectedAccountKey(event.target.value)}
             >
-              {summary.accounts.map((account) => (
-                <option key={account.key} value={account.key}>
-                  {account.label}
+              {accountOptions.map((account) => (
+                <option key={`${account.accountType}:${account.key}`} value={account.key}>
+                  {accountOptionLabel(account)}
                 </option>
               ))}
             </select>
-            {accountView ? (
+            {selectedAccount ? (
               <StatusPill
-                label={accountView.account.enabled ? "trading enabled" : "trading stopped"}
-                tone={accountView.account.enabled ? "positive" : "warning"}
+                label={accountTradingStatusLabel(selectedAccount)}
+                tone={accountTradingStatusTone(selectedAccount)}
               />
             ) : null}
-            {accountView ? (
-              accountView.account.enabled ? (
+            {selectedAccount ? (
+              accountTradingEnabled(selectedAccount) ? (
                 <>
                   <button
                     type="button"
@@ -415,9 +511,17 @@ export function AccountsDashboard({
         balance={createStartingBalance}
         error={createError}
         isSubmitting={createSubmitting}
+        liveKey={createLiveKey}
+        liveLabel={createLiveLabel}
+        liveVaultAddress={createLiveVaultAddress}
+        liveWalletAddress={createLiveWalletAddress}
         onAccountTypeChange={setCreateAccountType}
         onBalanceChange={setCreateStartingBalance}
         onClose={closeCreateAccount}
+        onLiveKeyChange={setCreateLiveKey}
+        onLiveLabelChange={setCreateLiveLabel}
+        onLiveVaultAddressChange={setCreateLiveVaultAddress}
+        onLiveWalletAddressChange={setCreateLiveWalletAddress}
         onSubmit={handleCreateAccount}
         open={createAccountOpen}
       />
@@ -428,15 +532,17 @@ export function AccountsDashboard({
         </div>
       ) : null}
 
-      {accountView ? (
+      {selectedAccount?.accountType === "paper" && accountView ? (
         <AccountContent
           accountView={accountView}
           lastRefreshAt={lastRefreshAt}
           marketDataStatus={summary.marketDataStatus}
         />
+      ) : selectedAccount?.accountType === "live" ? (
+        <LiveAccountContent account={selectedAccount.live} lastRefreshAt={lastRefreshAt} />
       ) : (
         <section className="rounded-lg border border-line bg-panel p-8 text-center text-sm text-[#5b6770]">
-          No paper accounts are synced yet.
+          No accounts are synced yet.
         </section>
       )}
     </>
@@ -448,9 +554,17 @@ function CreateAccountDialog({
   balance,
   error,
   isSubmitting,
+  liveKey,
+  liveLabel,
+  liveVaultAddress,
+  liveWalletAddress,
   onAccountTypeChange,
   onBalanceChange,
   onClose,
+  onLiveKeyChange,
+  onLiveLabelChange,
+  onLiveVaultAddressChange,
+  onLiveWalletAddressChange,
   onSubmit,
   open,
 }: {
@@ -458,19 +572,27 @@ function CreateAccountDialog({
   balance: string;
   error: string | null;
   isSubmitting: boolean;
+  liveKey: string;
+  liveLabel: string;
+  liveVaultAddress: string;
+  liveWalletAddress: string;
   onAccountTypeChange: (accountType: CreateAccountType) => void;
   onBalanceChange: (balance: string) => void;
   onClose: () => void;
+  onLiveKeyChange: (value: string) => void;
+  onLiveLabelChange: (value: string) => void;
+  onLiveVaultAddressChange: (value: string) => void;
+  onLiveWalletAddressChange: (value: string) => void;
   onSubmit: () => void;
   open: boolean;
 }) {
   const titleId = useId();
   const parsedBalance = Number(balance);
   const canCreate =
-    accountType === "paper" &&
-    Number.isFinite(parsedBalance) &&
-    parsedBalance > 0 &&
-    !isSubmitting;
+    !isSubmitting &&
+    (accountType === "paper"
+      ? Number.isFinite(parsedBalance) && parsedBalance > 0
+      : liveKey.trim().length > 0 && liveLabel.trim().length > 0);
 
   useEffect(() => {
     if (!open) {
@@ -544,7 +666,7 @@ function CreateAccountDialog({
               />
               <AccountTypeOption
                 active={accountType === "live"}
-                detail="Coming later"
+                detail="Real exchange"
                 icon={Activity}
                 label="Live account"
                 onClick={() => onAccountTypeChange("live")}
@@ -572,8 +694,48 @@ function CreateAccountDialog({
                 </span>
               </label>
             ) : (
-              <div className="rounded-md border border-line bg-[#f7f9fb] px-3 py-3 text-sm font-medium text-[#5b6770]">
-                Live accounts are not available yet.
+              <div className="grid gap-3">
+                <label className="grid gap-2">
+                  <span className="text-sm font-semibold text-ink">Account key</span>
+                  <input
+                    maxLength={64}
+                    value={liveKey}
+                    onChange={(event) => onLiveKeyChange(event.target.value)}
+                    className="h-10 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink shadow-sm outline-none focus:border-[#9eb1c1]"
+                    placeholder="live_main"
+                  />
+                </label>
+                <label className="grid gap-2">
+                  <span className="text-sm font-semibold text-ink">Label</span>
+                  <input
+                    maxLength={120}
+                    value={liveLabel}
+                    onChange={(event) => onLiveLabelChange(event.target.value)}
+                    className="h-10 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink shadow-sm outline-none focus:border-[#9eb1c1]"
+                    placeholder="Live Main"
+                  />
+                </label>
+                <label className="grid gap-2">
+                  <span className="text-sm font-semibold text-ink">Wallet address</span>
+                  <input
+                    value={liveWalletAddress}
+                    onChange={(event) => onLiveWalletAddressChange(event.target.value)}
+                    className="h-10 rounded-md border border-line bg-white px-3 font-mono text-sm font-medium text-ink shadow-sm outline-none focus:border-[#9eb1c1]"
+                    placeholder="Uses config wallet when empty"
+                  />
+                </label>
+                <label className="grid gap-2">
+                  <span className="text-sm font-semibold text-ink">Vault address</span>
+                  <input
+                    value={liveVaultAddress}
+                    onChange={(event) => onLiveVaultAddressChange(event.target.value)}
+                    className="h-10 rounded-md border border-line bg-white px-3 font-mono text-sm font-medium text-ink shadow-sm outline-none focus:border-[#9eb1c1]"
+                    placeholder="Optional"
+                  />
+                </label>
+                <span className="text-xs font-medium text-[#5b6770]">
+                  Starts disabled
+                </span>
               </div>
             )}
 
@@ -603,7 +765,7 @@ function CreateAccountDialog({
               ) : (
                 <Plus className="h-4 w-4" aria-hidden="true" />
               )}
-              Create paper account
+              Create {accountType} account
             </button>
           </div>
         </form>
@@ -752,6 +914,80 @@ function AccountContent({
 
         <Panel icon={BarChart3} title="Recent Fills">
           <FillRows fills={accountView.recentFills} />
+        </Panel>
+      </section>
+    </>
+  );
+}
+
+function LiveAccountContent({
+  account,
+  lastRefreshAt,
+}: {
+  account: TradingAccount;
+  lastRefreshAt: Date | null;
+}) {
+  const realizedPnl = decimal(account.realizedPnlUsd);
+  const feeUsd = decimal(account.feeUsd);
+
+  return (
+    <>
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        <MetricTile
+          detail={`${formatLiveAccountStatus(account.status)} on ${account.network}`}
+          icon={WalletCards}
+          label="Equity"
+          value={formatCurrency(account.equityUsd)}
+        />
+        <MetricTile
+          detail="Available balance"
+          icon={Layers}
+          label="Cash"
+          value={formatCurrency(account.cashBalanceUsd)}
+        />
+        <MetricTile
+          detail="Exchange reconciled"
+          icon={realizedPnl >= 0 ? TrendingUp : TrendingDown}
+          label="Realized"
+          tone={realizedPnl >= 0 ? "positive" : "danger"}
+          value={formatCurrency(realizedPnl)}
+        />
+        <MetricTile
+          detail="Recorded fees"
+          icon={Activity}
+          label="Fees"
+          tone={feeUsd > 0 ? "warning" : "neutral"}
+          value={formatCurrency(feeUsd)}
+        />
+        <MetricTile
+          detail={formatDate(account.lastReconciledAt)}
+          icon={Clock}
+          label="Reconciled"
+          value={account.lastReconciledAt ? "synced" : "pending"}
+        />
+      </section>
+
+      <section className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
+        <Panel icon={WalletCards} title="Live Account">
+          <div className="grid gap-2 sm:grid-cols-2">
+            <SmallMetric label="Status" value={formatLiveAccountStatus(account.status)} />
+            <SmallMetric label="Network" value={account.network} />
+            <SmallMetric label="Created" value={formatDate(account.createdAt)} />
+            <SmallMetric label="Updated" value={formatDate(account.updatedAt)} />
+            <SmallMetric
+              label="Last refresh"
+              value={lastRefreshAt?.toLocaleTimeString("sv-SE") ?? "-"}
+            />
+            <SmallMetric label="Last reconcile" value={formatDate(account.lastReconciledAt)} />
+          </div>
+        </Panel>
+
+        <Panel icon={Activity} title="Exchange Routing">
+          <div className="grid gap-3">
+            <DetailRow label="Wallet address" value={account.walletAddress ?? "config wallet"} />
+            <DetailRow label="Vault address" value={account.vaultAddress ?? "none"} />
+            <DetailRow label="Account key" value={account.key} />
+          </div>
         </Panel>
       </section>
     </>
@@ -1247,6 +1483,89 @@ function Bar({ tone = "neutral", value }: { tone?: Tone; value: number }) {
 
 function EmptyState({ text }: { text: string }) {
   return <div className="py-6 text-center text-sm text-[#5b6770]">{text}</div>;
+}
+
+function DetailRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="grid gap-1 rounded-md border border-line bg-[#f8fafb] px-3 py-2">
+      <p className="text-[11px] font-medium uppercase text-[#5b6770]">{label}</p>
+      <p className="break-words font-mono text-sm font-semibold text-ink">{value}</p>
+    </div>
+  );
+}
+
+function initialAccountKey(
+  summary: PaperTradingSummaryResponse,
+  tradingAccounts: TradingAccountsResponse,
+) {
+  return buildAccountOptions(summary, tradingAccounts)[0]?.key ?? "";
+}
+
+function buildAccountOptions(
+  summary: PaperTradingSummaryResponse,
+  tradingAccounts: TradingAccountsResponse,
+): AccountOption[] {
+  const mirroredPaperKeys = new Set(
+    tradingAccounts.accounts
+      .filter((account) => account.accountType === "paper")
+      .map((account) => account.key),
+  );
+  const paperOptions = summary.accounts.map<AccountOption>((account) => ({
+    accountType: "paper",
+    key: account.key,
+    label: account.label,
+    paper: account,
+  }));
+  const liveOptions = tradingAccounts.accounts
+    .filter((account) => account.accountType === "live" && !mirroredPaperKeys.has(account.key))
+    .map<AccountOption>((account) => ({
+      accountType: "live",
+      key: account.key,
+      label: account.label,
+      live: account,
+    }));
+  return [...paperOptions, ...liveOptions];
+}
+
+function accountOptionLabel(account: AccountOption) {
+  return `${account.label} (${account.accountType})`;
+}
+
+function accountTradingEnabled(account: AccountOption) {
+  if (account.accountType === "paper") {
+    return account.paper.enabled;
+  }
+  return account.live.status === "enabled";
+}
+
+function accountTradingStatusLabel(account: AccountOption) {
+  if (account.accountType === "paper") {
+    return account.paper.enabled ? "trading enabled" : "trading stopped";
+  }
+  return `trading ${formatLiveAccountStatus(account.live.status)}`;
+}
+
+function accountTradingStatusTone(account: AccountOption): Tone {
+  if (accountTradingEnabled(account)) {
+    return "positive";
+  }
+  return account.accountType === "live" && account.live.status === "disabled" ? "neutral" : "warning";
+}
+
+function formatLiveAccountStatus(status: TradingAccount["status"]) {
+  if (status === "exit_only") {
+    return "exit only";
+  }
+  return status;
+}
+
+function lastUpdatedAt(
+  summary: PaperTradingSummaryResponse,
+  tradingAccounts: TradingAccountsResponse,
+) {
+  return dateMs(tradingAccounts.updatedAt) > dateMs(summary.updatedAt)
+    ? tradingAccounts.updatedAt
+    : summary.updatedAt;
 }
 
 function buildAccountView(

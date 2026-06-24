@@ -12,6 +12,7 @@ import type { HealthResponse } from "@/types/health";
 import type { OperationStatusListResponse } from "@/types/operation";
 import type { OpsHealthResponse } from "@/types/ops";
 import type { PaperTradingSummaryResponse } from "@/types/paper";
+import type { TradingAccountsResponse } from "@/types/trading";
 import type {
   CopyTradeListResponse,
   SourceTradeListResponse,
@@ -353,6 +354,27 @@ export async function getPaperTradingSummary(
   } catch {
     return emptyPaperTradingSummary();
   }
+}
+
+export async function getTradingAccounts(): Promise<TradingAccountsResponse> {
+  try {
+    const response = await backendGet(`${getApiBaseUrl()}/trading/accounts`);
+
+    if (!response.ok) {
+      return emptyTradingAccounts();
+    }
+
+    return (await response.json()) as TradingAccountsResponse;
+  } catch {
+    return emptyTradingAccounts();
+  }
+}
+
+function emptyTradingAccounts(): TradingAccountsResponse {
+  return {
+    accounts: [],
+    updatedAt: new Date(0).toISOString(),
+  };
 }
 
 function emptyPaperTradingSummary(): PaperTradingSummaryResponse {

@@ -525,7 +525,8 @@ Worker:
 - Can run as `python -m app.workers.monitor_worker` when the in-API worker is disabled.
 - Docker Compose runs separate `trading-worker` and `maintenance-worker`
   services and disables the in-API worker through `WORKER_RUN_IN_API_PROCESS=false`.
-- `WORKER_ROLE=trading` starts realtime monitoring and paper-copy recovery only.
+- `WORKER_ROLE=trading` starts realtime monitoring, copy execution, copy
+  recovery, and live reconciliation.
 - `WORKER_ROLE=maintenance` starts discovery, pool reimport, scoring, and pruning only.
 - Each worker writes a lightweight heartbeat to Postgres so `/ops` can show
   fresh, stale, or missing worker state.
@@ -544,8 +545,9 @@ What it does:
 Purpose:
 
 - Active wallet monitoring.
-- Future open position management.
-- Future paper/live copy decisions.
+- Realtime paper copy.
+- Live copy when explicit live execution flags are enabled.
+- Open position management through recovery and reconciliation.
 
 ### Paper Copytrading
 
@@ -711,20 +713,23 @@ What it does:
 - The Trading page polls the paper summary API and shows account PnL,
   monitored sources, currently trading sources, open position PnL, wallet PnL
   history, closed trade history, and recent fills without a full page refresh.
-- The Accounts page filters the paper summary to one selected paper account.
+- The Accounts page filters account data to one selected paper or live account.
   It keeps the last selected account in browser storage and falls back to the
-  first synced account. It shows account KPIs, balance and PnL charts,
-  allocation usage, market exposure, source performance, open positions, closed
-  trades, and recent fills for the selected account.
-- The Accounts page can create new paper accounts from the dashboard. The modal
-  includes a live account option for the future, but only paper accounts can be
-  created now.
+  first synced account. For paper accounts it shows account KPIs, balance and
+  PnL charts, allocation usage, market exposure, source performance, open
+  positions, closed trades, and recent fills. For live accounts it shows
+  exchange equity, cash balance, realized PnL, fees, reconciliation state,
+  wallet routing, and vault routing.
+- The Accounts page can create new paper and live accounts from the dashboard.
+  Paper accounts choose a USD starting balance. Live accounts choose an account
+  key, label, wallet address, and optional vault address. New accounts start
+  disabled.
 - The Accounts page can start, stop, or close all and stop trading for the
-  selected paper account. Start trading enables new entries again. Stop trading
-  disables new entries and adds for that account, but still lets source reduce
-  and exit fills manage existing positions. Close all and stop trading disables
-  the account and manually closes every open paper position for that account.
-  Other paper accounts are not disabled or closed.
+  selected account. Start trading enables new entries again. Stop trading
+  disables new entries and adds for that account, but still lets reduce and exit
+  fills manage existing positions. Close all and stop trading disables the
+  account and closes every open position for that account. Other accounts are
+  not disabled or closed.
 - The summary API attaches wallet labels to paper allocation, position,
   wallet-history, closed-trade, and recent-fill rows. The UI shows the label
   when available and falls back to the short address.
@@ -802,8 +807,9 @@ What it does:
 - Adds generic trading tables for paper and live account state:
   `trading_accounts`, `trading_positions`, `trading_orders`, and
   `trading_fills`.
-- Mirrors existing paper accounts into `trading_accounts` so the Accounts page
-  can later move from paper-only data to mixed paper/live account data.
+- Mirrors existing paper accounts into `trading_accounts` and lists live
+  accounts from the same endpoint so the Accounts page can select mixed
+  paper/live account data.
 - Uses account `status` values of `enabled`, `exit_only`, and `disabled`.
   Disabled paper accounts are mirrored as `exit_only` because source exits and
   reductions remain allowed after Stop trading.
@@ -812,21 +818,27 @@ What it does:
 - Adds deterministic Hyperliquid client order ids from account, source wallet,
   source fill id, sequence index, and action.
 - Adds a Hyperliquid live trading adapter that can submit IOC limit orders
-  through the official Python SDK when explicitly called by future live worker
-  code.
+  through the official Python SDK.
 - Persists live order intents before submission and reconciles active live
   orders from Hyperliquid `orderStatus`, `userFillsByTime`, and
   `clearinghouseState`.
 - Stores live exchange fills idempotently in `trading_fills` and syncs aggregate
   account-level live positions in `trading_positions`.
 - Blocks live order submission unless global live trading flags are enabled,
-  acknowledgements are present, the live account is enabled or exit-only, and
-  the intent is a live intent for that account.
+  acknowledgements are present, the live account network matches the configured
+  network, the live account is enabled or exit-only, and the intent is a live
+  intent for that account.
 - Allows exit-only live accounts to submit reduce-only exits, but blocks new
   entries and adds.
-- Keeps live copy execution disconnected from the trading worker for now.
-  Realtime copy processing still writes paper fills only. The worker can run
-  live reconciliation for enabled live accounts when live trading is enabled.
+- Runs automatic live copy only when `live_trading_enabled` and
+  `live_trading_copy_enabled` are both true. Realtime live copy reuses the
+  existing source allocation policy, live mid-price cache, price drift guard,
+  deterministic client order ids, and live risk guardrails.
+- Enforces live entry guardrails for max order notional, max account open
+  notional, max open positions, max daily loss, max orders per minute, and
+  market allow/block lists before submitting a live entry order.
+- Reconciles matched live fills back into source-attributed live positions so
+  exit-only accounts can continue to reduce or close copied exposure.
 - Adds testnet-only manual order submission through `POST /trading/testnet/orders`
   so lifecycle and reconciliation can be tested before mainnet.
 
@@ -841,6 +853,7 @@ Config:
 - `live_trading_reconciliation_enabled`
 - `live_trading_reconciliation_interval_seconds`
 - `live_trading_reconciliation_lookback_minutes`
+- `live_trading_copy_enabled`
 - `live_trading_min_order_notional_usd`
 - `live_trading_max_order_notional_usd`
 - `live_trading_max_account_open_notional_usd`
@@ -858,6 +871,9 @@ Live trading API:
 - `GET /trading/accounts`
 - `POST /trading/accounts/live`
 - `PATCH /trading/accounts/{account_key}/status`
+- `POST /trading/accounts/{account_key}/start`
+- `POST /trading/accounts/{account_key}/stop`
+- `POST /trading/accounts/{account_key}/close-all-and-stop`
 - `POST /trading/accounts/{account_key}/reconcile`
 - `POST /trading/testnet/orders`
 
@@ -1177,5 +1193,6 @@ Purpose:
 
 Purpose:
 
-- Future live execution with very small risk and strict manual enablement.
-- Not part of the current MVP implementation.
+- Live execution with very small risk and strict manual enablement.
+- Runs only when global live trading, copy execution, and account-level trading
+  are all enabled.

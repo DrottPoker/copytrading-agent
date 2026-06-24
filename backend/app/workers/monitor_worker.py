@@ -18,6 +18,7 @@ from app.integrations.hyperliquid_ws_client import (
 from app.integrations.redis_client import get_redis
 from app.services.discovery_service import run_discovery_import
 from app.services.job_lock_service import JobLockAlreadyHeldError, job_lock
+from app.services.live_copy_service import process_live_copy_fills, process_live_copy_recovery
 from app.services.live_trading_service import (
     LiveReconciliationResult,
     reconcile_live_trading_account,
@@ -112,8 +113,10 @@ async def run_monitor_services(
     price_cache = (
         MarketPriceCache()
         if runs_trading
-        and settings.paper_trading_enabled
-        and settings.paper_copy_enabled
+        and (
+            (settings.paper_trading_enabled and settings.paper_copy_enabled)
+            or (settings.live_trading_enabled and settings.live_trading_copy_enabled)
+        )
         and settings.paper_copy_use_live_mid_price
         and settings.paper_copy_market_price_cache_enabled
         else None
@@ -132,6 +135,14 @@ async def run_monitor_services(
         )
     if runs_trading and settings.paper_trading_enabled and settings.paper_copy_enabled:
         await run_paper_copy_recovery_once(
+            sessionmaker=sessionmaker,
+            redis=redis,
+            settings=settings,
+            source_wallet=None,
+            price_cache=price_cache,
+        )
+    if runs_trading and settings.live_trading_enabled and settings.live_trading_copy_enabled:
+        await run_live_copy_recovery_once(
             sessionmaker=sessionmaker,
             redis=redis,
             settings=settings,
@@ -194,6 +205,19 @@ async def run_monitor_services(
         tasks.append(
             asyncio.create_task(
                 run_paper_copy_recovery_loop(
+                    sessionmaker=sessionmaker,
+                    redis=redis,
+                    stop_event=stop_event,
+                    settings=settings,
+                    price_cache=price_cache,
+                )
+            )
+        )
+
+    if runs_trading and settings.live_trading_enabled and settings.live_trading_copy_enabled:
+        tasks.append(
+            asyncio.create_task(
+                run_live_copy_recovery_loop(
                     sessionmaker=sessionmaker,
                     redis=redis,
                     stop_event=stop_event,
@@ -446,7 +470,9 @@ async def load_realtime_wallets(
     if max_wallets <= 0:
         return []
 
-    if settings.paper_trading_enabled and settings.paper_copy_enabled:
+    if (settings.paper_trading_enabled and settings.paper_copy_enabled) or (
+        settings.live_trading_enabled and settings.live_trading_copy_enabled
+    ):
         async with sessionmaker() as session:
             allocations = await refresh_paper_copy_allocations(session, settings=settings)
             await session.commit()
@@ -809,6 +835,86 @@ async def run_paper_copy_recovery_once(
         return PaperCopyBatchResult()
 
 
+async def run_live_copy_recovery_loop(
+    *,
+    sessionmaker: Any,
+    redis: Any,
+    stop_event: asyncio.Event,
+    settings: Any,
+    price_cache: MarketPriceCache | None = None,
+) -> None:
+    while not stop_event.is_set():
+        await sleep_until_stop(stop_event, settings.paper_copy_recovery_interval_seconds)
+        if stop_event.is_set():
+            return
+        await run_live_copy_recovery_once(
+            sessionmaker=sessionmaker,
+            redis=redis,
+            settings=settings,
+            source_wallet=None,
+            price_cache=price_cache,
+        )
+
+
+async def run_live_copy_recovery_once(
+    *,
+    sessionmaker: Any,
+    redis: Any,
+    settings: Any,
+    source_wallet: str | None,
+    price_cache: MarketPriceCache | None = None,
+) -> PaperCopyBatchResult:
+    try:
+        async with sessionmaker() as session:
+            async with job_lock(
+                session,
+                key="live_copy_recovery",
+                ttl_seconds=max(settings.paper_copy_recovery_interval_seconds * 3, 300),
+            ):
+                result = await process_live_copy_recovery(
+                    session,
+                    source_wallet=source_wallet,
+                    settings=settings,
+                    price_cache=price_cache,
+                )
+        if result.processed_fills > 0 or result.skipped_fills > 0:
+            logger.info(
+                "live copy recovery completed source_wallet=%s processed=%s skipped=%s",
+                source_wallet or "all",
+                result.processed_fills,
+                result.skipped_fills,
+            )
+            await publish_event(
+                redis,
+                event_type="live_copy_recovery",
+                channel="events:fills",
+                message=(
+                    "Live copy recovery completed: "
+                    f"{result.processed_fills} processed, {result.skipped_fills} skipped."
+                ),
+                payload={
+                    "sourceWallet": source_wallet,
+                    "processedFills": result.processed_fills,
+                    "skippedFills": result.skipped_fills,
+                    "accountsUpdated": result.accounts_updated,
+                },
+            )
+        return result
+    except JobLockAlreadyHeldError as exc:
+        logger.info("live copy recovery skipped: %s", exc)
+        return PaperCopyBatchResult()
+    except Exception as exc:
+        logger.exception("live copy recovery failed source_wallet=%s", source_wallet or "all")
+        await publish_event(
+            redis,
+            event_type="live_copy_recovery_error",
+            channel="events:system",
+            message="Live copy recovery failed.",
+            payload={"sourceWallet": source_wallet, "error": str(exc)},
+        )
+        return PaperCopyBatchResult()
+
+
 async def run_live_trading_reconciliation_loop(
     *,
     sessionmaker: Any,
@@ -1057,6 +1163,14 @@ async def handle_websocket_message(
                 source_wallet=stored.wallet_address,
                 price_cache=price_cache,
             )
+        if settings.live_trading_enabled and settings.live_trading_copy_enabled:
+            await run_live_copy_recovery_once(
+                sessionmaker=sessionmaker,
+                redis=redis,
+                settings=settings,
+                source_wallet=stored.wallet_address,
+                price_cache=price_cache,
+            )
         await publish_event(
             redis,
             event_type="fill_snapshot",
@@ -1128,6 +1242,50 @@ async def handle_websocket_message(
                 event_type="paper_copy_error",
                 channel="events:system",
                 message="Paper copy processing failed.",
+                payload={"walletAddress": stored.wallet_address, "error": str(exc)},
+            )
+
+    if (
+        settings.live_trading_enabled
+        and settings.live_trading_copy_enabled
+        and stored.inserted_rows
+    ):
+        try:
+            if price_cache is not None:
+                await price_cache.request_dexes(
+                    dex_from_coin(fill.get("coin")) for fill in stored.inserted_rows
+                )
+            async with sessionmaker() as session:
+                live_result = await process_live_copy_fills(
+                    session,
+                    source_wallet=stored.wallet_address,
+                    fills=stored.inserted_rows,
+                    settings=settings,
+                    price_cache=price_cache,
+                )
+            if live_result.processed_fills > 0 or live_result.skipped_fills > 0:
+                await publish_event(
+                    redis,
+                    event_type="live_copy",
+                    channel="events:fills",
+                    message=(
+                        f"Live copied {live_result.processed_fills} fills from "
+                        f"{short_address(stored.wallet_address)}."
+                    ),
+                    payload={
+                        "walletAddress": stored.wallet_address,
+                        "processedFills": live_result.processed_fills,
+                        "skippedFills": live_result.skipped_fills,
+                        "accountsUpdated": live_result.accounts_updated,
+                    },
+                )
+        except Exception as exc:
+            logger.exception("live copy processing failed wallet=%s", stored.wallet_address)
+            await publish_event(
+                redis,
+                event_type="live_copy_error",
+                channel="events:system",
+                message="Live copy processing failed.",
                 payload={"walletAddress": stored.wallet_address, "error": str(exc)},
             )
 

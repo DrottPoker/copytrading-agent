@@ -96,7 +96,8 @@ Important folders:
 The monitor worker supports explicit roles through `WORKER_ROLE`:
 
 - `all`: starts both trading and maintenance loops in one process.
-- `trading`: starts realtime subscriptions and paper-copy recovery only.
+- `trading`: starts realtime subscriptions, copy execution, copy recovery, and
+  live reconciliation.
 - `maintenance`: starts discovery, pool reimport, scoring, and pruning only.
 
 Docker Compose runs `trading-worker` and `maintenance-worker` as separate
@@ -122,11 +123,14 @@ Trading worker responsibilities:
   and `sourceStatus = "waiting_for_slot"`.
 - Subscribe to Hyperliquid `userFills` over WebSocket.
 - Subscribe to Hyperliquid `allMids` over WebSocket and maintain a short-lived
-  price cache for paper execution.
+  price cache for copy execution.
 - Store snapshot and realtime fills in Postgres.
 - Simulate paper copies for non-snapshot fills from scored allocation wallets.
-- Run paper-copy recovery on startup, snapshots, and the configured periodic
-  recovery interval.
+- Submit live copy orders for non-snapshot fills when live trading and live copy
+  execution are enabled.
+- Run copy recovery on startup, snapshots, and the configured periodic recovery
+  interval.
+- Reconcile enabled live accounts when live trading reconciliation is enabled.
 - Publish system and fill events to Redis.
 
 Maintenance worker responsibilities:
@@ -659,8 +663,8 @@ Paper account rows are locked before copied fills are written, so different
 source wallets cannot concurrently update the same paper account balance.
 Successful paper fills also store a `raw_payload.tradeIntent` object from the
 shared trading core. That intent contains side, action, size, notional, limit
-price, reduce-only state, and deterministic client order id, so future live
-execution can consume the same planned order shape that paper simulation used.
+price, reduce-only state, and deterministic client order id, so live execution
+can consume the same planned order shape that paper simulation uses.
 Allocation refresh also restores open paper-position sources into
 `watched_wallets` as neutral `pool` rows if an earlier prune removed the pool
 row.
@@ -677,12 +681,15 @@ source rows, so a source is shown as `trading` when at least one account can
 open or manage that source and the source has open paper exposure.
 Paper account `enabled` is database runtime state after the account has been
 created through the dashboard or API. The Accounts page can create paper
-accounts with a selected USD starting balance. New paper accounts start
+accounts with a selected USD starting balance and live accounts with an account
+key, label, wallet address, and optional vault address. New accounts start
 disabled. The Accounts page can change enabled state for one account without
 disabling other accounts. Disabled paper accounts are excluded from new entries
 and adds, but are still included when an existing open position for the source
-needs a reduce or exit fill. The close-all-and-stop route disables the account
-first, then manually closes its open paper positions.
+needs a reduce or exit fill. Live accounts use `enabled`, `exit_only`, and
+`disabled` status. The close-all-and-stop route sets the selected account to
+exit-only first, closes open positions for that account, and disables the
+account after successful close submission.
 The summary also exposes `poolRank` and `sourceStatusReason`. `poolRank` is the
 source wallet's score rank in the wallet pool, while `sourceStatusReason`
 explains why a source is retained or waiting without relying on monitor-slot
@@ -715,15 +722,16 @@ position snapshots store Hyperliquid `positionValue` in
 The backend separates copied order planning from execution. The shared
 `trading_core` module produces `TradeIntent` objects and shared sizing helpers.
 Paper execution consumes those intents through the existing paper simulator.
-Live execution has a separate Hyperliquid adapter. The trading worker does not
-execute live copy intents yet, but it can reconcile enabled live accounts when
-live trading is enabled.
+Live execution has a separate Hyperliquid adapter. The trading worker executes
+live copy only when global live trading, copy execution, and the selected live
+account are enabled. It can also reconcile enabled live accounts when live
+trading is enabled.
 
 Generic live-ready tables sit beside the legacy paper tables:
 
 - `trading_accounts`: paper and live account registry with status, network,
   wallet address, vault address, and account PnL fields.
-- `trading_positions`: account/source/coin position state for future live
+- `trading_positions`: account/source/coin position state for live copy and
   reconciliation.
 - `trading_orders`: idempotent order records keyed by deterministic client order
   id and source fill sequence.
@@ -736,9 +744,12 @@ allowed after new entries are disabled.
 The Hyperliquid live adapter uses the official Python SDK at execution time. It
 submits IOC limit orders with deterministic client order ids and supports
 reduce-only orders. It refuses to submit unless live trading is enabled,
-acknowledged, account status allows the requested intent, and the intent is a
-live intent for that account. Mainnet also requires
-`live_trading_mainnet_acknowledged=true`.
+acknowledged, the account network matches the configured network, account
+status allows the requested intent, and the intent is a live intent for that
+account. Mainnet also requires `live_trading_mainnet_acknowledged=true`.
+Automatic copied live entries also pass account-level guardrails for max order
+notional, max account open notional, max open positions, max daily loss, max
+orders per minute, and market allow/block lists.
 
 Live order lifecycle is persisted in `trading_orders`. Orders move from
 `planned` to `submitted`, then to `accepted`, `rejected`, `filled`,
@@ -748,6 +759,10 @@ with the stored oid or deterministic cloid, importing `userFillsByTime` rows
 into `trading_fills`, and syncing aggregate account positions from
 `clearinghouseState` into `trading_positions` with source wallet
 `__exchange__`.
+
+Live fill reconciliation also updates source-attributed live positions for
+matched copied orders. Those source positions let exit-only accounts continue
+to reduce or close copied exposure without allowing new entries.
 
 The paper summary exposes closed trade history separately from raw recent fills.
 Closed trade rows are derived from paper `close` and `flip_close` executions,

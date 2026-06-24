@@ -23,6 +23,7 @@ from app.services.trading_core import (
 )
 
 ZERO = Decimal("0")
+POSITION_EPSILON = Decimal("0.000000000001")
 LIVE_EXCHANGE_SOURCE = "__exchange__"
 LIVE_MANUAL_TEST_SOURCE = "__manual_testnet__"
 TERMINAL_ORDER_STATUSES = {"filled", "rejected", "canceled", "failed"}
@@ -78,6 +79,14 @@ class LiveOrderLifecycleResult:
 
 
 @dataclass(frozen=True)
+class LiveCloseAllResult:
+    account_key: str
+    submitted_orders: int
+    failed_orders: int
+    status: str
+
+
+@dataclass(frozen=True)
 class LivePositionSnapshot:
     coin: str
     side: str
@@ -87,6 +96,13 @@ class LivePositionSnapshot:
     leverage: Decimal
     margin_usd: Decimal
     raw_payload: dict[str, Any]
+
+
+def validate_live_trading_configuration(settings: Settings) -> None:
+    try:
+        HyperliquidLiveTradingClient(settings=settings).validate_live_configuration()
+    except Exception as exc:
+        raise LiveTradingServiceError(str(exc) or exc.__class__.__name__) from exc
 
 
 async def create_live_trading_account(
@@ -102,14 +118,14 @@ async def create_live_trading_account(
     existing = await session.scalar(select(TradingAccount).where(TradingAccount.key == key))
     if existing is not None:
         raise LiveAccountCreateError("Trading account key already exists.", status_code=409)
-    if status not in {"disabled", "enabled", "exit_only"}:
-        raise LiveAccountCreateError("Unsupported live account status.")
+    if status != "disabled":
+        raise LiveAccountCreateError("Live accounts must be created disabled.")
 
     account = TradingAccount(
         key=key,
         account_type="live",
-        label=label,
-        status=status,
+        label=label.strip(),
+        status="disabled",
         network=settings.hyperliquid_network,
         wallet_address=normalize_optional_address(wallet_address),
         vault_address=normalize_optional_address(vault_address),
@@ -134,6 +150,99 @@ async def set_live_trading_account_status(
     account.status = status
     await session.flush()
     return account
+
+
+async def close_all_live_account_positions(
+    session: AsyncSession,
+    *,
+    account: TradingAccount,
+    settings: Settings,
+    info_client: HyperliquidClient | None = None,
+    trading_client: HyperliquidLiveTradingClient | None = None,
+) -> LiveCloseAllResult:
+    if account.account_type != "live":
+        raise LiveTradingServiceError("Only live accounts can close live positions.")
+
+    account.status = "exit_only"
+    await session.flush()
+
+    client_created = info_client is None
+    client = info_client or HyperliquidClient(settings)
+    if client_created:
+        await client.__aenter__()
+    try:
+        await reconcile_live_trading_account(
+            session,
+            account=account,
+            settings=settings,
+            info_client=client,
+        )
+        positions = await load_live_exchange_positions(session, account_key=account.key)
+        if not positions:
+            account.status = "disabled"
+            await session.flush()
+            return LiveCloseAllResult(
+                account_key=account.key,
+                submitted_orders=0,
+                failed_orders=0,
+                status=account.status,
+            )
+
+        mids = await client.all_mids()
+        submitted = 0
+        failed = 0
+        live_client = trading_client or HyperliquidLiveTradingClient(settings=settings)
+        for position in positions:
+            mid_price = decimal_or_none(mids.get(position.coin))
+            if mid_price is None or mid_price <= ZERO:
+                failed += 1
+                continue
+            intent = build_live_close_position_intent(
+                account=account,
+                position=position,
+                mid_price=mid_price,
+                settings=settings,
+            )
+            try:
+                result = await submit_live_trade_intent(
+                    session,
+                    account=account,
+                    intent=intent,
+                    settings=settings,
+                    client=live_client,
+                )
+                if result.order.status in {"rejected", "failed", "canceled"}:
+                    failed += 1
+                else:
+                    submitted += 1
+            except LiveTradingServiceError:
+                failed += 1
+        if failed > 0:
+            await session.flush()
+            return LiveCloseAllResult(
+                account_key=account.key,
+                submitted_orders=submitted,
+                failed_orders=failed,
+                status=account.status,
+            )
+
+        await reconcile_live_trading_account(
+            session,
+            account=account,
+            settings=settings,
+            info_client=client,
+        )
+        account.status = "disabled"
+        await session.flush()
+        return LiveCloseAllResult(
+            account_key=account.key,
+            submitted_orders=submitted,
+            failed_orders=0,
+            status=account.status,
+        )
+    finally:
+        if client_created:
+            await client.__aexit__(None, None, None)
 
 
 async def load_live_account_for_update(
@@ -167,6 +276,19 @@ async def submit_live_trade_intent(
     if intent.account_type != "live":
         raise LiveOrderSubmitError("Trade intent must target a live account.")
 
+    live_client = client or HyperliquidLiveTradingClient(settings=settings)
+    try:
+        live_client.validate_account_order(account=account, intent=intent)
+        if not intent.reduce_only:
+            await validate_live_entry_state_guardrails(
+                session,
+                account=account,
+                intent=intent,
+                settings=settings,
+            )
+    except Exception as exc:
+        raise LiveOrderSubmitError(str(exc) or exc.__class__.__name__) from exc
+
     order = await get_or_create_live_order(session, intent=intent)
     if order.status in TERMINAL_ORDER_STATUSES:
         return LiveOrderLifecycleResult(order=order, exchange_result=None, submitted=False)
@@ -180,7 +302,6 @@ async def submit_live_trade_intent(
     )
     await session.flush()
 
-    live_client = client or HyperliquidLiveTradingClient(settings=settings)
     try:
         result = await live_client.submit_order(account=account, intent=intent)
     except Exception as exc:
@@ -196,6 +317,137 @@ async def submit_live_trade_intent(
     apply_live_order_result(order, result, updated_at=datetime.now(UTC))
     await session.flush()
     return LiveOrderLifecycleResult(order=order, exchange_result=result, submitted=True)
+
+
+async def validate_live_entry_state_guardrails(
+    session: AsyncSession,
+    *,
+    account: TradingAccount,
+    intent: TradeIntent,
+    settings: Settings,
+) -> None:
+    now = datetime.now(UTC)
+    if settings.live_trading_max_account_open_notional_usd > ZERO:
+        open_notional = await live_account_open_notional(session, account_key=account.key)
+        if (
+            open_notional + intent.notional_usd
+            > settings.live_trading_max_account_open_notional_usd
+        ):
+            raise LiveOrderSubmitError("Live account open notional guard would be exceeded.")
+
+    if settings.live_trading_max_open_positions > 0:
+        open_coins = await live_account_open_coins(session, account_key=account.key)
+        if (
+            intent.coin not in open_coins
+            and len(open_coins) >= settings.live_trading_max_open_positions
+        ):
+            raise LiveOrderSubmitError("Live account open position guard would be exceeded.")
+
+    if settings.live_trading_max_daily_loss_usd > ZERO:
+        daily_net_pnl = await live_account_daily_net_pnl(
+            session,
+            account_key=account.key,
+            now=now,
+        )
+        if daily_net_pnl <= -settings.live_trading_max_daily_loss_usd:
+            raise LiveOrderSubmitError("Live account daily loss guard is active.")
+
+    if settings.live_trading_max_orders_per_minute > 0:
+        recent_orders = await live_account_recent_order_count(
+            session,
+            account_key=account.key,
+            now=now,
+        )
+        if recent_orders >= settings.live_trading_max_orders_per_minute:
+            raise LiveOrderSubmitError("Live account order rate guard is active.")
+
+
+async def live_account_open_notional(
+    session: AsyncSession,
+    *,
+    account_key: str,
+) -> Decimal:
+    aggregate_value = await session.scalar(
+        select(func.coalesce(func.sum(TradingPosition.notional_usd), ZERO)).where(
+            TradingPosition.account_key == account_key,
+            TradingPosition.account_type == "live",
+            TradingPosition.source_wallet == LIVE_EXCHANGE_SOURCE,
+        )
+    )
+    aggregate_notional = decimal_or_none(aggregate_value) or ZERO
+    if aggregate_notional > ZERO:
+        return aggregate_notional
+    source_value = await session.scalar(
+        select(func.coalesce(func.sum(TradingPosition.notional_usd), ZERO)).where(
+            TradingPosition.account_key == account_key,
+            TradingPosition.account_type == "live",
+            TradingPosition.source_wallet != LIVE_EXCHANGE_SOURCE,
+        )
+    )
+    return decimal_or_none(source_value) or ZERO
+
+
+async def live_account_open_coins(
+    session: AsyncSession,
+    *,
+    account_key: str,
+) -> set[str]:
+    aggregate_result = await session.scalars(
+        select(TradingPosition.coin).where(
+            TradingPosition.account_key == account_key,
+            TradingPosition.account_type == "live",
+            TradingPosition.source_wallet == LIVE_EXCHANGE_SOURCE,
+        )
+    )
+    aggregate_coins = {coin for coin in aggregate_result.all() if coin}
+    if aggregate_coins:
+        return aggregate_coins
+    source_result = await session.scalars(
+        select(TradingPosition.coin).where(
+            TradingPosition.account_key == account_key,
+            TradingPosition.account_type == "live",
+            TradingPosition.source_wallet != LIVE_EXCHANGE_SOURCE,
+        )
+    )
+    return {coin for coin in source_result.all() if coin}
+
+
+async def live_account_daily_net_pnl(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    now: datetime,
+) -> Decimal:
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    value = await session.scalar(
+        select(
+            func.coalesce(
+                func.sum(TradingFill.realized_pnl_usd - TradingFill.fee_usd),
+                ZERO,
+            )
+        ).where(
+            TradingFill.account_key == account_key,
+            TradingFill.account_type == "live",
+            TradingFill.filled_at >= day_start,
+        )
+    )
+    return decimal_or_none(value) or ZERO
+
+
+async def live_account_recent_order_count(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    now: datetime,
+) -> int:
+    value = await session.scalar(
+        select(func.count(TradingOrder.id)).where(
+            TradingOrder.account_key == account_key,
+            TradingOrder.account_type == "live",
+            TradingOrder.created_at >= now - timedelta(minutes=1),
+        )
+    )
+    return int(value or 0)
 
 
 async def get_or_create_live_order(
@@ -453,7 +705,15 @@ async def reconcile_live_fills(
         stmt = insert(TradingFill).values(**row)
         stmt = stmt.on_conflict_do_nothing(constraint="ux_trading_fills_exchange_fill_id")
         result = await session.execute(stmt)
-        inserted += int(result.rowcount or 0)
+        inserted_row = int(result.rowcount or 0) > 0
+        inserted += int(inserted_row)
+        if inserted_row:
+            await apply_live_source_fill_to_position(
+                session,
+                account=account,
+                order=matched_order,
+                parsed_fill=parsed,
+            )
     await session.flush()
     return inserted
 
@@ -470,6 +730,155 @@ async def load_live_orders_for_fill_matching(
         )
     )
     return list(result.all())
+
+
+async def load_live_exchange_positions(
+    session: AsyncSession,
+    *,
+    account_key: str,
+) -> list[TradingPosition]:
+    result = await session.scalars(
+        select(TradingPosition)
+        .where(
+            TradingPosition.account_key == account_key,
+            TradingPosition.account_type == "live",
+            TradingPosition.source_wallet == LIVE_EXCHANGE_SOURCE,
+        )
+        .order_by(TradingPosition.coin.asc())
+    )
+    return list(result.all())
+
+
+async def load_live_source_position(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    source_wallet: str,
+    coin: str,
+) -> TradingPosition | None:
+    return await session.scalar(
+        select(TradingPosition).where(
+            TradingPosition.account_key == account_key,
+            TradingPosition.account_type == "live",
+            TradingPosition.source_wallet == source_wallet,
+            TradingPosition.coin == coin,
+        )
+    )
+
+
+async def apply_live_source_fill_to_position(
+    session: AsyncSession,
+    *,
+    account: TradingAccount,
+    order: TradingOrder | None,
+    parsed_fill: dict[str, Any],
+) -> None:
+    fee_usd = parsed_fill["fee_usd"]
+    realized_pnl_usd = parsed_fill["realized_pnl_usd"]
+    account.fee_usd += fee_usd
+    account.realized_pnl_usd += realized_pnl_usd
+    if order is None or order.source_wallet == LIVE_EXCHANGE_SOURCE:
+        return
+
+    position = await load_live_source_position(
+        session,
+        account_key=account.key,
+        source_wallet=order.source_wallet,
+        coin=order.coin,
+    )
+
+    if order.action in {"open", "add", "flip_open"}:
+        await apply_live_open_fill_to_position(
+            session,
+            order=order,
+            position=position,
+            parsed_fill=parsed_fill,
+        )
+        return
+
+    if position is None or position.side != order.side:
+        return
+    await apply_live_close_fill_to_position(
+        session,
+        position=position,
+        parsed_fill=parsed_fill,
+    )
+
+
+async def apply_live_open_fill_to_position(
+    session: AsyncSession,
+    *,
+    order: TradingOrder,
+    position: TradingPosition | None,
+    parsed_fill: dict[str, Any],
+) -> None:
+    fill_size = parsed_fill["size"]
+    fill_notional = parsed_fill["notional_usd"]
+    margin_delta = order_margin_delta(order, fill_notional=fill_notional)
+    fee_usd = parsed_fill["fee_usd"]
+    filled_at = parsed_fill["filled_at"]
+
+    if position is None:
+        session.add(
+            TradingPosition(
+                account_key=order.account_key,
+                account_type="live",
+                source_wallet=order.source_wallet,
+                coin=order.coin,
+                side=order.side,
+                size=fill_size,
+                entry_price=parsed_fill["price"],
+                notional_usd=fill_notional,
+                leverage=order.leverage or Decimal("1"),
+                margin_usd=margin_delta,
+                realized_pnl_usd=ZERO,
+                fee_usd=fee_usd,
+                raw_payload={"source": "live_fill"},
+                opened_at=filled_at,
+                last_reconciled_at=filled_at,
+            )
+        )
+        return
+
+    if position.side != order.side:
+        return
+    previous_size = position.size
+    next_size = previous_size + fill_size
+    if next_size <= ZERO:
+        return
+    position.entry_price = (
+        (position.entry_price * previous_size) + (parsed_fill["price"] * fill_size)
+    ) / next_size
+    position.size = next_size
+    position.notional_usd += fill_notional
+    position.margin_usd += margin_delta
+    position.leverage = effective_leverage(
+        notional_usd=position.notional_usd,
+        margin_usd=position.margin_usd,
+        fallback=order.leverage or Decimal("1"),
+    )
+    position.fee_usd += fee_usd
+    position.last_reconciled_at = filled_at
+
+
+async def apply_live_close_fill_to_position(
+    session: AsyncSession,
+    *,
+    position: TradingPosition,
+    parsed_fill: dict[str, Any],
+) -> None:
+    fill_size = min(parsed_fill["size"], position.size)
+    if fill_size <= ZERO:
+        return
+    close_ratio = min(fill_size / position.size, Decimal("1"))
+    position.size -= fill_size
+    position.notional_usd = max(position.notional_usd * (Decimal("1") - close_ratio), ZERO)
+    position.margin_usd = max(position.margin_usd * (Decimal("1") - close_ratio), ZERO)
+    position.realized_pnl_usd += parsed_fill["realized_pnl_usd"]
+    position.fee_usd += parsed_fill["fee_usd"]
+    position.last_reconciled_at = parsed_fill["filled_at"]
+    if position.size <= POSITION_EPSILON:
+        await session.delete(position)
 
 
 async def update_live_orders_from_reconciled_fills(
@@ -667,6 +1076,76 @@ def build_testnet_live_trade_intent(
         source_exposure_pct=None,
         created_at=now,
     )
+
+
+def build_live_close_position_intent(
+    *,
+    account: TradingAccount,
+    position: TradingPosition,
+    mid_price: Decimal,
+    settings: Settings,
+) -> TradeIntent:
+    now = datetime.now(UTC)
+    limit_price = close_limit_price(
+        mid_price=mid_price,
+        side=position.side,
+        max_slippage_bps=settings.live_trading_max_slippage_bps,
+    )
+    notional_usd = limit_price * position.size
+    leverage = position.leverage if position.leverage > ZERO else Decimal("1")
+    return build_copy_trade_intent(
+        account_key=account.key,
+        account_type="live",
+        source_wallet=LIVE_EXCHANGE_SOURCE,
+        source_fill_id=f"close-all-{position.coin}-{uuid4().hex}",
+        sequence_index=0,
+        coin=position.coin,
+        action="close",
+        side=position.side,
+        size=position.size,
+        notional_usd=notional_usd,
+        margin_usd=margin_from_notional(notional_usd, leverage),
+        leverage=leverage,
+        limit_price=limit_price,
+        source_price=mid_price,
+        observed_price=mid_price,
+        price_drift_bps=ZERO,
+        price_source="live_close_all",
+        allocation_pct=None,
+        allocation_usd=None,
+        source_perp_equity_usd=None,
+        source_exposure_pct=None,
+        created_at=now,
+    )
+
+
+def close_limit_price(
+    *,
+    mid_price: Decimal,
+    side: str,
+    max_slippage_bps: Decimal,
+) -> Decimal:
+    slippage_ratio = max_slippage_bps / Decimal("10000")
+    if side == "long":
+        return mid_price * (Decimal("1") - slippage_ratio)
+    return mid_price * (Decimal("1") + slippage_ratio)
+
+
+def order_margin_delta(order: TradingOrder, *, fill_notional: Decimal) -> Decimal:
+    if order.requested_notional_usd <= ZERO or order.margin_usd is None:
+        return margin_from_notional(fill_notional, order.leverage or Decimal("1"))
+    return order.margin_usd * min(fill_notional / order.requested_notional_usd, Decimal("1"))
+
+
+def effective_leverage(
+    *,
+    notional_usd: Decimal,
+    margin_usd: Decimal,
+    fallback: Decimal,
+) -> Decimal:
+    if margin_usd <= ZERO:
+        return fallback if fallback > ZERO else Decimal("1")
+    return notional_usd / margin_usd
 
 
 def update_live_account_from_state(

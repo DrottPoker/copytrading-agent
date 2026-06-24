@@ -204,7 +204,8 @@ Worker loops:
 
 By default, `worker_role` is `all`, which starts both trading and maintenance
 loops in one process. Run `python -m app.workers.monitor_worker` with
-`WORKER_ROLE=trading` to run only realtime and paper-copy recovery, or
+`WORKER_ROLE=trading` to run realtime copy execution, copy recovery, and live
+reconciliation, or
 `WORKER_ROLE=maintenance` to run only discovery, pool reimport, scoring, and
 pruning.
 
@@ -212,7 +213,7 @@ Docker Compose runs two dedicated worker services and overrides
 `WORKER_RUN_IN_API_PROCESS=false` for the backend service:
 
 - `trading-worker`: realtime top-wallet subscriptions, realtime fills, paper
-  copy, and paper-copy recovery.
+  copy, live copy when enabled, copy recovery, and live reconciliation.
 - `maintenance-worker`: discovery, pool reimport, scoring, and pruning.
 
 Workers publish lightweight heartbeats to Postgres so the Ops Health page can
@@ -230,6 +231,9 @@ API:
 - `GET /trading/accounts`
 - `POST /trading/accounts/live`
 - `PATCH /trading/accounts/{account_key}/status`
+- `POST /trading/accounts/{account_key}/start`
+- `POST /trading/accounts/{account_key}/stop`
+- `POST /trading/accounts/{account_key}/close-all-and-stop`
 - `POST /trading/accounts/{account_key}/reconcile`
 - `POST /trading/testnet/orders`
 - `GET /paper-trading`
@@ -413,18 +417,20 @@ Sizing policy:
   account cap, missing matching positions, and price safety guards.
 - The Trading page polls the paper summary API and separates total,
   realized, and unrealized PnL at the top of the page.
-- The Accounts page stores the last selected paper account in the browser and
+- The Accounts page stores the last selected account in the browser and
   defaults to that account on the next visit, otherwise the first synced account
-  is selected. It shows account-specific metrics, charts, allocations, market
-  exposure, source performance, open positions, closed trades, and recent fills.
+  is selected. It shows paper account metrics, charts, allocations, market
+  exposure, source performance, open positions, closed trades, and recent fills,
+  and shows live account equity, balance, reconciliation, and routing details.
 - The Accounts page can create dashboard-managed paper accounts with a selected
-  USD starting balance. New paper accounts start with trading disabled.
+  USD starting balance and live accounts with a key, label, wallet address, and
+  optional vault address. New accounts start with trading disabled.
 - The Accounts page can start, stop, or close all and stop trading for the
-  selected paper account. Starting enables new paper copy entries for that
-  account. Stopping disables new entries and adds while still allowing source
-  reduce and exit fills to manage existing positions. Close all and stop
-  trading disables the account and closes all open positions for that account
-  while other paper accounts keep trading.
+  selected account. Starting enables new copy entries for that account.
+  Stopping disables new entries and adds while still allowing reduce and exit
+  fills to manage existing positions. Close all and stop trading disables the
+  account and closes all open positions for that account while other accounts
+  keep trading.
 - The dashboard shows paper accounts, monitored sources, currently trading
   sources, open positions, wallet PnL history, closed trade history, and recent
   fills as compact lists without horizontal scrolling.
@@ -523,8 +529,8 @@ the shared fill-import storage and market-filter settings.
 fill retention days, batch size, max rows, and protected top scored wallets.
 
 `backend/config/live_trading.json` owns live trading enablement,
-acknowledgements, execution limits, risk guardrails, and market allow/block
-lists.
+acknowledgements, copy execution, execution limits, risk guardrails, and market
+allow/block lists.
 
 The Ops Health page reads runtime settings from environment variables:
 
@@ -613,11 +619,15 @@ enablement and acknowledgement flags are explicitly set:
 {
   "enabled": true,
   "acknowledged": true,
-  "mainnet_acknowledged": false
+  "mainnet_acknowledged": false,
+  "copy_execution": {
+    "enabled": false
+  }
 }
 ```
 
-Mainnet live trading also requires `mainnet_acknowledged=true`.
+Mainnet live trading also requires `mainnet_acknowledged=true`. Automatic live
+copy requires both `enabled=true` and `copy_execution.enabled=true`.
 When live trading is enabled, startup requires `HYPERLIQUID_PRIVATE_KEY` and
 `HYPERLIQUID_WALLET_ADDRESS`. The private key is read from environment/config
 only and is not stored in Postgres.
@@ -625,12 +635,12 @@ only and is not stored in Postgres.
 Do not enable live trading before paper trading proves edge after delay, fees,
 slippage, and exit behavior.
 
-The live-ready backend now has a shared `TradeIntent` core, generic trading
+The live backend has a shared `TradeIntent` core, generic trading
 account/order/fill tables, and a Hyperliquid SDK adapter for IOC reduce-only or
 entry orders. The trading worker can reconcile enabled live accounts by reading
-Hyperliquid order status, fills, and clearinghouse state, but it still only
-executes paper copy until the live executor is wired into worker processing in a
-later phase.
+Hyperliquid order status, fills, and clearinghouse state. It can also execute
+live copy orders when global live trading, copy execution, and account-level
+trading are all enabled.
 
 Manual live test orders are only available through `POST /trading/testnet/orders`
 when `hyperliquid_network` is `testnet`. Use them with small notional values and

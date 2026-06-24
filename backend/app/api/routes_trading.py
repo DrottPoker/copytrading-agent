@@ -8,6 +8,7 @@ from app.api.dependencies import db_session
 from app.core.config import Settings, get_settings
 from app.db.models import TradingAccount
 from app.schemas.trading import (
+    LiveCloseAllResponse,
     LiveOrderSubmitResponse,
     LiveReconciliationResponse,
     LiveTradingAccountCreateRequest,
@@ -19,11 +20,13 @@ from app.schemas.trading import (
 from app.services.live_trading_service import (
     LiveTradingServiceError,
     build_testnet_live_trade_intent,
+    close_all_live_account_positions,
     create_live_trading_account,
     load_live_account_for_update,
     reconcile_live_trading_account,
     set_live_trading_account_status,
     submit_live_trade_intent,
+    validate_live_trading_configuration,
 )
 from app.services.trading_account_service import list_trading_accounts
 
@@ -66,8 +69,11 @@ async def set_trading_account_status_route(
     account_key: str,
     payload: TradingAccountStatusRequest,
     session: Annotated[AsyncSession, Depends(db_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> TradingAccount:
     try:
+        if payload.status == "enabled":
+            validate_live_trading_configuration(settings)
         account = await set_live_trading_account_status(
             session,
             account_key=account_key,
@@ -75,6 +81,70 @@ async def set_trading_account_status_route(
         )
         await session.commit()
         return account
+    except LiveTradingServiceError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.post("/accounts/{account_key}/start", response_model=TradingAccountRead)
+async def start_live_account_route(
+    account_key: str,
+    session: Annotated[AsyncSession, Depends(db_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> TradingAccount:
+    try:
+        validate_live_trading_configuration(settings)
+        account = await set_live_trading_account_status(
+            session,
+            account_key=account_key,
+            status="enabled",
+        )
+        await session.commit()
+        return account
+    except LiveTradingServiceError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.post("/accounts/{account_key}/stop", response_model=TradingAccountRead)
+async def stop_live_account_route(
+    account_key: str,
+    session: Annotated[AsyncSession, Depends(db_session)],
+) -> TradingAccount:
+    try:
+        account = await set_live_trading_account_status(
+            session,
+            account_key=account_key,
+            status="exit_only",
+        )
+        await session.commit()
+        return account
+    except LiveTradingServiceError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.post("/accounts/{account_key}/close-all-and-stop", response_model=LiveCloseAllResponse)
+async def close_all_and_stop_live_account_route(
+    account_key: str,
+    session: Annotated[AsyncSession, Depends(db_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> LiveCloseAllResponse:
+    try:
+        account = await load_live_account_for_update(session, account_key=account_key)
+        result = await close_all_live_account_positions(
+            session,
+            account=account,
+            settings=settings,
+        )
+        await session.commit()
+        return LiveCloseAllResponse(
+            account_key=result.account_key,
+            submitted_orders=result.submitted_orders,
+            failed_orders=result.failed_orders,
+            status=result.status,
+            updated_at=datetime.now(UTC),
+        )
     except LiveTradingServiceError as exc:
         await session.rollback()
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc

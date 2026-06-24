@@ -103,6 +103,10 @@ class HyperliquidLiveTradingClient:
             raise HyperliquidLiveTradingConfigurationError(
                 "Trade intent account does not match live account."
             )
+        if account.network != self.settings.hyperliquid_network:
+            raise HyperliquidLiveTradingConfigurationError(
+                "Live account network does not match the configured network."
+            )
         if account.status == "disabled":
             raise HyperliquidLiveTradingConfigurationError("Live account is disabled.")
         if account.status == "exit_only" and not intent.reduce_only:
@@ -183,9 +187,8 @@ class HyperliquidLiveTradingClient:
         intent: TradeIntent,
     ) -> LiveOrderResult:
         exchange = self._build_exchange(account)
-        if (
-            self.settings.live_trading_order_expires_after_ms > 0
-            and hasattr(exchange, "set_expires_after")
+        if self.settings.live_trading_order_expires_after_ms > 0 and hasattr(
+            exchange, "set_expires_after"
         ):
             exchange.set_expires_after(
                 int(time.time() * 1000) + self.settings.live_trading_order_expires_after_ms

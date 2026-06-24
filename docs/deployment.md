@@ -10,7 +10,8 @@ and local Postgres.
 - `postgres`: local Postgres 18 with persistent Docker volume storage.
 - `redis`: local Redis with append-only persistence.
 - `backend`: FastAPI API on the internal Docker network.
-- `trading-worker`: realtime monitoring, paper copy, and paper-copy recovery.
+- `trading-worker`: realtime monitoring, paper copy, live copy when enabled,
+  copy recovery, and live reconciliation.
 - `maintenance-worker`: discovery, pool import, scoring, pruning, and database maintenance.
 - `frontend`: Next.js dashboard on the internal Docker network.
 - `caddy`: public reverse proxy on ports 80 and 443.
@@ -88,7 +89,8 @@ Live trading is configured in `backend/config/live_trading.json` and requires
 `mainnet_acknowledged=true`. The key is read from environment or config only and
 is not stored in Postgres. Live reconciliation settings live in the same file
 under `reconciliation`; the worker reads Hyperliquid order status, fills, and
-clearinghouse state for enabled live accounts. Use testnet and the
+clearinghouse state for enabled live accounts. Automatic live copy also requires
+`copy_execution.enabled=true` in the same file. Use testnet and the
 `POST /trading/testnet/orders` endpoint before any mainnet enablement.
 
 Build the images:

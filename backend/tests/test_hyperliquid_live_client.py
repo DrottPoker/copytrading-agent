@@ -203,6 +203,22 @@ async def test_live_client_exit_only_blocks_entries() -> None:
 
 
 @pytest.mark.asyncio
+async def test_live_client_blocks_network_mismatch() -> None:
+    settings = live_test_settings()
+    client = HyperliquidLiveTradingClient(
+        settings=settings,
+        exchange_factory=lambda _account: FakeExchange(),
+        cloid_factory=lambda value: value,
+    )
+    account = live_test_account(status="enabled")
+    account.network = "mainnet"
+    intent = live_test_intent()
+
+    with pytest.raises(HyperliquidLiveTradingConfigurationError):
+        await client.submit_order(account=account, intent=intent)
+
+
+@pytest.mark.asyncio
 async def test_live_client_blocks_entry_above_max_notional() -> None:
     settings = live_test_settings()
     settings.live_trading_max_order_notional_usd = Decimal("25")

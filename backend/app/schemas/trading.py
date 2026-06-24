@@ -13,7 +13,7 @@ class LiveTradingAccountCreateRequest(CamelModel):
     label: str = Field(min_length=1, max_length=120)
     wallet_address: str | None = Field(default=None, max_length=128)
     vault_address: str | None = Field(default=None, max_length=128)
-    status: Literal["disabled", "enabled", "exit_only"] = "disabled"
+    status: Literal["disabled"] = "disabled"
 
 
 class TradingAccountStatusRequest(CamelModel):
@@ -101,3 +101,11 @@ class LiveReconciliationResponse(CamelModel):
     open_positions: int
     removed_positions: int
     reconciled_at: datetime
+
+
+class LiveCloseAllResponse(CamelModel):
+    account_key: str
+    submitted_orders: int
+    failed_orders: int
+    status: Literal["disabled", "enabled", "exit_only"]
+    updated_at: datetime

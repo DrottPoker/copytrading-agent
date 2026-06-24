@@ -10,6 +10,7 @@ def test_live_trading_config_is_loaded_from_dedicated_file() -> None:
     assert settings.live_trading_enabled is False
     assert settings.live_trading_acknowledged is False
     assert settings.live_trading_mainnet_acknowledged is False
+    assert settings.live_trading_copy_enabled is False
     assert settings.live_trading_min_order_notional_usd == Decimal("10")
     assert settings.live_trading_max_order_notional_usd == Decimal("1000")
     assert settings.live_trading_reconciliation_enabled is True

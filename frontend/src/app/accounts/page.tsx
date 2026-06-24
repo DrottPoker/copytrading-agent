@@ -1,10 +1,13 @@
 import { AccountsDashboard } from "@/components/AccountsDashboard";
-import { getPaperTradingSummary } from "@/lib/api";
+import { getPaperTradingSummary, getTradingAccounts } from "@/lib/api";
 
 export default async function AccountsPage() {
-  const summary = await getPaperTradingSummary({
-    closedTradeLimit: 250,
-    recentFillLimit: 250,
-  });
-  return <AccountsDashboard initialSummary={summary} />;
+  const [summary, tradingAccounts] = await Promise.all([
+    getPaperTradingSummary({
+      closedTradeLimit: 250,
+      recentFillLimit: 250,
+    }),
+    getTradingAccounts(),
+  ]);
+  return <AccountsDashboard initialSummary={summary} initialTradingAccounts={tradingAccounts} />;
 }

@@ -280,6 +280,7 @@ LIVE_TRADING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("reconciliation", "enabled"): "live_trading_reconciliation_enabled",
     ("reconciliation", "interval_seconds"): ("live_trading_reconciliation_interval_seconds"),
     ("reconciliation", "lookback_minutes"): ("live_trading_reconciliation_lookback_minutes"),
+    ("copy_execution", "enabled"): "live_trading_copy_enabled",
     ("risk", "min_order_notional_usd"): "live_trading_min_order_notional_usd",
     ("risk", "max_order_notional_usd"): "live_trading_max_order_notional_usd",
     ("risk", "max_account_open_notional_usd"): ("live_trading_max_account_open_notional_usd"),
@@ -336,6 +337,7 @@ class Settings(BaseSettings):
     live_trading_reconciliation_enabled: bool = True
     live_trading_reconciliation_interval_seconds: int = Field(default=30, ge=5, le=3600)
     live_trading_reconciliation_lookback_minutes: int = Field(default=120, ge=1, le=10080)
+    live_trading_copy_enabled: bool = False
     live_trading_min_order_notional_usd: Decimal = Field(default=Decimal("10"), ge=0)
     live_trading_max_order_notional_usd: Decimal = Field(default=Decimal("100"), ge=0)
     live_trading_max_account_open_notional_usd: Decimal = Field(

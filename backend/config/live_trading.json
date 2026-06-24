@@ -1,7 +1,7 @@
 {
-  "enabled": false,
-  "acknowledged": false,
-  "mainnet_acknowledged": false,
+  "enabled": true,
+  "acknowledged": true,
+  "mainnet_acknowledged": true,
   "execution": {
     "max_slippage_bps": 50,
     "order_expires_after_ms": 10000
@@ -10,6 +10,9 @@
     "enabled": true,
     "interval_seconds": 30,
     "lookback_minutes": 120
+  },
+  "copy_execution": {
+    "enabled": true
   },
   "risk": {
     "min_order_notional_usd": 10,
