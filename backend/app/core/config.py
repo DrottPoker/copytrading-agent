@@ -321,7 +321,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
 
     hyperliquid_network: Literal["mainnet", "testnet"] = "testnet"
-    hyperliquid_private_key: str | None = None
+    hyperliquid_private_key: str | None = Field(default=None, repr=False)
     hyperliquid_wallet_address: str | None = None
     hyperliquid_info_request_retries: int = Field(default=4, ge=0, le=10)
     hyperliquid_info_retry_base_delay_seconds: float = Field(default=1.5, ge=0, le=60)
@@ -737,7 +737,7 @@ class Settings(BaseSettings):
 
     dashboard_auth_enabled: bool = True
     dashboard_auth_username: str = "admin"
-    dashboard_auth_password: str = "change-me"
+    dashboard_auth_password: str = Field(default="change-me", repr=False)
 
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
 

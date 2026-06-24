@@ -14,7 +14,11 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
+
+import { getPublicApiBaseUrl } from "@/lib/config";
+import type { HealthResponse } from "@/types/health";
 
 const navItems = [
   {
@@ -118,7 +122,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           <div className="mt-auto hidden border-t border-[#252b2f] p-4 text-xs text-[#aeb7bd] lg:block">
             <div className="flex items-center justify-between gap-3">
               <span>Mode</span>
-              <span className="rounded-md border border-[#3c454a] px-1.5 py-0.5 text-xs text-white">Paper</span>
+              <SystemModeBadge />
             </div>
           </div>
         </div>
@@ -131,4 +135,64 @@ export function AppShell({ children }: { children: ReactNode }) {
       </div>
     </div>
   );
+}
+
+function SystemModeBadge() {
+  const [mode, setMode] = useState<HealthResponse["mode"] | "checking" | "unknown">(
+    "checking",
+  );
+
+  useEffect(() => {
+    let ignored = false;
+
+    async function loadMode() {
+      try {
+        const response = await fetch(`${getPublicApiBaseUrl()}/health`, {
+          cache: "no-store",
+        });
+        if (!response.ok) {
+          throw new Error(`Health check failed with HTTP ${response.status}.`);
+        }
+        const payload = (await response.json()) as HealthResponse;
+        if (!ignored) {
+          setMode(payload.mode);
+        }
+      } catch {
+        if (!ignored) {
+          setMode("unknown");
+        }
+      }
+    }
+
+    void loadMode();
+    const intervalId = window.setInterval(() => {
+      void loadMode();
+    }, 30_000);
+    return () => {
+      ignored = true;
+      window.clearInterval(intervalId);
+    };
+  }, []);
+
+  return (
+    <span className="rounded-md border border-[#3c454a] px-1.5 py-0.5 text-xs text-white">
+      {formatSystemMode(mode)}
+    </span>
+  );
+}
+
+function formatSystemMode(mode: HealthResponse["mode"] | "checking" | "unknown") {
+  if (mode === "live_small") {
+    return "Live";
+  }
+  if (mode === "paper") {
+    return "Paper";
+  }
+  if (mode === "monitor") {
+    return "Monitor";
+  }
+  if (mode === "checking") {
+    return "Checking";
+  }
+  return "Unknown";
 }
