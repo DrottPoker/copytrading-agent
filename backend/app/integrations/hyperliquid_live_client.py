@@ -125,6 +125,38 @@ class HyperliquidLiveTradingClient:
                 raise HyperliquidLiveTradingConfigurationError(
                     "Live order limit price exceeds max slippage guard."
                 )
+        if not intent.reduce_only:
+            self.validate_entry_guardrails(intent)
+
+    def validate_entry_guardrails(self, intent: TradeIntent) -> None:
+        coin = normalize_live_coin(intent.coin)
+        allowed_coins = {
+            normalize_live_coin(value) for value in self.settings.live_trading_allowed_coins
+        }
+        blocked_coins = {
+            normalize_live_coin(value) for value in self.settings.live_trading_blocked_coins
+        }
+        allowed_coins.discard("")
+        blocked_coins.discard("")
+        if allowed_coins and coin not in allowed_coins:
+            raise HyperliquidLiveTradingConfigurationError(
+                "Live order coin is not in the allowed coin list."
+            )
+        if coin in blocked_coins:
+            raise HyperliquidLiveTradingConfigurationError(
+                "Live order coin is blocked by live trading config."
+            )
+        if intent.notional_usd < self.settings.live_trading_min_order_notional_usd:
+            raise HyperliquidLiveTradingConfigurationError(
+                "Live order notional is below the configured minimum."
+            )
+        if (
+            self.settings.live_trading_max_order_notional_usd > Decimal("0")
+            and intent.notional_usd > self.settings.live_trading_max_order_notional_usd
+        ):
+            raise HyperliquidLiveTradingConfigurationError(
+                "Live order notional exceeds the configured maximum."
+            )
 
     def validate_live_configuration(self) -> None:
         if not self.settings.live_trading_enabled:
@@ -302,6 +334,10 @@ def string_or_none(value: Any) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def normalize_live_coin(value: str) -> str:
+    return str(value or "").strip().casefold()
 
 
 def utc_now() -> datetime:

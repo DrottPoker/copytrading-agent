@@ -572,10 +572,10 @@ Dashboard page:
 
 What it does:
 
-- Syncs configured paper trading accounts from `backend/config/paper_trading.json`.
-- Defaults to two paper accounts, 1,000 USD and 10,000 USD.
-- Stores dashboard-created paper accounts in Postgres. New dashboard-created
-  paper accounts start with trading disabled and must be started manually.
+- Stores paper accounts in Postgres. New dashboard-created paper accounts start
+  with trading disabled and must be started manually.
+- Keeps `backend/config/paper_trading.json` focused on paper copy policy. It no
+  longer seeds default accounts.
 - Builds allocations from the top 10 positive wallet scores in the enabled wallet pool.
 - When current drawdown scoring is enabled, allocation only uses wallets whose
   latest score has `current_drawdown_status = "ok"`.
@@ -761,7 +761,6 @@ Config:
 
 - `backend/config/paper_trading.json`
 - `paper_copy_enabled`
-- `paper_copy_accounts`
 - `paper_copy_top_wallet_count`
 - `paper_copy_top_tier_wallet_count`
 - `paper_copy_top_tier_allocation_pct`
@@ -815,23 +814,52 @@ What it does:
 - Adds a Hyperliquid live trading adapter that can submit IOC limit orders
   through the official Python SDK when explicitly called by future live worker
   code.
+- Persists live order intents before submission and reconciles active live
+  orders from Hyperliquid `orderStatus`, `userFillsByTime`, and
+  `clearinghouseState`.
+- Stores live exchange fills idempotently in `trading_fills` and syncs aggregate
+  account-level live positions in `trading_positions`.
 - Blocks live order submission unless global live trading flags are enabled,
   acknowledgements are present, the live account is enabled or exit-only, and
   the intent is a live intent for that account.
 - Allows exit-only live accounts to submit reduce-only exits, but blocks new
   entries and adds.
-- Keeps live execution disconnected from the trading worker for now. Realtime
-  copy processing still writes paper fills only.
+- Keeps live copy execution disconnected from the trading worker for now.
+  Realtime copy processing still writes paper fills only. The worker can run
+  live reconciliation for enabled live accounts when live trading is enabled.
+- Adds testnet-only manual order submission through `POST /trading/testnet/orders`
+  so lifecycle and reconciliation can be tested before mainnet.
 
 Config:
 
+- `backend/config/live_trading.json`
 - `live_trading_enabled`
 - `live_trading_acknowledged`
 - `live_trading_mainnet_acknowledged`
 - `live_trading_max_slippage_bps`
 - `live_trading_order_expires_after_ms`
+- `live_trading_reconciliation_enabled`
+- `live_trading_reconciliation_interval_seconds`
+- `live_trading_reconciliation_lookback_minutes`
+- `live_trading_min_order_notional_usd`
+- `live_trading_max_order_notional_usd`
+- `live_trading_max_account_open_notional_usd`
+- `live_trading_max_open_positions`
+- `live_trading_max_daily_loss_usd`
+- `live_trading_max_orders_per_minute`
+- `live_trading_reduce_only_when_stopped`
+- `live_trading_allowed_coins`
+- `live_trading_blocked_coins`
 - `hyperliquid_private_key`
 - `hyperliquid_wallet_address`
+
+Live trading API:
+
+- `GET /trading/accounts`
+- `POST /trading/accounts/live`
+- `PATCH /trading/accounts/{account_key}/status`
+- `POST /trading/accounts/{account_key}/reconcile`
+- `POST /trading/testnet/orders`
 
 ### Live Feed
 
@@ -869,6 +897,7 @@ Files:
 - `backend/config/app.json`
 - `backend/config/database.json`
 - `backend/config/discovery.json`
+- `backend/config/live_trading.json`
 - `backend/config/paper_trading.json`
 - `backend/config/pool_fill_import.json`
 - `backend/config/prune.json`
@@ -891,6 +920,9 @@ What it does:
   backfill quality checks, and promotion.
 - `backend/config/database.json` owns manual database maintenance defaults such
   as fill retention days, batch size, max rows, and protected top scored wallets.
+- `backend/config/live_trading.json` owns live trading enablement,
+  acknowledgements, execution guardrails, risk limits, and market allow/block
+  lists.
 - `backend/config/pool_fill_import.json` owns scheduled pool reimport and shared
   fill import storage and market-filter settings.
 - `backend/config/prune.json` owns wallet prune rules, scheduled prune behavior,

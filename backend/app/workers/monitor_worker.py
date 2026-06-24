@@ -8,7 +8,7 @@ from sqlalchemy import case, desc, func, select
 
 from app.core.config import get_settings
 from app.core.logging import configure_logging
-from app.db.models import PaperPosition, WalletScore, WatchedWallet
+from app.db.models import PaperPosition, TradingAccount, WalletScore, WatchedWallet
 from app.db.session import get_sessionmaker
 from app.integrations.hyperliquid_ws_client import (
     HyperliquidWebSocketError,
@@ -18,6 +18,10 @@ from app.integrations.hyperliquid_ws_client import (
 from app.integrations.redis_client import get_redis
 from app.services.discovery_service import run_discovery_import
 from app.services.job_lock_service import JobLockAlreadyHeldError, job_lock
+from app.services.live_trading_service import (
+    LiveReconciliationResult,
+    reconcile_live_trading_account,
+)
 from app.services.market_price_cache import MarketPriceCache, dex_from_coin
 from app.services.operation_status_service import (
     mark_operation_failed,
@@ -174,11 +178,7 @@ async def run_monitor_services(
             )
         )
 
-    if (
-        runs_maintenance
-        and settings.scoring_enabled
-        and not settings.pool_fill_import_enabled
-    ):
+    if runs_maintenance and settings.scoring_enabled and not settings.pool_fill_import_enabled:
         tasks.append(
             asyncio.create_task(
                 run_scoring_loop(
@@ -199,6 +199,22 @@ async def run_monitor_services(
                     stop_event=stop_event,
                     settings=settings,
                     price_cache=price_cache,
+                )
+            )
+        )
+
+    if (
+        runs_trading
+        and settings.live_trading_enabled
+        and settings.live_trading_reconciliation_enabled
+    ):
+        tasks.append(
+            asyncio.create_task(
+                run_live_trading_reconciliation_loop(
+                    sessionmaker=sessionmaker,
+                    redis=redis,
+                    stop_event=stop_event,
+                    settings=settings,
                 )
             )
         )
@@ -371,6 +387,7 @@ async def run_market_price_cache_subscription(
 ) -> None:
     label = dex or "default"
     while not stop_event.is_set():
+
         async def handle_message(message: dict[str, Any]) -> None:
             channel = message.get("channel")
             if channel in {"subscriptionResponse", "pong"}:
@@ -458,9 +475,7 @@ async def load_realtime_wallets(
             .limit(max_wallets)
         )
         retained_addresses = [
-            str(address).lower()
-            for address in retained_result.scalars().all()
-            if address
+            str(address).lower() for address in retained_result.scalars().all() if address
         ]
         remaining_slots = max_wallets - len(retained_addresses)
         if remaining_slots <= 0:
@@ -486,15 +501,11 @@ async def load_realtime_wallets(
             .limit(remaining_slots)
         )
         if retained_addresses:
-            candidate_query = candidate_query.where(
-                ~WatchedWallet.address.in_(retained_addresses)
-            )
+            candidate_query = candidate_query.where(~WatchedWallet.address.in_(retained_addresses))
 
         result = await session.execute(candidate_query)
         candidate_addresses = [
-            str(address).lower()
-            for address in result.scalars().all()
-            if address
+            str(address).lower() for address in result.scalars().all() if address
         ]
         return retained_addresses + candidate_addresses
 
@@ -798,6 +809,116 @@ async def run_paper_copy_recovery_once(
         return PaperCopyBatchResult()
 
 
+async def run_live_trading_reconciliation_loop(
+    *,
+    sessionmaker: Any,
+    redis: Any,
+    stop_event: asyncio.Event,
+    settings: Any,
+) -> None:
+    while not stop_event.is_set():
+        await run_live_trading_reconciliation_once(
+            sessionmaker=sessionmaker,
+            redis=redis,
+            settings=settings,
+        )
+        await sleep_until_stop(stop_event, settings.live_trading_reconciliation_interval_seconds)
+
+
+async def run_live_trading_reconciliation_once(
+    *,
+    sessionmaker: Any,
+    redis: Any,
+    settings: Any,
+) -> list[LiveReconciliationResult]:
+    results: list[LiveReconciliationResult] = []
+    failed_accounts: list[str] = []
+    try:
+        async with sessionmaker() as session:
+            async with job_lock(
+                session,
+                key="live_trading_reconciliation",
+                ttl_seconds=max(settings.live_trading_reconciliation_interval_seconds * 3, 300),
+            ):
+                account_keys_result = await session.scalars(
+                    select(TradingAccount.key)
+                    .where(
+                        TradingAccount.account_type == "live",
+                        TradingAccount.status.in_(["enabled", "exit_only"]),
+                    )
+                    .order_by(TradingAccount.key.asc())
+                )
+                account_keys = list(account_keys_result.all())
+                for account_key in account_keys:
+                    account = await session.scalar(
+                        select(TradingAccount)
+                        .where(
+                            TradingAccount.key == account_key,
+                            TradingAccount.account_type == "live",
+                        )
+                        .with_for_update()
+                    )
+                    if account is None:
+                        continue
+                    try:
+                        result = await reconcile_live_trading_account(
+                            session,
+                            account=account,
+                            settings=settings,
+                        )
+                        await session.commit()
+                        results.append(result)
+                    except Exception:
+                        failed_accounts.append(account_key)
+                        await session.rollback()
+                        logger.exception(
+                            "live trading reconciliation failed account=%s",
+                            account_key,
+                        )
+    except JobLockAlreadyHeldError as exc:
+        logger.info("live trading reconciliation skipped: %s", exc)
+        return results
+    except Exception as exc:
+        logger.exception("live trading reconciliation failed")
+        await publish_event(
+            redis,
+            event_type="live_trading_reconciliation_error",
+            channel="events:system",
+            message="Live trading reconciliation failed.",
+            payload={"error": str(exc)},
+        )
+        return results
+
+    if results or failed_accounts:
+        logger.info(
+            "live trading reconciliation completed accounts=%s failed=%s fills=%s positions=%s",
+            len(results),
+            len(failed_accounts),
+            sum(result.inserted_fills for result in results),
+            sum(result.open_positions for result in results),
+        )
+        await publish_event(
+            redis,
+            event_type="live_trading_reconciliation",
+            channel="events:system",
+            message=(
+                "Live trading reconciliation completed: "
+                f"{len(results)} accounts, {sum(result.inserted_fills for result in results)} "
+                "new fills."
+            ),
+            payload={
+                "accounts": len(results),
+                "failedAccounts": failed_accounts,
+                "fetchedFills": sum(result.fetched_fills for result in results),
+                "insertedFills": sum(result.inserted_fills for result in results),
+                "updatedOrders": sum(result.updated_orders for result in results),
+                "openPositions": sum(result.open_positions for result in results),
+                "removedPositions": sum(result.removed_positions for result in results),
+            },
+        )
+    return results
+
+
 async def run_wallet_prune_once(
     *,
     sessionmaker: Any,
@@ -815,9 +936,7 @@ async def run_wallet_prune_once(
                 result = await prune_all_wallets(
                     session,
                     dry_run=settings.wallet_prune_worker_dry_run,
-                    low_score_min_closed_trades=(
-                        settings.wallet_prune_low_score_min_closed_trades
-                    ),
+                    low_score_min_closed_trades=(settings.wallet_prune_low_score_min_closed_trades),
                     low_score_threshold=settings.wallet_prune_low_score_threshold,
                     low_score_operator=settings.wallet_prune_low_score_operator,
                     min_closed_trades=settings.wallet_prune_min_closed_trades,
@@ -970,11 +1089,7 @@ async def handle_websocket_message(
             },
         )
 
-    if (
-        settings.paper_trading_enabled
-        and settings.paper_copy_enabled
-        and stored.inserted_rows
-    ):
+    if settings.paper_trading_enabled and settings.paper_copy_enabled and stored.inserted_rows:
         try:
             if price_cache is not None:
                 await price_cache.request_dexes(

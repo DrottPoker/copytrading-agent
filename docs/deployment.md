@@ -82,11 +82,14 @@ openssl rand -hex 24
 
 For paper trading, Hyperliquid private key settings can remain empty. Do not
 enable live trading on the VPS until the paper trading system has been validated.
-Live trading requires `LIVE_TRADING_ENABLED=true`,
-`LIVE_TRADING_ACKNOWLEDGED=true`, a configured `HYPERLIQUID_PRIVATE_KEY`, and
+Live trading is configured in `backend/config/live_trading.json` and requires
+`enabled=true`, `acknowledged=true`, a configured `HYPERLIQUID_PRIVATE_KEY`, and
 `HYPERLIQUID_WALLET_ADDRESS`. Mainnet also requires
-`LIVE_TRADING_MAINNET_ACKNOWLEDGED=true`. The key is read from environment or
-config only and is not stored in Postgres.
+`mainnet_acknowledged=true`. The key is read from environment or config only and
+is not stored in Postgres. Live reconciliation settings live in the same file
+under `reconciliation`; the worker reads Hyperliquid order status, fills, and
+clearinghouse state for enabled live accounts. Use testnet and the
+`POST /trading/testnet/orders` endpoint before any mainnet enablement.
 
 Build the images:
 

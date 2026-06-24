@@ -16,73 +16,48 @@ POOL_FILL_IMPORT_CONFIG_PATH = CONFIG_DIR / "pool_fill_import.json"
 DATABASE_CONFIG_PATH = CONFIG_DIR / "database.json"
 SCORING_CONFIG_PATH = CONFIG_DIR / "scoring.json"
 PAPER_TRADING_CONFIG_PATH = CONFIG_DIR / "paper_trading.json"
+LIVE_TRADING_CONFIG_PATH = CONFIG_DIR / "live_trading.json"
 DISCOVERY_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("enabled",): "discovery_enabled",
     ("sources", "default"): "discovery_default_sources",
     ("sources", "hyperliquid", "sort_metric"): "discovery_hyperliquid_sort_metric",
     ("sources", "hyperliquid", "url"): "discovery_hyperliquid_leaderboard_url",
     ("sources", "hyperliquid", "vaults_url"): "discovery_hyperliquid_vaults_url",
-    ("sources", "hyperdash", "urls", "copytrading"): (
-        "discovery_hyperdash_copytrading_url"
-    ),
-    ("sources", "hyperdash", "urls", "cohorts"): (
-        "discovery_hyperdash_cohorts_url"
-    ),
+    ("sources", "hyperdash", "urls", "copytrading"): ("discovery_hyperdash_copytrading_url"),
+    ("sources", "hyperdash", "urls", "cohorts"): ("discovery_hyperdash_cohorts_url"),
     ("sources", "hyperdash", "urls", "very_profitable"): (
         "discovery_hyperdash_very_profitable_url"
     ),
     ("sources", "hyperdash", "urls", "extremely_profitable"): (
         "discovery_hyperdash_extremely_profitable_url"
     ),
-    ("sources", "hyperdash", "urls", "tagged"): (
-        "discovery_hyperdash_tagged_url"
-    ),
-    ("sources", "hypertracker", "static_base_url"): (
-        "discovery_hypertracker_static_base_url"
-    ),
+    ("sources", "hyperdash", "urls", "tagged"): ("discovery_hyperdash_tagged_url"),
+    ("sources", "hypertracker", "static_base_url"): ("discovery_hypertracker_static_base_url"),
     ("import", "limit"): "discovery_import_limit",
     ("import", "interval_seconds"): "discovery_import_interval_seconds",
     ("import", "run_on_worker_start"): "discovery_import_on_worker_start",
     ("import", "subaccounts", "enabled"): "discovery_import_subaccounts_enabled",
-    ("import", "subaccounts", "max_per_wallet"): (
-        "discovery_import_max_subaccounts_per_wallet"
-    ),
+    ("import", "subaccounts", "max_per_wallet"): ("discovery_import_max_subaccounts_per_wallet"),
     ("prefilter", "enabled"): "discovery_prefilter_enabled",
     ("prefilter", "run_after_import"): "discovery_prefilter_run_after_import",
-    ("prefilter", "reject_missing_source_pnl"): (
-        "discovery_prefilter_reject_missing_source_pnl"
-    ),
+    ("prefilter", "reject_missing_source_pnl"): ("discovery_prefilter_reject_missing_source_pnl"),
     ("prefilter", "require_positive_source_pnl"): (
         "discovery_prefilter_require_positive_source_pnl"
     ),
     ("prefilter", "min_source_pnl_usd"): "discovery_prefilter_min_source_pnl_usd",
     ("prefilter", "min_source_roi"): "discovery_prefilter_min_source_roi",
-    ("prefilter", "min_account_value_usd"): (
-        "discovery_prefilter_min_account_value_usd"
-    ),
-    ("prefilter", "max_account_value_usd"): (
-        "discovery_prefilter_max_account_value_usd"
-    ),
+    ("prefilter", "min_account_value_usd"): ("discovery_prefilter_min_account_value_usd"),
+    ("prefilter", "max_account_value_usd"): ("discovery_prefilter_max_account_value_usd"),
     ("prefilter", "min_copy_score"): "discovery_prefilter_min_copy_score",
     ("prefilter", "max_source_rank"): "discovery_prefilter_max_source_rank",
-    ("prefilter", "accept_if_metrics_missing"): (
-        "discovery_prefilter_accept_if_metrics_missing"
-    ),
+    ("prefilter", "accept_if_metrics_missing"): ("discovery_prefilter_accept_if_metrics_missing"),
     ("candidate_backfill", "days"): "discovery_candidate_backfill_days",
-    ("candidate_backfill", "max_pages"): (
-        "discovery_candidate_backfill_max_pages"
-    ),
-    ("candidate_backfill", "target_fills"): (
-        "discovery_candidate_backfill_target_fills"
-    ),
-    ("candidate_backfill", "batch_size"): (
-        "discovery_candidate_backfill_batch_size"
-    ),
+    ("candidate_backfill", "max_pages"): ("discovery_candidate_backfill_max_pages"),
+    ("candidate_backfill", "target_fills"): ("discovery_candidate_backfill_target_fills"),
+    ("candidate_backfill", "batch_size"): ("discovery_candidate_backfill_batch_size"),
     ("quality", "min_fills"): "discovery_quality_min_fills",
     ("quality", "min_closed_trades"): "discovery_quality_min_closed_trades",
-    ("quality", "require_positive_net_pnl"): (
-        "discovery_quality_require_positive_net_pnl"
-    ),
+    ("quality", "require_positive_net_pnl"): ("discovery_quality_require_positive_net_pnl"),
     ("quality", "min_profit_factor"): "discovery_quality_min_profit_factor",
     ("quality", "min_win_rate"): "discovery_quality_min_win_rate",
     ("quality", "max_drawdown_pct"): "discovery_quality_max_drawdown_pct",
@@ -109,9 +84,7 @@ POOL_FILL_IMPORT_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("pool_fill_import", "max_pages"): "pool_fill_import_max_pages",
     ("pool_fill_import", "overlap_seconds"): "pool_fill_import_overlap_seconds",
     ("fill_import", "storage_guard", "enabled"): "fill_import_storage_guard_enabled",
-    ("fill_import", "storage_guard", "min_free_database_mb"): (
-        "fill_import_min_free_database_mb"
-    ),
+    ("fill_import", "storage_guard", "min_free_database_mb"): ("fill_import_min_free_database_mb"),
     ("fill_import", "market_filter"): "fill_import_market_filter",
     ("fill_import", "raw_json_fields"): "fill_import_raw_json_fields",
 }
@@ -119,29 +92,15 @@ DATABASE_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("fill_retention", "days"): "fill_retention_days",
     ("fill_retention", "batch_size"): "fill_retention_batch_size",
     ("fill_retention", "max_rows"): "fill_retention_max_rows",
-    ("fill_retention", "protect_top_score_wallets"): (
-        "fill_retention_protect_top_score_wallets"
-    ),
+    ("fill_retention", "protect_top_score_wallets"): ("fill_retention_protect_top_score_wallets"),
 }
 PRUNE_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
-    ("rules", "current_drawdown", "unrealized_loss_ratio"): (
-        "wallet_prune_unrealized_loss_ratio"
-    ),
-    ("rules", "current_drawdown", "concurrency"): (
-        "wallet_prune_current_state_concurrency"
-    ),
-    ("rules", "minimum_closed_trades", "min_closed_trades"): (
-        "wallet_prune_min_closed_trades"
-    ),
-    ("rules", "stale_fills", "min_days_without_fill"): (
-        "wallet_prune_stale_fill_days"
-    ),
-    ("rules", "realized_drawdown", "max_drawdown_pct"): (
-        "wallet_prune_max_drawdown_pct"
-    ),
-    ("rules", "low_score", "min_closed_trades"): (
-        "wallet_prune_low_score_min_closed_trades"
-    ),
+    ("rules", "current_drawdown", "unrealized_loss_ratio"): ("wallet_prune_unrealized_loss_ratio"),
+    ("rules", "current_drawdown", "concurrency"): ("wallet_prune_current_state_concurrency"),
+    ("rules", "minimum_closed_trades", "min_closed_trades"): ("wallet_prune_min_closed_trades"),
+    ("rules", "stale_fills", "min_days_without_fill"): ("wallet_prune_stale_fill_days"),
+    ("rules", "realized_drawdown", "max_drawdown_pct"): ("wallet_prune_max_drawdown_pct"),
+    ("rules", "low_score", "min_closed_trades"): ("wallet_prune_low_score_min_closed_trades"),
     ("rules", "low_score", "threshold"): "wallet_prune_low_score_threshold",
     ("rules", "low_score", "operator"): "wallet_prune_low_score_operator",
     ("schedule", "after_pool_import_enabled"): "wallet_prune_after_pool_import_enabled",
@@ -173,9 +132,7 @@ SCORING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
         "weights",
         "median_trade_roi",
     ): "scoring_profitability_weight_median_trade_roi",
-    ("profitability", "roi_score", "full_score_at"): (
-        "scoring_profitability_roi_full_score_at"
-    ),
+    ("profitability", "roi_score", "full_score_at"): ("scoring_profitability_roi_full_score_at"),
     ("profitability", "average_trade_roi", "cap_min"): (
         "scoring_profitability_average_trade_roi_cap_min"
     ),
@@ -197,9 +154,7 @@ SCORING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("consistency", "weights", "active_day_regularity"): (
         "scoring_consistency_weight_active_day_regularity"
     ),
-    ("consistency", "weights", "max_inactive_gap"): (
-        "scoring_consistency_weight_max_inactive_gap"
-    ),
+    ("consistency", "weights", "max_inactive_gap"): ("scoring_consistency_weight_max_inactive_gap"),
     ("consistency", "profit_distribution", "full_score_ratio"): (
         "scoring_consistency_profit_distribution_full_score_ratio"
     ),
@@ -230,33 +185,25 @@ SCORING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("consistency", "max_inactive_gap", "zero_score_days"): (
         "scoring_consistency_max_inactive_gap_zero_score_days"
     ),
-    ("risk", "loss_ratio", "penalty_per_ratio"): (
-        "scoring_risk_loss_ratio_penalty_per_ratio"
-    ),
+    ("risk", "loss_ratio", "penalty_per_ratio"): ("scoring_risk_loss_ratio_penalty_per_ratio"),
     ("risk", "loss_ratio", "penalty_max"): "scoring_risk_loss_ratio_penalty_max",
     ("risk", "realized_drawdown", "penalty_per_ratio"): (
         "scoring_risk_realized_drawdown_penalty_per_ratio"
     ),
-    ("risk", "realized_drawdown", "penalty_max"): (
-        "scoring_risk_realized_drawdown_penalty_max"
-    ),
+    ("risk", "realized_drawdown", "penalty_max"): ("scoring_risk_realized_drawdown_penalty_max"),
     ("risk", "losing_trade_rate", "penalty_per_ratio"): (
         "scoring_risk_losing_trade_rate_penalty_per_ratio"
     ),
     ("risk", "current_drawdown", "enabled"): "scoring_current_drawdown_enabled",
     ("risk", "current_drawdown", "concurrency"): "scoring_current_drawdown_concurrency",
-    ("risk", "current_drawdown", "missing_penalty"): (
-        "scoring_current_drawdown_missing_penalty"
-    ),
+    ("risk", "current_drawdown", "missing_penalty"): ("scoring_current_drawdown_missing_penalty"),
     ("risk", "current_drawdown", "penalty_start_ratio"): (
         "scoring_current_drawdown_penalty_start_ratio"
     ),
     ("risk", "current_drawdown", "full_penalty_ratio"): (
         "scoring_current_drawdown_full_penalty_ratio"
     ),
-    ("risk", "current_drawdown", "penalty_max"): (
-        "scoring_current_drawdown_penalty_max"
-    ),
+    ("risk", "current_drawdown", "penalty_max"): ("scoring_current_drawdown_penalty_max"),
     ("risk", "current_drawdown", "score_cap_start_ratio"): (
         "scoring_current_drawdown_score_cap_start_ratio"
     ),
@@ -266,15 +213,9 @@ SCORING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("risk", "open_position_stress", "notional_full_ratio"): (
         "scoring_open_position_stress_notional_full_ratio"
     ),
-    ("risk", "open_position_stress", "penalty_max"): (
-        "scoring_open_position_stress_penalty_max"
-    ),
-    ("risk", "forced_exit", "event_gap_seconds"): (
-        "scoring_forced_exit_event_gap_seconds"
-    ),
-    ("risk", "forced_exit", "notional_full_ratio"): (
-        "scoring_forced_exit_notional_full_ratio"
-    ),
+    ("risk", "open_position_stress", "penalty_max"): ("scoring_open_position_stress_penalty_max"),
+    ("risk", "forced_exit", "event_gap_seconds"): ("scoring_forced_exit_event_gap_seconds"),
+    ("risk", "forced_exit", "notional_full_ratio"): ("scoring_forced_exit_notional_full_ratio"),
     ("risk", "forced_exit", "penalty_max"): "scoring_forced_exit_penalty_max",
     ("copyability", "weights", "copyable_trade_ratio"): (
         "scoring_copyability_weight_copyable_trade_ratio"
@@ -327,10 +268,27 @@ SCORING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("penalties", "confidence", "target_trades"): "scoring_confidence_target_trades",
     ("penalties", "confidence", "max"): "scoring_confidence_penalty_max",
     ("window_scores", "activity_trade_cap"): "scoring_window_score_activity_trade_cap",
-    ("window_scores", "weight_profitability"): (
-        "scoring_window_score_weight_profitability"
-    ),
+    ("window_scores", "weight_profitability"): ("scoring_window_score_weight_profitability"),
     ("window_scores", "weight_activity"): "scoring_window_score_weight_activity",
+}
+LIVE_TRADING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
+    ("enabled",): "live_trading_enabled",
+    ("acknowledged",): "live_trading_acknowledged",
+    ("mainnet_acknowledged",): "live_trading_mainnet_acknowledged",
+    ("execution", "max_slippage_bps"): "live_trading_max_slippage_bps",
+    ("execution", "order_expires_after_ms"): "live_trading_order_expires_after_ms",
+    ("reconciliation", "enabled"): "live_trading_reconciliation_enabled",
+    ("reconciliation", "interval_seconds"): ("live_trading_reconciliation_interval_seconds"),
+    ("reconciliation", "lookback_minutes"): ("live_trading_reconciliation_lookback_minutes"),
+    ("risk", "min_order_notional_usd"): "live_trading_min_order_notional_usd",
+    ("risk", "max_order_notional_usd"): "live_trading_max_order_notional_usd",
+    ("risk", "max_account_open_notional_usd"): ("live_trading_max_account_open_notional_usd"),
+    ("risk", "max_open_positions"): "live_trading_max_open_positions",
+    ("risk", "max_daily_loss_usd"): "live_trading_max_daily_loss_usd",
+    ("risk", "max_orders_per_minute"): "live_trading_max_orders_per_minute",
+    ("risk", "reduce_only_when_stopped"): "live_trading_reduce_only_when_stopped",
+    ("markets", "allowed_coins"): "live_trading_allowed_coins",
+    ("markets", "blocked_coins"): "live_trading_blocked_coins",
 }
 
 
@@ -375,21 +333,25 @@ class Settings(BaseSettings):
     live_trading_mainnet_acknowledged: bool = False
     live_trading_max_slippage_bps: Decimal = Field(default=Decimal("50"), ge=0, le=10000)
     live_trading_order_expires_after_ms: int = Field(default=10000, ge=0, le=60000)
+    live_trading_reconciliation_enabled: bool = True
+    live_trading_reconciliation_interval_seconds: int = Field(default=30, ge=5, le=3600)
+    live_trading_reconciliation_lookback_minutes: int = Field(default=120, ge=1, le=10080)
+    live_trading_min_order_notional_usd: Decimal = Field(default=Decimal("10"), ge=0)
+    live_trading_max_order_notional_usd: Decimal = Field(default=Decimal("100"), ge=0)
+    live_trading_max_account_open_notional_usd: Decimal = Field(
+        default=Decimal("500"),
+        ge=0,
+    )
+    live_trading_max_open_positions: int = Field(default=5, ge=0, le=1000)
+    live_trading_max_daily_loss_usd: Decimal = Field(default=Decimal("50"), ge=0)
+    live_trading_max_orders_per_minute: int = Field(default=10, ge=0, le=10000)
+    live_trading_reduce_only_when_stopped: bool = True
+    live_trading_allowed_coins: list[str] = Field(default_factory=list, max_length=500)
+    live_trading_blocked_coins: list[str] = Field(default_factory=list, max_length=500)
     paper_copy_enabled: bool = True
     paper_copy_accounts: list[PaperTradingAccountConfig] = Field(
-        default_factory=lambda: [
-            PaperTradingAccountConfig(
-                key="paper_1000",
-                label="Paper 1,000 USD",
-                starting_balance_usd=Decimal("1000"),
-            ),
-            PaperTradingAccountConfig(
-                key="paper_10000",
-                label="Paper 10,000 USD",
-                starting_balance_usd=Decimal("10000"),
-            ),
-        ],
-        max_length=10,
+        default_factory=list,
+        max_length=50,
     )
     paper_copy_top_wallet_count: int = Field(default=10, ge=1, le=10)
     paper_copy_top_tier_wallet_count: int = Field(default=3, ge=0, le=10)
@@ -442,9 +404,7 @@ class Settings(BaseSettings):
     discovery_hyperdash_very_profitable_url: str | None = None
     discovery_hyperdash_extremely_profitable_url: str | None = None
     discovery_hyperdash_tagged_url: str | None = None
-    discovery_hypertracker_static_base_url: str = (
-        "https://dw3ji7n7thadj.cloudfront.net/aggregator"
-    )
+    discovery_hypertracker_static_base_url: str = "https://dw3ji7n7thadj.cloudfront.net/aggregator"
     discovery_prefilter_enabled: bool = True
     discovery_prefilter_run_after_import: bool = True
     discovery_prefilter_reject_missing_source_pnl: bool = False
@@ -800,6 +760,13 @@ class Settings(BaseSettings):
             return [source.strip() for source in value.split(",") if source.strip()]
         return value
 
+    @field_validator("live_trading_allowed_coins", "live_trading_blocked_coins", mode="before")
+    @classmethod
+    def normalize_live_trading_coin_lists(cls, value: Any) -> list[str]:
+        if isinstance(value, str):
+            return [coin.strip() for coin in value.split(",") if coin.strip()]
+        return value
+
     @model_validator(mode="after")
     def guard_live_trading(self) -> "Settings":
         account_keys = [account.key for account in self.paper_copy_accounts]
@@ -906,6 +873,24 @@ class Settings(BaseSettings):
                 "must be less than "
                 "scoring_copyability_execution_zero_score_fills_per_trade_at_or_above."
             )
+        if (
+            self.live_trading_max_order_notional_usd > Decimal("0")
+            and self.live_trading_min_order_notional_usd > self.live_trading_max_order_notional_usd
+        ):
+            raise ValueError(
+                "live_trading_min_order_notional_usd must be less than or equal to "
+                "live_trading_max_order_notional_usd."
+            )
+        allowed_live_coins = {
+            normalize_live_trading_coin(coin) for coin in self.live_trading_allowed_coins
+        }
+        blocked_live_coins = {
+            normalize_live_trading_coin(coin) for coin in self.live_trading_blocked_coins
+        }
+        allowed_live_coins.discard("")
+        blocked_live_coins.discard("")
+        if allowed_live_coins & blocked_live_coins:
+            raise ValueError("A live trading coin cannot be both allowed and blocked.")
         if self.live_trading_enabled and not self.live_trading_acknowledged:
             raise ValueError(
                 "LIVE_TRADING_ENABLED requires LIVE_TRADING_ACKNOWLEDGED=true. "
@@ -917,8 +902,7 @@ class Settings(BaseSettings):
             and not self.live_trading_mainnet_acknowledged
         ):
             raise ValueError(
-                "LIVE_TRADING_ENABLED on mainnet requires "
-                "LIVE_TRADING_MAINNET_ACKNOWLEDGED=true."
+                "LIVE_TRADING_ENABLED on mainnet requires LIVE_TRADING_MAINNET_ACKNOWLEDGED=true."
             )
         if self.live_trading_enabled and not self.hyperliquid_private_key:
             raise ValueError("LIVE_TRADING_ENABLED requires HYPERLIQUID_PRIVATE_KEY.")
@@ -929,9 +913,7 @@ class Settings(BaseSettings):
             and self.dashboard_auth_enabled
             and self.dashboard_auth_password == "change-me"
         ):
-            raise ValueError(
-                "DASHBOARD_AUTH_PASSWORD must be changed before production startup."
-            )
+            raise ValueError("DASHBOARD_AUTH_PASSWORD must be changed before production startup.")
         if self.app_env == "production" and not self.dashboard_auth_enabled:
             raise ValueError("DASHBOARD_AUTH_ENABLED=false is not allowed in production.")
         return self
@@ -998,6 +980,7 @@ def load_app_config() -> dict[str, Any]:
         DATABASE_CONFIG_PATH,
         SCORING_CONFIG_PATH,
         PAPER_TRADING_CONFIG_PATH,
+        LIVE_TRADING_CONFIG_PATH,
     ):
         config.update(load_json_config(config_path))
 
@@ -1023,6 +1006,8 @@ def load_json_config(config_path: Path) -> dict[str, Any]:
         return normalize_nested_config(config, PRUNE_CONFIG_PATH_MAP)
     if config_path == SCORING_CONFIG_PATH:
         return normalize_nested_config(config, SCORING_CONFIG_PATH_MAP)
+    if config_path == LIVE_TRADING_CONFIG_PATH:
+        return normalize_nested_config(config, LIVE_TRADING_CONFIG_PATH_MAP)
     return config
 
 
@@ -1046,6 +1031,10 @@ def get_nested_config_value(config: dict[str, Any], path: tuple[str, ...]) -> An
             return None
         current = current[key]
     return current
+
+
+def normalize_live_trading_coin(value: str) -> str:
+    return str(value or "").strip().casefold()
 
 
 @lru_cache

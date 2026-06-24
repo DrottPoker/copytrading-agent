@@ -40,6 +40,7 @@ copytrading-agent/
     config/
       app.json
       discovery.json
+      live_trading.json
       paper_trading.json
       pool_fill_import.json
       prune.json
@@ -84,7 +85,8 @@ Important folders:
 - `backend/app/db`: SQLAlchemy models, sessions, and Alembic migrations.
 - `backend/config/app.json`: non-secret app/runtime settings.
 - `backend/config/discovery.json`: discovery source, filter, backfill, and promotion settings.
-- `backend/config/paper_trading.json`: paper accounts and copy allocation policy.
+- `backend/config/live_trading.json`: live trading enablement and guardrails.
+- `backend/config/paper_trading.json`: paper copy allocation and execution policy.
 - `backend/config/pool_fill_import.json`: pool reimport and shared fill import settings.
 - `backend/config/prune.json`: wallet cleanup and pruning thresholds.
 - `backend/config/scoring.json`: scoring windows, weights, and penalty settings.
@@ -234,6 +236,7 @@ Tweakable non-secret config lives in JSON files:
 - `backend/config/app.json`
 - `backend/config/database.json`
 - `backend/config/discovery.json`
+- `backend/config/live_trading.json`
 - `backend/config/paper_trading.json`
 - `backend/config/pool_fill_import.json`
 - `backend/config/prune.json`
@@ -672,14 +675,14 @@ use `monitorStatus` as `monitored` or `waiting`. Wallet PnL history rows use
 The dashboard aggregates allocation status across paper accounts when rendering
 source rows, so a source is shown as `trading` when at least one account can
 open or manage that source and the source has open paper exposure.
-Paper account `enabled` is runtime state after the account has been synced from
-config or created through the dashboard. The Accounts page can create
-dashboard-managed paper accounts with a selected USD starting balance. New
-paper accounts start disabled. The Accounts page can change enabled state for
-one account without disabling other accounts. Disabled paper accounts are
-excluded from new entries and adds, but are still included when an existing open
-position for the source needs a reduce or exit fill. The close-all-and-stop
-route disables the account first, then manually closes its open paper positions.
+Paper account `enabled` is database runtime state after the account has been
+created through the dashboard or API. The Accounts page can create paper
+accounts with a selected USD starting balance. New paper accounts start
+disabled. The Accounts page can change enabled state for one account without
+disabling other accounts. Disabled paper accounts are excluded from new entries
+and adds, but are still included when an existing open position for the source
+needs a reduce or exit fill. The close-all-and-stop route disables the account
+first, then manually closes its open paper positions.
 The summary also exposes `poolRank` and `sourceStatusReason`. `poolRank` is the
 source wallet's score rank in the wallet pool, while `sourceStatusReason`
 explains why a source is retained or waiting without relying on monitor-slot
@@ -712,8 +715,9 @@ position snapshots store Hyperliquid `positionValue` in
 The backend separates copied order planning from execution. The shared
 `trading_core` module produces `TradeIntent` objects and shared sizing helpers.
 Paper execution consumes those intents through the existing paper simulator.
-Live execution has a separate Hyperliquid adapter, but the trading worker does
-not call it yet.
+Live execution has a separate Hyperliquid adapter. The trading worker does not
+execute live copy intents yet, but it can reconcile enabled live accounts when
+live trading is enabled.
 
 Generic live-ready tables sit beside the legacy paper tables:
 
@@ -735,6 +739,15 @@ reduce-only orders. It refuses to submit unless live trading is enabled,
 acknowledged, account status allows the requested intent, and the intent is a
 live intent for that account. Mainnet also requires
 `live_trading_mainnet_acknowledged=true`.
+
+Live order lifecycle is persisted in `trading_orders`. Orders move from
+`planned` to `submitted`, then to `accepted`, `rejected`, `filled`,
+`partially_filled`, `canceled`, or `failed` based on Hyperliquid responses and
+reconciliation. Reconciliation resumes after restart by querying `orderStatus`
+with the stored oid or deterministic cloid, importing `userFillsByTime` rows
+into `trading_fills`, and syncing aggregate account positions from
+`clearinghouseState` into `trading_positions` with source wallet
+`__exchange__`.
 
 The paper summary exposes closed trade history separately from raw recent fills.
 Closed trade rows are derived from paper `close` and `flip_close` executions,

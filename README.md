@@ -228,6 +228,10 @@ API:
 - `GET /ops/health`
 - `GET /analytics`
 - `GET /trading/accounts`
+- `POST /trading/accounts/live`
+- `PATCH /trading/accounts/{account_key}/status`
+- `POST /trading/accounts/{account_key}/reconcile`
+- `POST /trading/testnet/orders`
 - `GET /paper-trading`
 - `POST /paper-trading/accounts`
 - `POST /paper-trading/accounts/{account_key}/start`
@@ -345,10 +349,11 @@ Config:
 
 - `backend/config/paper_trading.json`
 
-Default paper accounts:
+Paper accounts:
 
-- `paper_1000`: starts with 1,000 USD.
-- `paper_10000`: starts with 10,000 USD.
+- Paper accounts are stored in Postgres and created from the dashboard or API.
+- `backend/config/paper_trading.json` owns paper copy policy only, not account
+  creation.
 
 Sizing policy:
 
@@ -493,6 +498,7 @@ Tweakable non-secret settings live in config files:
 - `backend/config/app.json`
 - `backend/config/discovery.json`
 - `backend/config/database.json`
+- `backend/config/live_trading.json`
 - `backend/config/paper_trading.json`
 - `backend/config/pool_fill_import.json`
 - `backend/config/prune.json`
@@ -515,6 +521,10 @@ the shared fill-import storage and market-filter settings.
 
 `backend/config/database.json` owns manual database maintenance defaults such as
 fill retention days, batch size, max rows, and protected top scored wallets.
+
+`backend/config/live_trading.json` owns live trading enablement,
+acknowledgements, execution limits, risk guardrails, and market allow/block
+lists.
 
 The Ops Health page reads runtime settings from environment variables:
 
@@ -596,17 +606,18 @@ Full guide: [docs/deployment.md](docs/deployment.md)
 
 ## Safety Defaults
 
-Live trading is disabled in `backend/config/app.json` unless both flags are explicitly set:
+Live trading is disabled in `backend/config/live_trading.json` unless the
+enablement and acknowledgement flags are explicitly set:
 
 ```json
 {
-  "live_trading_enabled": true,
-  "live_trading_acknowledged": true,
-  "live_trading_mainnet_acknowledged": false
+  "enabled": true,
+  "acknowledged": true,
+  "mainnet_acknowledged": false
 }
 ```
 
-Mainnet live trading also requires `live_trading_mainnet_acknowledged=true`.
+Mainnet live trading also requires `mainnet_acknowledged=true`.
 When live trading is enabled, startup requires `HYPERLIQUID_PRIVATE_KEY` and
 `HYPERLIQUID_WALLET_ADDRESS`. The private key is read from environment/config
 only and is not stored in Postgres.
@@ -616,8 +627,15 @@ slippage, and exit behavior.
 
 The live-ready backend now has a shared `TradeIntent` core, generic trading
 account/order/fill tables, and a Hyperliquid SDK adapter for IOC reduce-only or
-entry orders. The trading worker still only executes paper copy until the live
-executor is wired into worker processing in a later phase.
+entry orders. The trading worker can reconcile enabled live accounts by reading
+Hyperliquid order status, fills, and clearinghouse state, but it still only
+executes paper copy until the live executor is wired into worker processing in a
+later phase.
+
+Manual live test orders are only available through `POST /trading/testnet/orders`
+when `hyperliquid_network` is `testnet`. Use them with small notional values and
+run `POST /trading/accounts/{account_key}/reconcile` after submission to confirm
+the exchange fill and position state were observed.
 
 Current wallet scoring feeds paper copy allocation, but it is still a research
 ranking signal. Do not use it for live allocation until paper performance has

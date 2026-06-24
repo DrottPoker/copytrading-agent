@@ -1,0 +1,27 @@
+{
+  "enabled": false,
+  "acknowledged": false,
+  "mainnet_acknowledged": false,
+  "execution": {
+    "max_slippage_bps": 50,
+    "order_expires_after_ms": 10000
+  },
+  "reconciliation": {
+    "enabled": true,
+    "interval_seconds": 30,
+    "lookback_minutes": 120
+  },
+  "risk": {
+    "min_order_notional_usd": 10,
+    "max_order_notional_usd": 1000,
+    "max_account_open_notional_usd": 5000,
+    "max_open_positions": 50,
+    "max_daily_loss_usd": 5000,
+    "max_orders_per_minute": 10,
+    "reduce_only_when_stopped": true
+  },
+  "markets": {
+    "allowed_coins": [],
+    "blocked_coins": []
+  }
+}

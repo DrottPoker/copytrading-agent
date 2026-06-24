@@ -80,8 +80,7 @@ class HyperliquidClient:
                     continue
                 if response.status_code == 429:
                     raise HyperliquidRateLimitError(
-                        "Hyperliquid info request was rate limited after "
-                        f"{attempts} attempts."
+                        f"Hyperliquid info request was rate limited after {attempts} attempts."
                     )
                 raise HyperliquidClientError(
                     "Hyperliquid info request failed after retries with status "
@@ -144,6 +143,12 @@ class HyperliquidClient:
                 "Hyperliquid userFillsByTime returned an unexpected shape."
             )
         return [item for item in result if isinstance(item, dict)]
+
+    async def order_status(self, *, user: str, oid: int | str) -> dict[str, Any]:
+        result = await self.post_info({"type": "orderStatus", "user": user, "oid": oid})
+        if not isinstance(result, dict):
+            raise HyperliquidClientError("Hyperliquid orderStatus returned an unexpected shape.")
+        return result
 
     async def clearinghouse_state(self, *, user: str, dex: str | None = None) -> dict[str, Any]:
         payload = {"type": "clearinghouseState", "user": user}
