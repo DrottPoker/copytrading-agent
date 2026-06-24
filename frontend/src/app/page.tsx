@@ -294,7 +294,7 @@ function TopWalletRow({ wallet }: { wallet: Wallet }) {
       className="grid gap-3 py-3 hover:bg-[#f8fafb] sm:grid-cols-[1fr_90px_120px]"
     >
       <div className="min-w-0">
-        <p className="truncate text-sm font-semibold">{wallet.label || shortAddress(wallet.address)}</p>
+        <p className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold">{wallet.label || shortAddress(wallet.address)}</p>
         <p className="mt-1 font-mono text-xs text-[#5b6770]">{shortAddress(wallet.address)}</p>
       </div>
       <p className={`text-lg font-semibold ${scoreTone}`}>{formatScore(score)}</p>

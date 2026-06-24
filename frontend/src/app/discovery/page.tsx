@@ -415,12 +415,12 @@ function CandidateRow({ candidate }: { candidate: DiscoveryCandidate }) {
           {canOpenWallet ? (
             <Link
               href={`/wallets/${candidate.walletAddress}`}
-              className="max-w-[250px] truncate font-semibold hover:text-[#297c73]"
+              className="min-w-0 max-w-full whitespace-normal break-words font-semibold hover:text-[#297c73]"
             >
               {candidate.sourceLabel || candidate.subaccountName || shortAddress(candidate.walletAddress)}
             </Link>
           ) : (
-            <p className="max-w-[250px] truncate font-semibold">
+            <p className="min-w-0 max-w-full whitespace-normal break-words font-semibold">
               {candidate.sourceLabel || candidate.subaccountName || shortAddress(candidate.walletAddress)}
             </p>
           )}

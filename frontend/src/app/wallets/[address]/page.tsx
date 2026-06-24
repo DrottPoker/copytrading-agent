@@ -55,7 +55,7 @@ export default async function WalletDetailPage({
             <Link href="/wallets" className="text-sm font-medium text-[#5b6770] hover:text-ink">
               Wallet Pool
             </Link>
-            <h1 className="mt-1 truncate text-2xl font-semibold tracking-normal">
+            <h1 className="mt-1 min-w-0 max-w-full whitespace-normal break-words text-2xl font-semibold tracking-normal">
               {wallet.label || shortAddress(wallet.address)}
             </h1>
             <p className="mt-2 break-all font-mono text-sm text-[#5b6770]">{wallet.address}</p>
@@ -358,7 +358,7 @@ function ScoreSignalList({
         ) : (
           items.map((item) => (
             <div key={item.key} className="flex items-center justify-between gap-3 text-sm">
-              <span className="truncate text-[#526070]">{item.label}</span>
+              <span className="min-w-0 max-w-full whitespace-normal break-words text-[#526070]">{item.label}</span>
               <span className={`font-semibold ${scoreTextClass(item.value)}`}>
                 {formatScore(item.value)}
               </span>

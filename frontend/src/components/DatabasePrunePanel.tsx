@@ -174,7 +174,7 @@ function CandidateRow({ item }: { item: WalletPruneCandidate }) {
     <div className="py-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="truncate text-sm font-semibold">{item.label || shortAddress(item.address)}</p>
+          <p className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold">{item.label || shortAddress(item.address)}</p>
           <p className="font-mono text-xs text-[#5b6770]">{shortAddress(item.address)}</p>
         </div>
         <div className="shrink-0 text-right">

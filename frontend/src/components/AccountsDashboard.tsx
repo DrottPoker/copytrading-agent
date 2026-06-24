@@ -734,7 +734,7 @@ function PositionRows({ positions }: { positions: PaperPosition[] }) {
               </div>
               <Link
                 href={`/wallets/${position.sourceWallet}`}
-                className="mt-1 block truncate text-xs font-semibold text-ink hover:text-[#297c73]"
+                className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink hover:text-[#297c73]"
               >
                 {sourceDisplayName(position.sourceLabel, position.sourceWallet)}
               </Link>
@@ -777,7 +777,7 @@ function ClosedTradeRows({ trades }: { trades: PaperClosedTrade[] }) {
               </div>
               <Link
                 href={`/wallets/${trade.sourceWallet}`}
-                className="mt-1 block truncate text-xs font-semibold text-ink hover:text-[#297c73]"
+                className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink hover:text-[#297c73]"
               >
                 {sourceDisplayName(trade.sourceLabel, trade.sourceWallet)}
               </Link>
@@ -816,7 +816,7 @@ function FillRows({ fills }: { fills: PaperCopyFill[] }) {
               </div>
               <Link
                 href={`/wallets/${fill.sourceWallet}`}
-                className="mt-1 block truncate text-xs font-semibold text-ink hover:text-[#297c73]"
+                className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink hover:text-[#297c73]"
               >
                 {sourceDisplayName(fill.sourceLabel, fill.sourceWallet)}
               </Link>
@@ -840,7 +840,7 @@ function SourceIdentity({ row }: { row: SourceRow }) {
       <div className="flex flex-wrap items-center gap-1">
         <Link
           href={`/wallets/${row.sourceWallet}`}
-          className="truncate text-sm font-semibold text-ink hover:text-[#297c73]"
+          className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold text-ink hover:text-[#297c73]"
         >
           {sourceDisplayName(row.sourceLabel, row.sourceWallet)}
         </Link>

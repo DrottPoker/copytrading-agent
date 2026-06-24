@@ -333,7 +333,7 @@ function WalletIdentity({ wallet }: { wallet: AnalyticsWalletRow }) {
     <div className="min-w-0">
       <Link
         href={`/wallets/${wallet.walletAddress}`}
-        className="block truncate font-mono text-sm font-semibold text-ink hover:underline"
+        className="block min-w-0 max-w-full whitespace-normal break-words font-mono text-sm font-semibold text-ink hover:underline"
       >
         {wallet.label ?? shortAddress(wallet.walletAddress)}
       </Link>
@@ -465,7 +465,7 @@ function DiscoveryTable({ rows }: { rows: AnalyticsDiscoverySourceRow[] }) {
         <div key={row.source} className="rounded-md border border-line bg-[#f8fafb] p-3">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <p className="truncate text-sm font-semibold text-ink">{sourceLabel(row.source)}</p>
+              <p className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold text-ink">{sourceLabel(row.source)}</p>
               <p className="truncate text-xs text-[#5b6770]">last seen {formatDate(row.lastSeenAt)}</p>
             </div>
             <p className="font-mono text-sm font-semibold text-ink">{formatInteger(row.total)}</p>
@@ -499,7 +499,7 @@ function SourceIdentity({
     <div className="min-w-0">
       <Link
         href={`/wallets/${address}`}
-        className="block truncate font-mono text-sm font-semibold text-ink hover:underline"
+        className="block min-w-0 max-w-full whitespace-normal break-words font-mono text-sm font-semibold text-ink hover:underline"
       >
         {label ?? shortAddress(address)}
       </Link>

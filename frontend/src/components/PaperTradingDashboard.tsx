@@ -549,7 +549,7 @@ function AccountRow({
       <div className="grid gap-2 sm:grid-cols-[1.2fr_repeat(5,minmax(0,1fr))_auto] sm:items-center">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-1">
-            <p className="truncate text-sm font-semibold text-ink">{account.label}</p>
+            <p className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold text-ink">{account.label}</p>
             <StatusPill label={account.enabled ? "enabled" : "disabled"} tone={account.enabled ? "positive" : "warning"} />
           </div>
           <p className="mt-1 truncate font-mono text-xs text-[#5b6770]">{account.key}</p>
@@ -635,7 +635,7 @@ function SourceRow({
           <div className="flex flex-wrap items-center gap-1">
             <Link
               href={`/wallets/${source.sourceWallet}`}
-              className="truncate text-sm font-semibold text-ink hover:text-[#297c73]"
+              className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold text-ink hover:text-[#297c73]"
             >
               {sourceDisplayName(source.sourceLabel, source.sourceWallet)}
             </Link>
@@ -714,7 +714,7 @@ function PositionRow({
           </div>
           <Link
             href={`/wallets/${position.sourceWallet}`}
-            className="mt-1 block truncate text-xs font-semibold text-ink hover:text-[#297c73]"
+            className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink hover:text-[#297c73]"
           >
             {sourceDisplayName(position.sourceLabel, position.sourceWallet)}
           </Link>
@@ -752,7 +752,7 @@ function WalletHistoryRow({ wallet }: { wallet: PaperWalletPerformance }) {
           <div className="flex flex-wrap items-center gap-1">
             <Link
               href={`/wallets/${wallet.sourceWallet}`}
-              className="truncate text-sm font-semibold text-ink hover:text-[#297c73]"
+              className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold text-ink hover:text-[#297c73]"
             >
               {sourceDisplayName(wallet.sourceLabel, wallet.sourceWallet)}
             </Link>
@@ -792,7 +792,7 @@ function ClosedTradeRow({ trade }: { trade: PaperClosedTrade }) {
           </div>
           <Link
             href={`/wallets/${trade.sourceWallet}`}
-            className="mt-1 block truncate text-xs font-semibold text-ink hover:text-[#297c73]"
+            className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink hover:text-[#297c73]"
           >
             {sourceDisplayName(trade.sourceLabel, trade.sourceWallet)}
           </Link>
@@ -822,7 +822,7 @@ function PaperFillRow({ fill }: { fill: PaperCopyFill }) {
           <div className="flex flex-wrap items-center gap-1">
             <Link
               href={`/wallets/${fill.sourceWallet}`}
-              className="truncate text-sm font-semibold text-ink hover:text-[#297c73]"
+              className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold text-ink hover:text-[#297c73]"
             >
               {sourceDisplayName(fill.sourceLabel, fill.sourceWallet)}
             </Link>

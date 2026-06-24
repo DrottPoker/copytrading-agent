@@ -127,6 +127,8 @@ What it does:
 - Enables or disables wallets.
 - Forces cooldown state.
 - Stores labels and notes.
+- Wallet list labels and notes wrap so discovery promotion notes stay fully
+  readable.
 - Shows last seen fill time.
 - Shows each wallet's current `poolRank`, based on the latest score ordering.
 - Wallet detail pages also show that wallet's current pool rank.
@@ -711,6 +713,8 @@ What it does:
 - The summary API attaches wallet labels to paper allocation, position,
   wallet-history, closed-trade, and recent-fill rows. The UI shows the label
   when available and falls back to the short address.
+- Dashboard wallet and source labels wrap instead of using ellipsis so full
+  labels stay visible in list rows and detail headers.
 - Account rows include a reset action that restores the account to its
   configured starting balance and clears account-level realized PnL and fees
   without deleting open paper positions, copied fills, or closed trade history.
