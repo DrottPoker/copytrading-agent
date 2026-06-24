@@ -3,13 +3,16 @@ from decimal import Decimal
 
 import pytest
 
+from app.core.config import Settings
 from app.db.models import TradingAccount, TradingOrder
 from app.services.live_trading_service import (
     apply_order_status_response,
     build_testnet_live_trade_intent,
     fetch_live_fills_by_time,
+    live_account_key_for_route,
     parse_live_fill,
     parse_live_position,
+    resolve_live_account_wallet_address,
 )
 
 
@@ -108,6 +111,32 @@ def test_build_testnet_live_trade_intent_is_reduce_only_when_requested() -> None
     assert intent.is_buy is True
     assert intent.size == Decimal("0.1")
     assert intent.margin_usd == Decimal("5")
+
+
+def test_live_account_key_is_generated_from_wallet_route() -> None:
+    assert (
+        live_account_key_for_route(wallet_address="0x1234567890abcdef1234567890abcdef12345678")
+        == "live_0x1234567890abcdef1234567890abcdef12345678"
+    )
+
+
+def test_live_account_key_includes_vault_route_hash() -> None:
+    key = live_account_key_for_route(
+        wallet_address="0x1234567890abcdef1234567890abcdef12345678",
+        vault_address="0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+    )
+
+    assert key.startswith("live_0x1234567890abcdef1234567890abcdef12345678_")
+    assert len(key) <= 64
+
+
+def test_resolve_live_account_wallet_address_uses_config_fallback() -> None:
+    settings = Settings()
+    settings.hyperliquid_wallet_address = "0x" + "2" * 40
+
+    assert resolve_live_account_wallet_address(wallet_address=None, settings=settings) == (
+        "0x" + "2" * 40
+    )
 
 
 @pytest.mark.asyncio

@@ -423,8 +423,11 @@ Sizing policy:
   exposure, source performance, open positions, closed trades, and recent fills,
   and shows live account equity, balance, reconciliation, and routing details.
 - The Accounts page can create dashboard-managed paper accounts with a selected
-  USD starting balance and live accounts with a key, label, wallet address, and
-  optional vault address. New accounts start with trading disabled.
+  USD starting balance and live accounts with a wallet name, optional wallet
+  address, and optional vault address. Empty wallet address fields use and save
+  `HYPERLIQUID_WALLET_ADDRESS`. Live account keys are generated internally from
+  the wallet route, so the display name can change without creating a duplicate
+  route. New accounts start with trading disabled.
 - The Accounts page can start, stop, or close all and stop trading for the
   selected account. Starting enables new copy entries for that account.
   Stopping disables new entries and adds while still allowing reduce and exit

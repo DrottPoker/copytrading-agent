@@ -3,17 +3,29 @@ from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from app.schemas.base import CamelModel
 
 
 class LiveTradingAccountCreateRequest(CamelModel):
-    key: str = Field(min_length=1, max_length=64, pattern=r"^[a-zA-Z0-9_-]+$")
+    key: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        pattern=r"^[a-zA-Z0-9_-]+$",
+    )
     label: str = Field(min_length=1, max_length=120)
     wallet_address: str | None = Field(default=None, max_length=128)
     vault_address: str | None = Field(default=None, max_length=128)
     status: Literal["disabled"] = "disabled"
+
+    @field_validator("key", "wallet_address", "vault_address", mode="before")
+    @classmethod
+    def blank_string_to_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
 
 class TradingAccountStatusRequest(CamelModel):

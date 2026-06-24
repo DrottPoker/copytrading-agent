@@ -681,15 +681,18 @@ source rows, so a source is shown as `trading` when at least one account can
 open or manage that source and the source has open paper exposure.
 Paper account `enabled` is database runtime state after the account has been
 created through the dashboard or API. The Accounts page can create paper
-accounts with a selected USD starting balance and live accounts with an account
-key, label, wallet address, and optional vault address. New accounts start
-disabled. The Accounts page can change enabled state for one account without
-disabling other accounts. Disabled paper accounts are excluded from new entries
-and adds, but are still included when an existing open position for the source
-needs a reduce or exit fill. Live accounts use `enabled`, `exit_only`, and
-`disabled` status. The close-all-and-stop route sets the selected account to
-exit-only first, closes open positions for that account, and disables the
-account after successful close submission.
+accounts with a selected USD starting balance and live accounts with a wallet
+name, optional wallet address, and optional vault address. Empty wallet address
+fields use and save `HYPERLIQUID_WALLET_ADDRESS`. Live account keys are
+generated internally from the wallet route, so the display name can change
+without creating a duplicate route. New accounts start disabled. The Accounts
+page can change enabled state for one account without disabling other accounts.
+Disabled paper accounts are excluded from new entries and adds, but are still
+included when an existing open position for the source needs a reduce or exit
+fill. Live accounts use `enabled`, `exit_only`, and `disabled` status. The
+close-all-and-stop route sets the selected account to exit-only first, closes
+open positions for that account, and disables the account after successful
+close submission.
 The summary also exposes `poolRank` and `sourceStatusReason`. `poolRank` is the
 source wallet's score rank in the wallet pool, while `sourceStatusReason`
 explains why a source is retained or waiting without relying on monitor-slot

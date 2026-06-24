@@ -150,8 +150,7 @@ export function AccountsDashboard({
   const [createAccountOpen, setCreateAccountOpen] = useState(false);
   const [createAccountType, setCreateAccountType] = useState<CreateAccountType>("paper");
   const [createStartingBalance, setCreateStartingBalance] = useState("1000");
-  const [createLiveKey, setCreateLiveKey] = useState("live_main");
-  const [createLiveLabel, setCreateLiveLabel] = useState("Live Main");
+  const [createLiveLabel, setCreateLiveLabel] = useState("Main wallet");
   const [createLiveWalletAddress, setCreateLiveWalletAddress] = useState("");
   const [createLiveVaultAddress, setCreateLiveVaultAddress] = useState("");
   const [createSubmitting, setCreateSubmitting] = useState(false);
@@ -308,8 +307,7 @@ export function AccountsDashboard({
     setCreateAccountOpen(true);
     setCreateAccountType("paper");
     setCreateStartingBalance("1000");
-    setCreateLiveKey("live_main");
-    setCreateLiveLabel("Live Main");
+    setCreateLiveLabel("Main wallet");
     setCreateLiveWalletAddress("");
     setCreateLiveVaultAddress("");
     setCreateError(null);
@@ -336,12 +334,8 @@ export function AccountsDashboard({
       setCreateError("Enter a starting balance greater than 0.");
       return;
     }
-    if (createAccountType === "live" && !createLiveKey.trim()) {
-      setCreateError("Enter a live account key.");
-      return;
-    }
     if (createAccountType === "live" && !createLiveLabel.trim()) {
-      setCreateError("Enter a live account label.");
+      setCreateError("Enter a wallet name.");
       return;
     }
 
@@ -358,7 +352,6 @@ export function AccountsDashboard({
               startingBalanceUsd: createStartingBalance,
             }
           : {
-              key: createLiveKey.trim(),
               label: createLiveLabel.trim(),
               walletAddress: createLiveWalletAddress.trim() || null,
               vaultAddress: createLiveVaultAddress.trim() || null,
@@ -404,7 +397,6 @@ export function AccountsDashboard({
   }, [
     accountOptions,
     createAccountType,
-    createLiveKey,
     createLiveLabel,
     createLiveVaultAddress,
     createLiveWalletAddress,
@@ -511,14 +503,12 @@ export function AccountsDashboard({
         balance={createStartingBalance}
         error={createError}
         isSubmitting={createSubmitting}
-        liveKey={createLiveKey}
         liveLabel={createLiveLabel}
         liveVaultAddress={createLiveVaultAddress}
         liveWalletAddress={createLiveWalletAddress}
         onAccountTypeChange={setCreateAccountType}
         onBalanceChange={setCreateStartingBalance}
         onClose={closeCreateAccount}
-        onLiveKeyChange={setCreateLiveKey}
         onLiveLabelChange={setCreateLiveLabel}
         onLiveVaultAddressChange={setCreateLiveVaultAddress}
         onLiveWalletAddressChange={setCreateLiveWalletAddress}
@@ -554,14 +544,12 @@ function CreateAccountDialog({
   balance,
   error,
   isSubmitting,
-  liveKey,
   liveLabel,
   liveVaultAddress,
   liveWalletAddress,
   onAccountTypeChange,
   onBalanceChange,
   onClose,
-  onLiveKeyChange,
   onLiveLabelChange,
   onLiveVaultAddressChange,
   onLiveWalletAddressChange,
@@ -572,14 +560,12 @@ function CreateAccountDialog({
   balance: string;
   error: string | null;
   isSubmitting: boolean;
-  liveKey: string;
   liveLabel: string;
   liveVaultAddress: string;
   liveWalletAddress: string;
   onAccountTypeChange: (accountType: CreateAccountType) => void;
   onBalanceChange: (balance: string) => void;
   onClose: () => void;
-  onLiveKeyChange: (value: string) => void;
   onLiveLabelChange: (value: string) => void;
   onLiveVaultAddressChange: (value: string) => void;
   onLiveWalletAddressChange: (value: string) => void;
@@ -592,7 +578,7 @@ function CreateAccountDialog({
     !isSubmitting &&
     (accountType === "paper"
       ? Number.isFinite(parsedBalance) && parsedBalance > 0
-      : liveKey.trim().length > 0 && liveLabel.trim().length > 0);
+      : liveLabel.trim().length > 0);
 
   useEffect(() => {
     if (!open) {
@@ -696,23 +682,13 @@ function CreateAccountDialog({
             ) : (
               <div className="grid gap-3">
                 <label className="grid gap-2">
-                  <span className="text-sm font-semibold text-ink">Account key</span>
-                  <input
-                    maxLength={64}
-                    value={liveKey}
-                    onChange={(event) => onLiveKeyChange(event.target.value)}
-                    className="h-10 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink shadow-sm outline-none focus:border-[#9eb1c1]"
-                    placeholder="live_main"
-                  />
-                </label>
-                <label className="grid gap-2">
-                  <span className="text-sm font-semibold text-ink">Label</span>
+                  <span className="text-sm font-semibold text-ink">Wallet name</span>
                   <input
                     maxLength={120}
                     value={liveLabel}
                     onChange={(event) => onLiveLabelChange(event.target.value)}
                     className="h-10 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink shadow-sm outline-none focus:border-[#9eb1c1]"
-                    placeholder="Live Main"
+                    placeholder="Main wallet"
                   />
                 </label>
                 <label className="grid gap-2">
@@ -721,7 +697,7 @@ function CreateAccountDialog({
                     value={liveWalletAddress}
                     onChange={(event) => onLiveWalletAddressChange(event.target.value)}
                     className="h-10 rounded-md border border-line bg-white px-3 font-mono text-sm font-medium text-ink shadow-sm outline-none focus:border-[#9eb1c1]"
-                    placeholder="Uses config wallet when empty"
+                    placeholder="Uses and saves HYPERLIQUID_WALLET_ADDRESS when empty"
                   />
                 </label>
                 <label className="grid gap-2">
@@ -734,7 +710,7 @@ function CreateAccountDialog({
                   />
                 </label>
                 <span className="text-xs font-medium text-[#5b6770]">
-                  Starts disabled
+                  Starts disabled. The internal key is generated from the wallet route.
                 </span>
               </div>
             )}
@@ -986,7 +962,7 @@ function LiveAccountContent({
           <div className="grid gap-3">
             <DetailRow label="Wallet address" value={account.walletAddress ?? "config wallet"} />
             <DetailRow label="Vault address" value={account.vaultAddress ?? "none"} />
-            <DetailRow label="Account key" value={account.key} />
+            <DetailRow label="Internal key" value={account.key} />
           </div>
         </Panel>
       </section>

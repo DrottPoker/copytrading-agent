@@ -1,10 +1,12 @@
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from hashlib import blake2s
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,6 +31,7 @@ LIVE_MANUAL_TEST_SOURCE = "__manual_testnet__"
 TERMINAL_ORDER_STATUSES = {"filled", "rejected", "canceled", "failed"}
 ACTIVE_ORDER_STATUSES = {"planned", "submitted", "accepted", "partially_filled"}
 MAX_LIVE_FILL_RECONCILIATION_PAGES = 10
+LIVE_ACCOUNT_KEY_MAX_LENGTH = 64
 
 
 class LiveTradingServiceError(Exception):
@@ -108,34 +111,128 @@ def validate_live_trading_configuration(settings: Settings) -> None:
 async def create_live_trading_account(
     session: AsyncSession,
     *,
-    key: str,
+    key: str | None,
     label: str,
     wallet_address: str | None,
     vault_address: str | None,
     status: str,
     settings: Settings,
 ) -> TradingAccount:
-    existing = await session.scalar(select(TradingAccount).where(TradingAccount.key == key))
-    if existing is not None:
-        raise LiveAccountCreateError("Trading account key already exists.", status_code=409)
+    account_label = label.strip()
+    if not account_label:
+        raise LiveAccountCreateError("Live account wallet name is required.")
     if status != "disabled":
         raise LiveAccountCreateError("Live accounts must be created disabled.")
+    resolved_wallet_address = resolve_live_account_wallet_address(
+        wallet_address=wallet_address,
+        settings=settings,
+    )
+    resolved_vault_address = normalize_optional_address(vault_address)
+    existing_route = await find_existing_live_account_for_route(
+        session,
+        wallet_address=resolved_wallet_address,
+        vault_address=resolved_vault_address,
+        include_config_wallet_fallback=not normalize_optional_address(wallet_address),
+    )
+    if existing_route is not None:
+        raise LiveAccountCreateError(
+            "A live account already exists for this wallet route.",
+            status_code=409,
+        )
+    account_key = live_account_key_for_route(
+        wallet_address=resolved_wallet_address,
+        vault_address=resolved_vault_address,
+    )
+    existing = await session.scalar(
+        select(TradingAccount).where(TradingAccount.key == account_key)
+    )
+    if existing is not None:
+        raise LiveAccountCreateError("Trading account key already exists.", status_code=409)
 
     account = TradingAccount(
-        key=key,
+        key=account_key,
         account_type="live",
-        label=label.strip(),
+        label=account_label,
         status="disabled",
         network=settings.hyperliquid_network,
-        wallet_address=normalize_optional_address(wallet_address),
-        vault_address=normalize_optional_address(vault_address),
+        wallet_address=resolved_wallet_address,
+        vault_address=resolved_vault_address,
         realized_pnl_usd=ZERO,
         fee_usd=ZERO,
-        config_payload={"source": "dashboard"},
+        config_payload={
+            "source": "dashboard",
+            "keySource": "wallet_route",
+            "legacyRequestKey": key,
+        },
     )
     session.add(account)
     await session.flush()
     return account
+
+
+async def find_existing_live_account_for_route(
+    session: AsyncSession,
+    *,
+    wallet_address: str,
+    vault_address: str | None,
+    include_config_wallet_fallback: bool,
+) -> TradingAccount | None:
+    wallet_conditions = [TradingAccount.wallet_address == wallet_address]
+    if include_config_wallet_fallback:
+        wallet_conditions.append(TradingAccount.wallet_address.is_(None))
+    query = select(TradingAccount).where(
+        TradingAccount.account_type == "live",
+        or_(*wallet_conditions),
+    )
+    if vault_address is None:
+        query = query.where(TradingAccount.vault_address.is_(None))
+    else:
+        query = query.where(TradingAccount.vault_address == vault_address)
+    return await session.scalar(query.limit(1))
+
+
+def resolve_live_account_wallet_address(
+    *,
+    wallet_address: str | None,
+    settings: Settings,
+) -> str:
+    resolved = normalize_optional_address(wallet_address) or normalize_optional_address(
+        settings.hyperliquid_wallet_address
+    )
+    if not resolved:
+        raise LiveAccountCreateError(
+            "Live account requires wallet address or HYPERLIQUID_WALLET_ADDRESS.",
+        )
+    return resolved
+
+
+def live_account_key_for_route(
+    *,
+    wallet_address: str,
+    vault_address: str | None = None,
+) -> str:
+    wallet_part = live_account_address_key_part(wallet_address)
+    if vault_address:
+        route_key = (
+            f"{normalize_optional_address(wallet_address)}:"
+            f"{normalize_optional_address(vault_address)}"
+        )
+        route_hash = blake2s(
+            route_key.encode(),
+            digest_size=6,
+        ).hexdigest()
+        suffix = f"_{route_hash}"
+        wallet_limit = LIVE_ACCOUNT_KEY_MAX_LENGTH - len("live_") - len(suffix)
+        wallet_part = wallet_part[:wallet_limit].rstrip("_") or "wallet"
+        return f"live_{wallet_part}{suffix}"
+    wallet_limit = LIVE_ACCOUNT_KEY_MAX_LENGTH - len("live_")
+    wallet_part = wallet_part[:wallet_limit].rstrip("_") or "wallet"
+    return f"live_{wallet_part}"
+
+
+def live_account_address_key_part(address: str) -> str:
+    key_part = re.sub(r"[^a-zA-Z0-9]+", "", normalize_optional_address(address) or "")
+    return key_part or "wallet"
 
 
 async def set_live_trading_account_status(

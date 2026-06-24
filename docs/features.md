@@ -721,8 +721,11 @@ What it does:
   exchange equity, cash balance, realized PnL, fees, reconciliation state,
   wallet routing, and vault routing.
 - The Accounts page can create new paper and live accounts from the dashboard.
-  Paper accounts choose a USD starting balance. Live accounts choose an account
-  key, label, wallet address, and optional vault address. New accounts start
+  Paper accounts choose a USD starting balance. Live accounts choose a wallet
+  name, optional wallet address, and optional vault address. Empty wallet
+  address fields use and save `HYPERLIQUID_WALLET_ADDRESS`. The internal live
+  account key is generated from the wallet route, so changing the display name
+  cannot create a duplicate account for the same route. New accounts start
   disabled.
 - The Accounts page can start, stop, or close all and stop trading for the
   selected account. Start trading enables new entries again. Stop trading
