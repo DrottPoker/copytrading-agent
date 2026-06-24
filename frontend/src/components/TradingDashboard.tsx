@@ -40,7 +40,7 @@ import { HeaderRefreshButton, HeaderUpdatedLabel } from "./HeaderRefresh";
 import { PageTopPanel } from "./PageTopPanel";
 import { StatusPill } from "./StatusPill";
 
-const PAPER_REFRESH_MS = 4000;
+const TRADING_REFRESH_MS = 4000;
 const HISTORY_PAGE_SIZE = 10;
 
 type Tone = "positive" | "warning" | "danger" | "neutral";
@@ -68,7 +68,7 @@ type MonitoredSource = {
   totalPnlUsd: string;
 };
 
-export function PaperTradingDashboard({
+export function TradingDashboard({
   initialSummary,
 }: {
   initialSummary: PaperTradingSummaryResponse;
@@ -103,7 +103,7 @@ export function PaperTradingDashboard({
   useEffect(() => {
     const intervalId = window.setInterval(() => {
       void refresh();
-    }, PAPER_REFRESH_MS);
+    }, TRADING_REFRESH_MS);
     return () => window.clearInterval(intervalId);
   }, [refresh]);
 
@@ -113,7 +113,7 @@ export function PaperTradingDashboard({
         return;
       }
       const confirmed = window.confirm(
-        `Close ${position.coin} ${position.side} paper position for ${position.accountKey}?`,
+        `Close ${position.coin} ${position.side} position for ${position.accountKey}?`,
       );
       if (!confirmed) {
         return;
@@ -151,7 +151,7 @@ export function PaperTradingDashboard({
       }
       const sourceName = sourceDisplayName(source.sourceLabel, source.sourceWallet);
       const confirmed = window.confirm(
-        `Close all ${formatInteger(source.openPositionCount)} open paper positions for ${sourceName}?`,
+        `Close all ${formatInteger(source.openPositionCount)} open positions for ${sourceName}?`,
       );
       if (!confirmed) {
         return;
@@ -229,14 +229,14 @@ export function PaperTradingDashboard({
   return (
     <>
       <PageTopPanel
-        eyebrow="Paper execution cockpit"
+        eyebrow="Execution cockpit"
         icon={BarChart3}
-        title="Paper Trading"
+        title="Trading"
         actions={
           <>
             <HeaderUpdatedLabel label={`Updated ${formatDate(summary.updatedAt)}`} />
             <StatusPill
-              label={summary.policy.enabled ? "paper copy enabled" : "paper copy disabled"}
+              label={summary.policy.enabled ? "paper execution enabled" : "paper execution disabled"}
               tone={summary.policy.enabled ? "positive" : "warning"}
             />
             <StatusPill label={marketStatusLabel(summary.marketDataStatus)} tone={marketStatusTone(summary.marketDataStatus)} />
@@ -247,7 +247,7 @@ export function PaperTradingDashboard({
           <HeaderRefreshButton
             isRefreshing={connectionState === "refreshing"}
             onRefresh={refresh}
-            title="Refresh paper trading data"
+            title="Refresh trading data"
           />
         }
       />
@@ -304,7 +304,7 @@ export function PaperTradingDashboard({
       <section className="grid gap-3 xl:grid-cols-[1fr_0.9fr]">
         <ListPanel title="Accounts" meta={`${formatInteger(summary.accounts.length)} accounts`}>
           {summary.accounts.length === 0 ? (
-            <EmptyState text="No paper accounts synced." />
+            <EmptyState text="No trading accounts available." />
           ) : (
             summary.accounts.map((account) => (
               <AccountRow
@@ -343,7 +343,7 @@ export function PaperTradingDashboard({
 
         <ListPanel title="Open Positions" meta={`${formatInteger(summary.positions.length)} open`}>
           {summary.positions.length === 0 ? (
-            <EmptyState text="No open paper positions." />
+            <EmptyState text="No open positions." />
           ) : (
             summary.positions.map((position) => (
               <PositionRow
@@ -604,7 +604,7 @@ function PolicyRow({
       <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[#5b6770]">
         <Clock className="h-3.5 w-3.5" aria-hidden="true" />
         <span>Last refresh {lastRefreshAt ? formatDate(lastRefreshAt.toISOString()) : "-"}</span>
-        <span className="font-mono">{formatInteger(PAPER_REFRESH_MS)} ms polling</span>
+        <span className="font-mono">{formatInteger(TRADING_REFRESH_MS)} ms polling</span>
       </div>
     </ListRow>
   );
@@ -660,7 +660,7 @@ function SourceRow({
               type="button"
               onClick={() => onCloseSource(source)}
               disabled={isClosing}
-              title="Close all open paper positions for this source"
+              title="Close all open positions for this source"
               className="inline-flex min-h-7 shrink-0 items-center justify-center gap-1.5 rounded-md border border-[#f2aaa5] bg-[#fff2f0] px-2 py-1 text-xs font-semibold text-danger shadow-sm hover:bg-[#ffe6e2] disabled:cursor-not-allowed disabled:border-line disabled:bg-[#f7f9fb] disabled:text-[#98a2b3]"
             >
               {isClosing ? (
@@ -830,7 +830,7 @@ function PositionRow({
           type="button"
           onClick={() => onClose(position)}
           disabled={!canClose || isClosing}
-          title={canClose ? "Close paper position" : "Execution price unavailable"}
+          title={canClose ? "Close position" : "Execution price unavailable"}
           className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-[#f2aaa5] bg-[#fff2f0] px-2.5 text-xs font-semibold text-danger shadow-sm hover:bg-[#ffe6e2] disabled:cursor-not-allowed disabled:border-line disabled:bg-[#f7f9fb] disabled:text-[#98a2b3]"
         >
           {isClosing ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <XCircle className="h-3.5 w-3.5" aria-hidden="true" />}

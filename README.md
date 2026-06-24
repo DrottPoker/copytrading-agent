@@ -237,7 +237,7 @@ Dashboard:
 - `http://127.0.0.1:3000/analytics`
 - `http://127.0.0.1:3000/ops`
 - `http://127.0.0.1:3000/accounts`
-- `http://127.0.0.1:3000/paper-trading`
+- `http://127.0.0.1:3000/trading`
 
 Notes:
 
@@ -333,7 +333,7 @@ API:
 
 Dashboard:
 
-- `http://127.0.0.1:3000/paper-trading`
+- `http://127.0.0.1:3000/trading`
 - `http://127.0.0.1:3000/accounts`
 
 Config:
@@ -398,7 +398,7 @@ Sizing policy:
   positions in a stable order.
 - Skip reasons distinguish minimum notional, source-wallet pocket cap, total
   account cap, missing matching positions, and price safety guards.
-- The paper trading dashboard polls the summary API and separates total,
+- The Trading page polls the paper summary API and separates total,
   realized, and unrealized PnL at the top of the page.
 - The Accounts page stores the last selected paper account in the browser and
   defaults to that account on the next visit, otherwise the first synced account

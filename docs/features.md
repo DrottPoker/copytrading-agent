@@ -567,7 +567,7 @@ Query parameters:
 
 Dashboard page:
 
-- `/paper-trading`
+- `/trading`
 - `/accounts`
 
 What it does:
@@ -705,7 +705,7 @@ What it does:
   minimum notional, source allocation cap exhaustion, or total account cap
   exhaustion.
 - Publishes `paper_copy` events to the live feed when realtime fills are simulated.
-- The paper trading dashboard polls the summary API and shows account PnL,
+- The Trading page polls the paper summary API and shows account PnL,
   monitored sources, currently trading sources, open position PnL, wallet PnL
   history, closed trade history, and recent fills without a full page refresh.
 - The Accounts page filters the paper summary to one selected paper account.
@@ -785,7 +785,7 @@ Current limitations:
 - Paper accounts are not backfilled from historical fills. They start recording
   only from new non-snapshot realtime fills after they exist.
 - Editing `starting_balance_usd` does not reset existing account state by
-  itself. Use the account reset action in the paper trading dashboard to apply
+  itself. Use the account reset action in the Trading page to apply
   configured starting capital to an existing paper account.
 
 ### Live Feed

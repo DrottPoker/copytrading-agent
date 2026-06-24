@@ -157,7 +157,7 @@ Current pages:
 - `/analytics`: pool, scoring, paper, discovery, and freshness analytics.
 - `/accounts`: selected paper account metrics, charts, allocations, positions,
   closed trades, and fills.
-- `/paper-trading`: paper accounts, allocations, positions, and recent paper fills.
+- `/trading`: trading accounts, allocations, positions, and recent fills.
 
 Important folders:
 
@@ -705,13 +705,13 @@ so dashboard trade history is not a skip or fill activity log. The summary also
 matches closed paper fills back to original source fills and marks rows whose
 source close fill was a Hyperliquid liquidation.
 Recent fills remain available in the summary as the diagnostic fill and skip
-activity log, and the paper trading page renders them in a separate paginated
+activity log, and the Trading page renders them in a separate paginated
 list at the bottom of the page.
 
 Discovery candidate source metrics use explicit unit-bearing database columns:
 `source_account_value_usd`, `source_pnl_usd`, and `source_roi_pct`.
 
-The paper trading page is a client dashboard that polls the summary API for live
+The Trading page is a client dashboard that polls the summary API for live
 mark prices and unrealized PnL. The API also aggregates source-wallet PnL from
 all copied fills, not just the most recent fill rows shown in the UI.
 The summary attaches wallet labels to allocation, position, wallet-history,

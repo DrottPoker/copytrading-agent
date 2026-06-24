@@ -24,10 +24,17 @@ const navItems = [
     match: (pathname: string) => pathname === "/",
   },
   {
-    href: "/wallets",
-    icon: WalletCards,
-    label: "Wallet Pool",
-    match: (pathname: string) => pathname.startsWith("/wallets"),
+    href: "/accounts",
+    icon: SquareStack,
+    label: "Accounts",
+    match: (pathname: string) => pathname.startsWith("/accounts"),
+  },
+  {
+    href: "/trading",
+    icon: BarChart3,
+    label: "Trading",
+    match: (pathname: string) =>
+      pathname.startsWith("/trading") || pathname.startsWith("/paper-trading"),
   },
   {
     href: "/discovery",
@@ -42,22 +49,16 @@ const navItems = [
     match: (pathname: string) => pathname.startsWith("/analytics"),
   },
   {
-    href: "/accounts",
-    icon: SquareStack,
-    label: "Accounts",
-    match: (pathname: string) => pathname.startsWith("/accounts"),
-  },
-  {
     href: "/live-feed",
     icon: RadioTower,
     label: "Live Feed",
     match: (pathname: string) => pathname.startsWith("/live-feed"),
   },
   {
-    href: "/paper-trading",
-    icon: BarChart3,
-    label: "Paper Trading",
-    match: (pathname: string) => pathname.startsWith("/paper-trading"),
+    href: "/database",
+    icon: Database,
+    label: "Database",
+    match: (pathname: string) => pathname.startsWith("/database"),
   },
   {
     href: "/ops",
@@ -66,10 +67,10 @@ const navItems = [
     match: (pathname: string) => pathname.startsWith("/ops"),
   },
   {
-    href: "/database",
-    icon: Database,
-    label: "Database",
-    match: (pathname: string) => pathname.startsWith("/database"),
+    href: "/wallets",
+    icon: WalletCards,
+    label: "Wallet Pool",
+    match: (pathname: string) => pathname.startsWith("/wallets"),
   },
 ];
 
