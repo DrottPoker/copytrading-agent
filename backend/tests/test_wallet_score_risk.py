@@ -1,6 +1,8 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 
+import pytest
+
 from app.core.config import Settings
 from app.services.source_trade_reconstruction_service import (
     OpenSourceTrade,
@@ -14,6 +16,7 @@ from app.services.wallet_score_service import (
     current_drawdown_score_cap,
     forced_exit_fill_ratio_score,
     forced_exit_severity_penalty,
+    metric_with_current_drawdown,
     metrics_with_reconstructed_trades,
 )
 
@@ -49,6 +52,25 @@ def test_current_drawdown_score_cap_is_inactive_until_start_ratio() -> None:
 
     assert current_drawdown_score_cap(Decimal("0.24"), settings=settings) is None
     assert current_drawdown_score_cap(Decimal("0.625"), settings=settings) == Decimal("50.00")
+
+
+@pytest.mark.asyncio
+async def test_current_drawdown_uses_unified_account_value_when_perp_equity_is_zero() -> None:
+    metric = wallet_metrics(current_drawdown_pct=Decimal("0"))
+
+    updated = await metric_with_current_drawdown(
+        metric,
+        client=FakeUnifiedWalletClient(),
+        known_dexes=(),
+        settings=risk_settings(),
+    )
+
+    assert updated.current_perp_equity_usd == Decimal("0")
+    assert updated.current_account_value_usd == Decimal("200")
+    assert updated.current_drawdown_pct == Decimal("0.1000")
+    assert updated.current_margin_usage_pct == Decimal("0.0500")
+    assert updated.current_notional_exposure_pct == Decimal("0.5000")
+    assert updated.current_drawdown_status == "ok"
 
 
 def test_forced_exit_severity_scales_with_notional_even_when_profitable() -> None:
@@ -200,6 +222,7 @@ def wallet_metrics(*, current_drawdown_pct: Decimal) -> WalletScoreMetrics:
         max_coin_notional_usd=Decimal("25000"),
         max_drawdown_usd=Decimal("0"),
         current_perp_equity_usd=Decimal("1000"),
+        current_account_value_usd=Decimal("1000"),
         current_unrealized_pnl_usd=-current_drawdown_pct * Decimal("1000"),
         current_drawdown_pct=current_drawdown_pct,
         current_margin_usage_pct=Decimal("0.10"),
@@ -235,3 +258,37 @@ def replace_forced_exit_metrics(
             "liquidation_notional_usd": notional_usd,
         }
     )
+
+
+class FakeUnifiedWalletClient:
+    async def clearinghouse_state(self, *, user: str, dex: str | None = None) -> dict:
+        return {
+            "assetPositions": [
+                {
+                    "position": {
+                        "coin": "HYPE",
+                        "entryPx": "100",
+                        "leverage": {"type": "cross", "value": "5"},
+                        "marginUsed": "10",
+                        "positionValue": "100",
+                        "szi": "1",
+                        "unrealizedPnl": "-20",
+                    }
+                }
+            ],
+            "marginSummary": {
+                "accountValue": "0",
+                "totalMarginUsed": "10",
+                "totalNtlPos": "100",
+            },
+            "withdrawable": "0",
+        }
+
+    async def user_abstraction(self, *, user: str) -> str:
+        return "unifiedAccount"
+
+    async def spot_clearinghouse_state(self, *, user: str) -> dict:
+        return {
+            "balances": [{"coin": "USDC", "hold": "0", "total": "200"}],
+            "tokenToAvailableAfterMaintenance": [[0, "200"]],
+        }

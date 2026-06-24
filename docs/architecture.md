@@ -391,7 +391,7 @@ sequenceDiagram
   API->>DB: aggregate wallet_fills over scoring window
   API->>DB: refresh changed source_trades from fill directions
   API->>DB: load materialized source trade metrics
-  API->>HL: fetch default and known-dex live perp state for current drawdown
+  API->>HL: fetch live perp state and userAbstraction for current drawdown
   API->>DB: upsert wallet_scores and remove stale score rows
   API-->>UI: score run summary
   UI->>API: GET /wallets
@@ -405,14 +405,15 @@ drawdown and margin stress when `scoring_current_drawdown_enabled` is true.
 Current drawdown is stored as `wallet_scores.current_drawdown_pct` with
 `wallet_scores.current_drawdown_status`. Margin stress is stored as
 `wallet_scores.open_position_stress_pct` and is calculated from live unrealized
-loss, margin usage, and notional exposure. Live current drawdown can consume the
-full risk component, and severe current drawdown also caps the final score. This
-prevents wallets with perfect realized win rates from ranking highly while they
-carry large unrealized losses. If live perp state is incomplete or perp equity is
-zero, the scoring run keeps the history-only risk component and applies the
-configured missing-state penalty. Scoring only checks default perp plus dexes
-already observed in stored fills, so full HIP-3 discovery remains limited to
-single-wallet current-state views.
+loss, margin usage, and notional exposure. Unified wallets use unified USDC from
+`spotClearinghouseState` as account value; standard wallets use perps account
+value. Live current drawdown can consume the full risk component, and severe
+current drawdown also caps the final score. This prevents wallets with perfect
+realized win rates from ranking highly while they carry large unrealized losses.
+If live state is incomplete or account value is zero, the scoring run keeps the
+history-only risk component and applies the configured missing-state penalty.
+Scoring only checks default perp plus dexes already observed in stored fills, so
+full HIP-3 discovery remains limited to single-wallet current-state views.
 By default, current drawdown risk penalty starts at 5 percent and reaches full
 penalty at 75 percent. The final score cap starts at 25 percent current drawdown
 and reaches zero at 100 percent.
@@ -513,9 +514,11 @@ sequenceDiagram
 - Realized drawdown pruning uses stored reconstructed closed-trade scores and
   removes non-active, non-copy wallets at or above the configured drawdown
   threshold.
-- Current drawdown pruning checks live Hyperliquid `clearinghouseState` and removes
-  non-active, non-copy wallets whose total unrealized perp loss is at least the
-  configured share of perp equity.
+- Current drawdown pruning checks live Hyperliquid `clearinghouseState` and
+  `userAbstraction`, then removes non-active, non-copy wallets whose total
+  unrealized perp loss is at least the configured share of account value.
+  Unified wallets use unified USDC from `spotClearinghouseState`; standard
+  wallets use perps account value.
 - Current drawdown fetch errors are reported separately and are never included in
   the delete list.
 - Low-score pruning removes polled, scored wallets whose reconstructed closed

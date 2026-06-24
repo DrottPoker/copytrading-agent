@@ -1,5 +1,7 @@
 from decimal import Decimal
 
+import pytest
+
 from app.core.config import Settings
 from app.services.discovery_service import (
     HYPERDASH_PNL_COHORT_SOURCES,
@@ -12,6 +14,7 @@ from app.services.discovery_service import (
     hypertracker_segment_wallets_url,
     normalize_requested_sources,
 )
+from app.services.hyperliquid_leaderboard_source import load_subaccount_wallet_candidates
 
 
 def test_hypertracker_sources_are_known_discovery_sources() -> None:
@@ -78,9 +81,9 @@ def test_hypertracker_segment_candidate_maps_wallet_metrics() -> None:
     assert candidate.source_rank == 3
     assert candidate.source_label == "Trader One"
     assert candidate.source_cohort == "Smart Money"
-    assert candidate.account_value == Decimal("1500000")
+    assert candidate.account_value == Decimal("2000000")
     assert candidate.source_pnl == Decimal("300000")
-    assert candidate.source_roi == Decimal("25.00")
+    assert candidate.source_roi == Decimal("17.64705882352941176470588235")
     assert candidate.raw_payload == {
         "address": "0x1111111111111111111111111111111111111111",
         "displayName": "Trader One",
@@ -172,6 +175,22 @@ def test_hypertracker_avg_daily_perp_pnl_candidate_maps_wallet_metrics() -> None
     }
 
 
+@pytest.mark.asyncio
+async def test_subaccount_candidates_use_unified_account_value_when_perp_value_is_zero() -> None:
+    candidates = await load_subaccount_wallet_candidates(
+        client=FakeUnifiedSubaccountClient(),
+        master_address="0x1111111111111111111111111111111111111111",
+        rank=1,
+        display_name="Master",
+        row={"windowPerformances": [["day", {"pnl": "10", "roi": "5"}]]},
+        window="day",
+        max_subaccounts=1,
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].account_value == "200"
+
+
 def test_hypertracker_segment_wallets_url_uses_configured_base_url() -> None:
     settings = Settings(
         discovery_hypertracker_static_base_url="https://example.com/aggregator/"
@@ -192,3 +211,28 @@ def test_hypertracker_leaderboard_url_uses_configured_base_url() -> None:
         hypertracker_leaderboard_url("hypertracker_avg_daily_perp_pnl", settings)
         == "https://example.com/aggregator/avg_daily_perp_pnl_leaderboard.json"
     )
+
+
+class FakeUnifiedSubaccountClient:
+    async def post_info(self, payload: dict) -> list[dict]:
+        assert payload["type"] == "subAccounts"
+        return [
+            {
+                "clearinghouseState": {
+                    "assetPositions": [],
+                    "marginSummary": {"accountValue": "0"},
+                    "withdrawable": "0",
+                },
+                "name": "Unified Sub",
+                "subAccountUser": "0x2222222222222222222222222222222222222222",
+            }
+        ]
+
+    async def user_abstraction(self, *, user: str) -> str:
+        return "unifiedAccount"
+
+    async def spot_clearinghouse_state(self, *, user: str) -> dict:
+        return {
+            "balances": [{"coin": "USDC", "hold": "0", "total": "200"}],
+            "tokenToAvailableAfterMaintenance": [[0, "200"]],
+        }

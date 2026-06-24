@@ -358,10 +358,12 @@ Normal manual pruning runs this through `POST /wallets/prune-all`.
 What it does:
 
 - Fetches live Hyperliquid `clearinghouseState` for enabled pool wallets across
-  default perp and known perp dex prefixes from stored fills.
+  default perp and known perp dex prefixes from stored fills, then checks
+  `userAbstraction`.
 - Deletes wallets whose total open perp unrealized loss is at least the configured
-  share of perp equity. Default threshold is `0.80`, meaning unrealized PnL is
-  `<= -80%` of perp equity.
+  share of account value. Unified wallets use unified USDC from
+  `spotClearinghouseState`; standard wallets use perps account value. Default
+  threshold is `0.80`, meaning unrealized PnL is `<= -80%` of account value.
 - Excludes copy-enabled, active, and exit-only wallets from cleanup candidates.
 - Runs as a dry run by default and supports `dry_run=false` for deletion.
 - Adds deleted addresses to the discovery ignore list so they are not imported
@@ -476,12 +478,14 @@ What it does:
   correctly.
 - Aggregates perp equity, margin, open positions, reconstructed position open
   times when available, and unrealized PnL across those venues. Spot balances
-  are shown separately and are not counted as perp equity.
+  are shown separately. If `userAbstraction` reports a unified wallet, account
+  value uses unified USDC from `spotClearinghouseState` while perp equity
+  remains the raw perps-only value.
 - Open perp position rows are enriched from open reconstructed source trades
   with realized PnL, net PnL, add fill count, reduce fill count, and
   liquidation fill count when available.
 - Shows current unrealized drawdown as the current open perp loss divided by
-  perp equity. This is separate from realized score drawdown.
+  account value. This is separate from realized score drawdown.
 - For isolated HIP-3 positions, Hyperliquid `marginSummary.accountValue` can be
   isolated position equity and move together with `totalMarginUsed`. It is not
   a stable wallet cash balance.
@@ -1121,12 +1125,13 @@ Phase A behavior:
   unrealized PnL.
 - When `scoring_current_drawdown_enabled` is true, scoring fetches live perp state
   from Hyperliquid for default perp and any perp dexes already observed in stored
-  wallet fills, then stores `current_drawdown_pct` and
-  `current_drawdown_status` on `wallet_scores`. Current drawdown is open
-  unrealized perp loss divided by perp equity.
+  wallet fills, then checks `userAbstraction` and stores `current_drawdown_pct`
+  and `current_drawdown_status` on `wallet_scores`. Current drawdown is open
+  unrealized perp loss divided by account value. Unified wallets use unified
+  USDC from `spotClearinghouseState`; standard wallets use perps account value.
 - It also stores `open_position_stress_pct`, a normalized live margin stress
   metric from unrealized loss, margin usage, and notional exposure. By default,
-  notional exposure reaches full stress at 10x perp equity.
+  notional exposure reaches full stress at 10x account value.
 - Current drawdown and margin stress reduce the risk component. Current drawdown
   has no penalty until the configured start ratio, then scales linearly to the
   configured max penalty. By default, current drawdown penalty starts at 5
@@ -1147,7 +1152,7 @@ Phase A behavior:
   weights, weighted scores, and the input-level subscores used inside
   profitability, consistency, risk, copyability, recency, and penalty
   calculations.
-- If current perp state cannot be fetched completely or perp equity is zero, the
+- If current state cannot be fetched completely or account value is zero, the
   wallet keeps a history-only risk component and receives the configured
   `scoring_current_drawdown_missing_penalty`.
 - Adds a confidence penalty up to `scoring_confidence_penalty_max` until the

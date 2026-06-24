@@ -1,9 +1,13 @@
 from decimal import Decimal
 
+import pytest
+
 from app.schemas.wallet_stats import WalletPerpPositionStats
 from app.services.wallet_current_state_service import (
     OpenPositionTradeStats,
+    WalletPerpStateSummary,
     annotate_open_position_source_stats,
+    load_wallet_account_value_summary,
 )
 
 
@@ -54,6 +58,35 @@ def test_annotate_open_position_source_stats_matches_dex_prefixed_coin() -> None
     assert position.reduce_fill_count == 2
 
 
+@pytest.mark.asyncio
+async def test_load_wallet_account_value_summary_uses_unified_spot_balance() -> None:
+    summary = WalletPerpStateSummary(
+        state_time_ms=1,
+        account_value_usd=Decimal("0"),
+        withdrawable_usd=Decimal("0"),
+        total_position_notional_usd=Decimal("100"),
+        total_margin_used_usd=Decimal("10"),
+        total_unrealized_pnl_usd=Decimal("-20"),
+        positions=[],
+        raw_positions=[],
+    )
+
+    result = await load_wallet_account_value_summary(
+        client=FakeUnifiedWalletClient(),
+        address="0xwallet",
+        perp_summary=summary,
+    )
+
+    assert result.uses_unified_account is True
+    assert result.perp_equity_usd == Decimal("0")
+    assert result.account_value_usd == Decimal("200")
+    assert result.withdrawable_usd == Decimal("190")
+    assert result.spot_usdc_total == Decimal("200")
+    assert result.spot_usdc_available == Decimal("190")
+    assert result.user_abstraction == "unifiedAccount"
+    assert result.error is None
+
+
 def wallet_position(*, coin: str, side: str) -> WalletPerpPositionStats:
     return WalletPerpPositionStats(
         coin=coin,
@@ -69,3 +102,14 @@ def wallet_position(*, coin: str, side: str) -> WalletPerpPositionStats:
         leverage_type="cross",
         leverage_value=10,
     )
+
+
+class FakeUnifiedWalletClient:
+    async def user_abstraction(self, *, user: str) -> str:
+        return "unifiedAccount"
+
+    async def spot_clearinghouse_state(self, *, user: str) -> dict:
+        return {
+            "balances": [{"coin": "USDC", "hold": "0", "total": "200"}],
+            "tokenToAvailableAfterMaintenance": [[0, "190"]],
+        }

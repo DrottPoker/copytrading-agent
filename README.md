@@ -132,7 +132,10 @@ Notes:
   `clearinghouseState` for default perp plus each known perp dex. Perp account
   value and open positions are aggregated across those venues. Position storage
   is only synced when every requested perp state fetch succeeds.
-- Hyperliquid `spotClearinghouseState` is queried separately for spot balances.
+- Hyperliquid `userAbstraction` and `spotClearinghouseState` are queried
+  separately. If a wallet is unified, account value and current drawdown
+  denominator use unified USDC from `spotClearinghouseState`; `perp_equity_usd`
+  remains the raw perps-only value.
 - Each response is capped by Hyperliquid, so large backfills are paged conservatively.
 - Imported fills are deduplicated by `wallet_address + external_fill_id`.
 - By default, imports only store perp fills; spot-only wallets can be pruned.
@@ -294,11 +297,13 @@ Notes:
   refresh restores it as a neutral `pool` row.
 - Wallet risk scoring can include current open perp drawdown from Hyperliquid.
   It also calculates open position stress from live unrealized loss, margin
-  usage, and notional exposure. `backend/config/scoring.json` controls whether
-  live state is enabled, fetch concurrency, missing-state penalty, max risk
-  penalties, and current-drawdown final score caps. By default, current
-  drawdown penalty scales from 5% to 75% drawdown, and the final score cap
-  scales from 25% to 100% drawdown.
+  usage, and notional exposure. Unified wallets use unified account value from
+  `spotClearinghouseState` as the denominator; standard wallets use perps
+  account value. `backend/config/scoring.json` controls whether live state is
+  enabled, fetch concurrency, missing-state penalty, max risk penalties, and
+  current-drawdown final score caps. By default, current drawdown penalty scales
+  from 5% to 75% drawdown, and the final score cap scales from 25% to 100%
+  drawdown.
 - Wallet detail pages include a Detailed scoring modal next to the score header.
   It shows gross score, penalty, final score before sample cap, component
   weights, weighted scores, live risk score cap, and the input-level subscores

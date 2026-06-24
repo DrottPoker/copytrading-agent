@@ -35,6 +35,7 @@ from app.services.source_trade_reconstruction_service import (
 )
 from app.services.wallet_current_state_service import (
     load_known_wallet_perp_dexes_for_addresses,
+    load_wallet_account_value_summary,
     load_wallet_perp_clearinghouse_states,
     summarize_perp_clearinghouse_states,
 )
@@ -89,6 +90,7 @@ class WalletScoreMetrics:
     max_coin_notional_usd: Decimal
     max_drawdown_usd: Decimal
     current_perp_equity_usd: Decimal | None
+    current_account_value_usd: Decimal | None
     current_unrealized_pnl_usd: Decimal | None
     current_drawdown_pct: Decimal | None
     current_margin_usage_pct: Decimal | None
@@ -350,7 +352,7 @@ async def get_wallet_score_detail(
         net_pnl_usd=wallet_metrics.net_pnl_usd,
         gross_profit_usd=wallet_metrics.gross_profit_usd,
         current_perp_equity_usd=wallet_metrics.current_perp_equity_usd,
-        current_account_value_usd=wallet_metrics.current_perp_equity_usd,
+        current_account_value_usd=wallet_metrics.current_account_value_usd,
         current_unrealized_pnl_usd=wallet_metrics.current_unrealized_pnl_usd,
         current_margin_usage_pct=wallet_metrics.current_margin_usage_pct,
         current_notional_exposure_pct=wallet_metrics.current_notional_exposure_pct,
@@ -638,13 +640,26 @@ async def metric_with_current_drawdown(
         return replace(metric, current_drawdown_status="unavailable")
 
     perp_summary = summarize_perp_clearinghouse_states(perp_states)
-    perp_equity = perp_summary.account_value_usd
+    account_value_summary = await load_wallet_account_value_summary(
+        client=client,
+        address=metric.wallet_address,
+        perp_summary=perp_summary,
+    )
+    if account_value_summary.error is not None:
+        logger.debug(
+            "wallet current drawdown scoring skipped wallet=%s error=%s",
+            metric.wallet_address,
+            account_value_summary.error,
+        )
+        return replace(metric, current_drawdown_status="unavailable")
+
+    account_value = account_value_summary.account_value_usd
     current_drawdown_pct: Decimal | None = ZERO
     current_margin_usage_pct: Decimal | None = ZERO
     current_notional_exposure_pct: Decimal | None = ZERO
     open_position_stress_pct: Decimal | None = ZERO
     current_drawdown_status = "ok"
-    if perp_equity <= ZERO:
+    if account_value <= ZERO:
         current_drawdown_pct = None
         current_margin_usage_pct = None
         current_notional_exposure_pct = None
@@ -654,13 +669,13 @@ async def metric_with_current_drawdown(
         if perp_summary.total_unrealized_pnl_usd < ZERO:
             current_drawdown_pct = (
                 perp_summary.total_unrealized_pnl_usd.copy_abs()
-                / perp_equity
+                / account_value
             ).quantize(RATIO_QUANT)
         current_margin_usage_pct = (
-            perp_summary.total_margin_used_usd / perp_equity
+            perp_summary.total_margin_used_usd / account_value
         ).quantize(RATIO_QUANT)
         current_notional_exposure_pct = (
-            perp_summary.total_position_notional_usd / perp_equity
+            perp_summary.total_position_notional_usd / account_value
         ).quantize(RATIO_QUANT)
         open_position_stress_pct = calculate_open_position_stress_pct(
             current_drawdown_pct=current_drawdown_pct,
@@ -671,7 +686,8 @@ async def metric_with_current_drawdown(
 
     return replace(
         metric,
-        current_perp_equity_usd=perp_equity,
+        current_perp_equity_usd=perp_summary.account_value_usd,
+        current_account_value_usd=account_value,
         current_unrealized_pnl_usd=perp_summary.total_unrealized_pnl_usd,
         current_drawdown_pct=current_drawdown_pct,
         current_margin_usage_pct=current_margin_usage_pct,
@@ -1599,9 +1615,9 @@ def profitability_roi(metrics: WalletScoreMetrics) -> Decimal:
 
 
 def wallet_size_adjusted_return(metrics: WalletScoreMetrics) -> Decimal | None:
-    if metrics.current_perp_equity_usd is None or metrics.current_perp_equity_usd <= ZERO:
+    if metrics.current_account_value_usd is None or metrics.current_account_value_usd <= ZERO:
         return None
-    return metrics.net_pnl_usd / metrics.current_perp_equity_usd
+    return metrics.net_pnl_usd / metrics.current_account_value_usd
 
 
 def source_trade_roi_values(trades: ReconstructedWalletTrades) -> list[Decimal]:
@@ -2383,6 +2399,7 @@ def metrics_from_row(row: Any) -> WalletScoreMetrics:
         max_coin_notional_usd=decimal_value(row["max_coin_notional_usd"]),
         max_drawdown_usd=decimal_value(row["max_drawdown_usd"]),
         current_perp_equity_usd=None,
+        current_account_value_usd=None,
         current_unrealized_pnl_usd=None,
         current_drawdown_pct=None,
         current_margin_usage_pct=None,
@@ -2450,6 +2467,7 @@ def metrics_with_reconstructed_trades(
             max_coin_notional_usd=ZERO,
             max_drawdown_usd=ZERO,
             current_perp_equity_usd=base_metrics.current_perp_equity_usd,
+            current_account_value_usd=base_metrics.current_account_value_usd,
             current_unrealized_pnl_usd=base_metrics.current_unrealized_pnl_usd,
             current_drawdown_pct=base_metrics.current_drawdown_pct,
             current_margin_usage_pct=base_metrics.current_margin_usage_pct,
@@ -2514,6 +2532,7 @@ def metrics_with_reconstructed_trades(
         max_coin_notional_usd=trades.max_coin_notional_usd,
         max_drawdown_usd=trades.max_drawdown_usd,
         current_perp_equity_usd=base_metrics.current_perp_equity_usd,
+        current_account_value_usd=base_metrics.current_account_value_usd,
         current_unrealized_pnl_usd=base_metrics.current_unrealized_pnl_usd,
         current_drawdown_pct=base_metrics.current_drawdown_pct,
         current_margin_usage_pct=base_metrics.current_margin_usage_pct,

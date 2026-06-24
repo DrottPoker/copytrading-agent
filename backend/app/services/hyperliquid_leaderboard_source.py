@@ -5,6 +5,11 @@ from typing import Any
 
 from app.integrations.hyperliquid_client import HyperliquidClient
 from app.schemas.wallet import normalize_wallet_address
+from app.services.wallet_current_state_service import (
+    WalletPerpClearinghouseState,
+    load_wallet_account_value_summary,
+    summarize_perp_clearinghouse_states,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +87,12 @@ async def load_subaccount_wallet_candidates(
             subaccount.get("name") if isinstance(subaccount.get("name"), str) else None
         )
         subaccount_value = subaccount_account_value(subaccount)
+        if decimal_value(subaccount_value) <= Decimal("0"):
+            subaccount_value = await resolve_subaccount_account_value(
+                client=client,
+                subaccount=subaccount,
+                subaccount_address=subaccount_address,
+            )
         window_performance = get_window(row, window) or {}
         candidates.append(
             LeaderboardWalletCandidate(
@@ -114,6 +125,31 @@ def subaccount_account_value(subaccount: dict[str, Any]) -> str | None:
         return None
     value = margin_summary.get("accountValue")
     return str(value) if value is not None else None
+
+
+async def resolve_subaccount_account_value(
+    *,
+    client: HyperliquidClient,
+    subaccount: dict[str, Any],
+    subaccount_address: str,
+) -> str | None:
+    fallback = subaccount_account_value(subaccount)
+    clearinghouse_state = subaccount.get("clearinghouseState")
+    if not isinstance(clearinghouse_state, dict):
+        return fallback
+    perp_summary = summarize_perp_clearinghouse_states(
+        [WalletPerpClearinghouseState(dex="", payload=clearinghouse_state)]
+    )
+    account_summary = await load_wallet_account_value_summary(
+        client=client,
+        address=subaccount_address,
+        perp_summary=perp_summary,
+    )
+    if account_summary.error is not None:
+        return fallback
+    if account_summary.account_value_usd > Decimal("0"):
+        return str(account_summary.account_value_usd)
+    return fallback
 
 
 def build_subaccount_label(

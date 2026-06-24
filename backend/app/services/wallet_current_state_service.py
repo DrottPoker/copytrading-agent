@@ -16,6 +16,12 @@ from app.schemas.wallet_stats import (
     WalletPerpPositionStats,
     WalletSpotBalanceStats,
 )
+from app.services.live_trading_service import (
+    live_spot_usdc_available,
+    live_spot_usdc_total,
+    normalize_user_abstraction,
+    user_abstraction_is_unified,
+)
 
 logger = logging.getLogger(__name__)
 ZERO = Decimal("0")
@@ -37,6 +43,18 @@ class WalletPerpStateSummary:
     total_unrealized_pnl_usd: Decimal
     positions: list[WalletPerpPositionStats]
     raw_positions: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class WalletAccountValueSummary:
+    account_value_usd: Decimal
+    perp_equity_usd: Decimal
+    withdrawable_usd: Decimal
+    spot_usdc_total: Decimal
+    spot_usdc_available: Decimal
+    user_abstraction: str | None
+    uses_unified_account: bool
+    error: str | None = None
 
 
 @dataclass
@@ -84,13 +102,18 @@ async def get_wallet_current_state(
     if not perp_states:
         return empty_current_state(error="; ".join(perp_errors) or "Perp state unavailable.")
 
-    try:
-        spot_state = await hyperliquid_client.spot_clearinghouse_state(user=address)
-    except Exception as exc:
-        logger.warning("wallet spot state fetch failed wallet=%s error=%s", address, exc)
-        spot_state = {}
+    spot_state, spot_error = await fetch_wallet_spot_state(
+        client=hyperliquid_client,
+        address=address,
+    )
 
     perp_summary = summarize_perp_clearinghouse_states(perp_states)
+    account_value_summary = await load_wallet_account_value_summary(
+        client=hyperliquid_client,
+        address=address,
+        perp_summary=perp_summary,
+        spot_state=spot_state,
+    )
     if perp_summary.positions:
         annotate_open_position_source_stats(
             perp_summary.positions,
@@ -114,8 +137,8 @@ async def get_wallet_current_state(
     return WalletCurrentStateStats(
         state_time_ms=perp_summary.state_time_ms,
         perp_equity_usd=perp_summary.account_value_usd,
-        account_value_usd=perp_summary.account_value_usd,
-        withdrawable_usd=perp_summary.withdrawable_usd,
+        account_value_usd=account_value_summary.account_value_usd,
+        withdrawable_usd=account_value_summary.withdrawable_usd,
         total_position_notional_usd=perp_summary.total_position_notional_usd,
         total_margin_used_usd=perp_summary.total_margin_used_usd,
         total_unrealized_pnl_usd=perp_summary.total_unrealized_pnl_usd,
@@ -131,7 +154,9 @@ async def get_wallet_current_state(
         ),
         positions=perp_summary.positions,
         spot_balances=spot_balances,
-        error="; ".join(perp_errors) or None,
+        error=join_error_messages(
+            [*perp_errors, spot_error, account_value_summary.error]
+        ),
     )
 
 
@@ -244,6 +269,78 @@ async def fetch_wallet_perp_clearinghouse_state(
         )
         return None, f"{dex or 'default'}: {str(exc) or exc.__class__.__name__}"
     return WalletPerpClearinghouseState(dex=dex, payload=payload), None
+
+
+async def fetch_wallet_spot_state(
+    *,
+    client: HyperliquidClient,
+    address: str,
+) -> tuple[dict[str, Any], str | None]:
+    try:
+        return await client.spot_clearinghouse_state(user=address), None
+    except Exception as exc:
+        logger.warning("wallet spot state fetch failed wallet=%s error=%s", address, exc)
+        return {}, f"spotClearinghouseState: {str(exc) or exc.__class__.__name__}"
+
+
+async def fetch_wallet_user_abstraction(
+    *,
+    client: HyperliquidClient,
+    address: str,
+) -> tuple[Any, str | None]:
+    try:
+        return await client.user_abstraction(user=address), None
+    except Exception as exc:
+        logger.warning("wallet user abstraction fetch failed wallet=%s error=%s", address, exc)
+        return None, f"userAbstraction: {str(exc) or exc.__class__.__name__}"
+
+
+async def load_wallet_account_value_summary(
+    *,
+    client: HyperliquidClient,
+    address: str,
+    perp_summary: WalletPerpStateSummary,
+    spot_state: dict[str, Any] | None = None,
+) -> WalletAccountValueSummary:
+    user_abstraction, abstraction_error = await fetch_wallet_user_abstraction(
+        client=client,
+        address=address,
+    )
+    normalized_abstraction = normalize_user_abstraction(user_abstraction)
+    uses_unified_account = user_abstraction_is_unified(user_abstraction)
+    resolved_spot_state = spot_state
+    spot_error: str | None = None
+    if uses_unified_account and resolved_spot_state is None:
+        resolved_spot_state, spot_error = await fetch_wallet_spot_state(
+            client=client,
+            address=address,
+        )
+
+    spot_usdc_total = live_spot_usdc_total(resolved_spot_state or {})
+    spot_usdc_available = live_spot_usdc_available(resolved_spot_state or {})
+    error = join_error_messages([abstraction_error, spot_error])
+    if uses_unified_account:
+        return WalletAccountValueSummary(
+            account_value_usd=spot_usdc_total,
+            perp_equity_usd=perp_summary.account_value_usd,
+            withdrawable_usd=spot_usdc_available,
+            spot_usdc_total=spot_usdc_total,
+            spot_usdc_available=spot_usdc_available,
+            user_abstraction=normalized_abstraction,
+            uses_unified_account=True,
+            error=error,
+        )
+
+    return WalletAccountValueSummary(
+        account_value_usd=perp_summary.account_value_usd,
+        perp_equity_usd=perp_summary.account_value_usd,
+        withdrawable_usd=perp_summary.withdrawable_usd,
+        spot_usdc_total=spot_usdc_total,
+        spot_usdc_available=spot_usdc_available,
+        user_abstraction=normalized_abstraction,
+        uses_unified_account=False,
+        error=error,
+    )
 
 
 def summarize_perp_clearinghouse_states(
@@ -621,6 +718,11 @@ def empty_current_state(*, error: str | None = None) -> WalletCurrentStateStats:
         spot_balances=[],
         error=error,
     )
+
+
+def join_error_messages(values: list[str | None]) -> str | None:
+    messages = [value for value in values if value]
+    return "; ".join(messages) if messages else None
 
 
 def object_or_empty(value: Any) -> dict[str, Any]:

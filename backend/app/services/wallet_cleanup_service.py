@@ -30,6 +30,7 @@ from app.schemas.wallet_cleanup import (
 from app.services.job_lock_service import job_lock
 from app.services.wallet_current_state_service import (
     load_known_wallet_perp_dexes_for_addresses,
+    load_wallet_account_value_summary,
     load_wallet_perp_clearinghouse_states,
     summarize_perp_clearinghouse_states,
 )
@@ -1327,14 +1328,26 @@ async def load_current_drawdown_candidate(
         )
 
     perp_summary = summarize_perp_clearinghouse_states(perp_states)
+    account_value_summary = await load_wallet_account_value_summary(
+        client=client,
+        address=address,
+        perp_summary=perp_summary,
+    )
+    if account_value_summary.error is not None:
+        return CurrentDrawdownWalletCandidate(
+            address=address,
+            label=label,
+            score=str(score) if score is not None else None,
+            error=account_value_summary.error,
+        )
     positions = perp_summary.positions
-    perp_equity = perp_summary.account_value_usd
+    account_value = account_value_summary.account_value_usd
     unrealized_pnl = perp_summary.total_unrealized_pnl_usd
 
-    if perp_equity <= ZERO or unrealized_pnl >= ZERO:
+    if account_value <= ZERO or unrealized_pnl >= ZERO:
         return None
 
-    loss_ratio = unrealized_pnl.copy_abs() / perp_equity
+    loss_ratio = unrealized_pnl.copy_abs() / account_value
     if loss_ratio < threshold_ratio:
         return None
 
@@ -1343,8 +1356,8 @@ async def load_current_drawdown_candidate(
         address=address,
         label=label,
         score=str(score) if score is not None else None,
-        perp_equity_usd=str(perp_equity),
-        account_value_usd=str(perp_equity),
+        perp_equity_usd=str(perp_summary.account_value_usd),
+        account_value_usd=str(account_value),
         total_unrealized_pnl_usd=str(unrealized_pnl),
         unrealized_loss_ratio=str(loss_ratio),
         open_position_count=len(positions),

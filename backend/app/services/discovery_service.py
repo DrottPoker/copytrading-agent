@@ -1612,7 +1612,7 @@ def hyperdash_system_group_candidate(
     address = extract_address(row)
     if address is None:
         return None
-    account_value = decimal_or_none(first_present(row, ("perpsEquity", "accountValue", "equity")))
+    account_value = decimal_or_none(first_present(row, ("equity", "accountValue", "perpsEquity")))
     source_pnl = decimal_or_none(first_present(row, ("pnl", "perpPnl")))
     label = string_or_none(row.get("displayName")) or string_or_none(row.get("label"))
 
@@ -1671,7 +1671,7 @@ def hypertracker_segment_candidate(
         return None
 
     cohort = HYPERTRACKER_SEGMENT_COHORTS[source]
-    account_value = decimal_or_none(first_present(row, ("perpEquity", "totalEquity")))
+    account_value = decimal_or_none(first_present(row, ("totalEquity", "perpEquity")))
     source_pnl = decimal_or_none(row.get("perpPnl"))
     display_name = string_or_none(row.get("displayName"))
 
@@ -1707,9 +1707,9 @@ def hypertracker_leaderboard_candidate(
     source_config = HYPERTRACKER_LEADERBOARD_SOURCES[source]
     profile = row.get("profile") if isinstance(row.get("profile"), dict) else {}
     rank = int_or_none(row.get("rank")) or fallback_rank
-    account_value = decimal_or_none(first_present(row, ("perpEquity", "totalEquity")))
+    account_value = decimal_or_none(first_present(row, ("totalEquity", "perpEquity")))
     if account_value is None:
-        account_value = decimal_or_none(first_present(profile, ("perpEquity", "totalEquity")))
+        account_value = decimal_or_none(first_present(profile, ("totalEquity", "perpEquity")))
     source_pnl = decimal_or_none(row.get("avgPnl"))
     display_name = string_or_none(row.get("displayName")) or string_or_none(
         profile.get("displayName")
