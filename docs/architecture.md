@@ -621,7 +621,9 @@ order value. Paper execution starts the configured latency while source account
 state is fetched in parallel, then prices from live mids when enabled, applies
 adverse slippage, and skips fills whose observed drift exceeds the configured
 max drift limit. The default latency is 250 ms and the default max drift limit
-is 50 bps.
+is 50 bps. Paper fees use Hyperliquid's base perp taker fee by default, 0.045%,
+because paper execution models immediate taker-style fills rather than resting
+maker orders.
 Stored paper position notional and margin represent simulated entry exposure.
 Adds increase stored margin by the new fill margin, and partial closes reduce
 stored margin proportionally. Current notional is calculated separately from mark

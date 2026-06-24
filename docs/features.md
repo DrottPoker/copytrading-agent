@@ -615,7 +615,9 @@ What it does:
 - Skips opens below `paper_copy_min_order_notional_usd` before any paper position
   is created. The default is 10 USD to match Hyperliquid's live perp minimum
   order value.
-- Applies the configured paper fee rate to opens and closes.
+- Applies the configured paper fee rate to opens and closes. The default is
+  0.045% to match Hyperliquid's base perp taker fee because paper fills model
+  immediate taker-style execution.
 - Starts `paper_copy_latency_ms` immediately while source account state is
   fetched in parallel, then prices paper execution. The default latency is
   250 ms.

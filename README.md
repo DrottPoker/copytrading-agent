@@ -373,7 +373,9 @@ Sizing policy:
 - Paper copy reads the source wallet's current per-coin leverage from
   Hyperliquid `clearinghouseState` and uses it for margin accounting. If leverage
   is unavailable for a coin, paper falls back to 1x.
-- A configurable fee rate is applied to paper fills.
+- A configurable fee rate is applied to paper fills. The default is 0.045%,
+  matching Hyperliquid's base perp taker fee because paper fills model immediate
+  taker-style execution.
 - Paper opens below `paper_copy_min_order_notional_usd` are skipped before any
   position is created. The default is 10 USD to match Hyperliquid's live perp
   minimum order value.

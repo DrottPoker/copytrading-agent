@@ -394,7 +394,7 @@ class Settings(BaseSettings):
     paper_copy_standard_allocation_pct: Decimal = Field(default=Decimal("0.20"), ge=0, le=1)
     paper_copy_max_total_allocation_pct: Decimal = Field(default=Decimal("0.80"), ge=0, le=1)
     paper_copy_min_order_notional_usd: Decimal = Field(default=Decimal("10"), ge=0)
-    paper_copy_fee_rate: Decimal = Field(default=Decimal("0.0004"), ge=0, le=1)
+    paper_copy_fee_rate: Decimal = Field(default=Decimal("0.00045"), ge=0, le=1)
     paper_copy_slippage_bps: Decimal = Field(default=Decimal("5"), ge=0, le=10000)
     paper_copy_latency_ms: int = Field(default=250, ge=0, le=60000)
     paper_copy_max_price_drift_bps: Decimal = Field(default=Decimal("50"), ge=0, le=10000)
