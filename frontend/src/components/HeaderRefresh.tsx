@@ -52,7 +52,8 @@ export function HeaderRefresh({
   const controlTitle = intervalSeconds ? `${title}, every ${intervalSeconds}s` : title;
 
   return (
-    <span className="inline-flex min-h-8 items-center gap-2 text-xs font-medium text-[#5b6770]">
+    <span className="inline-flex min-h-8 items-center gap-2 whitespace-nowrap text-xs font-medium text-[#5b6770]">
+      <span>{label}</span>
       <button
         type="button"
         onClick={refresh}
@@ -62,7 +63,6 @@ export function HeaderRefresh({
         <RefreshCw className={`h-3.5 w-3.5 ${active ? "animate-spin" : ""}`} aria-hidden="true" />
         <span className="sr-only">Refresh</span>
       </button>
-      <span>{label}</span>
     </span>
   );
 }
