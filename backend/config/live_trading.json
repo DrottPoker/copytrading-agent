@@ -6,7 +6,7 @@
     "capital_mode": "unified"
   },
   "execution": {
-    "limit_slippage_bps": 5,
+    "limit_slippage_bps": 20,
     "max_slippage_bps": 50,
     "order_expires_after_ms": 10000
   },

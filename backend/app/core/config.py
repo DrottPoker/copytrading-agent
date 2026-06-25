@@ -358,7 +358,7 @@ class Settings(BaseSettings):
     live_trading_acknowledged: bool = False
     live_trading_mainnet_acknowledged: bool = False
     live_trading_capital_mode: Literal["unified", "standard_per_dex"] = "unified"
-    live_trading_limit_slippage_bps: Decimal = Field(default=Decimal("5"), ge=0, le=10000)
+    live_trading_limit_slippage_bps: Decimal = Field(default=Decimal("20"), ge=0, le=10000)
     live_trading_max_slippage_bps: Decimal = Field(default=Decimal("50"), ge=0, le=10000)
     live_trading_order_expires_after_ms: int = Field(default=10000, ge=0, le=60000)
     live_trading_reconciliation_enabled: bool = True

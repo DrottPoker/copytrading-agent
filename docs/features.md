@@ -902,6 +902,11 @@ What it does:
   shared source allocation policy, live mid-price cache, price drift guard,
   optional min-order adjustment, deterministic client order ids, and live risk
   guardrails.
+- Prices live entry IOC-limit orders with `live_trading_limit_slippage_bps`,
+  which defaults to 20 bps. `live_trading_max_slippage_bps` remains the hard
+  guard against overly aggressive prices. If the execution value is too tight,
+  Hyperliquid can reject the IOC order because it cannot immediately match
+  resting liquidity.
 - Reserves one source per live account and market while exposure is open.
   Another source opening the same market is skipped until the market is free,
   even if it is the same side, because Hyperliquid nets exchange position and

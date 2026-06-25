@@ -26,7 +26,7 @@ def test_live_trading_config_is_loaded_from_dedicated_file(
     assert settings.live_trading_mainnet_acknowledged is True
     assert settings.live_trading_capital_mode == "unified"
     assert settings.live_trading_copy_enabled is True
-    assert settings.live_trading_limit_slippage_bps == Decimal("5")
+    assert settings.live_trading_limit_slippage_bps == Decimal("20")
     assert settings.live_trading_min_order_notional_usd == Decimal("10")
     assert settings.live_trading_max_order_notional_usd == Decimal("1000")
     assert settings.live_trading_max_account_open_notional_usd == Decimal("5000")

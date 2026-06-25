@@ -724,6 +724,12 @@ submission, the live adapter normalizes order size and limit price to
 Hyperliquid tick and lot precision from market metadata. If lot rounding would
 push an adjusted entry below the configured minimum notional, the adapter rounds
 to the next valid lot only when min-order adjustment is enabled.
+Live entries use IOC-limit orders with `live_trading_limit_slippage_bps` applied
+to the live mid-price. The default is 20 bps so copied entries are more likely
+to cross resting liquidity, while `live_trading_max_slippage_bps` remains the
+hard guard against overly aggressive prices. If this value is too tight,
+Hyperliquid can reject the order with "Order could not immediately match
+against any resting orders."
 Enabled and exit-only live accounts reconcile on
 `live_trading_reconciliation_interval_seconds`. Live copy also refreshes a stale
 account snapshot before sizing a new fill, so deposits are picked up before copy
