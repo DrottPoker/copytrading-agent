@@ -46,6 +46,7 @@ from app.services.paper_trading_service import (
     plan_source_fill,
     refresh_paper_copy_allocations,
     sorted_paper_source_fills,
+    source_fill_age_exceeds_entry_limit,
 )
 from app.services.trading_core import (
     TradeIntent,
@@ -387,6 +388,8 @@ async def apply_live_open_part(
         return live_skip("live_account_not_enabled")
     if source_perp_equity <= ZERO:
         return live_skip("live_source_equity_missing")
+    if source_fill_age_exceeds_entry_limit(fill, settings=settings):
+        return live_skip("live_source_fill_too_old")
     coin = str(fill.get("coin") or "")
     tradable_equity_usd = live_tradable_equity_usd(
         account,

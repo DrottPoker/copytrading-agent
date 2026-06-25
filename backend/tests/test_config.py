@@ -54,6 +54,7 @@ def test_shared_trading_config_is_loaded_from_dedicated_file(
     assert Decimal(str(config["trading_copy_max_total_allocation_pct"])) == Decimal("1.0")
     assert Decimal(str(config["trading_copy_min_order_notional_usd"])) == Decimal("10")
     assert config["trading_copy_adjust_small_orders_to_min_order"] is True
+    assert config["trading_copy_max_entry_age_seconds"] == 15
     assert Decimal(str(config["trading_copy_max_price_drift_bps"])) == Decimal("50")
     assert config["trading_copy_use_live_mid_price"] is True
     assert config["trading_copy_market_price_cache_enabled"] is True
@@ -63,6 +64,7 @@ def test_shared_trading_config_is_loaded_from_dedicated_file(
     assert "paper_copy_top_wallet_count" not in config
     assert "paper_copy_max_total_allocation_pct" not in config
     assert "paper_copy_min_order_notional_usd" not in config
+    assert "paper_copy_max_entry_age_seconds" not in config
 
 
 def test_paper_config_does_not_seed_accounts(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -72,3 +74,5 @@ def test_paper_config_does_not_seed_accounts(monkeypatch: pytest.MonkeyPatch) ->
 
     assert "paper_copy_accounts" not in config
     assert settings.paper_copy_accounts == []
+    assert settings.paper_copy_recovery_interval_seconds == 15
+    assert settings.realtime_subscription_refresh_seconds == 15

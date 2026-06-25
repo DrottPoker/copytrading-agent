@@ -3118,6 +3118,18 @@ async def apply_open_part(
             settings=settings,
             leverage=source_leverage,
         )
+    if source_fill_age_exceeds_entry_limit(fill, settings=settings):
+        return await record_skip(
+            session,
+            account=account,
+            allocation=allocation,
+            fill=fill,
+            part=part,
+            source_perp_equity=source_perp_equity,
+            reason="source_fill_too_old",
+            settings=settings,
+            leverage=source_leverage,
+        )
 
     position = await load_paper_position(
         session,
@@ -3573,7 +3585,7 @@ async def record_skip_for_accounts(
     reason: str,
     settings: Settings,
 ) -> PaperCopyBatchResult:
-    skipped = 0
+    batch_result = PaperCopyBatchResult()
     part = SourceFillPart(
         action="skip",
         side=side_from_fill_direction(raw_json_from_fill(fill).get("dir")),
@@ -3592,8 +3604,8 @@ async def record_skip_for_accounts(
             reason=reason,
             settings=settings,
         )
-        skipped += result.skipped_fills
-    return PaperCopyBatchResult(skipped_fills=skipped)
+        batch_result = combine_batch_results(batch_result, result)
+    return batch_result
 
 
 async def record_skip(
@@ -3643,7 +3655,7 @@ async def record_skip(
             execution_context=execution_context,
         )
     )
-    return PaperCopyBatchResult(skipped_fills=1)
+    return PaperCopyBatchResult(skipped_fills=1, skip_reasons={reason: 1})
 
 
 def paper_copy_fill(
@@ -4121,6 +4133,23 @@ def fill_datetime(fill: dict[str, Any]) -> datetime:
     if timestamp_ms <= 0:
         return datetime.now(UTC)
     return datetime.fromtimestamp(timestamp_ms / 1000, tz=UTC)
+
+
+def source_fill_age_exceeds_entry_limit(
+    fill: dict[str, Any],
+    *,
+    settings: Settings,
+    now: datetime | None = None,
+) -> bool:
+    max_age_seconds = settings.trading_copy_max_entry_age_seconds
+    if max_age_seconds <= 0:
+        return False
+    timestamp_ms = int(fill.get("timestampMs") or 0)
+    if timestamp_ms <= 0:
+        return False
+    observed_at = now or datetime.now(UTC)
+    fill_at = datetime.fromtimestamp(timestamp_ms / 1000, tz=UTC)
+    return (observed_at - fill_at).total_seconds() > max_age_seconds
 
 
 def timestamp_ms(value: datetime) -> int:

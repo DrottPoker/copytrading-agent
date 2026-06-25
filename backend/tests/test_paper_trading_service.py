@@ -1,9 +1,13 @@
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
 
 from app.core.config import Settings
-from app.services.paper_trading_service import load_source_account_state
+from app.services.paper_trading_service import (
+    load_source_account_state,
+    source_fill_age_exceeds_entry_limit,
+)
 from app.services.trading_core import (
     adjust_open_sizing_to_min_order,
     build_client_order_id,
@@ -84,6 +88,39 @@ def test_adjust_open_sizing_to_min_order_respects_caps() -> None:
             min_order_notional=Decimal("10"),
         )
         == "source_allocation_cap_reached"
+    )
+
+
+def test_source_fill_age_limit_allows_fresh_entries() -> None:
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    fill = {"timestampMs": int((now - timedelta(seconds=5)).timestamp() * 1000)}
+
+    assert not source_fill_age_exceeds_entry_limit(
+        fill,
+        settings=Settings(trading_copy_max_entry_age_seconds=15),
+        now=now,
+    )
+
+
+def test_source_fill_age_limit_blocks_stale_entries() -> None:
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    fill = {"timestampMs": int((now - timedelta(seconds=16)).timestamp() * 1000)}
+
+    assert source_fill_age_exceeds_entry_limit(
+        fill,
+        settings=Settings(trading_copy_max_entry_age_seconds=15),
+        now=now,
+    )
+
+
+def test_source_fill_age_limit_can_be_disabled() -> None:
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    fill = {"timestampMs": int((now - timedelta(minutes=5)).timestamp() * 1000)}
+
+    assert not source_fill_age_exceeds_entry_limit(
+        fill,
+        settings=Settings(trading_copy_max_entry_age_seconds=0),
+        now=now,
     )
 
 

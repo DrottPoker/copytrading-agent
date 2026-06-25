@@ -542,6 +542,9 @@ What it does:
 - Uses paper allocation refresh as the source of truth for realtime
   subscriptions. Sources with open paper positions reserve slots first, then
   remaining slots go to the highest scored eligible copy candidates.
+- Checks the desired realtime subscription list every
+  `realtime_subscription_refresh_seconds` and reconnects only when the selected
+  wallet list changes.
 - Processes initial snapshot messages safely.
 - Stores realtime fills in Postgres with the same dedupe logic as historical import.
 - Publishes system and fill events to Redis.
@@ -627,12 +630,15 @@ What it does:
   source and account caps can fit the adjusted margin. Otherwise they are
   skipped before any paper position is created. The default minimum is 10 USD to
   match Hyperliquid's live perp minimum order value.
+- Skips new opens or adds when the source fill is older than
+  `trading_copy_max_entry_age_seconds`. This prevents late snapshot or recovery
+  entries from opening exposure minutes after the source traded. Older close and
+  reduce fills can still be processed to catch up existing exposure.
 - Applies the configured paper fee rate to opens and closes. The default is
   0.045% to match Hyperliquid's base perp taker fee because paper fills model
   immediate taker-style execution.
 - Starts `paper_copy_latency_ms` immediately while source account state is
-  fetched in parallel, then prices paper execution. The default latency is
-  250 ms.
+  fetched in parallel, then prices paper execution.
 - Uses live Hyperliquid mids after latency when `trading_copy_use_live_mid_price`
   is enabled. This is enabled in the default shared trading config.
 - Uses the trading worker's WebSocket `allMids` cache before HTTP when
@@ -686,7 +692,8 @@ What it does:
   Recovery focuses on sources with open paper positions and current monitored
   allocation sources. For open-exposure sources, it replays fills from the oldest
   open paper position with a small overlap and relies on copied fill IDs to avoid
-  duplicate paper fills.
+  duplicate paper fills. Recovery cannot open stale entries beyond the shared
+  max entry age guard.
 - Uses a `paper_copy_recovery` job lock so startup, snapshot, and periodic
   recovery cannot run over each other.
 - Serializes paper-copy mutations per source wallet with a Postgres advisory
@@ -802,6 +809,7 @@ Config:
 - `trading_copy_max_total_allocation_pct`
 - `trading_copy_min_order_notional_usd`
 - `trading_copy_adjust_small_orders_to_min_order`
+- `trading_copy_max_entry_age_seconds`
 - `trading_copy_max_price_drift_bps`, defaults to 50 bps
 - `trading_copy_use_live_mid_price`
 - `trading_copy_market_price_cache_enabled`

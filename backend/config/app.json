@@ -13,7 +13,7 @@
   "paper_trading_enabled": true,
   "active_copy_wallets": 10,
   "max_realtime_wallets": 10,
-  "realtime_subscription_refresh_seconds": 300,
+  "realtime_subscription_refresh_seconds": 15,
   "realtime_reconnect_seconds": 5,
   "cors_origins": [
     "http://localhost:3000",

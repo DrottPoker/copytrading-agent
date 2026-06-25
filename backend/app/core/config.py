@@ -282,6 +282,7 @@ TRADING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("copy", "adjust_small_orders_to_min_order"): (
         "trading_copy_adjust_small_orders_to_min_order"
     ),
+    ("copy", "max_entry_age_seconds"): "trading_copy_max_entry_age_seconds",
     ("copy", "max_price_drift_bps"): "trading_copy_max_price_drift_bps",
     ("copy", "use_live_mid_price"): "trading_copy_use_live_mid_price",
     ("copy", "market_price_cache_enabled"): "trading_copy_market_price_cache_enabled",
@@ -383,6 +384,7 @@ class Settings(BaseSettings):
     trading_copy_max_total_allocation_pct: Decimal = Field(default=Decimal("0.80"), ge=0, le=1)
     trading_copy_min_order_notional_usd: Decimal = Field(default=Decimal("10"), ge=0)
     trading_copy_adjust_small_orders_to_min_order: bool = True
+    trading_copy_max_entry_age_seconds: int = Field(default=15, ge=0, le=3600)
     trading_copy_max_price_drift_bps: Decimal = Field(default=Decimal("50"), ge=0, le=10000)
     trading_copy_use_live_mid_price: bool = True
     trading_copy_market_price_cache_enabled: bool = True
@@ -401,7 +403,7 @@ class Settings(BaseSettings):
 
     active_copy_wallets: int = Field(default=10, ge=1, le=10)
     max_realtime_wallets: int = Field(default=10, ge=1, le=10)
-    realtime_subscription_refresh_seconds: int = Field(default=300, ge=30)
+    realtime_subscription_refresh_seconds: int = Field(default=15, ge=5)
     realtime_reconnect_seconds: int = Field(default=5, ge=1)
     discovery_enabled: bool = True
     discovery_default_sources: list[str] = Field(
@@ -1066,6 +1068,7 @@ def normalize_paper_trading_config(config: dict[str, Any]) -> dict[str, Any]:
         "paper_copy_adjust_small_orders_to_min_order": (
             "trading_copy_adjust_small_orders_to_min_order"
         ),
+        "paper_copy_max_entry_age_seconds": "trading_copy_max_entry_age_seconds",
         "paper_copy_max_price_drift_bps": "trading_copy_max_price_drift_bps",
         "paper_copy_use_live_mid_price": "trading_copy_use_live_mid_price",
         "paper_copy_market_price_cache_enabled": "trading_copy_market_price_cache_enabled",

@@ -120,6 +120,9 @@ Trading worker responsibilities:
   that same allocation result. Source wallets with open paper positions are
   retained first, then remaining slots are filled by the highest scored eligible
   copy candidates.
+- Check the desired realtime subscription list every
+  `realtime_subscription_refresh_seconds`; keep the current WebSocket open when
+  the list is unchanged and reconnect only when selected wallets change.
 - A source with a realtime slot is exposed as `monitorStatus = "monitored"`. A
   top candidate without a free slot is exposed as `monitorStatus = "waiting"`
   and `sourceStatus = "waiting_for_slot"`.
@@ -646,9 +649,11 @@ before any paper position is created. The default minimum is 10 USD to match
 Hyperliquid's live perp minimum order value. Paper execution starts the
 configured latency while source account state is fetched in parallel, then
 prices from live mids when enabled, applies adverse slippage, and skips fills
-whose observed drift exceeds the configured max drift limit. The default latency
-is 250 ms and the default max drift limit is 50 bps. Paper fees use Hyperliquid's
-base perp taker fee by default, 0.045%, because paper execution models immediate
+whose observed drift exceeds the configured max drift limit. New open or add
+fills are also skipped when the source fill age exceeds
+`trading_copy_max_entry_age_seconds`, so snapshot or recovery entries cannot
+open exposure minutes after the source traded. Paper fees use Hyperliquid's base
+perp taker fee by default, 0.045%, because paper execution models immediate
 taker-style fills rather than resting maker orders.
 Stored paper position notional and margin represent simulated entry exposure.
 Adds increase stored margin by the new fill margin, and partial closes reduce
@@ -667,8 +672,10 @@ positions in the copy allocation set, and run recovery after worker start,
 WebSocket snapshots, and the configured periodic recovery interval. Recovery
 focuses on sources with open paper positions and current monitored allocation
 sources instead of scanning every historical paper-fill source. For open
-exposure sources, recovery scans fills from the oldest open paper position with
-overlap, then the copied-fill uniqueness constraint prevents duplicate
+entries, recovery obeys the same max entry age guard as realtime copy. For close
+and reduce fills, recovery can still catch up older source exits. For
+open-exposure sources, recovery scans fills from the oldest open paper position
+with overlap, then the copied-fill uniqueness constraint prevents duplicate
 simulation. Exit skip rows caused by unavailable source state or unavailable
 execution price are retriable during recovery so copied positions can still
 close after transient data issues.

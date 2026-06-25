@@ -269,7 +269,9 @@ Notes:
 - Realtime subscriptions are derived from the same paper allocation refresh used
   by the paper summary and copy engine. Open paper-position sources reserve
   slots first, then remaining slots go to the highest scored eligible copy
-  candidates.
+  candidates. The worker checks the desired subscription list every
+  `realtime_subscription_refresh_seconds` and reconnects only when the list
+  changes.
 - Automated sourcing runs through Discovery using `backend/config/discovery.json`.
 - Discovery defaults to Hyperliquid 1D, 7D, and 30D leaderboard sources,
   Hyperliquid 7D and 30D vault leaders, leaderboard subaccounts, HyperTracker
@@ -411,8 +413,12 @@ Sizing policy:
   and the source and account caps can fit the adjusted margin. Otherwise they
   are skipped before any position is created. The default minimum is 10 USD to
   match Hyperliquid's live perp minimum order value.
+- New entry fills older than `trading_copy_max_entry_age_seconds` are skipped
+  before opening or adding exposure. This prevents snapshot or recovery fills
+  from creating late entries minutes after the source traded. Close and reduce
+  processing still runs for older fills so exits can catch up safely.
 - Paper execution starts the configured simulated latency immediately while
-  source account state is fetched in parallel. The default latency is 250 ms.
+  source account state is fetched in parallel.
   It then reads live mids and applies adverse slippage to the execution price.
 - The trading worker keeps a WebSocket `allMids` cache for copy execution when
   `trading_copy_market_price_cache_enabled` is enabled. Fresh cached prices are
@@ -581,8 +587,8 @@ wallet is intentionally using separate default and HIP-3 perp balances.
 
 `backend/config/trading.json` owns shared copy policy used by both paper and live
 copy: source ranking limits, allocation pockets, total allocation cap, copy
-minimum notional, optional min-order adjustment, price drift guard, and the live
-mid-price cache settings.
+minimum notional, optional min-order adjustment, max entry age, price drift
+guard, and the live mid-price cache settings.
 
 `backend/config/paper_trading.json` owns paper-only simulation settings:
 paper copy enablement, simulated fee rate, simulated slippage, simulated latency,

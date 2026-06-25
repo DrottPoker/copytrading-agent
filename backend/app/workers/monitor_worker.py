@@ -317,16 +317,40 @@ async def run_realtime_monitor_loop(
                 price_cache=price_cache,
             )
 
-        try:
-            await asyncio.wait_for(
-                stream_user_fills(
-                    settings=settings,
-                    wallet_addresses=wallet_addresses,
-                    on_message=handle_message,
-                    stop_event=stop_event,
-                ),
-                timeout=settings.realtime_subscription_refresh_seconds,
+        stream_task = asyncio.create_task(
+            stream_user_fills(
+                settings=settings,
+                wallet_addresses=wallet_addresses,
+                on_message=handle_message,
+                stop_event=stop_event,
             )
+        )
+        try:
+            while not stop_event.is_set():
+                done, _ = await asyncio.wait(
+                    {stream_task},
+                    timeout=settings.realtime_subscription_refresh_seconds,
+                )
+                if stream_task in done:
+                    await stream_task
+                    break
+
+                refreshed_wallet_addresses = await load_realtime_wallets(
+                    sessionmaker=sessionmaker,
+                    max_wallets=settings.max_realtime_wallets,
+                    settings=settings,
+                )
+                if refreshed_wallet_addresses == subscribed_wallet_addresses:
+                    continue
+
+                logger.info(
+                    "realtime wallet subscriptions changed old=%s new=%s",
+                    ",".join(subscribed_wallet_addresses),
+                    ",".join(refreshed_wallet_addresses),
+                )
+                stream_task.cancel()
+                await asyncio.gather(stream_task, return_exceptions=True)
+                break
         except TimeoutError:
             logger.info("refreshing realtime wallet subscriptions")
         except HyperliquidWebSocketError as exc:
@@ -339,6 +363,10 @@ async def run_realtime_monitor_loop(
                 payload={"error": str(exc)},
             )
             await sleep_until_stop(stop_event, settings.realtime_reconnect_seconds)
+        finally:
+            if not stream_task.done():
+                stream_task.cancel()
+                await asyncio.gather(stream_task, return_exceptions=True)
 
 
 async def run_worker_heartbeat_loop(
@@ -808,7 +836,8 @@ async def run_paper_copy_recovery_once(
                 channel="events:fills",
                 message=(
                     "Paper copy recovery completed: "
-                    f"{result.processed_fills} processed, {result.skipped_fills} skipped."
+                    f"{result.processed_fills} processed, {result.skipped_fills} skipped"
+                    f"{skip_reason_suffix(result.skip_reasons)}."
                 ),
                 payload={
                     "sourceWallet": source_wallet,
@@ -817,6 +846,7 @@ async def run_paper_copy_recovery_once(
                     "accountsUpdated": result.accounts_updated,
                     "realizedPnlUsd": str(result.realized_pnl_usd),
                     "feeUsd": str(result.fee_usd),
+                    "skipReasons": result.skip_reasons,
                 },
             )
         return result
@@ -1226,7 +1256,8 @@ async def handle_websocket_message(
                     channel="events:fills",
                     message=(
                         f"Paper copied {paper_result.processed_fills} fills from "
-                        f"{short_address(stored.wallet_address)}."
+                        f"{short_address(stored.wallet_address)}"
+                        f"{skip_reason_suffix(paper_result.skip_reasons)}."
                     ),
                     payload={
                         "walletAddress": stored.wallet_address,
@@ -1235,6 +1266,7 @@ async def handle_websocket_message(
                         "accountsUpdated": paper_result.accounts_updated,
                         "realizedPnlUsd": str(paper_result.realized_pnl_usd),
                         "feeUsd": str(paper_result.fee_usd),
+                        "skipReasons": paper_result.skip_reasons,
                     },
                 )
         except Exception as exc:

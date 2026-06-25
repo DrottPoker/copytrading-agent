@@ -7,6 +7,7 @@
     "max_total_allocation_pct": 1.0,
     "min_order_notional_usd": 10,
     "adjust_small_orders_to_min_order": true,
+    "max_entry_age_seconds": 15,
     "max_price_drift_bps": 50,
     "use_live_mid_price": true,
     "market_price_cache_enabled": true,
