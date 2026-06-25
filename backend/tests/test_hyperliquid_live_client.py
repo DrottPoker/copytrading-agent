@@ -337,9 +337,9 @@ async def test_live_client_blocks_entry_above_max_notional() -> None:
 
 
 @pytest.mark.asyncio
-async def test_live_client_allows_reduce_only_below_entry_minimum() -> None:
+async def test_live_client_blocks_reduce_only_below_exchange_minimum() -> None:
     settings = live_test_settings()
-    settings.live_trading_min_order_notional_usd = Decimal("100")
+    settings.live_trading_min_order_notional_usd = Decimal("10")
     exchange = FakeExchange()
     client = HyperliquidLiveTradingClient(
         settings=settings,
@@ -354,10 +354,10 @@ async def test_live_client_allows_reduce_only_below_entry_minimum() -> None:
         notional_usd=Decimal("5"),
     )
 
-    result = await client.submit_order(account=account, intent=intent)
+    with pytest.raises(HyperliquidLiveTradingConfigurationError):
+        await client.submit_order(account=account, intent=intent)
 
-    assert result.status == "filled"
-    assert exchange.orders[0]["reduce_only"] is True
+    assert exchange.orders == []
 
 
 def live_test_settings() -> Settings:

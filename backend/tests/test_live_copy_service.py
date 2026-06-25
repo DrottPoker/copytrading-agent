@@ -8,12 +8,21 @@ from app.db.models import TradingAccount, TradingPosition
 from app.services import live_copy_service
 from app.services.live_copy_service import (
     combine_batch_results,
+    live_close_below_min_order_notional,
+    live_close_size_for_part,
     live_copy_account_snapshot_is_stale,
     live_exchange_position_conflict,
+    live_min_order_notional_usd,
     live_skip,
+    live_source_position_is_final_close,
     submit_live_copy_intent,
 )
 from app.services.live_trading_service import LiveOrderSubmitError
+from app.services.paper_trading_service import (
+    PaperSourceAccountState,
+    PaperSourceCurrentPosition,
+    SourceFillPart,
+)
 from app.services.trading_core import build_copy_trade_intent
 
 
@@ -101,6 +110,76 @@ def test_live_exchange_position_conflict_blocks_opposite_exchange_side() -> None
     assert conflict == "live_exchange_position_side_conflict"
 
 
+def test_live_min_order_notional_uses_stricter_copy_or_exchange_minimum() -> None:
+    settings = Settings(
+        trading_copy_min_order_notional_usd=Decimal("12"),
+        live_trading_min_order_notional_usd=Decimal("10"),
+    )
+
+    assert live_min_order_notional_usd(settings) == Decimal("12")
+
+
+def test_live_close_below_min_order_notional_blocks_sub_min_closes() -> None:
+    settings = Settings(
+        trading_copy_min_order_notional_usd=Decimal("10"),
+        live_trading_min_order_notional_usd=Decimal("10"),
+    )
+
+    assert live_close_below_min_order_notional(Decimal("9.99"), settings=settings)
+    assert not live_close_below_min_order_notional(Decimal("10"), settings=settings)
+
+
+def test_live_close_size_uses_ratio_while_source_position_remains_open() -> None:
+    position = live_position(source_wallet="0xsource", side="long", size=Decimal("2"))
+    part = live_close_part(close_ratio=Decimal("0.25"))
+    source_state = live_source_state(position_side="long")
+
+    close_size = live_close_size_for_part(
+        position=position,
+        part=part,
+        source_account_state=source_state,
+        coin="HYPE",
+    )
+
+    assert close_size == Decimal("0.50")
+
+
+def test_live_close_size_closes_remaining_position_when_source_is_flat() -> None:
+    position = live_position(source_wallet="0xsource", side="long", size=Decimal("2"))
+    part = live_close_part(close_ratio=Decimal("0.05"))
+    source_state = live_source_state(position_side=None)
+
+    close_size = live_close_size_for_part(
+        position=position,
+        part=part,
+        source_account_state=source_state,
+        coin="HYPE",
+    )
+
+    assert close_size == Decimal("2")
+
+
+def test_live_close_size_closes_remaining_position_without_ratio_when_source_is_flat() -> None:
+    position = live_position(source_wallet="0xsource", side="long", size=Decimal("2"))
+    part = live_close_part(close_ratio=None)
+    source_state = live_source_state(position_side=None)
+
+    close_size = live_close_size_for_part(
+        position=position,
+        part=part,
+        source_account_state=source_state,
+        coin="HYPE",
+    )
+
+    assert close_size == Decimal("2")
+
+
+def test_live_source_position_is_final_close_when_source_flipped_side() -> None:
+    source_state = live_source_state(position_side="short")
+
+    assert live_source_position_is_final_close(source_state, coin="HYPE", side="long")
+
+
 @pytest.mark.asyncio
 async def test_submit_live_copy_intent_reports_submit_error(monkeypatch) -> None:
     async def fake_submit_live_trade_intent(*args, **kwargs):
@@ -157,14 +236,19 @@ def live_account(*, last_reconciled_at: datetime | None) -> TradingAccount:
     )
 
 
-def live_position(*, source_wallet: str, side: str) -> TradingPosition:
+def live_position(
+    *,
+    source_wallet: str,
+    side: str,
+    size: Decimal = Decimal("0.1"),
+) -> TradingPosition:
     return TradingPosition(
         account_key="live_test",
         account_type="live",
         source_wallet=source_wallet,
         coin="HYPE",
         side=side,
-        size=Decimal("0.1"),
+        size=size,
         entry_price=Decimal("100"),
         notional_usd=Decimal("10"),
         leverage=Decimal("10"),
@@ -172,4 +256,33 @@ def live_position(*, source_wallet: str, side: str) -> TradingPosition:
         realized_pnl_usd=Decimal("0"),
         fee_usd=Decimal("0"),
         opened_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+
+def live_close_part(close_ratio: Decimal | None) -> SourceFillPart:
+    return SourceFillPart(
+        action="close",
+        side="long",
+        source_size=Decimal("1"),
+        source_notional_usd=Decimal("100"),
+        sequence_index=0,
+        close_ratio=close_ratio,
+        start_position=Decimal("10"),
+    )
+
+
+def live_source_state(position_side: str | None) -> PaperSourceAccountState:
+    positions_by_coin = {}
+    if position_side is not None:
+        positions_by_coin["HYPE"] = PaperSourceCurrentPosition(
+            coin="HYPE",
+            side=position_side,
+            size=Decimal("1"),
+        )
+    return PaperSourceAccountState(
+        dex="",
+        perp_equity=Decimal("1000"),
+        leverage_by_coin={"HYPE": Decimal("10")},
+        positions_by_coin=positions_by_coin,
+        skip_reason=None,
     )

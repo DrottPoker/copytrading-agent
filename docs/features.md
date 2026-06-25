@@ -907,6 +907,12 @@ What it does:
   guard against overly aggressive prices. If the execution value is too tight,
   Hyperliquid can reject the IOC order because it cannot immediately match
   resting liquidity.
+- Skips live reduce and close copy orders below the configured minimum notional
+  with `live_close_below_min_order_notional` before any exchange submission,
+  because Hyperliquid rejects sub-minimum reduce-only orders. When current
+  source state shows the source is flat or on the opposite side, live copy
+  treats the close fill as final and closes the full remaining copied source
+  position, unless that full remaining notional is still below the minimum.
 - Reserves one source per live account and market while exposure is open.
   Another source opening the same market is skipped until the market is free,
   even if it is the same side, because Hyperliquid nets exchange position and

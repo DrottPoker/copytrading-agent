@@ -30,6 +30,7 @@ from app.services.market_price_cache import MarketPriceCache, dex_from_coin
 from app.services.paper_trading_service import (
     ExecutionMarketPrices,
     PaperCopyBatchResult,
+    PaperSourceAccountState,
     PaperSourceAllocation,
     SourceFillPart,
     build_execution_context,
@@ -45,8 +46,10 @@ from app.services.paper_trading_service import (
     part_requires_source_equity,
     plan_source_fill,
     refresh_paper_copy_allocations,
+    resolve_source_current_position,
     sorted_paper_source_fills,
     source_fill_age_exceeds_entry_limit,
+    source_state_available_for_reconciliation,
 )
 from app.services.trading_core import (
     TradeIntent,
@@ -184,6 +187,7 @@ async def process_live_copy_fills(
                     allocation=allocation,
                     fill=fill,
                     part=part,
+                    source_account_state=source_account_state,
                     source_perp_equity=source_perp_equity,
                     source_leverages=source_leverages,
                     market_prices=market_prices,
@@ -325,6 +329,7 @@ async def apply_live_copy_part(
     allocation: PaperSourceAllocation,
     fill: dict[str, Any],
     part: SourceFillPart,
+    source_account_state: PaperSourceAccountState | None,
     source_perp_equity: Decimal,
     source_leverages: dict[str, Decimal],
     market_prices: ExecutionMarketPrices,
@@ -362,6 +367,7 @@ async def apply_live_copy_part(
         allocation=allocation,
         fill=fill,
         part=part,
+        source_account_state=source_account_state,
         source_perp_equity=source_perp_equity,
         source_leverages=source_leverages,
         market_prices=market_prices,
@@ -475,11 +481,7 @@ async def apply_live_open_part(
         source_leverage=source_leverage,
         settings=settings,
     )
-    live_min_order_notional_usd = max(
-        settings.trading_copy_min_order_notional_usd,
-        settings.live_trading_min_order_notional_usd,
-    )
-    if notional_usd < live_min_order_notional_usd:
+    if notional_usd < live_min_order_notional_usd(settings):
         return live_skip("live_below_min_order_notional")
 
     action = "add" if position is not None and part.action == "open" else part.action
@@ -523,22 +525,22 @@ async def apply_live_close_part(
     allocation: PaperSourceAllocation,
     fill: dict[str, Any],
     part: SourceFillPart,
+    source_account_state: PaperSourceAccountState | None,
     source_perp_equity: Decimal,
     source_leverages: dict[str, Decimal],
     market_prices: ExecutionMarketPrices,
     settings: Settings,
     trading_client: HyperliquidLiveTradingClient,
 ) -> PaperCopyBatchResult:
+    coin = str(fill.get("coin") or "")
     position = await load_live_source_position(
         session,
         account_key=account.key,
         source_wallet=allocation.source_wallet,
-        coin=str(fill.get("coin") or ""),
+        coin=coin,
     )
     if position is None or position.side != part.side:
         return live_skip("live_matching_position_missing")
-    if part.close_ratio is None or part.close_ratio <= ZERO:
-        return live_skip("live_close_ratio_missing")
 
     execution_context = build_execution_context(
         fill=fill,
@@ -553,11 +555,20 @@ async def apply_live_close_part(
     if execution_context.price_drift_bps > settings.trading_copy_max_price_drift_bps:
         return live_skip("live_price_drift_too_high")
 
-    close_size = min(position.size, position.size * part.close_ratio)
+    close_size = live_close_size_for_part(
+        position=position,
+        part=part,
+        source_account_state=source_account_state,
+        coin=coin,
+    )
+    if close_size is None:
+        return live_skip("live_close_ratio_missing")
     if close_size <= ZERO:
         return live_skip("live_close_size_zero")
     price = execution_context.execution_price
     notional_usd = close_size * price
+    if live_close_below_min_order_notional(notional_usd, settings=settings):
+        return live_skip("live_close_below_min_order_notional")
     leverage = (
         position.leverage
         if position.leverage > ZERO
@@ -572,7 +583,7 @@ async def apply_live_close_part(
         source_wallet=allocation.source_wallet,
         source_fill_id=str(fill.get("externalFillId") or ""),
         sequence_index=part.sequence_index,
-        coin=str(fill.get("coin") or ""),
+        coin=coin,
         action=part.action,
         side=part.side,
         size=close_size,
@@ -766,6 +777,54 @@ def live_exchange_position_conflict(
     if exchange_position.side != side:
         return "live_exchange_position_side_conflict"
     return None
+
+
+def live_min_order_notional_usd(settings: Settings) -> Decimal:
+    return max(
+        settings.trading_copy_min_order_notional_usd,
+        settings.live_trading_min_order_notional_usd,
+    )
+
+
+def live_close_below_min_order_notional(
+    notional_usd: Decimal,
+    *,
+    settings: Settings,
+) -> bool:
+    return notional_usd < live_min_order_notional_usd(settings)
+
+
+def live_close_size_for_part(
+    *,
+    position: TradingPosition,
+    part: SourceFillPart,
+    source_account_state: PaperSourceAccountState | None,
+    coin: str,
+) -> Decimal | None:
+    if live_source_position_is_final_close(
+        source_account_state,
+        coin=coin,
+        side=part.side,
+    ):
+        return position.size
+    if part.close_ratio is None or part.close_ratio <= ZERO:
+        return None
+    return min(position.size, position.size * part.close_ratio)
+
+
+def live_source_position_is_final_close(
+    source_account_state: PaperSourceAccountState | None,
+    *,
+    coin: str,
+    side: str,
+) -> bool:
+    if not source_state_available_for_reconciliation(source_account_state):
+        return False
+    source_position = resolve_source_current_position(
+        source_account_state.positions_by_coin,
+        coin,
+    )
+    return source_position is None or source_position.side != side
 
 
 async def live_copy_recovery_start_time_ms(

@@ -142,6 +142,10 @@ class HyperliquidLiveTradingClient:
             raise HyperliquidLiveTradingConfigurationError(
                 "Live order limit price must be positive."
             )
+        if intent.notional_usd < self.settings.live_trading_min_order_notional_usd:
+            raise HyperliquidLiveTradingConfigurationError(
+                "Live order notional is below the Hyperliquid minimum."
+            )
         if intent.observed_price is not None and intent.observed_price > Decimal("0"):
             slippage_bps = (
                 (intent.limit_price - intent.observed_price).copy_abs()
@@ -407,11 +411,7 @@ def live_order_wire_values(
         raise HyperliquidLiveTradingConfigurationError(
             "Live order limit price is below Hyperliquid tick precision."
         )
-    if (
-        not intent.reduce_only
-        and min_order_notional > Decimal("0")
-        and notional_usd < min_order_notional
-    ):
+    if min_order_notional > Decimal("0") and notional_usd < min_order_notional:
         raise HyperliquidLiveTradingConfigurationError(
             "Live order notional is below the configured minimum after lot rounding."
         )

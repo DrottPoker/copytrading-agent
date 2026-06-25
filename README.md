@@ -730,6 +730,13 @@ to cross resting liquidity, while `live_trading_max_slippage_bps` remains the
 hard guard against overly aggressive prices. If this value is too tight,
 Hyperliquid can reject the order with "Order could not immediately match
 against any resting orders."
+Live reduce and close copy orders below the configured minimum notional are
+skipped locally with `live_close_below_min_order_notional` instead of being sent
+to Hyperliquid, because the exchange rejects sub-minimum reduce-only orders.
+When current source state shows the source is flat or on the opposite side,
+live copy treats that close fill as final and closes the full remaining copied
+source position. If that full remaining notional is still below the configured
+minimum, it is skipped locally as dust until it can be closed above the minimum.
 Enabled and exit-only live accounts reconcile on
 `live_trading_reconciliation_interval_seconds`. Live copy also refreshes a stale
 account snapshot before sizing a new fill, so deposits are picked up before copy
