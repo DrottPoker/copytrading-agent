@@ -116,6 +116,7 @@ type DashboardPosition = {
   entryExecutionDelayMs: number | null;
   updatedAt: string | null;
   paperPosition: PaperPosition | null;
+  livePosition: TradingPosition | null;
 };
 
 type DashboardFill =
@@ -195,12 +196,13 @@ export function TradingDashboard({
   }, [refresh]);
 
   const handleManualClose = useCallback(
-    async (position: PaperPosition) => {
+    async (position: DashboardPosition) => {
       if (closingPositionId) {
         return;
       }
+      const isLivePosition = position.livePosition !== null;
       const confirmed = window.confirm(
-        `Close ${position.coin} ${position.side} position for ${position.accountKey}?`,
+        `Close ${position.coin} ${position.side} ${isLivePosition ? "live" : "paper"} position for ${position.accountKey}?`,
       );
       if (!confirmed) {
         return;
@@ -210,17 +212,23 @@ export function TradingDashboard({
       setActionError(null);
       try {
         const response = await fetch(
-          `${getPublicApiBaseUrl()}/paper-trading/positions/${position.id}/close`,
+          isLivePosition
+            ? `${getPublicApiBaseUrl()}/trading/positions/${position.id}/close`
+            : `${getPublicApiBaseUrl()}/paper-trading/positions/${position.id}/close`,
           { cache: "no-store", method: "POST" },
         );
         if (!response.ok) {
           setActionError(await responseError(response, "Manual close failed"));
           return;
         }
-        const payload = (await response.json()) as PaperTradingSummaryResponse;
-        setSummary(payload);
-        setLastRefreshAt(new Date());
-        setConnectionState("live");
+        if (isLivePosition) {
+          await refresh();
+        } else {
+          const payload = (await response.json()) as PaperTradingSummaryResponse;
+          setSummary(payload);
+          setLastRefreshAt(new Date());
+          setConnectionState("live");
+        }
       } catch {
         setConnectionState("offline");
         setActionError("Manual close failed.");
@@ -228,7 +236,7 @@ export function TradingDashboard({
         setClosingPositionId(null);
       }
     },
-    [closingPositionId],
+    [closingPositionId, refresh],
   );
 
   const handleCloseSource = useCallback(
@@ -396,7 +404,7 @@ export function TradingDashboard({
           icon={metrics.totalPnl >= 0 ? TrendingUp : TrendingDown}
           label="Total PnL"
           value={formatCurrency(metrics.totalPnl)}
-          detail="realized + paper unrealized"
+          detail="realized + unrealized"
           tone={metrics.totalPnl >= 0 ? "positive" : "danger"}
         />
         <HeroMetric
@@ -946,13 +954,21 @@ function PositionRow({
   position,
 }: {
   isClosing: boolean;
-  onClose: (position: PaperPosition) => void;
+  onClose: (position: DashboardPosition) => void;
   position: DashboardPosition;
 }) {
   const paperPosition = position.paperPosition;
-  const canClose = paperPosition !== null && position.markPrice !== null;
+  const livePosition = position.livePosition;
+  const canClose =
+    livePosition !== null || (paperPosition !== null && position.markPrice !== null);
   const unrealizedPnl = numberValue(position.unrealizedPnlUsd ?? 0);
   const sourceName = sourceDisplayName(position.sourceLabel, position.sourceWallet);
+  const closeTitle =
+    livePosition !== null
+      ? "Close live position"
+      : canClose
+        ? "Close paper position"
+        : "Execution price unavailable";
   return (
     <ListRow>
       <div className="grid gap-2 xl:grid-cols-[1.15fr_0.7fr_0.8fr_0.8fr_0.75fr_0.8fr_auto] xl:items-center">
@@ -993,12 +1009,12 @@ function PositionRow({
           detail={position.accountType === "paper" ? "source to open" : "live position"}
         />
         <RowStat label="Mark" value={formatPrice(position.markPrice)} detail={formatDate(position.priceUpdatedAt ?? position.updatedAt)} />
-        {paperPosition ? (
+        {paperPosition || livePosition ? (
           <button
             type="button"
-            onClick={() => onClose(paperPosition)}
+            onClick={() => onClose(position)}
             disabled={!canClose || isClosing}
-            title={canClose ? "Close paper position" : "Execution price unavailable"}
+            title={closeTitle}
             className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-[#f2aaa5] bg-[#fff2f0] px-2.5 text-xs font-semibold text-danger shadow-sm hover:bg-[#ffe6e2] disabled:cursor-not-allowed disabled:border-line disabled:bg-[#f7f9fb] disabled:text-[#98a2b3]"
           >
             {isClosing ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <XCircle className="h-3.5 w-3.5" aria-hidden="true" />}
@@ -1353,20 +1369,25 @@ function buildDashboardAccounts(
     .filter((account) => account.accountType === "live")
     .map<DashboardAccount>((account) => {
       const positions = livePositionsByAccount.get(account.key) ?? [];
+      const liveUnrealizedPnl = sumNumbers(
+        positions.map((position) => position.unrealizedPnlUsd),
+      );
       return {
         accountType: "live",
         equityUsd: liveAccountEquity(account),
         key: account.key,
         label: account.label,
         openMarginUsd: sumNumbers(positions.map((position) => position.marginUsd)),
-        openNotionalUsd: sumNumbers(positions.map((position) => position.notionalUsd)),
+        openNotionalUsd: sumNumbers(
+          positions.map((position) => position.currentNotionalUsd ?? position.notionalUsd),
+        ),
         openPositionCount: positions.length,
         paperAccount: null,
         realizedPnlUsd: numberValue(account.realizedPnlUsd),
         statusLabel: formatLiveAccountStatus(account.status),
         statusTone: account.status === "enabled" ? "positive" : account.status === "exit_only" ? "warning" : "neutral",
-        totalPnlUsd: numberValue(account.realizedPnlUsd),
-        unrealizedPnlUsd: null,
+        totalPnlUsd: numberValue(account.realizedPnlUsd) + liveUnrealizedPnl,
+        unrealizedPnlUsd: liveUnrealizedPnl,
       };
     });
 
@@ -1390,6 +1411,7 @@ function buildDashboardPositions(
     markPrice: position.markPrice,
     notionalUsd: position.notionalUsd,
     paperPosition: position,
+    livePosition: null,
     priceUpdatedAt: position.priceUpdatedAt,
     side: position.side,
     size: position.size,
@@ -1403,22 +1425,23 @@ function buildDashboardPositions(
     accountKey: position.accountKey,
     accountType: "live",
     coin: position.coin,
-    currentNotionalUsd: position.notionalUsd,
+    currentNotionalUsd: position.currentNotionalUsd ?? position.notionalUsd,
     entryExecutionDelayMs: null,
     entryPrice: position.entryPrice,
     id: position.id,
     leverage: position.leverage,
     marginUsd: position.marginUsd,
-    markPrice: null,
+    markPrice: position.markPrice,
     notionalUsd: position.notionalUsd,
     paperPosition: null,
-    priceUpdatedAt: position.lastReconciledAt,
+    livePosition: position,
+    priceUpdatedAt: position.priceUpdatedAt ?? position.lastReconciledAt,
     side: position.side,
     size: position.size,
     sourceLabel: isLiveExchangePosition(position) ? "Exchange position" : null,
     sourceWallet: position.sourceWallet,
-    unrealizedPnlPct: null,
-    unrealizedPnlUsd: null,
+    unrealizedPnlPct: position.unrealizedPnlPct,
+    unrealizedPnlUsd: position.unrealizedPnlUsd,
     updatedAt: position.updatedAt,
   }));
   return [...paperRows, ...liveRows].sort((left, right) => dateMs(right.updatedAt) - dateMs(left.updatedAt));
@@ -1509,7 +1532,12 @@ function buildMetrics(
     .filter((account) => account.accountType === "live")
     .reduce((total, account) => total + numberValue(account.feeUsd), 0);
   const liveOpenMargin = sumNumbers(livePositions.map((position) => position.marginUsd));
-  const liveOpenNotional = sumNumbers(livePositions.map((position) => position.notionalUsd));
+  const liveOpenNotional = sumNumbers(
+    livePositions.map((position) => position.currentNotionalUsd ?? position.notionalUsd),
+  );
+  const liveUnrealizedPnl = sumNumbers(
+    livePositions.map((position) => position.unrealizedPnlUsd),
+  );
   return {
     cashEquity: cashEquity + liveEquity,
     fees: fees + liveFees,
@@ -1517,8 +1545,8 @@ function buildMetrics(
     openMargin: openMargin + liveOpenMargin,
     openNotional: openNotional + liveOpenNotional,
     realizedPnl: realizedPnl + liveRealizedPnl,
-    totalPnl: realizedPnl + unrealizedPnl + liveRealizedPnl,
-    unrealizedPnl,
+    totalPnl: realizedPnl + unrealizedPnl + liveRealizedPnl + liveUnrealizedPnl,
+    unrealizedPnl: unrealizedPnl + liveUnrealizedPnl,
   };
 }
 

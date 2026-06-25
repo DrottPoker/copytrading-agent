@@ -733,6 +733,10 @@ What it does:
   live reconciled fills, and live order attempts that do not yet have matching
   fills. Copy Sources labels paper account coverage separately from live enabled
   account coverage, and paper-only actions remain labeled as paper actions.
+- Live open position rows include reconciled current notional, mark price,
+  unrealized PnL, and ROE when Hyperliquid supplies the fields. They also expose
+  an individual Close action that submits a reduce-only live close order for
+  that position.
 - The Accounts page filters account data to one selected paper or live account.
   It keeps the last selected account in browser storage and falls back to the
   first synced account. For paper accounts it shows account KPIs, balance and
@@ -941,6 +945,7 @@ Live trading API:
 - `POST /trading/accounts/{account_key}/stop`
 - `POST /trading/accounts/{account_key}/close-all-and-stop`
 - `POST /trading/accounts/{account_key}/reconcile`
+- `POST /trading/positions/{position_id}/close`
 - `POST /trading/testnet/orders`
 
 ### Live Feed

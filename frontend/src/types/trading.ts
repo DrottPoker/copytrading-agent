@@ -43,6 +43,11 @@ export type TradingPosition = {
   notionalUsd: string;
   leverage: string;
   marginUsd: string;
+  currentNotionalUsd: string | null;
+  markPrice: string | null;
+  unrealizedPnlUsd: string | null;
+  unrealizedPnlPct: string | null;
+  priceUpdatedAt: string | null;
   realizedPnlUsd: string;
   feeUsd: string;
   openedAt: string;

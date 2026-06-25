@@ -77,6 +77,11 @@ class TradingPositionRead(CamelModel):
     notional_usd: Decimal
     leverage: Decimal
     margin_usd: Decimal
+    current_notional_usd: Decimal | None = None
+    mark_price: Decimal | None = None
+    unrealized_pnl_usd: Decimal | None = None
+    unrealized_pnl_pct: Decimal | None = None
+    price_updated_at: datetime | None = None
     realized_pnl_usd: Decimal
     fee_usd: Decimal
     opened_at: datetime

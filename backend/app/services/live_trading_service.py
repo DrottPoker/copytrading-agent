@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from hashlib import blake2s
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
@@ -523,6 +523,69 @@ async def close_all_live_account_positions(
             await client.__aexit__(None, None, None)
 
 
+async def close_live_account_position(
+    session: AsyncSession,
+    *,
+    position_id: UUID,
+    settings: Settings,
+    info_client: HyperliquidClient | None = None,
+    trading_client: HyperliquidLiveTradingClient | None = None,
+) -> LiveOrderLifecycleResult:
+    position = await load_live_position_for_update(session, position_id=position_id)
+    account = await load_live_account_for_update(session, account_key=position.account_key)
+
+    client_created = info_client is None
+    client = info_client or HyperliquidClient(settings)
+    if client_created:
+        await client.__aenter__()
+    try:
+        await reconcile_live_trading_account(
+            session,
+            account=account,
+            settings=settings,
+            info_client=client,
+        )
+        position = await load_live_position_for_update(session, position_id=position_id)
+        if position.account_key != account.key:
+            raise LiveTradingServiceError("Live position account changed during reconcile.")
+
+        mids = await load_live_close_mids(client, positions=[position])
+        mid_price = decimal_or_none(mids.get(position.coin)) or live_position_mark_price(
+            position
+        )
+        if mid_price is None or mid_price <= ZERO:
+            raise LiveTradingServiceError("Live close price is unavailable.", status_code=409)
+
+        previous_status = account.status
+        if account.status == "disabled":
+            account.status = "exit_only"
+            await session.flush()
+
+        live_client = trading_client or HyperliquidLiveTradingClient(settings=settings)
+        intent = build_live_close_position_intent(
+            account=account,
+            position=position,
+            mid_price=mid_price,
+            settings=settings,
+            source_fill_prefix="manual-close",
+            price_source="manual_live_close",
+        )
+        result = await submit_live_trade_intent(
+            session,
+            account=account,
+            intent=intent,
+            settings=settings,
+            client=live_client,
+        )
+        if previous_status == "disabled":
+            account.status = "disabled"
+            await session.flush()
+        return result
+    finally:
+        if client_created:
+            await client.__aexit__(None, None, None)
+
+
 async def load_live_close_mids(
     client: HyperliquidClient,
     *,
@@ -540,6 +603,24 @@ async def load_live_close_mids(
             if not dex:
                 mids_by_coin[coin] = raw_price
     return mids_by_coin
+
+
+async def load_live_position_for_update(
+    session: AsyncSession,
+    *,
+    position_id: UUID,
+) -> TradingPosition:
+    position = await session.scalar(
+        select(TradingPosition)
+        .where(
+            TradingPosition.id == position_id,
+            TradingPosition.account_type == "live",
+        )
+        .with_for_update()
+    )
+    if position is None:
+        raise LiveTradingServiceError("Live position was not found.", status_code=404)
+    return position
 
 
 async def load_live_account_for_update(
@@ -1510,6 +1591,8 @@ def build_live_close_position_intent(
     position: TradingPosition,
     mid_price: Decimal,
     settings: Settings,
+    source_fill_prefix: str = "close-all",
+    price_source: str = "live_close_all",
 ) -> TradeIntent:
     now = datetime.now(UTC)
     limit_price = close_limit_price(
@@ -1522,8 +1605,8 @@ def build_live_close_position_intent(
     return build_copy_trade_intent(
         account_key=account.key,
         account_type="live",
-        source_wallet=LIVE_EXCHANGE_SOURCE,
-        source_fill_id=f"close-all-{position.coin}-{uuid4().hex}",
+        source_wallet=position.source_wallet,
+        source_fill_id=f"{source_fill_prefix}-{position.coin}-{uuid4().hex}",
         sequence_index=0,
         coin=position.coin,
         action="close",
@@ -1536,7 +1619,7 @@ def build_live_close_position_intent(
         source_price=mid_price,
         observed_price=mid_price,
         price_drift_bps=ZERO,
-        price_source="live_close_all",
+        price_source=price_source,
         allocation_pct=None,
         allocation_usd=None,
         source_perp_equity_usd=None,
@@ -1555,6 +1638,54 @@ def close_limit_price(
     if side == "long":
         return mid_price * (Decimal("1") - slippage_ratio)
     return mid_price * (Decimal("1") + slippage_ratio)
+
+
+def live_position_mark_price(position: TradingPosition) -> Decimal | None:
+    raw_position = live_position_raw_position(position)
+    position_value = (
+        decimal_or_none(raw_position.get("positionValue"))
+        if raw_position is not None
+        else None
+    )
+    position_value = position_value or position.notional_usd
+    if position.size <= ZERO or position_value <= ZERO:
+        return None
+    return position_value / position.size
+
+
+def live_position_current_notional(position: TradingPosition) -> Decimal:
+    raw_position = live_position_raw_position(position)
+    if raw_position is None:
+        return position.notional_usd
+    return decimal_or_none(raw_position.get("positionValue")) or position.notional_usd
+
+
+def live_position_unrealized_pnl(position: TradingPosition) -> Decimal | None:
+    raw_position = live_position_raw_position(position)
+    if raw_position is None:
+        return None
+    return decimal_or_none(raw_position.get("unrealizedPnl"))
+
+
+def live_position_unrealized_pnl_pct(position: TradingPosition) -> Decimal | None:
+    raw_position = live_position_raw_position(position)
+    if raw_position is None:
+        return None
+    return_on_equity = decimal_or_none(raw_position.get("returnOnEquity"))
+    if return_on_equity is not None:
+        return return_on_equity
+    unrealized = live_position_unrealized_pnl(position)
+    if unrealized is None or position.margin_usd <= ZERO:
+        return None
+    return unrealized / position.margin_usd
+
+
+def live_position_raw_position(position: TradingPosition) -> dict[str, Any] | None:
+    payload = position.raw_payload if isinstance(position.raw_payload, dict) else {}
+    raw_position = payload.get("position")
+    if isinstance(raw_position, dict):
+        return raw_position
+    return payload if payload else None
 
 
 def order_margin_delta(order: TradingOrder, *, fill_notional: Decimal) -> Decimal:

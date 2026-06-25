@@ -239,6 +239,7 @@ API:
 - `POST /trading/accounts/{account_key}/stop`
 - `POST /trading/accounts/{account_key}/close-all-and-stop`
 - `POST /trading/accounts/{account_key}/reconcile`
+- `POST /trading/positions/{position_id}/close`
 - `POST /trading/testnet/orders`
 - `GET /paper-trading`
 - `POST /paper-trading/accounts`

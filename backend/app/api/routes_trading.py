@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -28,11 +29,16 @@ from app.services.live_trading_service import (
     account_last_reconciliation,
     build_testnet_live_trade_intent,
     close_all_live_account_positions,
+    close_live_account_position,
     create_live_trading_account,
     decimal_or_none,
     delete_live_trading_account,
     live_capital_mode,
     live_perp_equity_usd,
+    live_position_current_notional,
+    live_position_mark_price,
+    live_position_unrealized_pnl,
+    live_position_unrealized_pnl_pct,
     live_spot_available_usd,
     live_spot_balance_usd,
     live_tradable_equity_usd,
@@ -141,6 +147,21 @@ def live_capital_balance_rows(
     return rows
 
 
+def trading_position_read(position: TradingPosition) -> TradingPositionRead:
+    read = TradingPositionRead.model_validate(position)
+    if position.account_type != "live":
+        return read
+    return read.model_copy(
+        update={
+            "current_notional_usd": live_position_current_notional(position),
+            "mark_price": live_position_mark_price(position),
+            "unrealized_pnl_usd": live_position_unrealized_pnl(position),
+            "unrealized_pnl_pct": live_position_unrealized_pnl_pct(position),
+            "price_updated_at": position.last_reconciled_at,
+        }
+    )
+
+
 @router.get("/accounts", response_model=TradingAccountsResponse)
 async def list_trading_accounts_route(
     session: Annotated[AsyncSession, Depends(db_session)],
@@ -176,7 +197,7 @@ async def list_trading_accounts_route(
         live_copy_enabled=settings.live_trading_copy_enabled,
         live_trading_enabled=settings.live_trading_enabled,
         positions=[
-            TradingPositionRead.model_validate(position)
+            trading_position_read(position)
             for position in position_result.all()
         ],
         recent_fills=[
@@ -354,6 +375,29 @@ async def reconcile_live_account_route(
         )
         await session.commit()
         return LiveReconciliationResponse.model_validate(result)
+    except LiveTradingServiceError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.post("/positions/{position_id}/close", response_model=LiveOrderSubmitResponse)
+async def close_live_position_route(
+    position_id: UUID,
+    session: Annotated[AsyncSession, Depends(db_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> LiveOrderSubmitResponse:
+    try:
+        result = await close_live_account_position(
+            session,
+            position_id=position_id,
+            settings=settings,
+        )
+        await session.commit()
+        return LiveOrderSubmitResponse(
+            order=result.order,
+            submitted=result.submitted,
+            updated_at=datetime.now(UTC),
+        )
     except LiveTradingServiceError as exc:
         await session.rollback()
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc

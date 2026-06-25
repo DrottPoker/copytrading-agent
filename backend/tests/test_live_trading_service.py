@@ -4,7 +4,7 @@ from decimal import Decimal
 import pytest
 
 from app.core.config import Settings
-from app.db.models import TradingAccount, TradingOrder
+from app.db.models import TradingAccount, TradingOrder, TradingPosition
 from app.integrations.hyperliquid_live_client import LiveOrderResult
 from app.services import live_trading_service
 from app.services.live_trading_service import (
@@ -16,6 +16,10 @@ from app.services.live_trading_service import (
     fetch_live_fills_by_time,
     live_account_key_for_route,
     live_perp_equity_usd,
+    live_position_current_notional,
+    live_position_mark_price,
+    live_position_unrealized_pnl,
+    live_position_unrealized_pnl_pct,
     live_tradable_equity_usd,
     parse_live_fill,
     parse_live_position,
@@ -119,6 +123,36 @@ def test_parse_live_position_reads_signed_position_size() -> None:
     assert snapshot.size == Decimal("0.25")
     assert snapshot.leverage == Decimal("5")
     assert snapshot.margin_usd == Decimal("3250")
+
+
+def test_live_position_market_values_read_raw_payload() -> None:
+    position = live_position(
+        raw_payload={
+            "position": {
+                "positionValue": "97.75",
+                "unrealizedPnl": "-0.90",
+                "returnOnEquity": "-0.084",
+            }
+        }
+    )
+
+    assert live_position_current_notional(position) == Decimal("97.75")
+    assert live_position_mark_price(position) == Decimal("61.86708860759493670886075949")
+    assert live_position_unrealized_pnl(position) == Decimal("-0.90")
+    assert live_position_unrealized_pnl_pct(position) == Decimal("-0.084")
+
+
+def test_live_position_unrealized_pct_falls_back_to_margin() -> None:
+    position = live_position(
+        raw_payload={
+            "position": {
+                "positionValue": "97.75",
+                "unrealizedPnl": "1.95",
+            }
+        }
+    )
+
+    assert live_position_unrealized_pnl_pct(position) == Decimal("0.195")
 
 
 def test_build_testnet_live_trade_intent_is_reduce_only_when_requested() -> None:
@@ -378,6 +412,25 @@ def live_order(*, status: str) -> TradingOrder:
         filled_size=Decimal("0"),
         filled_notional_usd=Decimal("0"),
         fee_usd=Decimal("0"),
+    )
+
+
+def live_position(*, raw_payload: dict[str, object]) -> TradingPosition:
+    return TradingPosition(
+        account_key="live_test",
+        account_type="live",
+        source_wallet="__exchange__",
+        coin="HYPE",
+        side="long",
+        size=Decimal("1.58"),
+        entry_price=Decimal("61.7158"),
+        notional_usd=Decimal("97.75"),
+        leverage=Decimal("10"),
+        margin_usd=Decimal("10"),
+        realized_pnl_usd=Decimal("0"),
+        fee_usd=Decimal("0"),
+        raw_payload=raw_payload,
+        opened_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
 
 
