@@ -540,6 +540,11 @@ Notes:
 - Live trading can place Hyperliquid orders only when live trading is explicitly
   enabled, acknowledged, configured with credentials, and enabled per account.
   Paper execution remains the default simulation layer.
+- Live copy reserves one source per live account and market while exposure is
+  open. Another source opening the same market is skipped until the market is
+  free, even if it is the same side, because Hyperliquid nets the exchange
+  position and leverage at account level. Matching exits and adds from the
+  already reserved source are still allowed.
 - Full old history is not imported into fresh paper accounts. Recovery only
   replays fills for current allocation sources or sources with open paper
   positions.

@@ -805,6 +805,11 @@ into `trading_fills`, and syncing aggregate account positions from
 Live fill reconciliation also updates source-attributed live positions for
 matched copied orders. Those source positions let exit-only accounts continue
 to reduce or close copied exposure without allowing new entries.
+Live copy reserves one source per live account and market while source
+exposure is open. A different source opening the same market is skipped until
+that market is free, even on the same side, because Hyperliquid stores one net
+exchange position and leverage setting for the account market. Matching exits
+and adds from the reserved source continue to execute.
 
 The paper summary exposes closed trade history separately from raw recent fills.
 Closed trade rows are derived from paper `close` and `flip_close` executions,

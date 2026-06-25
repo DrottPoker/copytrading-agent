@@ -902,6 +902,11 @@ What it does:
   shared source allocation policy, live mid-price cache, price drift guard,
   optional min-order adjustment, deterministic client order ids, and live risk
   guardrails.
+- Reserves one source per live account and market while exposure is open.
+  Another source opening the same market is skipped until the market is free,
+  even if it is the same side, because Hyperliquid nets exchange position and
+  leverage at account level. Matching exits and adds from the reserved source
+  remain allowed.
 - Enforces live entry guardrails for max order notional, max account open
   notional, max open positions, max daily loss, max orders per minute, and
   market allow/block lists before submitting a live entry order.

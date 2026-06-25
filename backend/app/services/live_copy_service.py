@@ -411,6 +411,26 @@ async def apply_live_open_part(
         return live_skip("live_position_side_mismatch")
     if position is None and not allocation.active:
         return live_skip("live_allocation_inactive")
+    if await live_market_is_reserved_by_other_source(
+        session,
+        account_key=account.key,
+        source_wallet=allocation.source_wallet,
+        coin=coin,
+    ):
+        return live_skip("live_market_reserved_by_other_source")
+    exchange_position = await load_live_source_position(
+        session,
+        account_key=account.key,
+        source_wallet=LIVE_EXCHANGE_SOURCE,
+        coin=coin,
+    )
+    exchange_conflict = live_exchange_position_conflict(
+        source_position=position,
+        exchange_position=exchange_position,
+        side=part.side,
+    )
+    if exchange_conflict is not None:
+        return live_skip(exchange_conflict)
 
     execution_context = build_execution_context(
         fill=fill,
@@ -710,6 +730,42 @@ async def live_order_exists(
         )
     )
     return existing is not None
+
+
+async def live_market_is_reserved_by_other_source(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    source_wallet: str,
+    coin: str,
+) -> bool:
+    existing_position_id = await session.scalar(
+        select(TradingPosition.id)
+        .where(
+            TradingPosition.account_key == account_key,
+            TradingPosition.account_type == "live",
+            TradingPosition.coin == coin,
+            TradingPosition.source_wallet != source_wallet,
+            TradingPosition.source_wallet != LIVE_EXCHANGE_SOURCE,
+        )
+        .limit(1)
+    )
+    return existing_position_id is not None
+
+
+def live_exchange_position_conflict(
+    *,
+    source_position: TradingPosition | None,
+    exchange_position: TradingPosition | None,
+    side: str,
+) -> str | None:
+    if exchange_position is None:
+        return None
+    if source_position is None:
+        return "live_exchange_position_conflict"
+    if exchange_position.side != side:
+        return "live_exchange_position_side_conflict"
+    return None
 
 
 async def live_copy_recovery_start_time_ms(

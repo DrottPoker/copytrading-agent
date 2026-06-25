@@ -4,11 +4,12 @@ from decimal import Decimal
 import pytest
 
 from app.core.config import Settings
-from app.db.models import TradingAccount
+from app.db.models import TradingAccount, TradingPosition
 from app.services import live_copy_service
 from app.services.live_copy_service import (
     combine_batch_results,
     live_copy_account_snapshot_is_stale,
+    live_exchange_position_conflict,
     live_skip,
     submit_live_copy_intent,
 )
@@ -70,6 +71,36 @@ def test_live_copy_combine_batch_results_merges_skip_reasons() -> None:
     assert combined.skip_reasons == {"live_order_submit_error": 3}
 
 
+def test_live_exchange_position_conflict_allows_matching_source_position() -> None:
+    conflict = live_exchange_position_conflict(
+        source_position=live_position(source_wallet="0xsource", side="long"),
+        exchange_position=live_position(source_wallet="exchange", side="long"),
+        side="long",
+    )
+
+    assert conflict is None
+
+
+def test_live_exchange_position_conflict_blocks_unattributed_exchange_position() -> None:
+    conflict = live_exchange_position_conflict(
+        source_position=None,
+        exchange_position=live_position(source_wallet="exchange", side="long"),
+        side="long",
+    )
+
+    assert conflict == "live_exchange_position_conflict"
+
+
+def test_live_exchange_position_conflict_blocks_opposite_exchange_side() -> None:
+    conflict = live_exchange_position_conflict(
+        source_position=live_position(source_wallet="0xsource", side="long"),
+        exchange_position=live_position(source_wallet="exchange", side="short"),
+        side="long",
+    )
+
+    assert conflict == "live_exchange_position_side_conflict"
+
+
 @pytest.mark.asyncio
 async def test_submit_live_copy_intent_reports_submit_error(monkeypatch) -> None:
     async def fake_submit_live_trade_intent(*args, **kwargs):
@@ -123,4 +154,22 @@ def live_account(*, last_reconciled_at: datetime | None) -> TradingAccount:
         status="enabled",
         network="mainnet",
         last_reconciled_at=last_reconciled_at,
+    )
+
+
+def live_position(*, source_wallet: str, side: str) -> TradingPosition:
+    return TradingPosition(
+        account_key="live_test",
+        account_type="live",
+        source_wallet=source_wallet,
+        coin="HYPE",
+        side=side,
+        size=Decimal("0.1"),
+        entry_price=Decimal("100"),
+        notional_usd=Decimal("10"),
+        leverage=Decimal("10"),
+        margin_usd=Decimal("1"),
+        realized_pnl_usd=Decimal("0"),
+        fee_usd=Decimal("0"),
+        opened_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
