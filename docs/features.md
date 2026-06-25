@@ -726,6 +726,9 @@ What it does:
   positions, closed trades, and recent fills. For live accounts it shows
   exchange equity, cash balance, realized PnL, fees, reconciliation state,
   wallet routing, and vault routing.
+  The live Reconciled card includes a manual refresh icon that posts to
+  `POST /trading/accounts/{account_key}/reconcile` and refreshes the selected
+  account snapshot.
 - The Accounts page can create new paper and live accounts from the dashboard.
   Paper accounts choose a USD starting balance. Live accounts choose a wallet
   name, optional wallet address, and optional vault address. Empty wallet
@@ -854,6 +857,10 @@ What it does:
   across default and HIP-3 perp markets. `standard_per_dex` keeps separate
   default and HIP-3 perp balances, and live copy sizing uses tradable perp
   equity on the same perp dex as the copied market.
+- Reconciles enabled and exit-only live accounts on
+  `live_trading_reconciliation_interval_seconds`. Live copy also refreshes any
+  stale account snapshot before sizing a new source fill, so newly deposited
+  capital is picked up before order sizing when the background loop is late.
 - Stores live exchange fills idempotently in `trading_fills` and syncs aggregate
   account-level live positions in `trading_positions`.
 - Blocks live order submission unless global live trading flags are enabled,

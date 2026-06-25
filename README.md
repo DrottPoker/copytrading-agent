@@ -429,6 +429,9 @@ Sizing policy:
   is selected. It shows paper account metrics, charts, allocations, market
   exposure, source performance, open positions, closed trades, and recent fills,
   and shows live account equity, balance, reconciliation, and routing details.
+  The live Reconciled card includes a manual refresh icon that posts to
+  `POST /trading/accounts/{account_key}/reconcile` and refreshes the selected
+  account snapshot.
 - The Accounts page can create dashboard-managed paper accounts with a selected
   USD starting balance and live accounts with a wallet name, optional wallet
   address, and optional vault address. Empty wallet address fields use and save
@@ -675,6 +678,10 @@ uses tradable perp equity on the same perp dex as the copied market, while spot
 USDC remains visible but not used for opening perp entries. It can also execute
 live copy orders when global live trading, copy execution, and account-level
 trading are all enabled.
+Enabled and exit-only live accounts reconcile on
+`live_trading_reconciliation_interval_seconds`. Live copy also refreshes a stale
+account snapshot before sizing a new fill, so deposits are picked up before copy
+order sizing if the background loop is late.
 
 Source wallets can also be unified. When their per-dex `clearinghouseState`
 reports zero perp equity, paper and live copy check `userAbstraction` and use

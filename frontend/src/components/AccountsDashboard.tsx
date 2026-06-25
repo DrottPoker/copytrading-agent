@@ -9,6 +9,7 @@ import {
   Loader2,
   Play,
   Plus,
+  RotateCw,
   Square,
   Target,
   Trash2,
@@ -177,6 +178,7 @@ export function AccountsDashboard({
   const [createSubmitting, setCreateSubmitting] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [reconcileAccountKey, setReconcileAccountKey] = useState<string | null>(null);
   const [lastRefreshAt, setLastRefreshAt] = useState<Date | null>(new Date());
   const [storedSelectionLoaded, setStoredSelectionLoaded] = useState(false);
   const createAccountOpenRef = useRef(createDraft.open);
@@ -393,6 +395,35 @@ export function AccountsDashboard({
       setAccountAction(null);
     }
   }, [accountAction, refresh, selectedAccount]);
+
+  const handleReconcileLiveAccount = useCallback(
+    async (account: TradingAccount) => {
+      if (reconcileAccountKey) {
+        return;
+      }
+
+      setReconcileAccountKey(account.key);
+      setActionError(null);
+      try {
+        const response = await fetch(
+          `${getPublicApiBaseUrl()}/trading/accounts/${encodeURIComponent(account.key)}/reconcile`,
+          { cache: "no-store", method: "POST" },
+        );
+        if (!response.ok) {
+          setActionError(await responseError(response, "Reconcile account failed"));
+          await refresh();
+          return;
+        }
+        await refresh();
+      } catch {
+        setConnectionState("offline");
+        setActionError("Reconcile account failed.");
+      } finally {
+        setReconcileAccountKey(null);
+      }
+    },
+    [reconcileAccountKey, refresh],
+  );
 
   const updateCreateDraft = useCallback((patch: Partial<CreateAccountDraft>) => {
     setCreateDraft((current) => ({ ...current, ...patch }));
@@ -665,7 +696,12 @@ export function AccountsDashboard({
           marketDataStatus={summary.marketDataStatus}
         />
       ) : selectedAccount?.accountType === "live" ? (
-        <LiveAccountContent account={selectedAccount.live} lastRefreshAt={lastRefreshAt} />
+        <LiveAccountContent
+          account={selectedAccount.live}
+          isReconciling={reconcileAccountKey === selectedAccount.live.key}
+          lastRefreshAt={lastRefreshAt}
+          onReconcile={handleReconcileLiveAccount}
+        />
       ) : (
         <section className="rounded-lg border border-line bg-panel p-8 text-center text-sm text-[#5b6770]">
           No accounts are synced yet.
@@ -1033,10 +1069,14 @@ function AccountContent({
 
 function LiveAccountContent({
   account,
+  isReconciling,
   lastRefreshAt,
+  onReconcile,
 }: {
   account: TradingAccount;
+  isReconciling: boolean;
   lastRefreshAt: Date | null;
+  onReconcile: (account: TradingAccount) => void;
 }) {
   const realizedPnl = decimal(account.realizedPnlUsd);
   const feeUsd = decimal(account.feeUsd);
@@ -1078,6 +1118,21 @@ function LiveAccountContent({
           value={formatCurrency(feeUsd)}
         />
         <MetricTile
+          action={
+            <button
+              type="button"
+              onClick={() => onReconcile(account)}
+              disabled={isReconciling}
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-line bg-white text-[#5b6770] shadow-sm transition hover:bg-[#f7f9fb] hover:text-ink disabled:cursor-not-allowed disabled:opacity-60"
+              title="Reconcile live account"
+              aria-label="Reconcile live account"
+            >
+              <RotateCw
+                className={`h-4 w-4 ${isReconciling ? "animate-spin" : ""}`}
+                aria-hidden="true"
+              />
+            </button>
+          }
           detail={formatDate(account.lastReconciledAt)}
           icon={Clock}
           label="Reconciled"
@@ -1151,12 +1206,14 @@ function CapitalBalanceRows({ balances }: { balances: TradingCapitalBalance[] })
 }
 
 function MetricTile({
+  action,
   detail,
   icon: Icon,
   label,
   tone = "neutral",
   value,
 }: {
+  action?: ReactNode;
   detail: string;
   icon: LucideIcon;
   label: string;
@@ -1177,7 +1234,7 @@ function MetricTile({
           <p className="truncate text-xs font-medium uppercase text-[#5b6770]">{label}</p>
           <p className="mt-2 truncate text-2xl font-semibold text-ink">{value}</p>
         </div>
-        <Icon className="h-5 w-5 shrink-0 text-[#5b6770]" aria-hidden="true" />
+        {action ?? <Icon className="h-5 w-5 shrink-0 text-[#5b6770]" aria-hidden="true" />}
       </div>
       <p className="mt-3 truncate text-sm text-[#5b6770]">{detail}</p>
     </article>

@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -117,6 +118,12 @@ async def process_live_copy_fills(
     )
     if not accounts:
         return PaperCopyBatchResult(skipped_fills=len(fills))
+    await refresh_stale_live_copy_accounts(
+        session,
+        accounts=accounts,
+        settings=resolved_settings,
+        client=client,
+    )
 
     processed = 0
     skipped = 0
@@ -247,6 +254,43 @@ async def process_live_copy_recovery(
         )
         total = combine_batch_results(total, result)
     return total
+
+
+async def refresh_stale_live_copy_accounts(
+    session: AsyncSession,
+    *,
+    accounts: list[TradingAccount],
+    settings: Settings,
+    client: HyperliquidClient,
+) -> None:
+    if not settings.live_trading_reconciliation_enabled:
+        return
+    now = datetime.now(UTC)
+    for account in accounts:
+        if not live_copy_account_snapshot_is_stale(account, settings=settings, now=now):
+            continue
+        await reconcile_live_trading_account(
+            session,
+            account=account,
+            settings=settings,
+            info_client=client,
+        )
+    await session.flush()
+
+
+def live_copy_account_snapshot_is_stale(
+    account: TradingAccount,
+    *,
+    settings: Settings,
+    now: datetime,
+) -> bool:
+    if account.last_reconciled_at is None:
+        return True
+    last_reconciled_at = account.last_reconciled_at
+    if last_reconciled_at.tzinfo is None:
+        last_reconciled_at = last_reconciled_at.replace(tzinfo=UTC)
+    max_age_seconds = max(settings.live_trading_reconciliation_interval_seconds, 1)
+    return (now - last_reconciled_at).total_seconds() >= max_age_seconds
 
 
 async def apply_live_copy_part(

@@ -477,9 +477,10 @@ function CurrentStateSection({ state }: { state: WalletCurrentStateStats }) {
           <div className="px-4 py-6 text-sm text-danger">{state.error}</div>
         ) : (
           <>
-            <div className="grid gap-0 divide-y divide-line sm:grid-cols-2 sm:divide-x sm:divide-y-0 lg:grid-cols-3">
+            <div className="grid gap-0 divide-y divide-line sm:grid-cols-2 sm:divide-x sm:divide-y-0 lg:grid-cols-4">
+              <StateMetric label="Account value" value={formatCurrency(state.accountValueUsd)} />
               <StateMetric label="Perp equity" value={formatCurrency(perpEquityUsd(state))} />
-              <StateMetric label="Withdrawable" value={formatCurrency(state.withdrawableUsd)} />
+              <StateMetric label="Available" value={formatCurrency(state.withdrawableUsd)} />
               <StateMetric
                 label="Unrealized PnL"
                 value={formatCurrency(state.totalUnrealizedPnlUsd)}
@@ -1231,14 +1232,14 @@ function openStressTone(
 }
 
 function currentUnrealizedDrawdownPct(state: WalletCurrentStateStats) {
-  const perpEquity = numberValue(perpEquityUsd(state));
+  const accountValue = numberValue(state.accountValueUsd);
   const unrealizedPnlUsd = numberValue(state.totalUnrealizedPnlUsd);
 
-  if (perpEquity <= 0 || unrealizedPnlUsd >= 0) {
+  if (accountValue <= 0 || unrealizedPnlUsd >= 0) {
     return 0;
   }
 
-  return Math.abs(unrealizedPnlUsd) / perpEquity;
+  return Math.abs(unrealizedPnlUsd) / accountValue;
 }
 
 function perpEquityUsd(state: WalletCurrentStateStats) {

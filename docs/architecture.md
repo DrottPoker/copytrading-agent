@@ -692,8 +692,9 @@ fields use and save `HYPERLIQUID_WALLET_ADDRESS`. Live account keys are
 generated internally from the wallet route, so the display name can change
 without creating a duplicate route. New accounts start disabled and reconcile
 the exchange wallet snapshot immediately so equity, balance, and open live
-positions are visible before trading is started. The Accounts page can change
-enabled state for one account without disabling other accounts.
+positions are visible before trading is started. The live Reconciled card can
+also manually refresh the selected live account snapshot. The Accounts page can
+change enabled state for one account without disabling other accounts.
 Disabled paper accounts are excluded from new entries and adds, but are still
 included when an existing open position for the source needs a reduce or exit
 fill. Live accounts use `enabled`, `exit_only`, and `disabled` status. The
