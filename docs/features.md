@@ -862,6 +862,10 @@ What it does:
   source fill id, sequence index, and action.
 - Adds a Hyperliquid live trading adapter that can submit IOC limit orders
   through the official Python SDK.
+- Normalizes live order size and limit price to Hyperliquid tick and lot
+  precision before SDK submission. Entry orders can round up to the next valid
+  lot only when min-order adjustment is enabled and lot rounding would otherwise
+  put the order below the configured minimum notional.
 - Persists live order intents before submission and reconciles active live
   orders from Hyperliquid `orderStatus`, `userFillsByTime`, and
   `clearinghouseState`.

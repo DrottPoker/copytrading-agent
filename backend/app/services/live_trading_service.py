@@ -802,6 +802,13 @@ def apply_live_order_result(
         order.raw_payload,
         {"exchangeResponse": result.raw_response},
     )
+    if result.submitted_size is not None:
+        order.requested_size = result.submitted_size
+    if result.submitted_limit_price is not None:
+        order.limit_price = result.submitted_limit_price
+    if result.submitted_notional_usd is not None:
+        order.requested_notional_usd = result.submitted_notional_usd
+        order.margin_usd = margin_from_notional(result.submitted_notional_usd, order.leverage)
     if result.status in {"accepted", "filled"}:
         order.accepted_at = order.accepted_at or updated_at
     if result.status == "filled":

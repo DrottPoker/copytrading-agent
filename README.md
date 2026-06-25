@@ -713,7 +713,11 @@ live copy orders when global live trading, copy execution, and account-level
 trading are all enabled. Live copy uses shared allocation, minimum notional,
 min-order adjustment, price drift, and mid-price cache policy from
 `backend/config/trading.json`, while live order submission uses live-only
-execution and risk guardrails from `backend/config/live_trading.json`.
+execution and risk guardrails from `backend/config/live_trading.json`. Before
+submission, the live adapter normalizes order size and limit price to
+Hyperliquid tick and lot precision from market metadata. If lot rounding would
+push an adjusted entry below the configured minimum notional, the adapter rounds
+to the next valid lot only when min-order adjustment is enabled.
 Enabled and exit-only live accounts reconcile on
 `live_trading_reconciliation_interval_seconds`. Live copy also refreshes a stale
 account snapshot before sizing a new fill, so deposits are picked up before copy

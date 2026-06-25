@@ -8,13 +8,17 @@ from app.db.models import TradingAccount
 from app.integrations.hyperliquid_live_client import (
     HyperliquidLiveTradingClient,
     HyperliquidLiveTradingConfigurationError,
+    live_order_wire_price,
+    live_order_wire_values,
     parse_order_response,
 )
 from app.services.trading_core import TradeIntent
 
 
 class FakeExchange:
-    def __init__(self) -> None:
+    def __init__(self, *, info: object | None = None) -> None:
+        if info is not None:
+            self.info = info
         self.orders: list[dict[str, object]] = []
 
     def order(
@@ -48,14 +52,28 @@ class FakeExchange:
                         {
                             "filled": {
                                 "oid": 123,
-                                "totalSz": "0.5",
-                                "avgPx": "100.25",
+                                "totalSz": str(size),
+                                "avgPx": str(limit_price),
                             }
                         }
                     ]
                 },
             },
         }
+
+
+class FakeInfo:
+    def __init__(
+        self,
+        *,
+        assets: dict[str, int],
+        size_decimals: dict[int, int],
+    ) -> None:
+        self.assets = assets
+        self.asset_to_sz_decimals = size_decimals
+
+    def name_to_asset(self, coin: str) -> int:
+        return self.assets[coin]
 
 
 def test_parse_order_response_filled() -> None:
@@ -153,6 +171,90 @@ async def test_live_client_submits_ioc_order_with_fake_exchange() -> None:
             "cloid": "0x" + "a" * 32,
         }
     ]
+
+
+def test_live_order_wire_price_rounds_without_worse_limit() -> None:
+    assert live_order_wire_price(
+        Decimal("63.930449"),
+        is_buy=True,
+        max_decimal_places=4,
+    ) == Decimal("63.9300")
+    assert live_order_wire_price(
+        Decimal("63.930449"),
+        is_buy=False,
+        max_decimal_places=4,
+    ) == Decimal("63.9310")
+
+
+def test_live_order_wire_values_adjust_min_order_after_lot_rounding() -> None:
+    exchange = FakeExchange(
+        info=FakeInfo(
+            assets={"HYPE": 0},
+            size_decimals={0: 2},
+        )
+    )
+    intent = live_test_intent(
+        coin="HYPE",
+        size=Decimal("0.157447565719185"),
+        limit_price=Decimal("63.930449"),
+        notional_usd=Decimal("10.07"),
+        source_price=Decimal("63.930449"),
+        observed_price=Decimal("63.930449"),
+    )
+
+    values = live_order_wire_values(
+        intent,
+        exchange=exchange,
+        min_order_notional_usd=Decimal("10"),
+        adjust_to_min_order=True,
+    )
+
+    assert values.size == Decimal("0.16")
+    assert values.limit_price == Decimal("63.9300")
+    assert values.notional_usd == Decimal("10.228800")
+    assert values.size_decimals == 2
+    assert values.price_decimals == 4
+
+
+@pytest.mark.asyncio
+async def test_live_client_submits_hyperliquid_wire_safe_values() -> None:
+    exchange = FakeExchange(
+        info=FakeInfo(
+            assets={"HYPE": 0},
+            size_decimals={0: 2},
+        )
+    )
+    settings = live_test_settings()
+    client = HyperliquidLiveTradingClient(
+        settings=settings,
+        exchange_factory=lambda _account: exchange,
+        cloid_factory=lambda value: value,
+    )
+    account = live_test_account(status="enabled")
+    intent = live_test_intent(
+        coin="HYPE",
+        size=Decimal("0.157447565719185"),
+        limit_price=Decimal("63.930449"),
+        notional_usd=Decimal("10.07"),
+        source_price=Decimal("63.930449"),
+        observed_price=Decimal("63.930449"),
+    )
+
+    result = await client.submit_order(account=account, intent=intent)
+
+    assert result.status == "filled"
+    assert result.submitted_size == Decimal("0.16")
+    assert result.submitted_limit_price == Decimal("63.9300")
+    assert result.submitted_notional_usd == Decimal("10.228800")
+    assert exchange.orders[0]["size"] == 0.16
+    assert exchange.orders[0]["limit_price"] == 63.93
+    assert result.raw_response["clientOrderRequest"] == {
+        "size": "0.16",
+        "limitPrice": "63.93",
+        "notionalUsd": "10.2288",
+        "sizeDecimals": 2,
+        "priceDecimals": 4,
+    }
 
 
 @pytest.mark.asyncio
@@ -281,10 +383,15 @@ def live_test_account(*, status: str) -> TradingAccount:
 
 def live_test_intent(
     *,
+    coin: str = "BTC",
     action: str = "open",
     is_buy: bool = True,
     reduce_only: bool = False,
+    size: Decimal = Decimal("0.5"),
     notional_usd: Decimal = Decimal("50"),
+    limit_price: Decimal = Decimal("100.25"),
+    source_price: Decimal = Decimal("100"),
+    observed_price: Decimal = Decimal("100"),
 ) -> TradeIntent:
     return TradeIntent(
         account_key="live_test",
@@ -293,18 +400,18 @@ def live_test_intent(
         source_fill_id="fill-1",
         sequence_index=0,
         client_order_id="0x" + "a" * 32,
-        coin="BTC",
+        coin=coin,
         action=action,
         side="long",
         is_buy=is_buy,
         reduce_only=reduce_only,
-        size=Decimal("0.5"),
+        size=size,
         notional_usd=notional_usd,
         margin_usd=Decimal("10"),
         leverage=Decimal("5"),
-        limit_price=Decimal("100.25"),
-        source_price=Decimal("100"),
-        observed_price=Decimal("100"),
+        limit_price=limit_price,
+        source_price=source_price,
+        observed_price=observed_price,
         price_drift_bps=Decimal("0"),
         price_source="test",
         allocation_pct=Decimal("0.2"),

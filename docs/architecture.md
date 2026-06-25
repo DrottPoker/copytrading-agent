@@ -780,6 +780,10 @@ reduce-only orders. It refuses to submit unless live trading is enabled,
 acknowledged, the account network matches the configured network, account
 status allows the requested intent, and the intent is a live intent for that
 account. Mainnet also requires `live_trading_mainnet_acknowledged=true`.
+Before SDK submission, the adapter normalizes size and limit price to
+Hyperliquid tick and lot precision from market metadata. This prevents SDK
+`float_to_wire` rounding failures and stores the submitted wire size on the
+order so reconciliation can compare fills against the actual exchange request.
 Automatic copied live entries also pass account-level guardrails for max order
 notional, max account open notional, max open positions, max daily loss, max
 orders per minute, and market allow/block lists.

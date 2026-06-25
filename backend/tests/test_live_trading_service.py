@@ -5,9 +5,11 @@ import pytest
 
 from app.core.config import Settings
 from app.db.models import TradingAccount, TradingOrder
+from app.integrations.hyperliquid_live_client import LiveOrderResult
 from app.services import live_trading_service
 from app.services.live_trading_service import (
     LivePerpState,
+    apply_live_order_result,
     apply_order_status_response,
     build_testnet_live_trade_intent,
     create_live_trading_account,
@@ -41,6 +43,34 @@ def test_apply_order_status_response_maps_filled_order() -> None:
     assert order.status == "filled"
     assert order.exchange_order_id == "123"
     assert order.filled_at == datetime.fromtimestamp(1_725_000_000_000 / 1000, UTC)
+
+
+def test_apply_live_order_result_updates_submitted_wire_values() -> None:
+    order = live_order(status="submitted")
+
+    apply_live_order_result(
+        order,
+        LiveOrderResult(
+            status="filled",
+            client_order_id=order.client_order_id,
+            exchange_order_id="123",
+            filled_size=Decimal("0.16"),
+            average_fill_price=Decimal("63.93"),
+            raw_response={"status": "ok"},
+            submitted_size=Decimal("0.16"),
+            submitted_limit_price=Decimal("63.9300"),
+            submitted_notional_usd=Decimal("10.228800"),
+        ),
+        updated_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+    assert order.requested_size == Decimal("0.16")
+    assert order.limit_price == Decimal("63.9300")
+    assert order.requested_notional_usd == Decimal("10.228800")
+    assert order.margin_usd == Decimal("10.228800")
+    assert order.filled_size == Decimal("0.16")
+    assert order.filled_notional_usd == Decimal("10.2288")
+    assert order.status == "filled"
 
 
 def test_parse_live_fill_uses_tid_for_id_and_infers_side() -> None:

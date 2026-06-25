@@ -1,9 +1,9 @@
 import asyncio
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_DOWN, ROUND_UP, Decimal
 from typing import Any
 
 from app.core.config import Settings, get_settings
@@ -31,7 +31,25 @@ class LiveOrderResult:
     filled_size: Decimal | None
     average_fill_price: Decimal | None
     raw_response: dict[str, Any]
+    submitted_size: Decimal | None = None
+    submitted_limit_price: Decimal | None = None
+    submitted_notional_usd: Decimal | None = None
     error: str | None = None
+
+
+@dataclass(frozen=True)
+class LiveMarketPrecision:
+    size_decimals: int
+    price_decimals: int
+
+
+@dataclass(frozen=True)
+class LiveOrderWireValues:
+    size: Decimal
+    limit_price: Decimal
+    notional_usd: Decimal
+    size_decimals: int
+    price_decimals: int
 
 
 @dataclass(frozen=True)
@@ -44,6 +62,11 @@ class HyperliquidSdkBindings:
 
 ExchangeFactory = Callable[[TradingAccount], Any]
 CloidFactory = Callable[[str], Any]
+PERP_MAX_PRICE_DECIMALS = 6
+SPOT_MAX_PRICE_DECIMALS = 8
+PRICE_SIGNIFICANT_DIGITS = 5
+FALLBACK_SIZE_DECIMALS = 8
+FALLBACK_PRICE_DECIMALS = 6
 
 
 class HyperliquidLiveTradingClient:
@@ -187,6 +210,23 @@ class HyperliquidLiveTradingClient:
         intent: TradeIntent,
     ) -> LiveOrderResult:
         exchange = self._build_exchange(account)
+        wire_values = live_order_wire_values(
+            intent,
+            exchange=exchange,
+            min_order_notional_usd=max(
+                self.settings.trading_copy_min_order_notional_usd,
+                self.settings.live_trading_min_order_notional_usd,
+            ),
+            adjust_to_min_order=self.settings.trading_copy_adjust_small_orders_to_min_order,
+        )
+        if (
+            not intent.reduce_only
+            and self.settings.live_trading_max_order_notional_usd > Decimal("0")
+            and wire_values.notional_usd > self.settings.live_trading_max_order_notional_usd
+        ):
+            raise HyperliquidLiveTradingConfigurationError(
+                "Live order notional exceeds the configured maximum after lot rounding."
+            )
         if self.settings.live_trading_order_expires_after_ms > 0 and hasattr(
             exchange, "set_expires_after"
         ):
@@ -197,8 +237,8 @@ class HyperliquidLiveTradingClient:
         response = exchange.order(
             intent.coin,
             intent.is_buy,
-            float(intent.size),
-            float(intent.limit_price),
+            float(wire_values.size),
+            float(wire_values.limit_price),
             {"limit": {"tif": "Ioc"}},
             reduce_only=intent.reduce_only,
             cloid=cloid,
@@ -207,9 +247,17 @@ class HyperliquidLiveTradingClient:
             raise HyperliquidLiveOrderRejectedError(
                 "Hyperliquid order returned an invalid response."
             )
-        return parse_order_response(
-            response,
+        response_payload = dict(response)
+        response_payload["clientOrderRequest"] = live_order_wire_payload(wire_values)
+        result = parse_order_response(
+            response_payload,
             client_order_id=intent.client_order_id,
+        )
+        return replace(
+            result,
+            submitted_size=wire_values.size,
+            submitted_limit_price=wire_values.limit_price,
+            submitted_notional_usd=wire_values.notional_usd,
         )
 
     def _build_exchange(self, account: TradingAccount) -> Any:
@@ -309,6 +357,217 @@ def parse_order_response(
         average_fill_price=None,
         raw_response=response,
     )
+
+
+def live_order_wire_values(
+    intent: TradeIntent,
+    *,
+    exchange: Any | None = None,
+    min_order_notional_usd: Decimal = Decimal("0"),
+    adjust_to_min_order: bool = False,
+) -> LiveOrderWireValues:
+    precision = live_market_precision(exchange, intent.coin)
+    size_decimals = precision.size_decimals if precision else FALLBACK_SIZE_DECIMALS
+    price_decimals = precision.price_decimals if precision else FALLBACK_PRICE_DECIMALS
+    limit_price = live_order_wire_price(
+        intent.limit_price,
+        is_buy=intent.is_buy,
+        max_decimal_places=price_decimals,
+    )
+    size = live_order_wire_size(
+        intent.size,
+        size_decimals=size_decimals,
+        rounding=ROUND_DOWN,
+    )
+    notional_usd = size * limit_price
+    min_order_notional = max(min_order_notional_usd, Decimal("0"))
+
+    if (
+        not intent.reduce_only
+        and adjust_to_min_order
+        and min_order_notional > Decimal("0")
+        and intent.notional_usd >= min_order_notional
+        and notional_usd < min_order_notional
+    ):
+        adjusted_size = live_order_wire_size(
+            intent.size,
+            size_decimals=size_decimals,
+            rounding=ROUND_UP,
+        )
+        adjusted_notional = adjusted_size * limit_price
+        if adjusted_notional >= min_order_notional:
+            size = adjusted_size
+            notional_usd = adjusted_notional
+
+    if size <= Decimal("0"):
+        raise HyperliquidLiveTradingConfigurationError(
+            "Live order size is below Hyperliquid lot precision."
+        )
+    if limit_price <= Decimal("0"):
+        raise HyperliquidLiveTradingConfigurationError(
+            "Live order limit price is below Hyperliquid tick precision."
+        )
+    if (
+        not intent.reduce_only
+        and min_order_notional > Decimal("0")
+        and notional_usd < min_order_notional
+    ):
+        raise HyperliquidLiveTradingConfigurationError(
+            "Live order notional is below the configured minimum after lot rounding."
+        )
+
+    return LiveOrderWireValues(
+        size=size,
+        limit_price=limit_price,
+        notional_usd=notional_usd,
+        size_decimals=size_decimals,
+        price_decimals=price_decimals,
+    )
+
+
+def live_market_precision(exchange: Any | None, coin: str) -> LiveMarketPrecision | None:
+    info = getattr(exchange, "info", None)
+    if info is None:
+        return None
+    asset = live_asset_id(info, coin)
+    size_decimals = live_size_decimals(info, asset=asset, coin=coin)
+    if size_decimals is None:
+        return None
+    max_price_decimals = (
+        SPOT_MAX_PRICE_DECIMALS if asset_is_spot(asset) else PERP_MAX_PRICE_DECIMALS
+    )
+    return LiveMarketPrecision(
+        size_decimals=max(size_decimals, 0),
+        price_decimals=max(max_price_decimals - size_decimals, 0),
+    )
+
+
+def live_asset_id(info: Any, coin: str) -> Any | None:
+    name_to_asset = getattr(info, "name_to_asset", None)
+    if callable(name_to_asset):
+        try:
+            return name_to_asset(coin)
+        except Exception:
+            pass
+
+    for attr_name in ("name_to_asset", "coin_to_asset"):
+        mapping = getattr(info, attr_name, None)
+        asset = mapping_value(mapping, coin)
+        if asset is not None:
+            return asset
+
+    name_to_coin = getattr(info, "name_to_coin", None)
+    canonical_coin = mapping_value(name_to_coin, coin)
+    if canonical_coin is not None:
+        coin_to_asset = getattr(info, "coin_to_asset", None)
+        asset = mapping_value(coin_to_asset, canonical_coin)
+        if asset is not None:
+            return asset
+    return None
+
+
+def live_size_decimals(info: Any, *, asset: Any | None, coin: str) -> int | None:
+    asset_to_sz_decimals = getattr(info, "asset_to_sz_decimals", None)
+    value = mapping_value(asset_to_sz_decimals, asset)
+    if value is None and asset is not None:
+        value = mapping_value(asset_to_sz_decimals, str(asset))
+    if value is None:
+        meta = getattr(info, "meta", None)
+        value = size_decimals_from_meta(meta, coin)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def mapping_value(mapping: Any, key: Any) -> Any | None:
+    if key is None or mapping is None:
+        return None
+    if isinstance(mapping, dict):
+        return mapping.get(key)
+    if isinstance(mapping, (list, tuple)) and isinstance(key, int) and 0 <= key < len(mapping):
+        return mapping[key]
+    return None
+
+
+def size_decimals_from_meta(meta: Any, coin: str) -> Any | None:
+    if not isinstance(meta, dict):
+        return None
+    universe = meta.get("universe")
+    if not isinstance(universe, list):
+        return None
+    for asset in universe:
+        if not isinstance(asset, dict):
+            continue
+        if str(asset.get("name") or "") == coin:
+            return asset.get("szDecimals")
+    return None
+
+
+def asset_is_spot(asset: Any | None) -> bool:
+    try:
+        return int(asset) >= 10_000
+    except (TypeError, ValueError):
+        return False
+
+
+def live_order_wire_size(
+    size: Decimal,
+    *,
+    size_decimals: int,
+    rounding: str,
+) -> Decimal:
+    return size.quantize(decimal_quantum(size_decimals), rounding=rounding)
+
+
+def live_order_wire_price(
+    price: Decimal,
+    *,
+    is_buy: bool,
+    max_decimal_places: int,
+) -> Decimal:
+    rounding = ROUND_DOWN if is_buy else ROUND_UP
+    significant_price = round_to_significant_digits(
+        price,
+        digits=PRICE_SIGNIFICANT_DIGITS,
+        rounding=rounding,
+    )
+    return significant_price.quantize(
+        decimal_quantum(max_decimal_places),
+        rounding=rounding,
+    )
+
+
+def round_to_significant_digits(
+    value: Decimal,
+    *,
+    digits: int,
+    rounding: str,
+) -> Decimal:
+    if value <= Decimal("0"):
+        return value
+    quantize_exponent = value.adjusted() - digits + 1
+    return value.quantize(Decimal("1").scaleb(quantize_exponent), rounding=rounding)
+
+
+def decimal_quantum(decimal_places: int) -> Decimal:
+    return Decimal("1").scaleb(-max(decimal_places, 0))
+
+
+def live_order_wire_payload(values: LiveOrderWireValues) -> dict[str, Any]:
+    return {
+        "size": decimal_to_plain_string(values.size),
+        "limitPrice": decimal_to_plain_string(values.limit_price),
+        "notionalUsd": decimal_to_plain_string(values.notional_usd),
+        "sizeDecimals": values.size_decimals,
+        "priceDecimals": values.price_decimals,
+    }
+
+
+def decimal_to_plain_string(value: Decimal) -> str:
+    return format(value.normalize(), "f")
 
 
 def order_statuses(response: dict[str, Any]) -> list[dict[str, Any]]:
