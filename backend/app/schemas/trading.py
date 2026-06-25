@@ -65,8 +65,53 @@ class TradingAccountRead(CamelModel):
     updated_at: datetime
 
 
+class TradingPositionRead(CamelModel):
+    id: UUID
+    account_key: str
+    account_type: Literal["paper", "live"]
+    source_wallet: str
+    coin: str
+    side: Literal["long", "short"]
+    size: Decimal
+    entry_price: Decimal
+    notional_usd: Decimal
+    leverage: Decimal
+    margin_usd: Decimal
+    realized_pnl_usd: Decimal
+    fee_usd: Decimal
+    opened_at: datetime
+    last_reconciled_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class TradingFillRead(CamelModel):
+    id: UUID
+    order_id: UUID | None
+    account_key: str
+    account_type: Literal["paper", "live"]
+    source_wallet: str
+    source_fill_id: str | None
+    sequence_index: int | None
+    exchange_fill_id: str | None
+    coin: str
+    action: str
+    side: Literal["long", "short"]
+    price: Decimal
+    size: Decimal
+    notional_usd: Decimal
+    fee_usd: Decimal
+    realized_pnl_usd: Decimal
+    filled_at: datetime
+    created_at: datetime
+
+
 class TradingAccountsResponse(CamelModel):
     accounts: list[TradingAccountRead]
+    live_trading_enabled: bool = False
+    live_copy_enabled: bool = False
+    positions: list[TradingPositionRead] = Field(default_factory=list)
+    recent_fills: list[TradingFillRead] = Field(default_factory=list)
     updated_at: datetime
 
 

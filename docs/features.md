@@ -718,9 +718,13 @@ What it does:
   minimum notional, source allocation cap exhaustion, or total account cap
   exhaustion.
 - Publishes `paper_copy` events to the live feed when realtime fills are simulated.
-- The Trading page polls the paper summary API and shows account PnL,
-  monitored sources, currently trading sources, open position PnL, wallet PnL
-  history, closed trade history, and recent fills without a full page refresh.
+- The Trading page polls the paper summary API and generic trading account API.
+  It shows paper execution state, live execution state, market mark state,
+  combined paper and live account rows, combined paper and live open positions,
+  wallet PnL history, paper closed trade history, and combined paper and live
+  recent fills without a full page refresh. Copy Sources labels paper account
+  coverage separately from live enabled account coverage, and paper-only actions
+  remain labeled as paper actions.
 - The Accounts page filters account data to one selected paper or live account.
   It keeps the last selected account in browser storage and falls back to the
   first synced account. For paper accounts it shows account KPIs, balance and
@@ -812,7 +816,9 @@ Config:
 
 Current limitations:
 
-- This is paper money only. It never places Hyperliquid orders.
+- Live trading can place Hyperliquid orders only when live trading is explicitly
+  enabled, acknowledged, configured with credentials, and enabled per account.
+  Paper execution remains the default simulation layer.
 - The execution model is still deterministic: it uses live mids, configured
   latency, configured adverse slippage, and a max drift guard, but it does not
   simulate order book depth or partial fills yet.
@@ -836,6 +842,8 @@ What it does:
 - Mirrors existing paper accounts into `trading_accounts` and lists live
   accounts from the same endpoint so the Accounts page can select mixed
   paper/live account data.
+- Includes live positions and recent live fills in the same response so generic
+  Trading dashboards do not need to infer live activity from account rows.
 - Uses account `status` values of `enabled`, `exit_only`, and `disabled`.
   Disabled paper accounts are mirrored as `exit_only` because source exits and
   reductions remain allowed after Stop trading.

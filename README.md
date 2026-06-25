@@ -249,6 +249,10 @@ API:
 - `POST /paper-trading/positions/{position_id}/close`
 - `POST /paper-trading/sources/{source_wallet}/close`
 
+`GET /trading/accounts` returns the generic paper/live account registry plus
+live positions and recent live fills for Trading dashboards. `GET /paper-trading`
+remains the paper simulator summary and manual paper action API.
+
 Dashboard:
 
 - `http://127.0.0.1:3000/live-feed`
@@ -329,7 +333,8 @@ Notes:
 - The pool fill importer works through all due wallets in configured batches so older pool wallets are not left unpolled.
 - Snapshot messages are stored safely through the same dedupe key as historical imports.
 - Non-snapshot realtime fills are published to Redis and shown in the live feed.
-- Non-snapshot realtime fills for selected scored wallets feed paper copy simulation.
+- Non-snapshot realtime fills for selected scored wallets feed paper copy and
+  live copy when live execution is enabled.
 - A source wallet that falls out of the top 10 stays monitored while any paper
   account still has an open position from that source. When those positions are
   closed, the slot is released to the next highest eligible wallet.
@@ -426,8 +431,12 @@ Sizing policy:
   positions in a stable order.
 - Skip reasons distinguish minimum notional, source-wallet pocket cap, total
   account cap, missing matching positions, and price safety guards.
-- The Trading page polls the paper summary API and separates total,
-  realized, and unrealized PnL at the top of the page.
+- The Trading page polls the paper summary API and generic trading account API.
+  The execution cockpit shows paper execution state, live execution state, and
+  market mark state. Top metrics, account rows, open positions, and recent fills
+  combine paper state with live accounts, live positions, and recent live fills.
+  Copy Sources labels paper account coverage separately from live enabled account
+  coverage, and paper-only actions remain labeled as paper actions.
 - The Accounts page stores the last selected account in the browser and
   defaults to that account on the next visit, otherwise the first synced account
   is selected. It shows paper account metrics, charts, allocations, market
@@ -519,7 +528,9 @@ Sizing policy:
 
 Notes:
 
-- This is paper money only. It never places Hyperliquid orders.
+- Live trading can place Hyperliquid orders only when live trading is explicitly
+  enabled, acknowledged, configured with credentials, and enabled per account.
+  Paper execution remains the default simulation layer.
 - Full old history is not imported into fresh paper accounts. Recovery only
   replays fills for current allocation sources or sources with open paper
   positions.

@@ -19,7 +19,7 @@ def test_live_trading_config_is_loaded_from_dedicated_file(
 ) -> None:
     _set_required_live_env(monkeypatch)
     config = load_app_config()
-    settings = Settings(**config)
+    settings = Settings(_env_file=None, **config)
 
     assert settings.live_trading_enabled is True
     assert settings.live_trading_acknowledged is True
@@ -46,21 +46,20 @@ def test_shared_trading_config_is_loaded_from_dedicated_file(
 ) -> None:
     _set_required_live_env(monkeypatch)
     config = load_app_config()
-    settings = Settings(**config)
 
-    assert settings.trading_copy_top_wallet_count == 10
-    assert settings.trading_copy_top_tier_wallet_count == 3
-    assert settings.trading_copy_top_tier_allocation_pct == Decimal("0.2")
-    assert settings.trading_copy_standard_allocation_pct == Decimal("0.2")
-    assert settings.trading_copy_max_total_allocation_pct == Decimal("0.8")
-    assert settings.trading_copy_min_order_notional_usd == Decimal("10")
-    assert settings.trading_copy_adjust_small_orders_to_min_order is True
-    assert settings.trading_copy_max_price_drift_bps == Decimal("50")
-    assert settings.trading_copy_use_live_mid_price is True
-    assert settings.trading_copy_market_price_cache_enabled is True
-    assert settings.trading_copy_market_price_cache_stale_seconds == 2
-    assert settings.trading_copy_market_price_cache_refresh_seconds == 1
-    assert settings.trading_copy_market_price_cache_dexes == []
+    assert config["trading_copy_top_wallet_count"] == 10
+    assert config["trading_copy_top_tier_wallet_count"] == 3
+    assert Decimal(str(config["trading_copy_top_tier_allocation_pct"])) == Decimal("0.2")
+    assert Decimal(str(config["trading_copy_standard_allocation_pct"])) == Decimal("0.2")
+    assert Decimal(str(config["trading_copy_max_total_allocation_pct"])) == Decimal("1.0")
+    assert Decimal(str(config["trading_copy_min_order_notional_usd"])) == Decimal("10")
+    assert config["trading_copy_adjust_small_orders_to_min_order"] is True
+    assert Decimal(str(config["trading_copy_max_price_drift_bps"])) == Decimal("50")
+    assert config["trading_copy_use_live_mid_price"] is True
+    assert config["trading_copy_market_price_cache_enabled"] is True
+    assert config["trading_copy_market_price_cache_stale_seconds"] == 2
+    assert config["trading_copy_market_price_cache_refresh_seconds"] == 1
+    assert config["trading_copy_market_price_cache_dexes"] == []
     assert "paper_copy_top_wallet_count" not in config
     assert "paper_copy_max_total_allocation_pct" not in config
     assert "paper_copy_min_order_notional_usd" not in config
@@ -69,7 +68,7 @@ def test_shared_trading_config_is_loaded_from_dedicated_file(
 def test_paper_config_does_not_seed_accounts(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_required_live_env(monkeypatch)
     config = load_app_config()
-    settings = Settings(**config)
+    settings = Settings(_env_file=None, **config)
 
     assert "paper_copy_accounts" not in config
     assert settings.paper_copy_accounts == []

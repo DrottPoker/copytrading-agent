@@ -373,6 +373,10 @@ export async function getTradingAccounts(): Promise<TradingAccountsResponse> {
 function emptyTradingAccounts(): TradingAccountsResponse {
   return {
     accounts: [],
+    liveCopyEnabled: false,
+    liveTradingEnabled: false,
+    positions: [],
+    recentFills: [],
     updatedAt: new Date(0).toISOString(),
   };
 }

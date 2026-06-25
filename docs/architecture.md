@@ -164,9 +164,10 @@ Current pages:
 - `/wallets/[address]`: wallet details and recent fills.
 - `/live-feed`: realtime system and fill events.
 - `/analytics`: pool, scoring, paper, discovery, and freshness analytics.
-- `/accounts`: selected paper account metrics, charts, allocations, positions,
-  closed trades, and fills.
-- `/trading`: trading accounts, allocations, positions, and recent fills.
+- `/accounts`: selected paper or live account metrics, reconciliation, routing,
+  positions, closed trades where available, and fills.
+- `/trading`: execution cockpit, trading accounts, copy sources, combined paper
+  and live positions, and combined recent fills.
 
 Important folders:
 
@@ -806,23 +807,22 @@ list at the bottom of the page.
 Discovery candidate source metrics use explicit unit-bearing database columns:
 `source_account_value_usd`, `source_pnl_usd`, and `source_roi_pct`.
 
-The Trading page is a client dashboard that polls the summary API for live
-mark prices and unrealized PnL. The API also aggregates source-wallet PnL from
-all copied fills, not just the most recent fill rows shown in the UI.
-The summary attaches wallet labels to allocation, position, wallet-history,
-closed-trade, and recent-fill rows. The UI uses labels as the primary source
-name and falls back to the short wallet address. Source rows split realized and
-unrealized source PnL, while account-level totals remain split into total,
-realized, and unrealized PnL.
-Wallet PnL history, closed trade history, and recent fills are shown 10 rows per
-page with pagination controls.
+The Trading page is a client dashboard that polls the paper summary API for
+paper marks, paper unrealized PnL, and source-wallet paper PnL, and also polls
+the generic trading account API for live accounts, live positions, and recent
+live fills. The UI uses paper wallet labels as the primary source names where
+available and falls back to the short wallet address. Source rows split paper
+realized and unrealized source PnL, while top account and position sections
+combine paper and live state. Paper closed trades and recent fills are shown 10
+rows per page with pagination controls, and recent fills include both paper fill
+activity and live reconciled fills.
 Account reset actions restore the configured starting capital and clear
 account-level realized PnL and fee counters, but they do not delete open paper
 positions, copied fills, or closed trade history.
 
 ## Important Constraint
 
-Hyperliquid user-specific WebSocket subscriptions are limited. Realtime monitoring
-is reserved for open paper-position sources, the highest scoring paper-copy
+Hyperliquid user-specific WebSocket subscriptions are limited. Realtime
+monitoring is reserved for open copy-exposure sources, the highest scoring copy
 candidates, and fallback active wallets. Full-pool analysis should use periodic
 historical polling instead.

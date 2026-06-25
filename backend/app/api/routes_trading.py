@@ -3,11 +3,12 @@ from decimal import Decimal
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import db_session
 from app.core.config import Settings, get_settings
-from app.db.models import TradingAccount
+from app.db.models import TradingAccount, TradingFill, TradingPosition
 from app.schemas.trading import (
     LiveCloseAllResponse,
     LiveOrderSubmitResponse,
@@ -18,6 +19,8 @@ from app.schemas.trading import (
     TradingAccountsResponse,
     TradingAccountStatusRequest,
     TradingCapitalBalanceRead,
+    TradingFillRead,
+    TradingPositionRead,
 )
 from app.services.live_trading_service import (
     LiveTradingServiceError,
@@ -45,6 +48,8 @@ from app.services.live_trading_service import (
 from app.services.trading_account_service import list_trading_accounts
 
 router = APIRouter(prefix="/trading", tags=["trading"])
+
+TRADING_ACTIVITY_LIMIT = 100
 
 
 async def trading_account_read(
@@ -141,10 +146,35 @@ async def list_trading_accounts_route(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> TradingAccountsResponse:
     accounts = await list_trading_accounts(session)
+    position_result = await session.scalars(
+        select(TradingPosition)
+        .where(TradingPosition.account_type == "live")
+        .order_by(
+            TradingPosition.account_key.asc(),
+            TradingPosition.source_wallet.asc(),
+            TradingPosition.coin.asc(),
+        )
+    )
+    fill_result = await session.scalars(
+        select(TradingFill)
+        .where(TradingFill.account_type == "live")
+        .order_by(TradingFill.filled_at.desc(), TradingFill.created_at.desc())
+        .limit(TRADING_ACTIVITY_LIMIT)
+    )
     return TradingAccountsResponse(
         accounts=[
             enriched_trading_account_read(account, settings=settings)
             for account in accounts
+        ],
+        live_copy_enabled=settings.live_trading_copy_enabled,
+        live_trading_enabled=settings.live_trading_enabled,
+        positions=[
+            TradingPositionRead.model_validate(position)
+            for position in position_result.all()
+        ],
+        recent_fills=[
+            TradingFillRead.model_validate(fill)
+            for fill in fill_result.all()
         ],
         updated_at=datetime.now(UTC),
     )
