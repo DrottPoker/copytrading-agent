@@ -72,11 +72,45 @@ export type TradingFill = {
   createdAt: string;
 };
 
+export type TradingOrder = {
+  id: string;
+  accountKey: string;
+  accountType: "paper" | "live";
+  sourceWallet: string;
+  sourceFillId: string;
+  sequenceIndex: number;
+  clientOrderId: string;
+  exchangeOrderId: string | null;
+  coin: string;
+  action: string;
+  side: string;
+  isBuy: boolean;
+  reduceOnly: boolean;
+  orderType: string;
+  status: string;
+  requestedSize: string;
+  requestedNotionalUsd: string;
+  marginUsd: string | null;
+  leverage: string | null;
+  limitPrice: string | null;
+  averageFillPrice: string | null;
+  filledSize: string;
+  filledNotionalUsd: string;
+  feeUsd: string;
+  error: string | null;
+  submittedAt: string | null;
+  acceptedAt: string | null;
+  filledAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type TradingAccountsResponse = {
   accounts: TradingAccount[];
   liveTradingEnabled: boolean;
   liveCopyEnabled: boolean;
   positions: TradingPosition[];
   recentFills: TradingFill[];
+  recentOrders: TradingOrder[];
   updatedAt: string;
 };

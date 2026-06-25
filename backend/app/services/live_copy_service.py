@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -32,6 +33,7 @@ from app.services.paper_trading_service import (
     PaperSourceAllocation,
     SourceFillPart,
     build_execution_context,
+    combine_skip_reasons,
     decimal_or_zero,
     fill_datetime,
     is_preexisting_source_add,
@@ -52,8 +54,16 @@ from app.services.trading_core import (
     margin_from_notional,
 )
 
+logger = logging.getLogger(__name__)
 ZERO = Decimal("0")
 LIVE_COPY_RECOVERY_OVERLAP_MS = 5 * 60 * 1000
+
+
+def live_skip(reason: str, count: int = 1) -> PaperCopyBatchResult:
+    return PaperCopyBatchResult(
+        skipped_fills=count,
+        skip_reasons={reason: count} if count > 0 else {},
+    )
 
 
 async def process_live_copy_fills(
@@ -78,14 +88,14 @@ async def process_live_copy_fills(
     allocations = await refresh_paper_copy_allocations(session, settings=resolved_settings)
     allocation = allocations.get(normalized_source_wallet)
     if allocation is None:
-        return PaperCopyBatchResult(skipped_fills=len(fills))
+        return live_skip("live_allocation_missing", len(fills))
 
     accounts = await load_live_accounts_for_source_copy(
         session,
         source_wallet=normalized_source_wallet,
     )
     if not accounts:
-        return PaperCopyBatchResult(skipped_fills=len(fills))
+        return live_skip("live_no_enabled_accounts", len(fills))
 
     if client is None:
         async with HyperliquidClient(resolved_settings) as hyperliquid_client:
@@ -123,7 +133,7 @@ async def process_live_copy_fills(
         for_update=True,
     )
     if not accounts:
-        return PaperCopyBatchResult(skipped_fills=len(fills))
+        return live_skip("live_no_enabled_accounts", len(fills))
     await refresh_stale_live_copy_accounts(
         session,
         accounts=accounts,
@@ -133,13 +143,19 @@ async def process_live_copy_fills(
 
     processed = 0
     skipped = 0
+    skip_reasons: dict[str, int] = {}
     touched_accounts: dict[str, TradingAccount] = {}
     live_client = trading_client or HyperliquidLiveTradingClient(settings=resolved_settings)
+
+    def add_skip(reason: str, count: int = 1) -> None:
+        nonlocal skipped
+        skipped += count
+        skip_reasons[reason] = skip_reasons.get(reason, 0) + count
 
     for fill in sorted_paper_source_fills(fills):
         parts = plan_source_fill(fill)
         if not parts:
-            skipped += len(accounts)
+            add_skip("live_no_planned_source_parts", len(accounts))
             continue
 
         source_account_state = source_account_states.get(dex_from_coin(fill.get("coin")))
@@ -155,10 +171,10 @@ async def process_live_copy_fills(
         for account in accounts:
             for part in parts:
                 if account.status != "enabled" and part_requires_source_equity(part):
-                    skipped += 1
+                    add_skip("live_account_exit_only")
                     continue
                 if source_state_skip_reason is not None and part_requires_source_equity(part):
-                    skipped += 1
+                    add_skip(source_state_skip_reason)
                     continue
 
                 fill_result = await apply_live_copy_part(
@@ -175,6 +191,7 @@ async def process_live_copy_fills(
                 )
                 processed += fill_result.processed_fills
                 skipped += fill_result.skipped_fills
+                skip_reasons = combine_skip_reasons(skip_reasons, fill_result.skip_reasons)
                 if fill_result.processed_fills > 0:
                     touched_accounts[account.key] = account
                     await session.commit()
@@ -196,6 +213,7 @@ async def process_live_copy_fills(
         processed_fills=processed,
         skipped_fills=skipped,
         accounts_updated=len(touched_accounts),
+        skip_reasons=skip_reasons,
     )
 
 
@@ -314,7 +332,7 @@ async def apply_live_copy_part(
 ) -> PaperCopyBatchResult:
     source_fill_id = str(fill.get("externalFillId") or "")
     if not source_fill_id:
-        return PaperCopyBatchResult(skipped_fills=1)
+        return live_skip("live_source_fill_id_missing")
     if await live_order_exists(
         session,
         account_key=account.key,
@@ -366,9 +384,9 @@ async def apply_live_open_part(
 ) -> PaperCopyBatchResult:
     source_leverage = leverage_for_fill(fill=fill, source_leverages=source_leverages)
     if account.status != "enabled":
-        return PaperCopyBatchResult(skipped_fills=1)
+        return live_skip("live_account_not_enabled")
     if source_perp_equity <= ZERO:
-        return PaperCopyBatchResult(skipped_fills=1)
+        return live_skip("live_source_equity_missing")
     coin = str(fill.get("coin") or "")
     tradable_equity_usd = live_tradable_equity_usd(
         account,
@@ -376,7 +394,7 @@ async def apply_live_open_part(
         settings=settings,
     )
     if tradable_equity_usd <= ZERO:
-        return PaperCopyBatchResult(skipped_fills=1)
+        return live_skip("live_account_no_tradable_equity")
 
     position = await load_live_source_position(
         session,
@@ -385,11 +403,11 @@ async def apply_live_open_part(
         coin=coin,
     )
     if position is None and is_preexisting_source_add(part.start_position, side=part.side):
-        return PaperCopyBatchResult(skipped_fills=1)
+        return live_skip("live_preexisting_source_add")
     if position is not None and position.side != part.side:
-        return PaperCopyBatchResult(skipped_fills=1)
+        return live_skip("live_position_side_mismatch")
     if position is None and not allocation.active:
-        return PaperCopyBatchResult(skipped_fills=1)
+        return live_skip("live_allocation_inactive")
 
     execution_context = build_execution_context(
         fill=fill,
@@ -400,9 +418,9 @@ async def apply_live_open_part(
         latency_ms=0,
     )
     if execution_context is None:
-        return PaperCopyBatchResult(skipped_fills=1)
+        return live_skip("live_execution_price_unavailable")
     if execution_context.price_drift_bps > settings.trading_copy_max_price_drift_bps:
-        return PaperCopyBatchResult(skipped_fills=1)
+        return live_skip("live_price_drift_too_high")
 
     price = execution_context.execution_price
     allocation_usd = tradable_equity_usd * allocation.allocation_pct
@@ -439,7 +457,7 @@ async def apply_live_open_part(
         settings.live_trading_min_order_notional_usd,
     )
     if notional_usd < live_min_order_notional_usd:
-        return PaperCopyBatchResult(skipped_fills=1)
+        return live_skip("live_below_min_order_notional")
 
     action = "add" if position is not None and part.action == "open" else part.action
     intent = build_copy_trade_intent(
@@ -495,9 +513,9 @@ async def apply_live_close_part(
         coin=str(fill.get("coin") or ""),
     )
     if position is None or position.side != part.side:
-        return PaperCopyBatchResult(skipped_fills=1)
+        return live_skip("live_matching_position_missing")
     if part.close_ratio is None or part.close_ratio <= ZERO:
-        return PaperCopyBatchResult(skipped_fills=1)
+        return live_skip("live_close_ratio_missing")
 
     execution_context = build_execution_context(
         fill=fill,
@@ -508,13 +526,13 @@ async def apply_live_close_part(
         latency_ms=0,
     )
     if execution_context is None:
-        return PaperCopyBatchResult(skipped_fills=1)
+        return live_skip("live_execution_price_unavailable")
     if execution_context.price_drift_bps > settings.trading_copy_max_price_drift_bps:
-        return PaperCopyBatchResult(skipped_fills=1)
+        return live_skip("live_price_drift_too_high")
 
     close_size = min(position.size, position.size * part.close_ratio)
     if close_size <= ZERO:
-        return PaperCopyBatchResult(skipped_fills=1)
+        return live_skip("live_close_size_zero")
     price = execution_context.execution_price
     notional_usd = close_size * price
     leverage = (
@@ -574,10 +592,19 @@ async def submit_live_copy_intent(
             settings=settings,
             client=trading_client,
         )
-    except LiveOrderSubmitError:
-        return PaperCopyBatchResult(skipped_fills=1)
-    if not result.submitted or result.order.status in {"rejected", "failed", "canceled"}:
-        return PaperCopyBatchResult(skipped_fills=1)
+    except LiveOrderSubmitError as exc:
+        logger.warning(
+            "live copy order submit failed account=%s source=%s coin=%s reason=%s",
+            account.key,
+            intent.source_wallet,
+            intent.coin,
+            str(exc) or exc.__class__.__name__,
+        )
+        return live_skip("live_order_submit_error")
+    if not result.submitted:
+        return live_skip("live_order_not_submitted")
+    if result.order.status in {"rejected", "failed", "canceled"}:
+        return live_skip(f"live_order_{result.order.status}")
     return PaperCopyBatchResult(processed_fills=1 if result.submitted else 0)
 
 
@@ -765,6 +792,7 @@ def combine_batch_results(
         accounts_updated=left.accounts_updated + right.accounts_updated,
         realized_pnl_usd=left.realized_pnl_usd + right.realized_pnl_usd,
         fee_usd=left.fee_usd + right.fee_usd,
+        skip_reasons=combine_skip_reasons(left.skip_reasons, right.skip_reasons),
     )
 
 

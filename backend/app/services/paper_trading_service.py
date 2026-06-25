@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
@@ -202,6 +202,7 @@ class PaperCopyBatchResult:
     accounts_updated: int = 0
     realized_pnl_usd: Decimal = ZERO
     fee_usd: Decimal = ZERO
+    skip_reasons: dict[str, int] = field(default_factory=dict)
 
 
 async def get_paper_trading_summary(
@@ -1963,7 +1964,18 @@ def combine_batch_results(
         accounts_updated=left.accounts_updated + right.accounts_updated,
         realized_pnl_usd=left.realized_pnl_usd + right.realized_pnl_usd,
         fee_usd=left.fee_usd + right.fee_usd,
+        skip_reasons=combine_skip_reasons(left.skip_reasons, right.skip_reasons),
     )
+
+
+def combine_skip_reasons(
+    left: dict[str, int],
+    right: dict[str, int],
+) -> dict[str, int]:
+    reasons = dict(left)
+    for reason, count in right.items():
+        reasons[reason] = reasons.get(reason, 0) + count
+    return reasons
 
 
 async def refresh_paper_copy_allocations(

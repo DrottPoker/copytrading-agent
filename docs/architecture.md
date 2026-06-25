@@ -167,7 +167,7 @@ Current pages:
 - `/accounts`: selected paper or live account metrics, reconciliation, routing,
   positions, closed trades where available, and fills.
 - `/trading`: execution cockpit, trading accounts, copy sources, combined paper
-  and live positions, and combined recent fills.
+  and live positions, and combined execution activity.
 
 Important folders:
 
@@ -810,12 +810,13 @@ Discovery candidate source metrics use explicit unit-bearing database columns:
 The Trading page is a client dashboard that polls the paper summary API for
 paper marks, paper unrealized PnL, and source-wallet paper PnL, and also polls
 the generic trading account API for live accounts, live positions, and recent
-live fills. The UI uses paper wallet labels as the primary source names where
-available and falls back to the short wallet address. Source rows split paper
-realized and unrealized source PnL, while top account and position sections
-combine paper and live state. Paper closed trades and recent fills are shown 10
-rows per page with pagination controls, and recent fills include both paper fill
-activity and live reconciled fills.
+live fills and live order attempts. The UI uses paper wallet labels as the
+primary source names where available and falls back to the short wallet address.
+Source rows split paper realized and unrealized source PnL, while top account
+and position sections combine paper and live state. Paper closed trades and
+recent execution activity are shown 10 rows per page with pagination controls,
+and execution activity includes paper fills, live reconciled fills, and live
+orders that do not yet have matching fills.
 Account reset actions restore the configured starting capital and clear
 account-level realized PnL and fee counters, but they do not delete open paper
 positions, copied fills, or closed trade history.

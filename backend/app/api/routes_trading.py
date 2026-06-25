@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import db_session
 from app.core.config import Settings, get_settings
-from app.db.models import TradingAccount, TradingFill, TradingPosition
+from app.db.models import TradingAccount, TradingFill, TradingOrder, TradingPosition
 from app.schemas.trading import (
     LiveCloseAllResponse,
     LiveOrderSubmitResponse,
@@ -20,6 +20,7 @@ from app.schemas.trading import (
     TradingAccountStatusRequest,
     TradingCapitalBalanceRead,
     TradingFillRead,
+    TradingOrderRead,
     TradingPositionRead,
 )
 from app.services.live_trading_service import (
@@ -161,6 +162,12 @@ async def list_trading_accounts_route(
         .order_by(TradingFill.filled_at.desc(), TradingFill.created_at.desc())
         .limit(TRADING_ACTIVITY_LIMIT)
     )
+    order_result = await session.scalars(
+        select(TradingOrder)
+        .where(TradingOrder.account_type == "live")
+        .order_by(TradingOrder.updated_at.desc(), TradingOrder.created_at.desc())
+        .limit(TRADING_ACTIVITY_LIMIT)
+    )
     return TradingAccountsResponse(
         accounts=[
             enriched_trading_account_read(account, settings=settings)
@@ -175,6 +182,10 @@ async def list_trading_accounts_route(
         recent_fills=[
             TradingFillRead.model_validate(fill)
             for fill in fill_result.all()
+        ],
+        recent_orders=[
+            TradingOrderRead.model_validate(order)
+            for order in order_result.all()
         ],
         updated_at=datetime.now(UTC),
     )

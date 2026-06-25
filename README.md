@@ -250,8 +250,9 @@ API:
 - `POST /paper-trading/sources/{source_wallet}/close`
 
 `GET /trading/accounts` returns the generic paper/live account registry plus
-live positions and recent live fills for Trading dashboards. `GET /paper-trading`
-remains the paper simulator summary and manual paper action API.
+live positions, recent live fills, and recent live order attempts for Trading
+dashboards. `GET /paper-trading` remains the paper simulator summary and manual
+paper action API.
 
 Dashboard:
 
@@ -433,8 +434,9 @@ Sizing policy:
   account cap, missing matching positions, and price safety guards.
 - The Trading page polls the paper summary API and generic trading account API.
   The execution cockpit shows paper execution state, live execution state, and
-  market mark state. Top metrics, account rows, open positions, and recent fills
-  combine paper state with live accounts, live positions, and recent live fills.
+  market mark state. Top metrics, account rows, open positions, and recent
+  execution activity combine paper state with live accounts, live positions,
+  recent live fills, and recent live order attempts.
   Copy Sources labels paper account coverage separately from live enabled account
   coverage, and paper-only actions remain labeled as paper actions.
 - The Accounts page stores the last selected account in the browser and
@@ -479,8 +481,8 @@ Sizing policy:
   PnL shown as supporting context.
 - Wallet PnL history rows use `monitored` when the source has a realtime slot
   and `history` otherwise.
-- Wallet PnL history, closed trade history, and recent fills show 10 rows per
-  page with pagination controls.
+- Wallet PnL history, closed trade history, and recent execution activity show
+  10 rows per page with pagination controls.
 - Closed trade history rows show compact close time and duration when the
   original paper position open time is available.
 - Account rows include a reset action that restores that account's starting

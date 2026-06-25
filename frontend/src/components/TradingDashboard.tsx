@@ -39,6 +39,7 @@ import type {
   TradingAccount,
   TradingAccountsResponse,
   TradingFill,
+  TradingOrder,
   TradingPosition,
 } from "@/types/trading";
 
@@ -130,6 +131,15 @@ type DashboardFill =
       id: string;
       filledAt: string;
       liveFill: TradingFill;
+      paperFill?: never;
+      liveOrder?: never;
+    }
+  | {
+      accountType: "live_order";
+      id: string;
+      filledAt: string;
+      liveOrder: TradingOrder;
+      liveFill?: never;
       paperFill?: never;
     };
 
@@ -313,8 +323,12 @@ export function TradingDashboard({
     [liveDisplayPositions, summary.positions],
   );
   const dashboardFills = useMemo(
-    () => buildDashboardFills(summary.recentFills, tradingAccounts.recentFills),
-    [summary.recentFills, tradingAccounts.recentFills],
+    () => buildDashboardFills(
+      summary.recentFills,
+      tradingAccounts.recentFills,
+      tradingAccounts.recentOrders,
+    ),
+    [summary.recentFills, tradingAccounts.recentFills, tradingAccounts.recentOrders],
   );
   const metrics = useMemo(
     () => buildMetrics(summary, tradingAccounts, liveDisplayPositions),
@@ -491,12 +505,12 @@ export function TradingDashboard({
 
       <section>
         <PaginatedListPanel
-          emptyText="No fills recorded yet."
+          emptyText="No execution activity recorded yet."
           getKey={(fill) => fill.id}
           items={dashboardFills}
-          meta={`${formatInteger(dashboardFills.length)} recent fills`}
+          meta={`${formatInteger(dashboardFills.length)} recent items`}
           renderItem={(fill) => <FillRow fill={fill} />}
-          title="Recent Fills"
+          title="Recent Execution Activity"
         />
       </section>
     </>
@@ -1070,6 +1084,9 @@ function FillRow({ fill }: { fill: DashboardFill }) {
   if (fill.accountType === "paper") {
     return <PaperFillRow fill={fill.paperFill} />;
   }
+  if (fill.accountType === "live_order") {
+    return <LiveOrderRow order={fill.liveOrder} />;
+  }
   return <LiveFillRow fill={fill.liveFill} />;
 }
 
@@ -1159,6 +1176,85 @@ function LiveFillRow({ fill }: { fill: TradingFill }) {
         />
       </div>
     </ListRow>
+  );
+}
+
+function LiveOrderRow({ order }: { order: TradingOrder }) {
+  const sourceName = isLiveExchangeSource(order.sourceWallet)
+    ? "Exchange order"
+    : shortAddress(order.sourceWallet);
+  const statusTone = liveOrderStatusTone(order.status);
+  const actionTone: Tone = order.action.includes("close") || order.action.includes("reduce")
+    ? "neutral"
+    : "positive";
+
+  return (
+    <ListRow>
+      <div className="grid gap-2 xl:grid-cols-[1.05fr_0.7fr_0.85fr_0.85fr_0.85fr_0.9fr] xl:items-center">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-1">
+            {isLiveExchangeSource(order.sourceWallet) ? (
+              <p className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold text-ink">
+                {sourceName}
+              </p>
+            ) : (
+              <Link
+                href={`/wallets/${order.sourceWallet}`}
+                className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold text-ink hover:text-[#297c73]"
+              >
+                {sourceName}
+              </Link>
+            )}
+            <StatusPill label="live order" tone="neutral" />
+            <StatusPill label={order.action} tone={actionTone} />
+            <StatusPill label={order.status} tone={statusTone} />
+          </div>
+          <p className="mt-1 truncate font-mono text-xs text-[#5b6770]">
+            {isLiveExchangeSource(order.sourceWallet) ? "exchange" : shortAddress(order.sourceWallet)} | {order.accountKey}
+          </p>
+        </div>
+        <RowStat label="Market" value={order.coin} detail={formatDate(order.createdAt)} />
+        <RowStat
+          label="Requested"
+          value={formatCurrency(order.requestedNotionalUsd)}
+          detail={`size ${formatSize(order.requestedSize)}`}
+        />
+        <RowStat
+          label="Filled"
+          value={formatCurrency(order.filledNotionalUsd)}
+          detail={`size ${formatSize(order.filledSize)}`}
+        />
+        <RowStat
+          label="Price"
+          value={formatPrice(order.limitPrice)}
+          detail={order.averageFillPrice ? `avg ${formatPrice(order.averageFillPrice)}` : formatLeverage(order.leverage)}
+        />
+        <OrderResultStat order={order} />
+      </div>
+    </ListRow>
+  );
+}
+
+function OrderResultStat({ order }: { order: TradingOrder }) {
+  const error = order.error?.trim();
+  const detail = order.exchangeOrderId
+    ? `exchange ${shortIdentifier(order.exchangeOrderId)}`
+    : `client ${shortIdentifier(order.clientOrderId)}`;
+  return (
+    <div className="min-w-0">
+      <p className="truncate text-[11px] font-medium uppercase text-[#5b6770]">Result</p>
+      <p
+        className={`mt-0.5 whitespace-normal break-words font-mono text-xs font-semibold ${
+          error ? "text-danger" : "text-ink"
+        }`}
+        title={error || order.status}
+      >
+        {error ? reasonLabel(error) : reasonLabel(order.status)}
+      </p>
+      <p className="mt-0.5 whitespace-normal break-words text-[11px] text-[#5b6770]">
+        {detail}
+      </p>
+    </div>
   );
 }
 
@@ -1331,6 +1427,7 @@ function buildDashboardPositions(
 function buildDashboardFills(
   paperFills: PaperCopyFill[],
   liveFills: TradingFill[],
+  liveOrders: TradingOrder[],
 ): DashboardFill[] {
   const paperRows = paperFills.map<DashboardFill>((fill) => ({
     accountType: "paper",
@@ -1344,9 +1441,36 @@ function buildDashboardFills(
     id: `live:${fill.id}`,
     liveFill: fill,
   }));
-  return [...paperRows, ...liveRows]
+  const liveFillOrderIds = new Set(
+    liveFills
+      .map((fill) => fill.orderId)
+      .filter((value): value is string => Boolean(value)),
+  );
+  const liveFillSourceKeys = new Set(liveFills.map(liveActivitySourceKey));
+  const liveOrderRows = liveOrders
+    .filter(
+      (order) =>
+        !liveFillOrderIds.has(order.id) &&
+        !liveFillSourceKeys.has(liveActivitySourceKey(order)),
+    )
+    .map<DashboardFill>((order) => ({
+      accountType: "live_order",
+      filledAt: order.filledAt ?? order.updatedAt ?? order.createdAt,
+      id: `live-order:${order.id}`,
+      liveOrder: order,
+    }));
+  return [...paperRows, ...liveRows, ...liveOrderRows]
     .sort((left, right) => dateMs(right.filledAt) - dateMs(left.filledAt))
     .slice(0, 100);
+}
+
+function liveActivitySourceKey(item: TradingFill | TradingOrder) {
+  return [
+    item.accountKey,
+    item.sourceWallet,
+    item.sourceFillId ?? "",
+    item.sequenceIndex ?? "",
+  ].join(":");
 }
 
 function buildMetrics(
@@ -1869,6 +1993,19 @@ function formatCloseType(value: string) {
     return "flip close";
   }
   return value;
+}
+
+function liveOrderStatusTone(status: string): Tone {
+  if (status === "filled" || status === "accepted" || status === "submitted") {
+    return "positive";
+  }
+  if (status === "planned" || status === "partially_filled") {
+    return "warning";
+  }
+  if (status === "rejected" || status === "failed" || status === "canceled") {
+    return "danger";
+  }
+  return "neutral";
 }
 
 function reasonLabel(value: string) {

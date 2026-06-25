@@ -377,6 +377,7 @@ function emptyTradingAccounts(): TradingAccountsResponse {
     liveTradingEnabled: false,
     positions: [],
     recentFills: [],
+    recentOrders: [],
     updatedAt: new Date(0).toISOString(),
   };
 }

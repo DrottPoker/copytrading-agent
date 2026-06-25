@@ -890,13 +890,15 @@ async def run_live_copy_recovery_once(
                 channel="events:fills",
                 message=(
                     "Live copy recovery completed: "
-                    f"{result.processed_fills} processed, {result.skipped_fills} skipped."
+                    f"{result.processed_fills} processed, {result.skipped_fills} skipped"
+                    f"{skip_reason_suffix(result.skip_reasons)}."
                 ),
                 payload={
                     "sourceWallet": source_wallet,
                     "processedFills": result.processed_fills,
                     "skippedFills": result.skipped_fills,
                     "accountsUpdated": result.accounts_updated,
+                    "skipReasons": result.skip_reasons,
                 },
             )
         return result
@@ -1270,13 +1272,15 @@ async def handle_websocket_message(
                     channel="events:fills",
                     message=(
                         f"Live copied {live_result.processed_fills} fills from "
-                        f"{short_address(stored.wallet_address)}."
+                        f"{short_address(stored.wallet_address)}"
+                        f"{skip_reason_suffix(live_result.skip_reasons)}."
                     ),
                     payload={
                         "walletAddress": stored.wallet_address,
                         "processedFills": live_result.processed_fills,
                         "skippedFills": live_result.skipped_fills,
                         "accountsUpdated": live_result.accounts_updated,
+                        "skipReasons": live_result.skip_reasons,
                     },
                 )
         except Exception as exc:
@@ -1299,6 +1303,16 @@ async def sleep_until_stop(stop_event: asyncio.Event, seconds: int) -> None:
 
 def short_address(address: str) -> str:
     return f"{address[:8]}...{address[-6:]}"
+
+
+def skip_reason_suffix(skip_reasons: dict[str, int]) -> str:
+    if not skip_reasons:
+        return ""
+    reasons = ", ".join(
+        f"{reason} x{count}"
+        for reason, count in sorted(skip_reasons.items(), key=lambda item: (-item[1], item[0]))
+    )
+    return f" ({reasons})"
 
 
 if __name__ == "__main__":

@@ -106,15 +106,6 @@ class TradingFillRead(CamelModel):
     created_at: datetime
 
 
-class TradingAccountsResponse(CamelModel):
-    accounts: list[TradingAccountRead]
-    live_trading_enabled: bool = False
-    live_copy_enabled: bool = False
-    positions: list[TradingPositionRead] = Field(default_factory=list)
-    recent_fills: list[TradingFillRead] = Field(default_factory=list)
-    updated_at: datetime
-
-
 class TradingOrderRead(CamelModel):
     id: UUID
     account_key: str
@@ -145,6 +136,16 @@ class TradingOrderRead(CamelModel):
     accepted_at: datetime | None
     filled_at: datetime | None
     created_at: datetime
+    updated_at: datetime
+
+
+class TradingAccountsResponse(CamelModel):
+    accounts: list[TradingAccountRead]
+    live_trading_enabled: bool = False
+    live_copy_enabled: bool = False
+    positions: list[TradingPositionRead] = Field(default_factory=list)
+    recent_fills: list[TradingFillRead] = Field(default_factory=list)
+    recent_orders: list[TradingOrderRead] = Field(default_factory=list)
     updated_at: datetime
 
 

@@ -721,10 +721,11 @@ What it does:
 - The Trading page polls the paper summary API and generic trading account API.
   It shows paper execution state, live execution state, market mark state,
   combined paper and live account rows, combined paper and live open positions,
-  wallet PnL history, paper closed trade history, and combined paper and live
-  recent fills without a full page refresh. Copy Sources labels paper account
-  coverage separately from live enabled account coverage, and paper-only actions
-  remain labeled as paper actions.
+  wallet PnL history, paper closed trade history, and combined execution
+  activity without a full page refresh. Execution activity includes paper fills,
+  live reconciled fills, and live order attempts that do not yet have matching
+  fills. Copy Sources labels paper account coverage separately from live enabled
+  account coverage, and paper-only actions remain labeled as paper actions.
 - The Accounts page filters account data to one selected paper or live account.
   It keeps the last selected account in browser storage and falls back to the
   first synced account. For paper accounts it shows account KPIs, balance and
@@ -788,8 +789,8 @@ What it does:
   motion instead of visible refreshing text.
 - Wallet PnL history rows show `monitored` when the source has a realtime slot
   and `history` otherwise.
-- Wallet PnL history, closed trade history, and recent fills are paginated at
-  10 rows per page.
+- Wallet PnL history, closed trade history, and recent execution activity are
+  paginated at 10 rows per page.
 
 Config:
 
