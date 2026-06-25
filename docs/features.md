@@ -725,14 +725,14 @@ What it does:
   minimum notional, source allocation cap exhaustion, or total account cap
   exhaustion.
 - Publishes `paper_copy` events to the live feed when realtime fills are simulated.
-- The Trading page polls the paper summary API and generic trading account API.
-  It shows paper execution state, live execution state, market mark state,
-  combined paper and live account rows, combined paper and live open positions,
-  wallet PnL history, paper closed trade history, and combined execution
-  activity without a full page refresh. Execution activity includes paper fills,
-  live reconciled fills, and live order attempts that do not yet have matching
-  fills. Copy Sources labels paper account coverage separately from live enabled
-  account coverage, and paper-only actions remain labeled as paper actions.
+- The Trading page polls the paper summary API and generic trading account API,
+  but a top-panel mode toggle separates the cockpit into Paper and Live modes.
+  The active mode owns the top metrics, accounts, copy sources, wallet PnL
+  history, open positions, closed activity, and recent execution activity
+  without mixing rows from the other mode. Paper mode shows paper accounts,
+  paper positions, paper closed trades, and paper fills. Live mode shows live
+  accounts, live positions, live source activity, live close executions, live
+  fills, and live order attempts that do not yet have matching fills.
 - Live open position rows include reconciled current notional, mark price,
   unrealized PnL, and ROE when Hyperliquid supplies the fields. They also expose
   an individual Close action that submits a reduce-only live close order for

@@ -837,15 +837,15 @@ Discovery candidate source metrics use explicit unit-bearing database columns:
 The Trading page is a client dashboard that polls the paper summary API for
 paper marks, paper unrealized PnL, and source-wallet paper PnL, and also polls
 the generic trading account API for live accounts, live positions, and recent
-live fills and live order attempts. The UI uses paper wallet labels as the
-primary source names where available and falls back to the short wallet address.
-Source rows split paper realized and unrealized source PnL, while top account
-and position sections combine paper and live state. Live position rows use
-reconciled Hyperliquid position payloads for mark price, current notional,
-unrealized PnL, and ROE, and can submit an individual reduce-only close order.
-Paper closed trades and recent execution activity are shown 10 rows per page
-with pagination controls, and execution activity includes paper fills, live
-reconciled fills, and live orders that do not yet have matching fills.
+live fills and live order attempts. A top-panel mode toggle selects Paper or
+Live mode. The active mode owns all Trading page view models, so accounts,
+copy sources, wallet PnL history, open positions, closed activity, and recent
+execution activity are never mixed across paper and live rows. Live mode derives
+source history from live positions, live fills, and live orders, while reusing
+known wallet labels for display names only. Live position rows use reconciled
+Hyperliquid position payloads for mark price, current notional, unrealized PnL,
+and ROE, and can submit an individual reduce-only close order. Paginated
+history sections show 10 rows per page in both modes.
 Account reset actions restore the configured starting capital and clear
 account-level realized PnL and fee counters, but they do not delete open paper
 positions, copied fills, or closed trade history.

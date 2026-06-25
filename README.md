@@ -439,13 +439,13 @@ Sizing policy:
   positions in a stable order.
 - Skip reasons distinguish minimum notional, source-wallet pocket cap, total
   account cap, missing matching positions, and price safety guards.
-- The Trading page polls the paper summary API and generic trading account API.
-  The execution cockpit shows paper execution state, live execution state, and
-  market mark state. Top metrics, account rows, open positions, and recent
-  execution activity combine paper state with live accounts, live positions,
-  recent live fills, and recent live order attempts.
-  Copy Sources labels paper account coverage separately from live enabled account
-  coverage, and paper-only actions remain labeled as paper actions.
+- The Trading page polls the paper summary API and generic trading account API,
+  but the cockpit has an explicit Paper or Live mode toggle. The active mode
+  owns top metrics, accounts, copy sources, wallet PnL history, open positions,
+  closed activity, and recent execution activity. Paper mode shows only paper
+  accounts, positions, closed trades, and paper fills. Live mode shows only live
+  accounts, live positions, live source activity, live close executions, live
+  fills, and live order attempts.
 - The Accounts page stores the last selected account in the browser and
   defaults to that account on the next visit, otherwise the first synced account
   is selected. It shows paper account metrics, charts, allocations, market
