@@ -580,8 +580,10 @@ What it does:
 
 - Stores paper accounts in Postgres. New dashboard-created paper accounts start
   with trading disabled and must be started manually.
-- Keeps `backend/config/paper_trading.json` focused on paper copy policy. It no
-  longer seeds default accounts.
+- Keeps shared copy policy in `backend/config/trading.json`, including source
+  ranking, allocation, min-order, price drift, and live mid-price cache settings.
+- Keeps `backend/config/paper_trading.json` focused on paper-only simulation
+  settings. It no longer seeds default accounts.
 - Builds allocations from the top 10 positive wallet scores in the enabled wallet pool.
 - When current drawdown scoring is enabled, allocation only uses wallets whose
   latest score has `current_drawdown_status = "ok"`.
@@ -620,8 +622,8 @@ What it does:
 - Resolves common Hyperliquid coin aliases for live mids and leverage, including
   matching `dex:COIN` fills against `COIN` market keys when the exact key is not
   present.
-- Opens or adds below `paper_copy_min_order_notional_usd` are adjusted up to the
-  minimum when `paper_copy_adjust_small_orders_to_min_order` is enabled and the
+- Opens or adds below `trading_copy_min_order_notional_usd` are adjusted up to the
+  minimum when `trading_copy_adjust_small_orders_to_min_order` is enabled and the
   source and account caps can fit the adjusted margin. Otherwise they are
   skipped before any paper position is created. The default minimum is 10 USD to
   match Hyperliquid's live perp minimum order value.
@@ -631,16 +633,16 @@ What it does:
 - Starts `paper_copy_latency_ms` immediately while source account state is
   fetched in parallel, then prices paper execution. The default latency is
   250 ms.
-- Uses live Hyperliquid mids after latency when `paper_copy_use_live_mid_price`
-  is enabled. This is enabled in the default paper trading config.
+- Uses live Hyperliquid mids after latency when `trading_copy_use_live_mid_price`
+  is enabled. This is enabled in the default shared trading config.
 - Uses the trading worker's WebSocket `allMids` cache before HTTP when
-  `paper_copy_market_price_cache_enabled` is enabled. The default stale window is
-  2 seconds.
+  `trading_copy_market_price_cache_enabled` is enabled. The default stale window
+  is 2 seconds.
 - Falls back to HTTP `allMids`, then dex-specific `allMids`, then Hyperliquid
   `metaAndAssetCtxs`, for missing or stale cache prices.
 - Applies adverse slippage from `paper_copy_slippage_bps` to the observed price.
 - Skips paper fills when the observed price has moved more than
-  `paper_copy_max_price_drift_bps` from the source fill price. The default
+  `trading_copy_max_price_drift_bps` from the source fill price. The default
   drift guard is 50 bps.
 - Shows source price, live mid, drift bps, the per-fill drift limit, and
   min-order adjustment markers in Recent Fills when execution details are
@@ -787,24 +789,25 @@ What it does:
 
 Config:
 
+- `backend/config/trading.json`
+- `trading_copy_top_wallet_count`
+- `trading_copy_top_tier_wallet_count`
+- `trading_copy_top_tier_allocation_pct`
+- `trading_copy_standard_allocation_pct`
+- `trading_copy_max_total_allocation_pct`
+- `trading_copy_min_order_notional_usd`
+- `trading_copy_adjust_small_orders_to_min_order`
+- `trading_copy_max_price_drift_bps`, defaults to 50 bps
+- `trading_copy_use_live_mid_price`
+- `trading_copy_market_price_cache_enabled`
+- `trading_copy_market_price_cache_stale_seconds`
+- `trading_copy_market_price_cache_refresh_seconds`
+- `trading_copy_market_price_cache_dexes`
 - `backend/config/paper_trading.json`
 - `paper_copy_enabled`
-- `paper_copy_top_wallet_count`
-- `paper_copy_top_tier_wallet_count`
-- `paper_copy_top_tier_allocation_pct`
-- `paper_copy_standard_allocation_pct`
-- `paper_copy_max_total_allocation_pct`
-- `paper_copy_min_order_notional_usd`
-- `paper_copy_adjust_small_orders_to_min_order`
 - `paper_copy_fee_rate`
 - `paper_copy_slippage_bps`
 - `paper_copy_latency_ms`
-- `paper_copy_max_price_drift_bps`, defaults to 50 bps
-- `paper_copy_use_live_mid_price`
-- `paper_copy_market_price_cache_enabled`
-- `paper_copy_market_price_cache_stale_seconds`
-- `paper_copy_market_price_cache_refresh_seconds`
-- `paper_copy_market_price_cache_dexes`
 - `paper_copy_recovery_interval_seconds`
 
 Current limitations:
@@ -871,8 +874,9 @@ What it does:
   entries and adds.
 - Runs automatic live copy only when `live_trading_enabled` and
   `live_trading_copy_enabled` are both true. Realtime live copy reuses the
-  existing source allocation policy, live mid-price cache, price drift guard,
-  deterministic client order ids, and live risk guardrails.
+  shared source allocation policy, live mid-price cache, price drift guard,
+  optional min-order adjustment, deterministic client order ids, and live risk
+  guardrails.
 - Enforces live entry guardrails for max order notional, max account open
   notional, max open positions, max daily loss, max orders per minute, and
   market allow/block lists before submitting a live entry order.
@@ -888,6 +892,7 @@ Config:
 - `live_trading_acknowledged`
 - `live_trading_mainnet_acknowledged`
 - `live_trading_capital_mode`
+- `live_trading_limit_slippage_bps`
 - `live_trading_max_slippage_bps`
 - `live_trading_order_expires_after_ms`
 - `live_trading_reconciliation_enabled`
@@ -958,6 +963,7 @@ Files:
 - `backend/config/pool_fill_import.json`
 - `backend/config/prune.json`
 - `backend/config/scoring.json`
+- `backend/config/trading.json`
 - `frontend/config/app.json`
 - `.env`
 
@@ -979,6 +985,12 @@ What it does:
 - `backend/config/live_trading.json` owns live trading enablement,
   acknowledgements, execution guardrails, risk limits, and market allow/block
   lists.
+- `backend/config/trading.json` owns copy policy shared by paper and live copy:
+  source ranking limits, allocation pockets, minimum copy notional, optional
+  min-order adjustment, price drift guard, and live mid-price cache settings.
+- `backend/config/paper_trading.json` owns paper-only simulation settings:
+  paper copy enablement, simulated fees, simulated slippage, simulated latency,
+  and recovery cadence.
 - `backend/config/pool_fill_import.json` owns scheduled pool reimport and shared
   fill import storage and market-filter settings.
 - `backend/config/prune.json` owns wallet prune rules, scheduled prune behavior,

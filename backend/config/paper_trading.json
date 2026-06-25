@@ -1,20 +1,7 @@
 {
   "paper_copy_enabled": true,
-  "paper_copy_top_wallet_count": 10,
-  "paper_copy_top_tier_wallet_count": 3,
-  "paper_copy_top_tier_allocation_pct": 0.2,
-  "paper_copy_standard_allocation_pct": 0.2,
-  "paper_copy_max_total_allocation_pct": 0.8,
-  "paper_copy_min_order_notional_usd": 10,
-  "paper_copy_adjust_small_orders_to_min_order": true,
   "paper_copy_fee_rate": 0.00045,
   "paper_copy_slippage_bps": 5,
-  "paper_copy_latency_ms": 250,
-  "paper_copy_max_price_drift_bps": 50,
-  "paper_copy_use_live_mid_price": true,
-  "paper_copy_market_price_cache_enabled": true,
-  "paper_copy_market_price_cache_stale_seconds": 2,
-  "paper_copy_market_price_cache_refresh_seconds": 1,
-  "paper_copy_market_price_cache_dexes": [],
+  "paper_copy_latency_ms": 750,
   "paper_copy_recovery_interval_seconds": 60
 }

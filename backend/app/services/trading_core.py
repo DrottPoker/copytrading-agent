@@ -159,13 +159,13 @@ def adjust_open_sizing_to_min_order(
     source_leverage: Decimal,
     settings: Settings,
 ) -> tuple[Decimal, Decimal, MinOrderAdjustment | None]:
-    min_order_notional = settings.paper_copy_min_order_notional_usd
+    min_order_notional = settings.trading_copy_min_order_notional_usd
     if notional_usd >= min_order_notional:
         return margin_usd, notional_usd, None
 
     min_order_margin = margin_from_notional(min_order_notional, source_leverage)
     can_adjust_to_min_order = (
-        settings.paper_copy_adjust_small_orders_to_min_order
+        settings.trading_copy_adjust_small_orders_to_min_order
         and target_notional < min_order_notional
         and source_remaining >= min_order_margin
         and global_remaining >= min_order_margin

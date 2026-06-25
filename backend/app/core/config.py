@@ -15,6 +15,7 @@ DISCOVERY_CONFIG_PATH = CONFIG_DIR / "discovery.json"
 POOL_FILL_IMPORT_CONFIG_PATH = CONFIG_DIR / "pool_fill_import.json"
 DATABASE_CONFIG_PATH = CONFIG_DIR / "database.json"
 SCORING_CONFIG_PATH = CONFIG_DIR / "scoring.json"
+TRADING_CONFIG_PATH = CONFIG_DIR / "trading.json"
 PAPER_TRADING_CONFIG_PATH = CONFIG_DIR / "paper_trading.json"
 LIVE_TRADING_CONFIG_PATH = CONFIG_DIR / "live_trading.json"
 DISCOVERY_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
@@ -271,11 +272,33 @@ SCORING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("window_scores", "weight_profitability"): ("scoring_window_score_weight_profitability"),
     ("window_scores", "weight_activity"): "scoring_window_score_weight_activity",
 }
+TRADING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
+    ("copy", "top_wallet_count"): "trading_copy_top_wallet_count",
+    ("copy", "top_tier_wallet_count"): "trading_copy_top_tier_wallet_count",
+    ("copy", "top_tier_allocation_pct"): "trading_copy_top_tier_allocation_pct",
+    ("copy", "standard_allocation_pct"): "trading_copy_standard_allocation_pct",
+    ("copy", "max_total_allocation_pct"): "trading_copy_max_total_allocation_pct",
+    ("copy", "min_order_notional_usd"): "trading_copy_min_order_notional_usd",
+    ("copy", "adjust_small_orders_to_min_order"): (
+        "trading_copy_adjust_small_orders_to_min_order"
+    ),
+    ("copy", "max_price_drift_bps"): "trading_copy_max_price_drift_bps",
+    ("copy", "use_live_mid_price"): "trading_copy_use_live_mid_price",
+    ("copy", "market_price_cache_enabled"): "trading_copy_market_price_cache_enabled",
+    ("copy", "market_price_cache_stale_seconds"): (
+        "trading_copy_market_price_cache_stale_seconds"
+    ),
+    ("copy", "market_price_cache_refresh_seconds"): (
+        "trading_copy_market_price_cache_refresh_seconds"
+    ),
+    ("copy", "market_price_cache_dexes"): "trading_copy_market_price_cache_dexes",
+}
 LIVE_TRADING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("enabled",): "live_trading_enabled",
     ("acknowledged",): "live_trading_acknowledged",
     ("mainnet_acknowledged",): "live_trading_mainnet_acknowledged",
     ("account", "capital_mode"): "live_trading_capital_mode",
+    ("execution", "limit_slippage_bps"): "live_trading_limit_slippage_bps",
     ("execution", "max_slippage_bps"): "live_trading_max_slippage_bps",
     ("execution", "order_expires_after_ms"): "live_trading_order_expires_after_ms",
     ("reconciliation", "enabled"): "live_trading_reconciliation_enabled",
@@ -334,6 +357,7 @@ class Settings(BaseSettings):
     live_trading_acknowledged: bool = False
     live_trading_mainnet_acknowledged: bool = False
     live_trading_capital_mode: Literal["unified", "standard_per_dex"] = "unified"
+    live_trading_limit_slippage_bps: Decimal = Field(default=Decimal("5"), ge=0, le=10000)
     live_trading_max_slippage_bps: Decimal = Field(default=Decimal("50"), ge=0, le=10000)
     live_trading_order_expires_after_ms: int = Field(default=10000, ge=0, le=60000)
     live_trading_reconciliation_enabled: bool = True
@@ -352,27 +376,27 @@ class Settings(BaseSettings):
     live_trading_reduce_only_when_stopped: bool = True
     live_trading_allowed_coins: list[str] = Field(default_factory=list, max_length=500)
     live_trading_blocked_coins: list[str] = Field(default_factory=list, max_length=500)
+    trading_copy_top_wallet_count: int = Field(default=10, ge=1, le=10)
+    trading_copy_top_tier_wallet_count: int = Field(default=3, ge=0, le=10)
+    trading_copy_top_tier_allocation_pct: Decimal = Field(default=Decimal("0.20"), ge=0, le=1)
+    trading_copy_standard_allocation_pct: Decimal = Field(default=Decimal("0.20"), ge=0, le=1)
+    trading_copy_max_total_allocation_pct: Decimal = Field(default=Decimal("0.80"), ge=0, le=1)
+    trading_copy_min_order_notional_usd: Decimal = Field(default=Decimal("10"), ge=0)
+    trading_copy_adjust_small_orders_to_min_order: bool = True
+    trading_copy_max_price_drift_bps: Decimal = Field(default=Decimal("50"), ge=0, le=10000)
+    trading_copy_use_live_mid_price: bool = True
+    trading_copy_market_price_cache_enabled: bool = True
+    trading_copy_market_price_cache_stale_seconds: float = Field(default=2.0, ge=0.1, le=60)
+    trading_copy_market_price_cache_refresh_seconds: int = Field(default=1, ge=1, le=60)
+    trading_copy_market_price_cache_dexes: list[str] = Field(default_factory=list, max_length=20)
     paper_copy_enabled: bool = True
     paper_copy_accounts: list[PaperTradingAccountConfig] = Field(
         default_factory=list,
         max_length=50,
     )
-    paper_copy_top_wallet_count: int = Field(default=10, ge=1, le=10)
-    paper_copy_top_tier_wallet_count: int = Field(default=3, ge=0, le=10)
-    paper_copy_top_tier_allocation_pct: Decimal = Field(default=Decimal("0.20"), ge=0, le=1)
-    paper_copy_standard_allocation_pct: Decimal = Field(default=Decimal("0.20"), ge=0, le=1)
-    paper_copy_max_total_allocation_pct: Decimal = Field(default=Decimal("0.80"), ge=0, le=1)
-    paper_copy_min_order_notional_usd: Decimal = Field(default=Decimal("10"), ge=0)
-    paper_copy_adjust_small_orders_to_min_order: bool = True
     paper_copy_fee_rate: Decimal = Field(default=Decimal("0.00045"), ge=0, le=1)
     paper_copy_slippage_bps: Decimal = Field(default=Decimal("5"), ge=0, le=10000)
     paper_copy_latency_ms: int = Field(default=250, ge=0, le=60000)
-    paper_copy_max_price_drift_bps: Decimal = Field(default=Decimal("50"), ge=0, le=10000)
-    paper_copy_use_live_mid_price: bool = True
-    paper_copy_market_price_cache_enabled: bool = True
-    paper_copy_market_price_cache_stale_seconds: float = Field(default=2.0, ge=0.1, le=60)
-    paper_copy_market_price_cache_refresh_seconds: int = Field(default=1, ge=1, le=60)
-    paper_copy_market_price_cache_dexes: list[str] = Field(default_factory=list, max_length=20)
     paper_copy_recovery_interval_seconds: int = Field(default=60, ge=10, le=3600)
 
     active_copy_wallets: int = Field(default=10, ge=1, le=10)
@@ -885,6 +909,16 @@ class Settings(BaseSettings):
                 "live_trading_min_order_notional_usd must be less than or equal to "
                 "live_trading_max_order_notional_usd."
             )
+        if self.live_trading_limit_slippage_bps > self.live_trading_max_slippage_bps:
+            raise ValueError(
+                "live_trading_limit_slippage_bps must be less than or equal to "
+                "live_trading_max_slippage_bps."
+            )
+        if self.trading_copy_top_tier_wallet_count > self.trading_copy_top_wallet_count:
+            raise ValueError(
+                "trading_copy_top_tier_wallet_count must be less than or equal to "
+                "trading_copy_top_wallet_count."
+            )
         allowed_live_coins = {
             normalize_live_trading_coin(coin) for coin in self.live_trading_allowed_coins
         }
@@ -983,6 +1017,7 @@ def load_app_config() -> dict[str, Any]:
         POOL_FILL_IMPORT_CONFIG_PATH,
         DATABASE_CONFIG_PATH,
         SCORING_CONFIG_PATH,
+        TRADING_CONFIG_PATH,
         PAPER_TRADING_CONFIG_PATH,
         LIVE_TRADING_CONFIG_PATH,
     ):
@@ -1010,9 +1045,43 @@ def load_json_config(config_path: Path) -> dict[str, Any]:
         return normalize_nested_config(config, PRUNE_CONFIG_PATH_MAP)
     if config_path == SCORING_CONFIG_PATH:
         return normalize_nested_config(config, SCORING_CONFIG_PATH_MAP)
+    if config_path == TRADING_CONFIG_PATH:
+        return normalize_nested_config(config, TRADING_CONFIG_PATH_MAP)
+    if config_path == PAPER_TRADING_CONFIG_PATH:
+        return normalize_paper_trading_config(config)
     if config_path == LIVE_TRADING_CONFIG_PATH:
         return normalize_nested_config(config, LIVE_TRADING_CONFIG_PATH_MAP)
     return config
+
+
+def normalize_paper_trading_config(config: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(config)
+    deprecated_shared_keys = {
+        "paper_copy_top_wallet_count": "trading_copy_top_wallet_count",
+        "paper_copy_top_tier_wallet_count": "trading_copy_top_tier_wallet_count",
+        "paper_copy_top_tier_allocation_pct": "trading_copy_top_tier_allocation_pct",
+        "paper_copy_standard_allocation_pct": "trading_copy_standard_allocation_pct",
+        "paper_copy_max_total_allocation_pct": "trading_copy_max_total_allocation_pct",
+        "paper_copy_min_order_notional_usd": "trading_copy_min_order_notional_usd",
+        "paper_copy_adjust_small_orders_to_min_order": (
+            "trading_copy_adjust_small_orders_to_min_order"
+        ),
+        "paper_copy_max_price_drift_bps": "trading_copy_max_price_drift_bps",
+        "paper_copy_use_live_mid_price": "trading_copy_use_live_mid_price",
+        "paper_copy_market_price_cache_enabled": "trading_copy_market_price_cache_enabled",
+        "paper_copy_market_price_cache_stale_seconds": (
+            "trading_copy_market_price_cache_stale_seconds"
+        ),
+        "paper_copy_market_price_cache_refresh_seconds": (
+            "trading_copy_market_price_cache_refresh_seconds"
+        ),
+        "paper_copy_market_price_cache_dexes": "trading_copy_market_price_cache_dexes",
+    }
+    for deprecated_key, replacement_key in deprecated_shared_keys.items():
+        if deprecated_key in normalized and replacement_key not in normalized:
+            normalized[replacement_key] = normalized[deprecated_key]
+
+    return normalized
 
 
 def normalize_nested_config(

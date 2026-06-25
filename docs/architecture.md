@@ -45,6 +45,7 @@ copytrading-agent/
       pool_fill_import.json
       prune.json
       scoring.json
+      trading.json
   frontend/
     src/
       app/
@@ -86,7 +87,8 @@ Important folders:
 - `backend/config/app.json`: non-secret app/runtime settings.
 - `backend/config/discovery.json`: discovery source, filter, backfill, and promotion settings.
 - `backend/config/live_trading.json`: live trading enablement and guardrails.
-- `backend/config/paper_trading.json`: paper copy allocation and execution policy.
+- `backend/config/trading.json`: shared paper and live copy policy.
+- `backend/config/paper_trading.json`: paper copy simulation settings.
 - `backend/config/pool_fill_import.json`: pool reimport and shared fill import settings.
 - `backend/config/prune.json`: wallet cleanup and pruning thresholds.
 - `backend/config/scoring.json`: scoring windows, weights, and penalty settings.
@@ -245,6 +247,7 @@ Tweakable non-secret config lives in JSON files:
 - `backend/config/pool_fill_import.json`
 - `backend/config/prune.json`
 - `backend/config/scoring.json`
+- `backend/config/trading.json`
 - `frontend/config/app.json`
 
 The backend config files are grouped by operational area:
@@ -254,6 +257,13 @@ The backend config files are grouped by operational area:
 - `database.json` owns manual database maintenance defaults such as fill
   retention days, retention batch size, max rows, and protected top scored
   wallets.
+- `live_trading.json` owns live trading enablement, acknowledgements, live
+  execution guardrails, account risk limits, and market allow/block lists.
+- `trading.json` owns copy policy shared by paper and live copy, including
+  source ranking limits, allocation pockets, minimum copy notional, optional
+  min-order adjustment, price drift guard, and live mid-price cache settings.
+- `paper_trading.json` owns paper-only simulation settings such as simulated
+  fees, simulated slippage, simulated latency, and recovery cadence.
 - `pool_fill_import.json` owns scheduled pool reimport and shared fill import
   storage and market-filter settings.
 - `scoring.json` owns scoring schedule, score windows, weights, ratio spans,
@@ -629,7 +639,7 @@ For isolated HIP-3 positions, Hyperliquid `marginSummary.accountValue` can equal
 isolated position equity and move with `totalMarginUsed`, so it should not be
 read as a stable wallet cash balance.
 Opens or adds below the configured minimum notional are adjusted up to the
-minimum when `paper_copy_adjust_small_orders_to_min_order` is enabled and the
+minimum when `trading_copy_adjust_small_orders_to_min_order` is enabled and the
 source and account caps can fit the adjusted margin. Otherwise they are skipped
 before any paper position is created. The default minimum is 10 USD to match
 Hyperliquid's live perp minimum order value. Paper execution starts the

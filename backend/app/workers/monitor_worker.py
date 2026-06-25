@@ -117,12 +117,12 @@ async def run_monitor_services(
             (settings.paper_trading_enabled and settings.paper_copy_enabled)
             or (settings.live_trading_enabled and settings.live_trading_copy_enabled)
         )
-        and settings.paper_copy_use_live_mid_price
-        and settings.paper_copy_market_price_cache_enabled
+        and settings.trading_copy_use_live_mid_price
+        and settings.trading_copy_market_price_cache_enabled
         else None
     )
     if price_cache is not None:
-        await price_cache.request_dexes(settings.paper_copy_market_price_cache_dexes)
+        await price_cache.request_dexes(settings.trading_copy_market_price_cache_dexes)
         tasks.append(
             asyncio.create_task(
                 run_market_price_cache_loop(
@@ -392,7 +392,7 @@ async def run_market_price_cache_loop(
                 )
             await sleep_until_stop(
                 stop_event,
-                settings.paper_copy_market_price_cache_refresh_seconds,
+                settings.trading_copy_market_price_cache_refresh_seconds,
             )
     finally:
         for task in tasks.values():

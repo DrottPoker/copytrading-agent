@@ -358,13 +358,16 @@ Dashboard:
 
 Config:
 
+- `backend/config/trading.json`
 - `backend/config/paper_trading.json`
 
 Paper accounts:
 
 - Paper accounts are stored in Postgres and created from the dashboard or API.
-- `backend/config/paper_trading.json` owns paper copy policy only, not account
-  creation.
+- `backend/config/trading.json` owns shared copy allocation, min-order, price
+  drift, and mid-price cache policy.
+- `backend/config/paper_trading.json` owns paper simulation settings only, not
+  account creation.
 
 Sizing policy:
 
@@ -397,21 +400,22 @@ Sizing policy:
 - A configurable fee rate is applied to paper fills. The default is 0.045%,
   matching Hyperliquid's base perp taker fee because paper fills model immediate
   taker-style execution.
-- Paper opens or adds below `paper_copy_min_order_notional_usd` are adjusted up
-  to the minimum when `paper_copy_adjust_small_orders_to_min_order` is enabled
+- Paper opens or adds below `trading_copy_min_order_notional_usd` are adjusted up
+  to the minimum when `trading_copy_adjust_small_orders_to_min_order` is enabled
   and the source and account caps can fit the adjusted margin. Otherwise they
   are skipped before any position is created. The default minimum is 10 USD to
   match Hyperliquid's live perp minimum order value.
 - Paper execution starts the configured simulated latency immediately while
   source account state is fetched in parallel. The default latency is 250 ms.
   It then reads live mids and applies adverse slippage to the execution price.
-- The trading worker keeps a WebSocket `allMids` cache for paper execution.
-  Fresh cached prices are used before HTTP, so realtime fills do not wait on a
-  new `allMids` request per batch.
+- The trading worker keeps a WebSocket `allMids` cache for copy execution when
+  `trading_copy_market_price_cache_enabled` is enabled. Fresh cached prices are
+  used before HTTP, so realtime fills do not wait on a new `allMids` request per
+  batch.
 - If the cache is stale or missing a coin, paper copy falls back to HTTP
   `allMids`, then dex-specific `allMids`, then `metaAndAssetCtxs`.
 - Paper fills are skipped when live mid price drift from the source fill price
-  is above `paper_copy_max_price_drift_bps`, which defaults to 50 bps.
+  is above `trading_copy_max_price_drift_bps`, which defaults to 50 bps.
 - Recent paper fill rows show source price, live mid, drift bps, the per-fill
   drift limit, and min-order adjustment markers when execution details are
   available.
@@ -535,6 +539,7 @@ Tweakable non-secret settings live in config files:
 - `backend/config/pool_fill_import.json`
 - `backend/config/prune.json`
 - `backend/config/scoring.json`
+- `backend/config/trading.json`
 - `frontend/config/app.json`
 
 `backend/config/scoring.json` uses organized sections for schedule, window,
@@ -560,6 +565,15 @@ guardrails, and market allow/block lists. `account.capital_mode` defaults to
 `unified`, where Hyperliquid `spotClearinghouseState` is the balance source of
 truth for live trading capital. Set it to `standard_per_dex` only when the live
 wallet is intentionally using separate default and HIP-3 perp balances.
+
+`backend/config/trading.json` owns shared copy policy used by both paper and live
+copy: source ranking limits, allocation pockets, total allocation cap, copy
+minimum notional, optional min-order adjustment, price drift guard, and the live
+mid-price cache settings.
+
+`backend/config/paper_trading.json` owns paper-only simulation settings:
+paper copy enablement, simulated fee rate, simulated slippage, simulated latency,
+and paper recovery cadence.
 
 The Ops Health page reads runtime settings from environment variables:
 
@@ -677,7 +691,10 @@ USDC from `spotClearinghouseState`. In `standard_per_dex` mode, live copy sizing
 uses tradable perp equity on the same perp dex as the copied market, while spot
 USDC remains visible but not used for opening perp entries. It can also execute
 live copy orders when global live trading, copy execution, and account-level
-trading are all enabled.
+trading are all enabled. Live copy uses shared allocation, minimum notional,
+min-order adjustment, price drift, and mid-price cache policy from
+`backend/config/trading.json`, while live order submission uses live-only
+execution and risk guardrails from `backend/config/live_trading.json`.
 Enabled and exit-only live accounts reconcile on
 `live_trading_reconciliation_interval_seconds`. Live copy also refreshes a stale
 account snapshot before sizing a new fill, so deposits are picked up before copy

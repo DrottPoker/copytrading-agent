@@ -96,6 +96,10 @@ and reads trading capital from `spotClearinghouseState`. Set it to
 HIP-3 perp balances. Automatic live copy also requires
 `copy_execution.enabled=true` in the same file. Use testnet and the
 `POST /trading/testnet/orders` endpoint before any mainnet enablement.
+Live copy shares source ranking, allocation, min-order, price drift, and
+mid-price cache policy with paper copy through `backend/config/trading.json`.
+Live order execution limits and account risk guardrails stay in
+`backend/config/live_trading.json`.
 
 Build the images:
 

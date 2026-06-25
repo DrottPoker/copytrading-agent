@@ -1,0 +1,17 @@
+{
+  "copy": {
+    "top_wallet_count": 10,
+    "top_tier_wallet_count": 3,
+    "top_tier_allocation_pct": 0.2,
+    "standard_allocation_pct": 0.2,
+    "max_total_allocation_pct": 1.0,
+    "min_order_notional_usd": 10,
+    "adjust_small_orders_to_min_order": true,
+    "max_price_drift_bps": 50,
+    "use_live_mid_price": true,
+    "market_price_cache_enabled": true,
+    "market_price_cache_stale_seconds": 2,
+    "market_price_cache_refresh_seconds": 1,
+    "market_price_cache_dexes": []
+  }
+}

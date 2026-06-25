@@ -1993,7 +1993,7 @@ async def refresh_paper_copy_allocations(
                 score=allocation.score,
                 allocation_pct=allocation.allocation_pct,
                 allocation_usd=allocation_usd,
-                max_total_allocation_pct=settings.paper_copy_max_total_allocation_pct,
+                max_total_allocation_pct=settings.trading_copy_max_total_allocation_pct,
                 active=account.enabled and allocation.active,
             )
             await session.execute(
@@ -2377,7 +2377,7 @@ async def load_paper_source_allocations(
         .join(WatchedWallet, WatchedWallet.address == ranked_pool.c.address)
         .where(*candidate_filters)
         .order_by(ranked_pool.c.pool_rank.asc())
-        .limit(settings.paper_copy_top_wallet_count)
+        .limit(settings.trading_copy_top_wallet_count)
     )
     candidate_rows = list(candidate_result.mappings().all())
     open_source_result = await session.execute(
@@ -2436,9 +2436,9 @@ async def load_paper_source_allocations(
     for copy_rank, row in enumerate(candidate_rows, start=1):
         source_wallet = str(row["address"]).lower()
         allocation_pct = (
-            settings.paper_copy_top_tier_allocation_pct
-            if copy_rank <= settings.paper_copy_top_tier_wallet_count
-            else settings.paper_copy_standard_allocation_pct
+            settings.trading_copy_top_tier_allocation_pct
+            if copy_rank <= settings.trading_copy_top_tier_wallet_count
+            else settings.trading_copy_standard_allocation_pct
         )
         pool_rank = int(row["pool_rank"])
         has_realtime_slot = source_wallet in slot_source_set
@@ -2460,7 +2460,7 @@ async def load_paper_source_allocations(
             )
         )
     allocation_sources = {allocation.source_wallet for allocation in allocations}
-    retained_rank = settings.paper_copy_top_wallet_count + 1
+    retained_rank = settings.trading_copy_top_wallet_count + 1
     for row in open_source_rows:
         source_wallet = str(row["source_wallet"]).lower()
         if not source_wallet or source_wallet in allocation_sources:
@@ -2478,7 +2478,7 @@ async def load_paper_source_allocations(
                 allocation_pct=(
                     allocation_pct
                     if allocation_pct is not None and allocation_pct > ZERO
-                    else settings.paper_copy_standard_allocation_pct
+                    else settings.trading_copy_standard_allocation_pct
                 ),
                 active=False,
                 has_realtime_slot=has_realtime_slot,
@@ -2515,7 +2515,7 @@ def paper_retained_status_reason(
         and row["current_drawdown_status"] != "ok"
     ):
         return "current_drawdown_blocked"
-    if pool_rank is not None and pool_rank > settings.paper_copy_top_wallet_count:
+    if pool_rank is not None and pool_rank > settings.trading_copy_top_wallet_count:
         return "outside_copy_top_wallet_count"
     if not has_realtime_slot:
         return "waiting_for_realtime_slot"
@@ -2760,12 +2760,14 @@ async def load_execution_market_prices(
     client: HyperliquidClient,
     fills: list[dict[str, Any]],
     settings: Settings,
+    latency_ms: int | None = None,
     price_cache: MarketPriceCache | None = None,
 ) -> ExecutionMarketPrices:
-    if not settings.paper_copy_use_live_mid_price:
+    if not settings.trading_copy_use_live_mid_price:
         return ExecutionMarketPrices(prices={}, sources={})
-    if settings.paper_copy_latency_ms > 0:
-        await asyncio.sleep(settings.paper_copy_latency_ms / 1000)
+    resolved_latency_ms = settings.paper_copy_latency_ms if latency_ms is None else latency_ms
+    if resolved_latency_ms > 0:
+        await asyncio.sleep(resolved_latency_ms / 1000)
 
     coins = {str(fill.get("coin") or "") for fill in fills}
     coins.discard("")
@@ -2775,10 +2777,10 @@ async def load_execution_market_prices(
     market_prices: dict[str, Decimal] = {}
     price_sources: dict[str, str] = {}
     missing_coins = set(coins)
-    if price_cache is not None and settings.paper_copy_market_price_cache_enabled:
+    if price_cache is not None and settings.trading_copy_market_price_cache_enabled:
         cached = await price_cache.get_many(
             missing_coins,
-            max_age_seconds=settings.paper_copy_market_price_cache_stale_seconds,
+            max_age_seconds=settings.trading_copy_market_price_cache_stale_seconds,
         )
         market_prices.update(cached.prices)
         price_sources.update(cached.sources)
@@ -2804,7 +2806,7 @@ async def load_execution_market_prices(
         for coin in missing_coins
         if coin not in market_prices and dex_from_coin(coin)
     }
-    if price_cache is not None and settings.paper_copy_market_price_cache_enabled:
+    if price_cache is not None and settings.trading_copy_market_price_cache_enabled:
         await price_cache.request_dexes(missing_dexes)
     for dex in sorted(missing_dexes):
         dex_prices = await load_dex_market_prices(client=client, dex=dex)
@@ -3178,7 +3180,7 @@ async def apply_open_part(
             settings=settings,
             leverage=source_leverage,
         )
-    if execution_context.price_drift_bps > settings.paper_copy_max_price_drift_bps:
+    if execution_context.price_drift_bps > settings.trading_copy_max_price_drift_bps:
         return await record_skip(
             session,
             account=account,
@@ -3207,7 +3209,7 @@ async def apply_open_part(
         ZERO,
     )
     global_remaining = max(
-        max(account.equity_usd, ZERO) * settings.paper_copy_max_total_allocation_pct
+        max(account.equity_usd, ZERO) * settings.trading_copy_max_total_allocation_pct
         - await open_margin_for_account(session, account_key=account.key),
         ZERO,
     )
@@ -3222,12 +3224,12 @@ async def apply_open_part(
         source_leverage=source_leverage,
         settings=settings,
     )
-    if notional_usd < settings.paper_copy_min_order_notional_usd:
+    if notional_usd < settings.trading_copy_min_order_notional_usd:
         reason = open_notional_skip_reason(
             target_notional=target_notional,
             source_remaining=source_remaining * source_leverage,
             global_remaining=global_remaining * source_leverage,
-            min_order_notional=settings.paper_copy_min_order_notional_usd,
+            min_order_notional=settings.trading_copy_min_order_notional_usd,
         )
         return await record_skip(
             session,
@@ -3406,7 +3408,7 @@ async def apply_close_part(
             settings=settings,
             leverage=leverage,
         )
-    if execution_context.price_drift_bps > settings.paper_copy_max_price_drift_bps:
+    if execution_context.price_drift_bps > settings.trading_copy_max_price_drift_bps:
         return await record_skip(
             session,
             account=account,
@@ -3896,20 +3898,20 @@ def effective_leverage(
 def paper_trading_policy(settings: Settings) -> PaperTradingPolicyRead:
     return PaperTradingPolicyRead(
         enabled=settings.paper_trading_enabled and settings.paper_copy_enabled,
-        top_wallet_count=settings.paper_copy_top_wallet_count,
-        top_tier_wallet_count=settings.paper_copy_top_tier_wallet_count,
-        top_tier_allocation_pct=settings.paper_copy_top_tier_allocation_pct,
-        standard_allocation_pct=settings.paper_copy_standard_allocation_pct,
-        max_total_allocation_pct=settings.paper_copy_max_total_allocation_pct,
-        min_order_notional_usd=settings.paper_copy_min_order_notional_usd,
-        adjust_small_orders_to_min_order=settings.paper_copy_adjust_small_orders_to_min_order,
+        top_wallet_count=settings.trading_copy_top_wallet_count,
+        top_tier_wallet_count=settings.trading_copy_top_tier_wallet_count,
+        top_tier_allocation_pct=settings.trading_copy_top_tier_allocation_pct,
+        standard_allocation_pct=settings.trading_copy_standard_allocation_pct,
+        max_total_allocation_pct=settings.trading_copy_max_total_allocation_pct,
+        min_order_notional_usd=settings.trading_copy_min_order_notional_usd,
+        adjust_small_orders_to_min_order=settings.trading_copy_adjust_small_orders_to_min_order,
         fee_rate=settings.paper_copy_fee_rate,
         slippage_bps=settings.paper_copy_slippage_bps,
         latency_ms=settings.paper_copy_latency_ms,
-        max_price_drift_bps=settings.paper_copy_max_price_drift_bps,
-        use_live_mid_price=settings.paper_copy_use_live_mid_price,
-        market_price_cache_enabled=settings.paper_copy_market_price_cache_enabled,
-        market_price_cache_stale_seconds=settings.paper_copy_market_price_cache_stale_seconds,
+        max_price_drift_bps=settings.trading_copy_max_price_drift_bps,
+        use_live_mid_price=settings.trading_copy_use_live_mid_price,
+        market_price_cache_enabled=settings.trading_copy_market_price_cache_enabled,
+        market_price_cache_stale_seconds=settings.trading_copy_market_price_cache_stale_seconds,
     )
 
 
@@ -4010,6 +4012,8 @@ def build_execution_context(
     part: SourceFillPart,
     market_prices: ExecutionMarketPrices,
     settings: Settings,
+    slippage_bps: Decimal | None = None,
+    latency_ms: int | None = None,
 ) -> PaperExecutionContext | None:
     source_price = decimal_or_zero(fill.get("price"))
     if source_price <= ZERO:
@@ -4017,20 +4021,24 @@ def build_execution_context(
 
     coin = str(fill.get("coin") or "")
     observed_price = (
-        market_prices.prices.get(coin) if settings.paper_copy_use_live_mid_price else None
+        market_prices.prices.get(coin) if settings.trading_copy_use_live_mid_price else None
     )
     if observed_price is None:
-        if settings.paper_copy_use_live_mid_price:
+        if settings.trading_copy_use_live_mid_price:
             return None
         observed_price = source_price
     if observed_price <= ZERO:
         return None
 
+    resolved_slippage_bps = (
+        settings.paper_copy_slippage_bps if slippage_bps is None else slippage_bps
+    )
+    resolved_latency_ms = settings.paper_copy_latency_ms if latency_ms is None else latency_ms
     execution_price = apply_adverse_slippage(
         price=observed_price,
         side=part.side,
         action=part.action,
-        slippage_bps=settings.paper_copy_slippage_bps,
+        slippage_bps=resolved_slippage_bps,
     )
     if execution_price <= ZERO:
         return None
@@ -4040,11 +4048,11 @@ def build_execution_context(
         observed_price=observed_price,
         execution_price=execution_price,
         price_drift_bps=price_drift_bps(source_price=source_price, observed_price=observed_price),
-        slippage_bps=settings.paper_copy_slippage_bps,
-        latency_ms=settings.paper_copy_latency_ms,
+        slippage_bps=resolved_slippage_bps,
+        latency_ms=resolved_latency_ms,
         price_source=(
             market_prices.sources.get(coin, "live_mid")
-            if settings.paper_copy_use_live_mid_price
+            if settings.trading_copy_use_live_mid_price
             else "source_fill"
         ),
     )
@@ -4131,17 +4139,17 @@ def paper_fill_payload(
         },
         "policy": {
             "feeRate": str(settings.paper_copy_fee_rate),
-            "maxTotalAllocationPct": str(settings.paper_copy_max_total_allocation_pct),
-            "minOrderNotionalUsd": str(settings.paper_copy_min_order_notional_usd),
+            "maxTotalAllocationPct": str(settings.trading_copy_max_total_allocation_pct),
+            "minOrderNotionalUsd": str(settings.trading_copy_min_order_notional_usd),
             "adjustSmallOrdersToMinOrder": (
-                settings.paper_copy_adjust_small_orders_to_min_order
+                settings.trading_copy_adjust_small_orders_to_min_order
             ),
             "slippageBps": str(settings.paper_copy_slippage_bps),
             "latencyMs": settings.paper_copy_latency_ms,
-            "maxPriceDriftBps": str(settings.paper_copy_max_price_drift_bps),
-            "useLiveMidPrice": settings.paper_copy_use_live_mid_price,
-            "marketPriceCacheEnabled": settings.paper_copy_market_price_cache_enabled,
-            "marketPriceCacheStaleSeconds": settings.paper_copy_market_price_cache_stale_seconds,
+            "maxPriceDriftBps": str(settings.trading_copy_max_price_drift_bps),
+            "useLiveMidPrice": settings.trading_copy_use_live_mid_price,
+            "marketPriceCacheEnabled": settings.trading_copy_market_price_cache_enabled,
+            "marketPriceCacheStaleSeconds": settings.trading_copy_market_price_cache_stale_seconds,
         },
         "execution": execution_payload(execution_context),
         "tradeIntent": trade_intent_payload(trade_intent),

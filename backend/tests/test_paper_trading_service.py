@@ -14,8 +14,8 @@ from app.services.trading_core import (
 
 def test_adjust_open_sizing_to_min_order_when_enabled() -> None:
     settings = Settings(
-        paper_copy_min_order_notional_usd=Decimal("10"),
-        paper_copy_adjust_small_orders_to_min_order=True,
+        trading_copy_min_order_notional_usd=Decimal("10"),
+        trading_copy_adjust_small_orders_to_min_order=True,
     )
 
     margin_usd, notional_usd, adjustment = adjust_open_sizing_to_min_order(
@@ -38,8 +38,8 @@ def test_adjust_open_sizing_to_min_order_when_enabled() -> None:
 
 def test_adjust_open_sizing_to_min_order_when_disabled() -> None:
     settings = Settings(
-        paper_copy_min_order_notional_usd=Decimal("10"),
-        paper_copy_adjust_small_orders_to_min_order=False,
+        trading_copy_min_order_notional_usd=Decimal("10"),
+        trading_copy_adjust_small_orders_to_min_order=False,
     )
 
     margin_usd, notional_usd, adjustment = adjust_open_sizing_to_min_order(
@@ -59,8 +59,8 @@ def test_adjust_open_sizing_to_min_order_when_disabled() -> None:
 
 def test_adjust_open_sizing_to_min_order_respects_caps() -> None:
     settings = Settings(
-        paper_copy_min_order_notional_usd=Decimal("10"),
-        paper_copy_adjust_small_orders_to_min_order=True,
+        trading_copy_min_order_notional_usd=Decimal("10"),
+        trading_copy_adjust_small_orders_to_min_order=True,
     )
 
     margin_usd, notional_usd, adjustment = adjust_open_sizing_to_min_order(

@@ -45,7 +45,12 @@ from app.services.paper_trading_service import (
     refresh_paper_copy_allocations,
     sorted_paper_source_fills,
 )
-from app.services.trading_core import TradeIntent, build_copy_trade_intent, margin_from_notional
+from app.services.trading_core import (
+    TradeIntent,
+    adjust_open_sizing_to_min_order,
+    build_copy_trade_intent,
+    margin_from_notional,
+)
 
 ZERO = Decimal("0")
 LIVE_COPY_RECOVERY_OVERLAP_MS = 5 * 60 * 1000
@@ -102,6 +107,7 @@ async def process_live_copy_fills(
     market_prices_task = load_execution_market_prices(
         client=client,
         fills=fills,
+        latency_ms=0,
         settings=resolved_settings,
         price_cache=price_cache,
     )
@@ -390,10 +396,12 @@ async def apply_live_open_part(
         part=part,
         market_prices=market_prices,
         settings=settings,
+        slippage_bps=settings.live_trading_limit_slippage_bps,
+        latency_ms=0,
     )
     if execution_context is None:
         return PaperCopyBatchResult(skipped_fills=1)
-    if execution_context.price_drift_bps > settings.paper_copy_max_price_drift_bps:
+    if execution_context.price_drift_bps > settings.trading_copy_max_price_drift_bps:
         return PaperCopyBatchResult(skipped_fills=1)
 
     price = execution_context.execution_price
@@ -411,13 +419,26 @@ async def apply_live_open_part(
         ZERO,
     )
     global_remaining = max(
-        tradable_equity_usd * settings.paper_copy_max_total_allocation_pct
+        tradable_equity_usd * settings.trading_copy_max_total_allocation_pct
         - await live_open_margin_for_account(session, account_key=account.key),
         ZERO,
     )
     margin_usd = min(target_margin, source_remaining, global_remaining)
     notional_usd = margin_usd * source_leverage
-    if notional_usd < settings.live_trading_min_order_notional_usd:
+    margin_usd, notional_usd, _ = adjust_open_sizing_to_min_order(
+        target_notional=target_notional,
+        margin_usd=margin_usd,
+        notional_usd=notional_usd,
+        source_remaining=source_remaining,
+        global_remaining=global_remaining,
+        source_leverage=source_leverage,
+        settings=settings,
+    )
+    live_min_order_notional_usd = max(
+        settings.trading_copy_min_order_notional_usd,
+        settings.live_trading_min_order_notional_usd,
+    )
+    if notional_usd < live_min_order_notional_usd:
         return PaperCopyBatchResult(skipped_fills=1)
 
     action = "add" if position is not None and part.action == "open" else part.action
@@ -483,10 +504,12 @@ async def apply_live_close_part(
         part=part,
         market_prices=market_prices,
         settings=settings,
+        slippage_bps=settings.live_trading_limit_slippage_bps,
+        latency_ms=0,
     )
     if execution_context is None:
         return PaperCopyBatchResult(skipped_fills=1)
-    if execution_context.price_drift_bps > settings.paper_copy_max_price_drift_bps:
+    if execution_context.price_drift_bps > settings.trading_copy_max_price_drift_bps:
         return PaperCopyBatchResult(skipped_fills=1)
 
     close_size = min(position.size, position.size * part.close_ratio)
