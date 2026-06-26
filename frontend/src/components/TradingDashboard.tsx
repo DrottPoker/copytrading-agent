@@ -37,6 +37,7 @@ import type {
 import type {
   TradingAccount,
   TradingAccountsResponse,
+  TradingClosedTrade,
   TradingFill,
   TradingOrder,
   TradingPosition,
@@ -425,9 +426,12 @@ export function TradingDashboard({
       tradingMode,
     ],
   );
-  const closedTrades = useMemo<Array<PaperClosedTrade | TradingFill>>(
-    () => (tradingMode === "paper" ? summary.closedTrades : buildLiveClosedExecutions(tradingAccounts.recentFills)),
-    [summary.closedTrades, tradingAccounts.recentFills, tradingMode],
+  const closedTrades = useMemo<Array<PaperClosedTrade | TradingClosedTrade>>(
+    () =>
+      tradingMode === "paper"
+        ? summary.closedTrades
+        : buildLiveClosedTradeRows(tradingAccounts.closedTrades, sourceLabels),
+    [sourceLabels, summary.closedTrades, tradingAccounts.closedTrades, tradingMode],
   );
   const tradingSourceCount = countSourcesWithDashboardOpenPositions(dashboardPositions);
   const monitoredSlotCount = countSourcesByMonitorStatus(monitoredSources, "monitored");
@@ -601,18 +605,18 @@ export function TradingDashboard({
         />
 
         <PaginatedListPanel
-          emptyText={tradingMode === "paper" ? "No closed paper trades yet." : "No closed live executions yet."}
+          emptyText={tradingMode === "paper" ? "No closed paper trades yet." : "No complete closed live trades yet."}
           getKey={(trade) => `${tradingMode}:${trade.id}`}
           items={closedTrades}
-          meta={`${formatInteger(closedTrades.length)} closed items`}
+          meta={`${formatInteger(closedTrades.length)} closed trades`}
           renderItem={(trade) =>
             tradingMode === "paper" ? (
               <ClosedTradeRow trade={trade as PaperClosedTrade} />
             ) : (
-              <LiveClosedExecutionRow fill={trade as TradingFill} />
+              <LiveClosedTradeRow trade={trade as TradingClosedTrade} />
             )
           }
-          title={tradingMode === "paper" ? "Closed Paper Trades" : "Closed Live Executions"}
+          title={tradingMode === "paper" ? "Closed Paper Trades" : "Closed Live Trades"}
         />
       </section>
 
@@ -952,7 +956,7 @@ function SourceRow({
     `${formatScore(source.score)} score`,
     mode === "paper"
       ? `${formatInteger(source.accountCount)} paper accounts`
-      : `${formatInteger(source.enabledLiveAccountCount)} live enabled`,
+      : `${formatInteger(source.enabledLiveAccountCount)} live accounts`,
     mode === "live" && source.recentLiveFillCount > 0
       ? `${formatInteger(source.recentLiveFillCount)} live fills`
       : null,
@@ -1040,7 +1044,7 @@ function SourceRow({
               <CompactSourceStat
                 label="Activity"
                 value={`${formatInteger(source.recentLiveFillCount)} fills`}
-                detail={`${formatInteger(source.recentLiveOrderCount)} orders, ${formatInteger(source.enabledLiveAccountCount)} live enabled`}
+                detail={`${formatInteger(source.recentLiveOrderCount)} orders, ${formatInteger(source.enabledLiveAccountCount)} live accounts`}
               />
             </>
           )}
@@ -1287,42 +1291,41 @@ function ClosedTradeRow({ trade }: { trade: PaperClosedTrade }) {
   );
 }
 
-function LiveClosedExecutionRow({ fill }: { fill: TradingFill }) {
-  const realizedPnl = numberValue(fill.realizedPnlUsd);
-  const sourceName = isLiveExchangeSource(fill.sourceWallet)
-    ? "Exchange fill"
-    : shortAddress(fill.sourceWallet);
+function LiveClosedTradeRow({ trade }: { trade: TradingClosedTrade }) {
+  const netPnl = numberValue(trade.netPnlUsd);
+  const sourceName = sourceDisplayName(trade.sourceLabel, trade.sourceWallet);
   return (
     <ListRow>
       <div className="grid gap-2 xl:grid-cols-[1.05fr_0.85fr_0.8fr_0.85fr_0.85fr_0.75fr] xl:items-center">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-1">
-            <p className="font-semibold text-ink">{fill.coin}</p>
+            <p className="font-semibold text-ink">{trade.coin}</p>
             <StatusPill label="live" tone="positive" />
-            <StatusPill label={fill.action} tone="neutral" />
-            <StatusPill label={fill.side} tone={fill.side === "long" ? "positive" : "warning"} />
+            <StatusPill label="closed trade" tone="neutral" />
+            <StatusPill label={trade.side} tone={trade.side === "long" ? "positive" : "warning"} />
           </div>
-          {isLiveExchangeSource(fill.sourceWallet) ? (
+          {isLiveExchangeSource(trade.sourceWallet) ? (
             <p className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink">
               {sourceName}
             </p>
           ) : (
             <Link
-              href={`/wallets/${fill.sourceWallet}`}
+              href={`/wallets/${trade.sourceWallet}`}
               className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink hover:text-[#297c73]"
             >
               {sourceName}
             </Link>
           )}
           <p className="mt-1 truncate font-mono text-xs text-[#5b6770]">
-            {isLiveExchangeSource(fill.sourceWallet) ? "exchange" : shortAddress(fill.sourceWallet)} | {fill.accountKey}
+            {isLiveExchangeSource(trade.sourceWallet) ? "exchange" : shortAddress(trade.sourceWallet)} | {trade.accountKey}
           </p>
         </div>
-        <RowStat label="Realized" value={formatCurrency(fill.realizedPnlUsd)} tone={realizedPnl >= 0 ? "positive" : "danger"} />
-        <RowStat label="Closed" value={formatShortDateTime(fill.filledAt)} detail={fill.exchangeFillId ? shortIdentifier(fill.exchangeFillId) : "exchange fill"} />
-        <RowStat label="Price" value={formatPrice(fill.price)} detail={`size ${formatSize(fill.size)}`} />
-        <RowStat label="Notional" value={formatCurrency(fill.notionalUsd)} />
-        <RowStat label="Fee" value={formatCurrency(fill.feeUsd)} />
+        <RowStat label="Net PnL" value={formatCurrency(trade.netPnlUsd)} detail={`${formatCurrency(trade.realizedPnlUsd)} realized`} tone={netPnl >= 0 ? "positive" : "danger"} />
+        <RowStat label="Closed" value={formatShortDateTime(trade.closedAt)} detail={formatTradeDuration(trade.durationMs)} />
+        <RowStat label="Entry" value={formatPrice(trade.entryPrice)} detail={formatShortDateTime(trade.openedAt)} />
+        <RowStat label="Exit" value={formatPrice(trade.exitPrice)} detail={`size ${formatSize(trade.size)}`} />
+        <RowStat label="Notional" value={formatCurrency(trade.exitNotionalUsd)} detail={`${formatInteger(trade.openFillCount)} open, ${formatInteger(trade.closeFillCount)} close fills`} />
+        <RowStat label="Fee" value={formatCurrency(trade.feeUsd)} />
       </div>
     </ListRow>
   );
@@ -1942,7 +1945,7 @@ function buildLiveMonitoredSources(
   const liveFillsBySource = groupLiveFillsBySource(tradingAccounts.recentFills);
   const liveOrdersBySource = groupLiveOrdersBySource(tradingAccounts.recentOrders);
   const liveReadySources = Array.from(allocationsBySource.entries())
-    .filter(([, allocations]) => liveCopyReady && allocations.some((allocation) => allocation.hasRealtimeSlot))
+    .filter(([, allocations]) => liveSourceCanOpenNewPositions(allocations, liveCopyReady))
     .map(([source]) => source);
   const sources = new Set([
     ...liveReadySources,
@@ -1958,7 +1961,7 @@ function buildLiveMonitoredSources(
       const liveFills = liveFillsBySource.get(source) ?? [];
       const liveOrders = liveOrdersBySource.get(source) ?? [];
       const hasRealtimeSlot = allocations.some((allocation) => allocation.hasRealtimeSlot);
-      const canOpenNewPositions = hasRealtimeSlot && liveCopyReady;
+      const canOpenNewPositions = liveSourceCanOpenNewPositions(allocations, liveCopyReady);
       const openPositionCount = liveOpenPositions.length;
       const monitorStatus: MonitoredSource["monitorStatus"] = hasRealtimeSlot
         ? "monitored"
@@ -1994,7 +1997,7 @@ function buildLiveMonitoredSources(
         hasRealtimeSlot,
         canOpenNewPositions,
         accountCount: accounts.size,
-        enabledLiveAccountCount: canOpenNewPositions ? enabledLiveAccountCount : 0,
+        enabledLiveAccountCount: liveCopyReady ? enabledLiveAccountCount : 0,
         openLivePositionCount: openPositionCount,
         openPaperPositionCount: 0,
         openPositionCount,
@@ -2111,8 +2114,17 @@ function buildLiveWalletHistory(
     .sort((left, right) => dateMs(right.lastFillAt) - dateMs(left.lastFillAt));
 }
 
-function buildLiveClosedExecutions(liveFills: TradingFill[]) {
-  return liveFills.filter((fill) => isCloseAction(fill.action));
+function buildLiveClosedTradeRows(
+  liveClosedTrades: TradingClosedTrade[],
+  sourceLabels: Map<string, string>,
+): TradingClosedTrade[] {
+  return liveClosedTrades
+    .map((trade) => ({
+      ...trade,
+      sourceLabel:
+        trade.sourceLabel ?? sourceLabels.get(trade.sourceWallet.toLowerCase()) ?? null,
+    }))
+    .sort((left, right) => dateMs(right.closedAt) - dateMs(left.closedAt));
 }
 
 function countSourcesWithDashboardOpenPositions(positions: DashboardPosition[]) {
@@ -2195,10 +2207,6 @@ function latestDateStringFromValues(values: Array<string | null | undefined>) {
     }
   }
   return latest;
-}
-
-function isCloseAction(action: string) {
-  return action.includes("close") || action.includes("reduce");
 }
 
 function accountNetEquity(account: { equityUsd: string; unrealizedPnlUsd: string }) {
@@ -2295,6 +2303,23 @@ function resolveSourceStatus(
     return "waiting_for_slot";
   }
   return "waiting_for_trades";
+}
+
+function liveSourceCanOpenNewPositions(
+  allocations: PaperCopyAllocation[],
+  liveCopyReady: boolean,
+) {
+  if (!liveCopyReady) {
+    return false;
+  }
+  if (allocations.some((allocation) => allocation.canOpenNewPositions)) {
+    return true;
+  }
+  return allocations.some(
+    (allocation) =>
+      allocation.hasRealtimeSlot &&
+      allocation.sourceStatusReason === "paper_account_disabled",
+  );
 }
 
 function resolveLiveSourceStatus({

@@ -20,6 +20,7 @@ from app.schemas.trading import (
     TradingAccountsResponse,
     TradingAccountStatusRequest,
     TradingCapitalBalanceRead,
+    TradingClosedTradeRead,
     TradingFillRead,
     TradingOrderRead,
     TradingPositionRead,
@@ -45,6 +46,7 @@ from app.services.live_trading_service import (
     live_unified_available_usd,
     live_unified_equity_usd,
     load_live_account_for_update,
+    load_live_closed_trades,
     normalize_user_abstraction,
     reconcile_live_trading_account,
     set_live_trading_account_status,
@@ -57,6 +59,8 @@ from app.services.trading_account_service import list_trading_accounts
 router = APIRouter(prefix="/trading", tags=["trading"])
 
 TRADING_ACTIVITY_LIMIT = 100
+TRADING_CLOSED_TRADE_LIMIT = 100
+TRADING_CLOSED_TRADE_FILL_SCAN_LIMIT = 5000
 
 
 async def trading_account_read(
@@ -189,6 +193,11 @@ async def list_trading_accounts_route(
         .order_by(TradingOrder.updated_at.desc(), TradingOrder.created_at.desc())
         .limit(TRADING_ACTIVITY_LIMIT)
     )
+    closed_trades = await load_live_closed_trades(
+        session,
+        limit=TRADING_CLOSED_TRADE_LIMIT,
+        fill_scan_limit=TRADING_CLOSED_TRADE_FILL_SCAN_LIMIT,
+    )
     return TradingAccountsResponse(
         accounts=[
             enriched_trading_account_read(account, settings=settings)
@@ -207,6 +216,10 @@ async def list_trading_accounts_route(
         recent_orders=[
             TradingOrderRead.model_validate(order)
             for order in order_result.all()
+        ],
+        closed_trades=[
+            TradingClosedTradeRead.model_validate(trade)
+            for trade in closed_trades
         ],
         updated_at=datetime.now(UTC),
     )

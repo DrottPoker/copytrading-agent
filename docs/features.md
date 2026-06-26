@@ -731,8 +731,14 @@ What it does:
   history, open positions, closed activity, and recent execution activity
   without mixing rows from the other mode. Paper mode shows paper accounts,
   paper positions, paper closed trades, and paper fills. Live mode shows live
-  accounts, live positions, live source activity, live close executions, live
-  fills, and live order attempts that do not yet have matching fills.
+  accounts, live positions, live source activity, reconstructed closed live
+  trades, live fills, and live order attempts that do not yet have matching
+  fills. Individual live reduce and close fills stay in Recent Execution
+  Activity.
+- Copy source monitor slots and source eligibility are shared across paper and
+  live execution, but each mode renders its own exposure, PnL, activity, and
+  execution status. A retained source remains retained in live mode unless the
+  shared source eligibility allows new entries.
 - Live open position rows include reconciled current notional, mark price,
   unrealized PnL, and ROE when Hyperliquid supplies the fields. They also expose
   an individual Close action that submits a reduce-only live close order for

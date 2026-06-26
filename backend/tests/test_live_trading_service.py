@@ -1,10 +1,11 @@
 from datetime import UTC, datetime
 from decimal import Decimal
+from uuid import uuid4
 
 import pytest
 
 from app.core.config import Settings
-from app.db.models import TradingAccount, TradingOrder, TradingPosition
+from app.db.models import TradingAccount, TradingFill, TradingOrder, TradingPosition
 from app.integrations.hyperliquid_live_client import LiveOrderResult
 from app.services import live_trading_service
 from app.services.live_trading_service import (
@@ -15,6 +16,7 @@ from app.services.live_trading_service import (
     create_live_trading_account,
     fetch_live_fills_by_time,
     live_account_key_for_route,
+    live_closed_trades_from_fills,
     live_perp_equity_usd,
     live_position_current_notional,
     live_position_mark_price,
@@ -75,6 +77,86 @@ def test_apply_live_order_result_updates_submitted_wire_values() -> None:
     assert order.filled_size == Decimal("0.16")
     assert order.filled_notional_usd == Decimal("10.2288")
     assert order.status == "filled"
+
+
+def test_live_closed_trades_from_fills_groups_complete_trade() -> None:
+    opened_at = datetime(2026, 1, 1, 10, 0, tzinfo=UTC)
+    fills = [
+        live_fill(
+            action="open",
+            filled_at=opened_at,
+            fee_usd=Decimal("0.01"),
+            notional_usd=Decimal("60"),
+            price=Decimal("60"),
+            realized_pnl_usd=Decimal("0"),
+            sequence_index=0,
+            size=Decimal("1"),
+        ),
+        live_fill(
+            action="add",
+            filled_at=datetime(2026, 1, 1, 10, 5, tzinfo=UTC),
+            fee_usd=Decimal("0.01"),
+            notional_usd=Decimal("30"),
+            price=Decimal("60"),
+            realized_pnl_usd=Decimal("0"),
+            sequence_index=1,
+            size=Decimal("0.5"),
+        ),
+        live_fill(
+            action="reduce",
+            filled_at=datetime(2026, 1, 1, 10, 10, tzinfo=UTC),
+            fee_usd=Decimal("0.01"),
+            notional_usd=Decimal("28"),
+            price=Decimal("70"),
+            realized_pnl_usd=Decimal("1"),
+            sequence_index=2,
+            size=Decimal("0.4"),
+        ),
+        live_fill(
+            action="close",
+            filled_at=datetime(2026, 1, 1, 10, 15, tzinfo=UTC),
+            fee_usd=Decimal("0.02"),
+            notional_usd=Decimal("77"),
+            price=Decimal("70"),
+            realized_pnl_usd=Decimal("2"),
+            sequence_index=3,
+            size=Decimal("1.1"),
+        ),
+    ]
+
+    trades = live_closed_trades_from_fills(fills)
+
+    assert len(trades) == 1
+    trade = trades[0]
+    assert trade.size == Decimal("1.5")
+    assert trade.entry_price == Decimal("60")
+    assert trade.exit_price == Decimal("70")
+    assert trade.entry_notional_usd == Decimal("90")
+    assert trade.exit_notional_usd == Decimal("105")
+    assert trade.realized_pnl_usd == Decimal("3")
+    assert trade.fee_usd == Decimal("0.05")
+    assert trade.net_pnl_usd == Decimal("2.95")
+    assert trade.open_fill_count == 2
+    assert trade.close_fill_count == 2
+    assert trade.opened_at == opened_at
+    assert trade.closed_at == datetime(2026, 1, 1, 10, 15, tzinfo=UTC)
+
+
+def test_live_closed_trades_from_fills_skips_incomplete_close_only_fill() -> None:
+    fills = [
+        live_fill(
+            action="close",
+            filled_at=datetime(2026, 1, 1, 10, 15, tzinfo=UTC),
+            fee_usd=Decimal("0.02"),
+            notional_usd=Decimal("77"),
+            price=Decimal("70"),
+            realized_pnl_usd=Decimal("2"),
+            sequence_index=3,
+            size=Decimal("1.1"),
+        )
+    ]
+
+    assert live_closed_trades_from_fills(fills) == []
 
 
 def test_parse_live_fill_uses_tid_for_id_and_infers_side() -> None:
@@ -412,6 +494,39 @@ def live_order(*, status: str) -> TradingOrder:
         filled_size=Decimal("0"),
         filled_notional_usd=Decimal("0"),
         fee_usd=Decimal("0"),
+    )
+
+
+def live_fill(
+    *,
+    action: str,
+    filled_at: datetime,
+    fee_usd: Decimal,
+    notional_usd: Decimal,
+    price: Decimal,
+    realized_pnl_usd: Decimal,
+    sequence_index: int,
+    size: Decimal,
+) -> TradingFill:
+    return TradingFill(
+        id=uuid4(),
+        order_id=None,
+        account_key="live_test",
+        account_type="live",
+        source_wallet="0xsource",
+        source_fill_id=f"source-fill-{sequence_index}",
+        sequence_index=sequence_index,
+        exchange_fill_id=f"exchange-fill-{sequence_index}",
+        coin="HYPE",
+        action=action,
+        side="long",
+        price=price,
+        size=size,
+        notional_usd=notional_usd,
+        fee_usd=fee_usd,
+        realized_pnl_usd=realized_pnl_usd,
+        filled_at=filled_at,
+        created_at=filled_at,
     )
 
 

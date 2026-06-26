@@ -144,6 +144,28 @@ class TradingOrderRead(CamelModel):
     updated_at: datetime
 
 
+class TradingClosedTradeRead(CamelModel):
+    id: str
+    account_key: str
+    source_wallet: str
+    source_label: str | None = None
+    coin: str
+    side: Literal["long", "short"]
+    entry_price: Decimal | None = None
+    exit_price: Decimal | None = None
+    size: Decimal
+    entry_notional_usd: Decimal
+    exit_notional_usd: Decimal
+    fee_usd: Decimal
+    realized_pnl_usd: Decimal
+    net_pnl_usd: Decimal
+    opened_at: datetime
+    closed_at: datetime
+    duration_ms: int | None = None
+    open_fill_count: int
+    close_fill_count: int
+
+
 class TradingAccountsResponse(CamelModel):
     accounts: list[TradingAccountRead]
     live_trading_enabled: bool = False
@@ -151,6 +173,7 @@ class TradingAccountsResponse(CamelModel):
     positions: list[TradingPositionRead] = Field(default_factory=list)
     recent_fills: list[TradingFillRead] = Field(default_factory=list)
     recent_orders: list[TradingOrderRead] = Field(default_factory=list)
+    closed_trades: list[TradingClosedTradeRead] = Field(default_factory=list)
     updated_at: datetime
 
 

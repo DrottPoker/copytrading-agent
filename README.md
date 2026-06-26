@@ -444,8 +444,13 @@ Sizing policy:
   owns top metrics, accounts, copy sources, wallet PnL history, open positions,
   closed activity, and recent execution activity. Paper mode shows only paper
   accounts, positions, closed trades, and paper fills. Live mode shows only live
-  accounts, live positions, live source activity, live close executions, live
-  fills, and live order attempts.
+  accounts, live positions, live source activity, reconstructed closed live
+  trades, live fills, and live order attempts. Individual live reduce and close
+  fills stay in Recent Execution Activity.
+- Copy source monitor slots and source eligibility are shared across paper and
+  live execution, but each mode renders its own exposure, PnL, activity, and
+  execution status. A retained source remains retained in live mode unless the
+  shared source eligibility allows new entries.
 - The Accounts page stores the last selected account in the browser and
   defaults to that account on the next visit, otherwise the first synced account
   is selected. It shows paper account metrics, charts, allocations, market

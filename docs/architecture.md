@@ -842,10 +842,15 @@ Live mode. The active mode owns all Trading page view models, so accounts,
 copy sources, wallet PnL history, open positions, closed activity, and recent
 execution activity are never mixed across paper and live rows. Live mode derives
 source history from live positions, live fills, and live orders, while reusing
-known wallet labels for display names only. Live position rows use reconciled
-Hyperliquid position payloads for mark price, current notional, unrealized PnL,
-and ROE, and can submit an individual reduce-only close order. Paginated
-history sections show 10 rows per page in both modes.
+known wallet labels for display names only. Copy source monitor slots and source
+eligibility are shared across paper and live execution, then rendered with
+mode-specific exposure, PnL, activity, and execution status. The trading API
+reconstructs live closed trades from stored live fills by grouping open and close
+executions into complete trade windows; individual reduce and close fills remain
+in Recent Execution Activity. Live position rows use reconciled Hyperliquid position
+payloads for mark price, current notional, unrealized PnL, and ROE, and can
+submit an individual reduce-only close order. Paginated history sections show
+10 rows per page in both modes.
 Account reset actions restore the configured starting capital and clear
 account-level realized PnL and fee counters, but they do not delete open paper
 positions, copied fills, or closed trade history.

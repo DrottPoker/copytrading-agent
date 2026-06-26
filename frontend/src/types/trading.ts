@@ -110,6 +110,28 @@ export type TradingOrder = {
   updatedAt: string;
 };
 
+export type TradingClosedTrade = {
+  id: string;
+  accountKey: string;
+  sourceWallet: string;
+  sourceLabel: string | null;
+  coin: string;
+  side: "long" | "short";
+  entryPrice: string | null;
+  exitPrice: string | null;
+  size: string;
+  entryNotionalUsd: string;
+  exitNotionalUsd: string;
+  feeUsd: string;
+  realizedPnlUsd: string;
+  netPnlUsd: string;
+  openedAt: string;
+  closedAt: string;
+  durationMs: number | null;
+  openFillCount: number;
+  closeFillCount: number;
+};
+
 export type TradingAccountsResponse = {
   accounts: TradingAccount[];
   liveTradingEnabled: boolean;
@@ -117,5 +139,6 @@ export type TradingAccountsResponse = {
   positions: TradingPosition[];
   recentFills: TradingFill[];
   recentOrders: TradingOrder[];
+  closedTrades: TradingClosedTrade[];
   updatedAt: string;
 };

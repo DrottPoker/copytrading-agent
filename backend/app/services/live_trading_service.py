@@ -104,6 +104,50 @@ class LiveOrderLifecycleResult:
 
 
 @dataclass(frozen=True)
+class LiveClosedTrade:
+    id: str
+    account_key: str
+    source_wallet: str
+    source_label: str | None
+    coin: str
+    side: str
+    entry_price: Decimal | None
+    exit_price: Decimal | None
+    size: Decimal
+    entry_notional_usd: Decimal
+    exit_notional_usd: Decimal
+    fee_usd: Decimal
+    realized_pnl_usd: Decimal
+    net_pnl_usd: Decimal
+    opened_at: datetime
+    closed_at: datetime
+    duration_ms: int | None
+    open_fill_count: int
+    close_fill_count: int
+
+
+@dataclass
+class LiveTradeAccumulator:
+    account_key: str
+    source_wallet: str
+    source_label: str | None
+    coin: str
+    side: str
+    opened_at: datetime
+    closed_at: datetime
+    last_close_fill_id: str
+    opened_size: Decimal = ZERO
+    remaining_size: Decimal = ZERO
+    closed_size: Decimal = ZERO
+    entry_notional_usd: Decimal = ZERO
+    exit_notional_usd: Decimal = ZERO
+    fee_usd: Decimal = ZERO
+    realized_pnl_usd: Decimal = ZERO
+    open_fill_count: int = 0
+    close_fill_count: int = 0
+
+
+@dataclass(frozen=True)
 class LiveCloseAllResult:
     account_key: str
     submitted_orders: int
@@ -1225,6 +1269,142 @@ async def load_live_source_position(
             TradingPosition.coin == coin,
         )
     )
+
+
+async def load_live_closed_trades(
+    session: AsyncSession,
+    *,
+    limit: int = 100,
+    fill_scan_limit: int = 5000,
+) -> list[LiveClosedTrade]:
+    fill_result = await session.scalars(
+        select(TradingFill)
+        .where(
+            TradingFill.account_type == "live",
+            TradingFill.source_wallet != "",
+            TradingFill.source_wallet != LIVE_EXCHANGE_SOURCE,
+        )
+        .order_by(TradingFill.filled_at.desc(), TradingFill.created_at.desc())
+        .limit(fill_scan_limit)
+    )
+    fills = list(fill_result.all())
+    return live_closed_trades_from_fills(fills, limit=limit)
+
+
+def live_closed_trades_from_fills(
+    fills: list[TradingFill],
+    *,
+    limit: int = 100,
+) -> list[LiveClosedTrade]:
+    open_trades: dict[tuple[str, str, str, str], LiveTradeAccumulator] = {}
+    closed_trades: list[LiveClosedTrade] = []
+    for fill in sorted(fills, key=live_fill_chronology_key):
+        if fill.source_wallet == LIVE_EXCHANGE_SOURCE:
+            continue
+        key = live_fill_trade_key(fill)
+        if live_fill_is_open(fill):
+            trade = open_trades.get(key) or live_trade_accumulator(fill)
+            fill_size = decimal_or_none(fill.size) or ZERO
+            trade.opened_size += fill_size
+            trade.remaining_size += fill_size
+            trade.entry_notional_usd += decimal_or_none(fill.notional_usd) or ZERO
+            trade.fee_usd += decimal_or_none(fill.fee_usd) or ZERO
+            trade.open_fill_count += 1
+            trade.opened_at = min(trade.opened_at, fill.filled_at)
+            open_trades[key] = trade
+            continue
+        if not live_fill_is_close(fill):
+            continue
+        trade = open_trades.get(key)
+        if trade is None:
+            continue
+        fill_size = decimal_or_none(fill.size) or ZERO
+        close_size = min(fill_size, trade.remaining_size)
+        if close_size <= ZERO:
+            continue
+        fill_ratio = close_size / fill_size if fill_size > ZERO else ZERO
+        trade.remaining_size = max(trade.remaining_size - close_size, ZERO)
+        trade.closed_size += close_size
+        trade.exit_notional_usd += (decimal_or_none(fill.notional_usd) or ZERO) * fill_ratio
+        trade.realized_pnl_usd += (decimal_or_none(fill.realized_pnl_usd) or ZERO) * fill_ratio
+        trade.fee_usd += (decimal_or_none(fill.fee_usd) or ZERO) * fill_ratio
+        trade.close_fill_count += 1
+        trade.closed_at = fill.filled_at
+        trade.last_close_fill_id = str(fill.id)
+        if trade.remaining_size <= POSITION_EPSILON:
+            closed_trades.append(finish_live_closed_trade(trade))
+            del open_trades[key]
+    return sorted(closed_trades, key=lambda trade: trade.closed_at, reverse=True)[:limit]
+
+
+def live_trade_accumulator(fill: TradingFill) -> LiveTradeAccumulator:
+    return LiveTradeAccumulator(
+        account_key=fill.account_key,
+        source_wallet=fill.source_wallet,
+        source_label=None,
+        coin=fill.coin,
+        side=fill.side,
+        opened_at=fill.filled_at,
+        closed_at=fill.filled_at,
+        last_close_fill_id=str(fill.id),
+    )
+
+
+def finish_live_closed_trade(trade: LiveTradeAccumulator) -> LiveClosedTrade:
+    duration_ms = int((trade.closed_at - trade.opened_at).total_seconds() * 1000)
+    return LiveClosedTrade(
+        id=(
+            f"live-closed:{trade.account_key}:{trade.source_wallet}:"
+            f"{trade.coin}:{trade.side}:{trade.last_close_fill_id}"
+        ),
+        account_key=trade.account_key,
+        source_wallet=trade.source_wallet,
+        source_label=trade.source_label,
+        coin=trade.coin,
+        side=trade.side,
+        entry_price=(
+            trade.entry_notional_usd / trade.opened_size
+            if trade.opened_size > ZERO
+            else None
+        ),
+        exit_price=(
+            trade.exit_notional_usd / trade.closed_size
+            if trade.closed_size > ZERO
+            else None
+        ),
+        size=trade.closed_size,
+        entry_notional_usd=trade.entry_notional_usd,
+        exit_notional_usd=trade.exit_notional_usd,
+        fee_usd=trade.fee_usd,
+        realized_pnl_usd=trade.realized_pnl_usd,
+        net_pnl_usd=trade.realized_pnl_usd - trade.fee_usd,
+        opened_at=trade.opened_at,
+        closed_at=trade.closed_at,
+        duration_ms=max(duration_ms, 0),
+        open_fill_count=trade.open_fill_count,
+        close_fill_count=trade.close_fill_count,
+    )
+
+
+def live_fill_chronology_key(fill: TradingFill) -> tuple[datetime, datetime, str, int]:
+    return (
+        fill.filled_at,
+        fill.created_at or fill.filled_at,
+        fill.source_fill_id or "",
+        fill.sequence_index or 0,
+    )
+
+
+def live_fill_trade_key(fill: TradingFill) -> tuple[str, str, str, str]:
+    return (fill.account_key, fill.source_wallet.lower(), fill.coin, fill.side)
+
+
+def live_fill_is_open(fill: TradingFill) -> bool:
+    return fill.action in {"open", "add", "flip_open"}
+
+
+def live_fill_is_close(fill: TradingFill) -> bool:
+    return "close" in fill.action or "reduce" in fill.action
 
 
 async def apply_live_source_fill_to_position(
