@@ -20,6 +20,7 @@ from app.integrations.hyperliquid_client import HyperliquidClient
 from app.integrations.hyperliquid_live_client import HyperliquidLiveTradingClient
 from app.services.live_trading_service import (
     LIVE_EXCHANGE_SOURCE,
+    POSITION_EPSILON,
     LiveOrderSubmitError,
     live_tradable_equity_usd,
     load_live_source_position,
@@ -61,6 +62,7 @@ from app.services.trading_core import (
 logger = logging.getLogger(__name__)
 ZERO = Decimal("0")
 LIVE_COPY_RECOVERY_OVERLAP_MS = 5 * 60 * 1000
+PENDING_CLOSE_ORDER_STATUSES = {"submitted", "accepted", "partially_filled", "filled"}
 
 
 def live_skip(reason: str, count: int = 1) -> PaperCopyBatchResult:
@@ -541,6 +543,16 @@ async def apply_live_close_part(
     )
     if position is None or position.side != part.side:
         return live_skip("live_matching_position_missing")
+    pending_close_size = await live_pending_close_size_for_position(
+        session,
+        account_key=account.key,
+        source_wallet=allocation.source_wallet,
+        coin=coin,
+        since=position.last_reconciled_at,
+    )
+    available_size = max(position.size - pending_close_size, ZERO)
+    if available_size <= POSITION_EPSILON:
+        return live_skip("live_close_already_pending")
 
     execution_context = build_execution_context(
         fill=fill,
@@ -560,6 +572,7 @@ async def apply_live_close_part(
         part=part,
         source_account_state=source_account_state,
         coin=coin,
+        available_size=available_size,
     )
     if close_size is None:
         return live_skip("live_close_ratio_missing")
@@ -743,6 +756,40 @@ async def live_order_exists(
     return existing is not None
 
 
+async def live_pending_close_size_for_position(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    source_wallet: str,
+    coin: str,
+    since: datetime | None,
+) -> Decimal:
+    query = select(TradingOrder).where(
+        TradingOrder.account_key == account_key,
+        TradingOrder.account_type == "live",
+        TradingOrder.source_wallet == source_wallet,
+        TradingOrder.coin == coin,
+        TradingOrder.reduce_only.is_(True),
+        TradingOrder.status.in_(PENDING_CLOSE_ORDER_STATUSES),
+    )
+    if since is not None:
+        query = query.where(TradingOrder.created_at >= since)
+    result = await session.scalars(query)
+    return live_pending_close_size_from_orders(result.all())
+
+
+def live_pending_close_size_from_orders(orders: list[TradingOrder]) -> Decimal:
+    total = ZERO
+    for order in orders:
+        if order.status not in PENDING_CLOSE_ORDER_STATUSES:
+            continue
+        if order.status == "filled" and order.filled_size > ZERO:
+            total += order.filled_size
+            continue
+        total += order.requested_size
+    return total
+
+
 async def live_market_is_reserved_by_other_source(
     session: AsyncSession,
     *,
@@ -800,16 +847,22 @@ def live_close_size_for_part(
     part: SourceFillPart,
     source_account_state: PaperSourceAccountState | None,
     coin: str,
+    available_size: Decimal | None = None,
 ) -> Decimal | None:
+    position_size = (
+        min(position.size, available_size)
+        if available_size is not None
+        else position.size
+    )
     if live_source_position_is_final_close(
         source_account_state,
         coin=coin,
         side=part.side,
     ):
-        return position.size
+        return position_size
     if part.close_ratio is None or part.close_ratio <= ZERO:
         return None
-    return min(position.size, position.size * part.close_ratio)
+    return min(position_size, position_size * part.close_ratio)
 
 
 def live_source_position_is_final_close(

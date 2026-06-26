@@ -4,7 +4,7 @@ from decimal import Decimal
 import pytest
 
 from app.core.config import Settings
-from app.db.models import TradingAccount, TradingPosition
+from app.db.models import TradingAccount, TradingOrder, TradingPosition
 from app.services import live_copy_service
 from app.services.live_copy_service import (
     combine_batch_results,
@@ -13,6 +13,7 @@ from app.services.live_copy_service import (
     live_copy_account_snapshot_is_stale,
     live_exchange_position_conflict,
     live_min_order_notional_usd,
+    live_pending_close_size_from_orders,
     live_skip,
     live_source_position_is_final_close,
     submit_live_copy_intent,
@@ -174,6 +175,74 @@ def test_live_close_size_closes_remaining_position_without_ratio_when_source_is_
     assert close_size == Decimal("2")
 
 
+def test_live_close_size_uses_unreconciled_available_size() -> None:
+    position = live_position(source_wallet="0xsource", side="long", size=Decimal("2"))
+    part = live_close_part(close_ratio=Decimal("0.50"))
+    source_state = live_source_state(position_side="long")
+
+    close_size = live_close_size_for_part(
+        position=position,
+        part=part,
+        source_account_state=source_state,
+        coin="HYPE",
+        available_size=Decimal("1"),
+    )
+
+    assert close_size == Decimal("0.50")
+
+
+def test_live_final_close_uses_unreconciled_available_size() -> None:
+    position = live_position(source_wallet="0xsource", side="long", size=Decimal("2"))
+    part = live_close_part(close_ratio=Decimal("0.05"))
+    source_state = live_source_state(position_side=None)
+
+    close_size = live_close_size_for_part(
+        position=position,
+        part=part,
+        source_account_state=source_state,
+        coin="HYPE",
+        available_size=Decimal("0.25"),
+    )
+
+    assert close_size == Decimal("0.25")
+
+
+def test_live_pending_close_size_counts_filled_reduce_order() -> None:
+    orders = [
+        live_order(
+            status="filled",
+            requested_size=Decimal("0.21"),
+            filled_size=Decimal("0.21"),
+        )
+    ]
+
+    assert live_pending_close_size_from_orders(orders) == Decimal("0.21")
+
+
+def test_live_pending_close_size_ignores_rejected_reduce_order() -> None:
+    orders = [
+        live_order(
+            status="rejected",
+            requested_size=Decimal("0.21"),
+            filled_size=Decimal("0"),
+        )
+    ]
+
+    assert live_pending_close_size_from_orders(orders) == Decimal("0")
+
+
+def test_live_pending_close_size_counts_active_requested_size() -> None:
+    orders = [
+        live_order(
+            status="accepted",
+            requested_size=Decimal("0.21"),
+            filled_size=Decimal("0"),
+        )
+    ]
+
+    assert live_pending_close_size_from_orders(orders) == Decimal("0.21")
+
+
 def test_live_source_position_is_final_close_when_source_flipped_side() -> None:
     source_state = live_source_state(position_side="short")
 
@@ -256,6 +325,37 @@ def live_position(
         realized_pnl_usd=Decimal("0"),
         fee_usd=Decimal("0"),
         opened_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+
+def live_order(
+    *,
+    status: str,
+    requested_size: Decimal,
+    filled_size: Decimal,
+) -> TradingOrder:
+    return TradingOrder(
+        account_key="live_test",
+        account_type="live",
+        source_wallet="0xsource",
+        source_fill_id="fill-1",
+        sequence_index=0,
+        client_order_id=f"client-{status}",
+        coin="HYPE",
+        action="close",
+        side="long",
+        is_buy=False,
+        reduce_only=True,
+        order_type="ioc",
+        status=status,
+        requested_size=requested_size,
+        requested_notional_usd=Decimal("10"),
+        margin_usd=Decimal("1"),
+        leverage=Decimal("10"),
+        limit_price=Decimal("100"),
+        filled_size=filled_size,
+        filled_notional_usd=Decimal("0"),
+        fee_usd=Decimal("0"),
     )
 
 
