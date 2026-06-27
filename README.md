@@ -459,7 +459,9 @@ Sizing policy:
 - Copy source monitor slots and source eligibility are shared across paper and
   live execution, but each mode renders its own exposure, PnL, activity, and
   execution status. A retained source remains retained in live mode unless the
-  shared source eligibility allows new entries.
+  shared source eligibility allows new entries. Live-only historical sources
+  from recent fills or orders are shown as history and are not counted as
+  waiting for a realtime slot.
 - The Accounts page stores the last selected account in the browser and
   defaults to that account on the next visit, otherwise the first synced account
   is selected. It shows paper account metrics, charts, allocations, market

@@ -61,8 +61,8 @@ type MonitoredSource = {
   rank: number | null;
   poolRank: number | null;
   score: string | null;
-  monitorStatus: "monitored" | "waiting";
-  sourceStatus: "trading" | "retained" | "waiting_for_trades" | "waiting_for_slot";
+  monitorStatus: "monitored" | "waiting" | "history";
+  sourceStatus: "trading" | "retained" | "waiting_for_trades" | "waiting_for_slot" | "history";
   sourceStatusReason: string | null;
   hasRealtimeSlot: boolean;
   canOpenNewPositions: boolean;
@@ -2009,9 +2009,18 @@ function buildLiveMonitoredSources(
       const hasRealtimeSlot = allocations.some((allocation) => allocation.hasRealtimeSlot);
       const canOpenNewPositions = liveSourceCanOpenNewPositions(allocations, liveCopyReady);
       const openPositionCount = liveOpenPositions.length;
-      const monitorStatus: MonitoredSource["monitorStatus"] = hasRealtimeSlot
-        ? "monitored"
-        : "waiting";
+      const hasLiveHistory = liveFills.length > 0 || liveOrders.length > 0;
+      const sourceStatus = resolveLiveSourceStatus({
+        canOpenNewPositions,
+        hasLiveHistory,
+        hasRealtimeSlot,
+        openPositionCount,
+      });
+      const monitorStatus = liveMonitorStatus({
+        hasLiveHistory,
+        hasRealtimeSlot,
+        sourceStatus,
+      });
       const realizedPnl = sumNumbers(liveFills.map((fill) => fill.realizedPnlUsd));
       const unrealizedPnl = sumNumbers(liveOpenPositions.map((position) => position.unrealizedPnlUsd));
       const allocationPct =
@@ -2038,11 +2047,7 @@ function buildLiveMonitoredSources(
         poolRank: metadata?.poolRank ?? minNumber(allocations.map((allocation) => allocation.poolRank)),
         score: metadata?.score ?? firstString(allocations.map((allocation) => allocation.score)),
         monitorStatus,
-        sourceStatus: resolveLiveSourceStatus({
-          canOpenNewPositions,
-          hasRealtimeSlot,
-          openPositionCount,
-        }),
+        sourceStatus,
         sourceStatusReason: resolveLiveSourceStatusReason({
           allocations,
           canOpenNewPositions,
@@ -2428,10 +2433,12 @@ function liveSourceCanOpenNewPositions(
 
 function resolveLiveSourceStatus({
   canOpenNewPositions,
+  hasLiveHistory,
   hasRealtimeSlot,
   openPositionCount,
 }: {
   canOpenNewPositions: boolean;
+  hasLiveHistory: boolean;
   hasRealtimeSlot: boolean;
   openPositionCount: number;
 }): MonitoredSource["sourceStatus"] {
@@ -2442,9 +2449,27 @@ function resolveLiveSourceStatus({
     return "retained";
   }
   if (!hasRealtimeSlot) {
-    return "waiting_for_slot";
+    return hasLiveHistory ? "history" : "waiting_for_slot";
   }
   return canOpenNewPositions ? "waiting_for_trades" : "waiting_for_slot";
+}
+
+function liveMonitorStatus({
+  hasLiveHistory,
+  hasRealtimeSlot,
+  sourceStatus,
+}: {
+  hasLiveHistory: boolean;
+  hasRealtimeSlot: boolean;
+  sourceStatus: MonitoredSource["sourceStatus"];
+}): MonitoredSource["monitorStatus"] {
+  if (hasRealtimeSlot) {
+    return "monitored";
+  }
+  if (sourceStatus === "history" || hasLiveHistory) {
+    return "history";
+  }
+  return "waiting";
 }
 
 function resolveSourceStatusReason(allocations: PaperCopyAllocation[]) {
@@ -2511,6 +2536,9 @@ function sourceStatusDetail(source: MonitoredSource, mode: TradingMode) {
   }
   if (source.sourceStatus === "waiting_for_trades") {
     return mode === "live" ? "ready for live entries" : "ready for new entries";
+  }
+  if (source.sourceStatus === "history") {
+    return mode === "live" ? "recent live activity" : "history";
   }
   return reason;
 }
@@ -2629,7 +2657,10 @@ function statusOrder(status: MonitoredSource["sourceStatus"]) {
   if (status === "waiting_for_trades") {
     return 2;
   }
-  return 3;
+  if (status === "waiting_for_slot") {
+    return 3;
+  }
+  return 4;
 }
 
 function clampPercent(value: number) {

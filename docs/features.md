@@ -746,7 +746,9 @@ What it does:
 - Copy source monitor slots and source eligibility are shared across paper and
   live execution, but each mode renders its own exposure, PnL, activity, and
   execution status. A retained source remains retained in live mode unless the
-  shared source eligibility allows new entries.
+  shared source eligibility allows new entries. Live-only historical sources
+  from recent fills or orders are shown as history and are not counted as
+  waiting for a realtime slot.
 - Live open position rows include reconciled current notional, mark price,
   unrealized PnL, and ROE when Hyperliquid supplies the fields. They also expose
   an individual Close action that submits a reduce-only live close order for
