@@ -866,6 +866,7 @@ async def live_account_recent_order_count(
         select(func.count(TradingOrder.id)).where(
             TradingOrder.account_key == account_key,
             TradingOrder.account_type == "live",
+            TradingOrder.submitted_at.is_not(None),
             TradingOrder.created_at >= now - timedelta(minutes=1),
         )
     )

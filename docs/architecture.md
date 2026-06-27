@@ -711,7 +711,9 @@ generated internally from the wallet route, so the display name can change
 without creating a duplicate route. New accounts start disabled and reconcile
 the exchange wallet snapshot immediately so equity, balance, and open live
 positions are visible before trading is started. The live Reconciled card can
-also manually refresh the selected live account snapshot. The Accounts page can
+also manually refresh the selected live account snapshot. The Accounts page
+adapts paper and live account sources into the same account view model, so the
+same panels and row components render the selected account. The Accounts page can
 change enabled state for one account without disabling other accounts.
 Disabled paper accounts are excluded from new entries and adds, but are still
 included when an existing open position for the source needs a reduce or exit
@@ -841,13 +843,18 @@ live fills and live order attempts. A top-panel mode toggle selects Paper or
 Live mode. The active mode owns all Trading page view models, so accounts,
 copy sources, wallet PnL history, open positions, closed activity, and recent
 execution activity are never mixed across paper and live rows. Live mode derives
-source history from live positions, live fills, and live orders, while reusing
-known wallet labels for display names only. Copy source monitor slots and source
-eligibility are shared across paper and live execution, then rendered with
-mode-specific exposure, PnL, activity, and execution status. The trading API
-reconstructs live closed trades from stored live fills by grouping open and close
-executions into complete trade windows; individual reduce and close fills remain
-in Recent Execution Activity. Live position rows use reconciled Hyperliquid position
+source history from live positions, live fills, live orders, and persisted live
+pre-submit skips, while reusing known wallet labels for display names only. Copy
+source monitor slots and source eligibility are shared across paper and live
+execution, then rendered with mode-specific exposure, PnL, activity, and
+execution status. Recent Execution Activity uses the same result-oriented row
+semantics in both modes, so filled, skipped, rejected, and failed attempts are
+visible without mixing paper and live rows. The frontend keeps mode-specific
+logic in paper and live view-model builders, while shared presentational
+components render the active mode. The trading API reconstructs live
+closed trades from stored live fills by grouping open and close executions into
+complete trade windows; individual reduce and close fills remain in Recent
+Execution Activity. Live position rows use reconciled Hyperliquid position
 payloads for mark price, current notional, unrealized PnL, and ROE, and can
 submit an individual reduce-only close order. Paginated history sections show
 10 rows per page in both modes.

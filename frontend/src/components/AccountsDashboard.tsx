@@ -45,6 +45,10 @@ import type {
   TradingAccount,
   TradingAccountsResponse,
   TradingCapitalBalance,
+  TradingClosedTrade,
+  TradingFill,
+  TradingOrder,
+  TradingPosition,
 } from "@/types/trading";
 
 import { HeaderRefreshButton, HeaderUpdatedLabel } from "./HeaderRefresh";
@@ -131,6 +135,77 @@ type SourceRow = {
   winRate: number | null;
 };
 
+type AccountPositionRow = {
+  accountType: "paper" | "live";
+  coin: string;
+  detail: string;
+  entryDetail: string;
+  entryPrice: string | number | null;
+  executionDetail: string;
+  executionValue: string;
+  id: string;
+  leverage: string | number | null;
+  notionalUsd: string | number | null;
+  side: "long" | "short";
+  sourceHref: string | null;
+  sourceLabel: string;
+  unrealizedPnlUsd: string | number | null;
+};
+
+type AccountClosedTradeRow = {
+  badges: RowPill[];
+  closedAt: string;
+  coin: string;
+  detail: string;
+  exitDetail: string;
+  exitPrice: string | number | null;
+  id: string;
+  netPnlUsd: string | number | null;
+  sourceHref: string | null;
+  sourceLabel: string;
+};
+
+type AccountExecutionRow = {
+  badges: RowPill[];
+  coin: string;
+  detail: string;
+  id: string;
+  notionalDetail?: string;
+  notionalUsd: string | number | null;
+  price: string | number | null;
+  priceDetail?: string;
+  realizedPnlUsd: string | number | null;
+  sourceHref: string | null;
+  sourceLabel: string;
+};
+
+type AccountDetailSection = {
+  icon: LucideIcon;
+  rows: Array<{ label: string; value: string }>;
+  title: string;
+};
+
+type MetricTileView = {
+  action?: ReactNode;
+  detail: string;
+  icon: LucideIcon;
+  label: string;
+  tone?: Tone;
+  value: string;
+};
+
+type MetricLineView = {
+  label: string;
+  tone?: Tone;
+  value: number;
+  valueLabel: string;
+};
+
+type RowPill = {
+  label: string;
+  tone: Tone;
+};
+
 type MarketRow = {
   coin: string;
   longCount: number;
@@ -147,13 +222,17 @@ type TimelinePoint = {
 };
 
 type AccountView = {
-  account: PaperTradingAccount;
+  accountType: "paper" | "live";
   allocations: PaperCopyAllocation[];
-  closedTrades: PaperClosedTrade[];
+  balanceLines: MetricLineView[];
+  capitalBalances: TradingCapitalBalance[];
+  closedTrades: AccountClosedTradeRow[];
+  detailSections: AccountDetailSection[];
   marketRows: MarketRow[];
   metrics: AccountMetrics;
-  positions: PaperPosition[];
-  recentFills: PaperCopyFill[];
+  metricTiles: MetricTileView[];
+  positions: AccountPositionRow[];
+  recentActivity: AccountExecutionRow[];
   sourceRows: SourceRow[];
   timeline: TimelinePoint[];
 };
@@ -283,11 +362,8 @@ export function AccountsDashboard({
   }, [refresh]);
 
   const accountView = useMemo(
-    () =>
-      selectedAccount?.accountType === "paper"
-        ? buildAccountView(summary, selectedAccount.key)
-        : null,
-    [selectedAccount, summary],
+    () => buildSelectedAccountView(summary, tradingAccounts, selectedAccount),
+    [selectedAccount, summary, tradingAccounts],
   );
 
   const handleTradingAction = useCallback(
@@ -304,7 +380,7 @@ export function AccountsDashboard({
         const confirmed = window.confirm(
           `Close ${formatInteger(
             accountView.positions.length,
-          )} open paper positions for ${accountView.account.label} and stop trading?`,
+          )} open paper positions for ${selectedAccount.label} and stop trading?`,
         );
         if (!confirmed) {
           return;
@@ -689,18 +765,20 @@ export function AccountsDashboard({
         </div>
       ) : null}
 
-      {selectedAccount?.accountType === "paper" && accountView ? (
+      {accountView ? (
         <AccountContent
           accountView={accountView}
           lastRefreshAt={lastRefreshAt}
           marketDataStatus={summary.marketDataStatus}
-        />
-      ) : selectedAccount?.accountType === "live" ? (
-        <LiveAccountContent
-          account={selectedAccount.live}
-          isReconciling={reconcileAccountKey === selectedAccount.live.key}
-          lastRefreshAt={lastRefreshAt}
-          onReconcile={handleReconcileLiveAccount}
+          isReconciling={
+            selectedAccount?.accountType === "live" &&
+            reconcileAccountKey === selectedAccount.live.key
+          }
+          onReconcile={
+            selectedAccount?.accountType === "live"
+              ? () => handleReconcileLiveAccount(selectedAccount.live)
+              : null
+          }
         />
       ) : (
         <section className="rounded-lg border border-line bg-panel p-8 text-center text-sm text-[#5b6770]">
@@ -957,68 +1035,65 @@ function AccountTypeOption({
 
 function AccountContent({
   accountView,
+  isReconciling,
   lastRefreshAt,
   marketDataStatus,
+  onReconcile,
 }: {
   accountView: AccountView;
+  isReconciling: boolean;
   lastRefreshAt: Date | null;
   marketDataStatus: PaperTradingSummaryResponse["marketDataStatus"];
+  onReconcile: (() => void) | null;
 }) {
-  const { account, metrics } = accountView;
-  const totalPnl = decimal(account.totalPnlUsd);
-  const realizedPnl = decimal(account.realizedPnlUsd);
-  const unrealizedPnl = decimal(account.unrealizedPnlUsd);
+  const metricTiles = onReconcile
+    ? accountView.metricTiles.map((tile) =>
+        tile.label === "Reconciled"
+          ? {
+              ...tile,
+              action: (
+                <button
+                  type="button"
+                  onClick={onReconcile}
+                  disabled={isReconciling}
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-line bg-white text-[#5b6770] shadow-sm transition hover:bg-[#f7f9fb] hover:text-ink disabled:cursor-not-allowed disabled:opacity-60"
+                  title="Reconcile live account"
+                  aria-label="Reconcile live account"
+                >
+                  <RotateCw
+                    className={`h-4 w-4 ${isReconciling ? "animate-spin" : ""}`}
+                    aria-hidden="true"
+                  />
+                </button>
+              ),
+            }
+          : tile,
+      )
+    : accountView.metricTiles;
 
   return (
     <>
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
-        <MetricTile
-          detail={`${formatCurrency(account.cashBalanceUsd)} cash`}
-          icon={WalletCards}
-          label="Net equity"
-          value={formatCurrency(metrics.netEquityUsd)}
-        />
-        <MetricTile
-          detail={formatPercent(metrics.returnPct)}
-          icon={totalPnl >= 0 ? TrendingUp : TrendingDown}
-          label="Total PnL"
-          tone={totalPnl >= 0 ? "positive" : "danger"}
-          value={formatCurrency(totalPnl)}
-        />
-        <MetricTile
-          detail={`${formatCurrency(account.feeUsd)} fees`}
-          icon={realizedPnl >= 0 ? TrendingUp : TrendingDown}
-          label="Realized"
-          tone={realizedPnl >= 0 ? "positive" : "danger"}
-          value={formatCurrency(realizedPnl)}
-        />
-        <MetricTile
-          detail={`${formatInteger(account.openPositionCount)} open positions`}
-          icon={unrealizedPnl >= 0 ? TrendingUp : TrendingDown}
-          label="Unrealized"
-          tone={unrealizedPnl >= 0 ? "positive" : "danger"}
-          value={formatCurrency(unrealizedPnl)}
-        />
-        <MetricTile
-          detail={`${formatPercent(metrics.exposureRatio)} of net equity`}
-          icon={Target}
-          label="Open notional"
-          value={formatCurrency(account.openNotionalUsd)}
-        />
-        <MetricTile
-          detail={`${formatCurrency(metrics.remainingAllocationUsd)} available`}
-          icon={Layers}
-          label="Allocation used"
-          value={formatPercent(metrics.allocationUsedPct)}
-        />
+        {metricTiles.map((tile) => (
+          <MetricTile
+            key={tile.label}
+            action={tile.action}
+            detail={tile.detail}
+            icon={tile.icon}
+            label={tile.label}
+            tone={tile.tone}
+            value={tile.value}
+          />
+        ))}
       </section>
 
       <section className="grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
         <Panel icon={Activity} title="Account Balance">
-          <BalanceBreakdown account={account} metrics={metrics} />
+          <BalanceBreakdown rows={accountView.balanceLines} />
           <div className="mt-4 grid gap-2 sm:grid-cols-3">
-            <SmallMetric label="Status" value={account.enabled ? "enabled" : "disabled"} />
-            <SmallMetric label="Created" value={formatDate(account.createdAt)} />
+            {accountView.detailSections[0]?.rows.slice(0, 2).map((row) => (
+              <SmallMetric key={row.label} label={row.label} value={row.value} />
+            ))}
             <SmallMetric label="Last refresh" value={lastRefreshAt?.toLocaleTimeString("sv-SE") ?? "-"} />
           </div>
         </Panel>
@@ -1027,12 +1102,26 @@ function AccountContent({
           <CumulativePnlChart points={accountView.timeline} />
           <div className="mt-4 grid gap-2 sm:grid-cols-4">
             <SmallMetric label="Closed trades" value={formatInteger(accountView.closedTrades.length)} />
-            <SmallMetric label="Closed net" value={formatCurrency(metrics.closedNetPnlUsd)} />
-            <SmallMetric label="Avg closed" value={formatCurrency(metrics.averageClosedPnlUsd)} />
-            <SmallMetric label="Win rate" value={formatPercent(metrics.winRate)} />
+            <SmallMetric label="Closed net" value={formatCurrency(accountView.metrics.closedNetPnlUsd)} />
+            <SmallMetric label="Avg closed" value={formatCurrency(accountView.metrics.averageClosedPnlUsd)} />
+            <SmallMetric label="Win rate" value={formatPercent(accountView.metrics.winRate)} />
           </div>
         </Panel>
       </section>
+
+      {accountView.detailSections.length > 0 ? (
+        <section className="grid gap-4 xl:grid-cols-2">
+          {accountView.detailSections.map((section) => (
+            <Panel key={section.title} icon={section.icon} title={section.title}>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {section.rows.map((row) => (
+                  <SmallMetric key={row.label} label={row.label} value={row.value} />
+                ))}
+              </div>
+            </Panel>
+          ))}
+        </section>
+      ) : null}
 
       <section className="grid gap-4 xl:grid-cols-[1.05fr_0.95fr]">
         <Panel icon={BarChart3} title="Allocation Usage">
@@ -1059,120 +1148,18 @@ function AccountContent({
           <ClosedTradeRows trades={accountView.closedTrades} />
         </Panel>
 
-        <Panel icon={BarChart3} title="Recent Fills">
-          <FillRows fills={accountView.recentFills} />
-        </Panel>
-      </section>
-    </>
-  );
-}
-
-function LiveAccountContent({
-  account,
-  isReconciling,
-  lastRefreshAt,
-  onReconcile,
-}: {
-  account: TradingAccount;
-  isReconciling: boolean;
-  lastRefreshAt: Date | null;
-  onReconcile: (account: TradingAccount) => void;
-}) {
-  const realizedPnl = decimal(account.realizedPnlUsd);
-  const feeUsd = decimal(account.feeUsd);
-  const capitalMode = formatCapitalMode(account.capitalMode);
-
-  return (
-    <>
-      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
-        <MetricTile
-          detail={`${formatLiveAccountStatus(account.status)} on ${account.network}, ${capitalMode}`}
-          icon={WalletCards}
-          label="Equity"
-          value={formatCurrency(account.equityUsd)}
-        />
-        <MetricTile
-          detail="Sizing capital"
-          icon={Target}
-          label="Tradable"
-          value={formatCurrency(account.tradableEquityUsd)}
-        />
-        <MetricTile
-          detail="Available balance"
-          icon={Layers}
-          label="Cash"
-          value={formatCurrency(account.cashBalanceUsd)}
-        />
-        <MetricTile
-          detail="Exchange reconciled"
-          icon={realizedPnl >= 0 ? TrendingUp : TrendingDown}
-          label="Realized"
-          tone={realizedPnl >= 0 ? "positive" : "danger"}
-          value={formatCurrency(realizedPnl)}
-        />
-        <MetricTile
-          detail="Recorded fees"
-          icon={Activity}
-          label="Fees"
-          tone={feeUsd > 0 ? "warning" : "neutral"}
-          value={formatCurrency(feeUsd)}
-        />
-        <MetricTile
-          action={
-            <button
-              type="button"
-              onClick={() => onReconcile(account)}
-              disabled={isReconciling}
-              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-line bg-white text-[#5b6770] shadow-sm transition hover:bg-[#f7f9fb] hover:text-ink disabled:cursor-not-allowed disabled:opacity-60"
-              title="Reconcile live account"
-              aria-label="Reconcile live account"
-            >
-              <RotateCw
-                className={`h-4 w-4 ${isReconciling ? "animate-spin" : ""}`}
-                aria-hidden="true"
-              />
-            </button>
-          }
-          detail={formatDate(account.lastReconciledAt)}
-          icon={Clock}
-          label="Reconciled"
-          value={account.lastReconciledAt ? "synced" : "pending"}
-        />
-      </section>
-
-      <section className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
-        <Panel icon={WalletCards} title="Live Account">
-          <div className="grid gap-2 sm:grid-cols-2">
-            <SmallMetric label="Status" value={formatLiveAccountStatus(account.status)} />
-            <SmallMetric label="Network" value={account.network} />
-            <SmallMetric label="Capital mode" value={capitalMode} />
-            <SmallMetric label="Abstraction" value={account.userAbstraction ?? "unknown"} />
-            <SmallMetric label="Perp equity" value={formatCurrency(account.perpEquityUsd)} />
-            <SmallMetric label="Spot USDC" value={formatCurrency(account.spotUsdcBalanceUsd)} />
-            <SmallMetric label="Created" value={formatDate(account.createdAt)} />
-            <SmallMetric label="Updated" value={formatDate(account.updatedAt)} />
-            <SmallMetric
-              label="Last refresh"
-              value={lastRefreshAt?.toLocaleTimeString("sv-SE") ?? "-"}
-            />
-            <SmallMetric label="Last reconcile" value={formatDate(account.lastReconciledAt)} />
-          </div>
-        </Panel>
-
-        <Panel icon={Activity} title="Exchange Routing">
-          <div className="grid gap-3">
-            <DetailRow label="Wallet address" value={account.walletAddress ?? "config wallet"} />
-            <DetailRow label="Vault address" value={account.vaultAddress ?? "none"} />
-            <DetailRow label="Internal key" value={account.key} />
-          </div>
+        <Panel icon={BarChart3} title="Recent Execution Activity">
+          <FillRows fills={accountView.recentActivity} />
         </Panel>
       </section>
 
-      <section>
+      {accountView.capitalBalances.length > 0 ? (
+        <section>
         <Panel icon={Layers} title="Capital Balances">
-          <CapitalBalanceRows balances={account.capitalBalances} />
+            <CapitalBalanceRows balances={accountView.capitalBalances} />
         </Panel>
-      </section>
+        </section>
+      ) : null}
     </>
   );
 }
@@ -1261,51 +1248,18 @@ function Panel({
   );
 }
 
-function BalanceBreakdown({
-  account,
-  metrics,
-}: {
-  account: PaperTradingAccount;
-  metrics: AccountMetrics;
-}) {
-  const startingBalance = decimal(account.startingBalanceUsd);
-  const cashBalance = decimal(account.cashBalanceUsd);
-  const openMargin = decimal(account.openMarginUsd);
-  const unrealizedPnl = decimal(account.unrealizedPnlUsd);
-  const balanceScale = Math.max(startingBalance, cashBalance, metrics.netEquityUsd, openMargin, 1);
-
+function BalanceBreakdown({ rows }: { rows: MetricLineView[] }) {
   return (
     <div className="grid gap-3">
-      <MetricLine
-        label="Starting balance"
-        tone="neutral"
-        value={startingBalance / balanceScale}
-        valueLabel={formatCurrency(startingBalance)}
-      />
-      <MetricLine
-        label="Cash balance"
-        tone="neutral"
-        value={cashBalance / balanceScale}
-        valueLabel={formatCurrency(cashBalance)}
-      />
-      <MetricLine
-        label="Net equity"
-        tone={metrics.netEquityUsd >= startingBalance ? "positive" : "danger"}
-        value={metrics.netEquityUsd / balanceScale}
-        valueLabel={formatCurrency(metrics.netEquityUsd)}
-      />
-      <MetricLine
-        label="Open margin"
-        tone="warning"
-        value={openMargin / balanceScale}
-        valueLabel={formatCurrency(openMargin)}
-      />
-      <MetricLine
-        label="Unrealized PnL"
-        tone={unrealizedPnl >= 0 ? "positive" : "danger"}
-        value={Math.abs(unrealizedPnl) / balanceScale}
-        valueLabel={formatCurrency(unrealizedPnl)}
-      />
+      {rows.map((row) => (
+        <MetricLine
+          key={row.label}
+          label={row.label}
+          tone={row.tone}
+          value={row.value}
+          valueLabel={row.valueLabel}
+        />
+      ))}
     </div>
   );
 }
@@ -1481,7 +1435,7 @@ function SourceRows({ rows }: { rows: SourceRow[] }) {
   );
 }
 
-function PositionRows({ positions }: { positions: PaperPosition[] }) {
+function PositionRows({ positions }: { positions: AccountPositionRow[] }) {
   if (positions.length === 0) {
     return <EmptyState text="No open positions for this account." />;
   }
@@ -1499,21 +1453,31 @@ function PositionRows({ positions }: { positions: PaperPosition[] }) {
                   label={position.side}
                   tone={position.side === "long" ? "positive" : "warning"}
                 />
+                <StatusPill
+                  label={position.accountType}
+                  tone={position.accountType === "live" ? "positive" : "neutral"}
+                />
               </div>
-              <Link
-                href={`/wallets/${position.sourceWallet}`}
-                className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink hover:text-[#297c73]"
-              >
-                {sourceDisplayName(position.sourceLabel, position.sourceWallet)}
-              </Link>
+              {position.sourceHref ? (
+                <Link
+                  href={position.sourceHref}
+                  className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink hover:text-[#297c73]"
+                >
+                  {position.sourceLabel}
+                </Link>
+              ) : (
+                <p className="mt-1 min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink">
+                  {position.sourceLabel}
+                </p>
+              )}
               <p className="mt-1 truncate text-[11px] text-[#5b6770]">
-                opened {formatDate(position.openedAt)}
+                {position.detail}
               </p>
             </div>
             <RowMetric label="Unrealized" tone={unrealized >= 0 ? "positive" : "danger"} value={formatCurrency(unrealized)} />
-            <RowMetric label="Notional" detail={`${formatLeverage(position.leverage)} leverage`} value={formatCurrency(position.currentNotionalUsd ?? position.notionalUsd)} />
-            <RowMetric label="Entry" detail={`mark ${formatPrice(position.markPrice)}`} value={formatPrice(position.entryPrice)} />
-            <RowMetric label="Execution" detail="source to open" value={formatExecutionMs(position.entryExecutionDelayMs)} />
+            <RowMetric label="Notional" detail={`${formatLeverage(position.leverage)} leverage`} value={formatCurrency(position.notionalUsd)} />
+            <RowMetric label="Entry" detail={position.entryDetail} value={formatPrice(position.entryPrice)} />
+            <RowMetric label="Execution" detail={position.executionDetail} value={position.executionValue} />
           </div>
         );
       })}
@@ -1521,7 +1485,7 @@ function PositionRows({ positions }: { positions: PaperPosition[] }) {
   );
 }
 
-function ClosedTradeRows({ trades }: { trades: PaperClosedTrade[] }) {
+function ClosedTradeRows({ trades }: { trades: AccountClosedTradeRow[] }) {
   if (trades.length === 0) {
     return <EmptyState text="No closed trades for this account." />;
   }
@@ -1535,27 +1499,29 @@ function ClosedTradeRows({ trades }: { trades: PaperClosedTrade[] }) {
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-1">
                 <p className="font-mono text-sm font-semibold text-ink">{trade.coin}</p>
-                {trade.side ? (
-                  <StatusPill
-                    label={trade.side}
-                    tone={trade.side === "long" ? "positive" : "warning"}
-                  />
-                ) : null}
-                {trade.isSourceLiquidation ? <StatusPill label="liquidation" tone="danger" /> : null}
+                {trade.badges.map((badge) => (
+                  <StatusPill key={`${badge.label}:${badge.tone}`} label={badge.label} tone={badge.tone} />
+                ))}
               </div>
-              <Link
-                href={`/wallets/${trade.sourceWallet}`}
-                className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink hover:text-[#297c73]"
-              >
-                {sourceDisplayName(trade.sourceLabel, trade.sourceWallet)}
-              </Link>
+              {trade.sourceHref ? (
+                <Link
+                  href={trade.sourceHref}
+                  className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink hover:text-[#297c73]"
+                >
+                  {trade.sourceLabel}
+                </Link>
+              ) : (
+                <p className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink">
+                  {trade.sourceLabel}
+                </p>
+              )}
               <p className="mt-1 text-[11px] text-[#5b6770]">
-                {formatCloseType(trade.closeType)}, {formatDuration(trade.durationMs)}
+                {trade.detail}
               </p>
             </div>
             <RowMetric label="Net PnL" tone={netPnl >= 0 ? "positive" : "danger"} value={formatCurrency(netPnl)} />
             <RowMetric label="Closed" value={formatShortDateTime(trade.closedAt)} />
-            <RowMetric label="Exit" detail={`size ${formatSize(trade.size)}`} value={formatPrice(trade.exitPrice)} />
+            <RowMetric label="Exit" detail={trade.exitDetail} value={formatPrice(trade.exitPrice)} />
           </div>
         );
       })}
@@ -1563,9 +1529,9 @@ function ClosedTradeRows({ trades }: { trades: PaperClosedTrade[] }) {
   );
 }
 
-function FillRows({ fills }: { fills: PaperCopyFill[] }) {
+function FillRows({ fills }: { fills: AccountExecutionRow[] }) {
   if (fills.length === 0) {
-    return <EmptyState text="No recent fills for this account." />;
+    return <EmptyState text="No recent execution activity for this account." />;
   }
 
   return (
@@ -1577,27 +1543,29 @@ function FillRows({ fills }: { fills: PaperCopyFill[] }) {
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-1">
                 <p className="font-mono text-sm font-semibold text-ink">{fill.coin}</p>
-                <StatusPill label={fill.action} tone={fill.action === "skip" ? "warning" : "neutral"} />
-                {fill.side ? (
-                  <StatusPill label={fill.side} tone={fill.side === "long" ? "positive" : "warning"} />
-                ) : null}
-                {fill.minOrderAdjusted ? (
-                  <StatusPill label="min order adjusted" tone="warning" />
-                ) : null}
+                {fill.badges.map((badge) => (
+                  <StatusPill key={`${badge.label}:${badge.tone}`} label={badge.label} tone={badge.tone} />
+                ))}
               </div>
-              <Link
-                href={`/wallets/${fill.sourceWallet}`}
-                className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink hover:text-[#297c73]"
-              >
-                {sourceDisplayName(fill.sourceLabel, fill.sourceWallet)}
-              </Link>
+              {fill.sourceHref ? (
+                <Link
+                  href={fill.sourceHref}
+                  className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink hover:text-[#297c73]"
+                >
+                  {fill.sourceLabel}
+                </Link>
+              ) : (
+                <p className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink">
+                  {fill.sourceLabel}
+                </p>
+              )}
               <p className="mt-1 truncate text-[11px] text-[#5b6770]">
-                {fill.skippedReason ? humanReason(fill.skippedReason) : formatShortDateTime(fill.filledAt)}
+                {fill.detail}
               </p>
             </div>
             <RowMetric label="Realized" tone={realizedPnl >= 0 ? "positive" : "danger"} value={formatCurrency(realizedPnl)} />
-            <RowMetric label="Notional" detail={fillNotionalDetail(fill)} value={formatCurrency(fill.notionalUsd)} />
-            <RowMetric label="Price" detail={fillPriceDetail(fill)} value={formatPrice(fill.price)} />
+            <RowMetric label="Notional" detail={fill.notionalDetail} value={formatCurrency(fill.notionalUsd)} />
+            <RowMetric label="Price" detail={fill.priceDetail} value={formatPrice(fill.price)} />
           </div>
         );
       })}
@@ -1696,15 +1664,6 @@ function Bar({ tone = "neutral", value }: { tone?: Tone; value: number }) {
 
 function EmptyState({ text }: { text: string }) {
   return <div className="py-6 text-center text-sm text-[#5b6770]">{text}</div>;
-}
-
-function DetailRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="grid gap-1 rounded-md border border-line bg-[#f8fafb] px-3 py-2">
-      <p className="text-[11px] font-medium uppercase text-[#5b6770]">{label}</p>
-      <p className="break-words font-mono text-sm font-semibold text-ink">{value}</p>
-    </div>
-  );
 }
 
 function readCreateAccountDraft(): CreateAccountDraft {
@@ -1836,16 +1795,23 @@ function lastUpdatedAt(
     : summary.updatedAt;
 }
 
-function buildAccountView(
+function buildSelectedAccountView(
   summary: PaperTradingSummaryResponse,
-  selectedAccountKey: string,
+  tradingAccounts: TradingAccountsResponse,
+  selectedAccount: AccountOption | null,
 ): AccountView | null {
-  const account =
-    summary.accounts.find((item) => item.key === selectedAccountKey) ?? summary.accounts[0];
-  if (!account) {
+  if (!selectedAccount) {
     return null;
   }
+  return selectedAccount.accountType === "paper"
+    ? buildPaperAccountView(summary, selectedAccount.paper)
+    : buildLiveAccountView(summary, tradingAccounts, selectedAccount.live);
+}
 
+function buildPaperAccountView(
+  summary: PaperTradingSummaryResponse,
+  account: PaperTradingAccount,
+): AccountView {
   const allocations = summary.allocations.filter((item) => item.accountKey === account.key);
   const positions = summary.positions.filter((item) => item.accountKey === account.key);
   const closedTrades = summary.closedTrades.filter((item) => item.accountKey === account.key);
@@ -1862,17 +1828,258 @@ function buildAccountView(
     closedTrades,
     recentFills,
   });
+  const netEquityUsd = accountNetEquity(account);
+  const startingBalance = decimal(account.startingBalanceUsd);
+  const cashBalance = decimal(account.cashBalanceUsd);
+  const openMargin = decimal(account.openMarginUsd);
+  const unrealizedPnl = decimal(account.unrealizedPnlUsd);
+  const totalPnl = decimal(account.totalPnlUsd);
+  const realizedPnl = decimal(account.realizedPnlUsd);
+  const balanceScale = Math.max(startingBalance, cashBalance, netEquityUsd, openMargin, 1);
 
   return {
-    account,
+    accountType: "paper",
     allocations,
-    closedTrades,
+    balanceLines: [
+      {
+        label: "Starting balance",
+        tone: "neutral",
+        value: startingBalance / balanceScale,
+        valueLabel: formatCurrency(startingBalance),
+      },
+      {
+        label: "Cash balance",
+        tone: "neutral",
+        value: cashBalance / balanceScale,
+        valueLabel: formatCurrency(cashBalance),
+      },
+      {
+        label: "Net equity",
+        tone: netEquityUsd >= startingBalance ? "positive" : "danger",
+        value: netEquityUsd / balanceScale,
+        valueLabel: formatCurrency(netEquityUsd),
+      },
+      {
+        label: "Open margin",
+        tone: "warning",
+        value: openMargin / balanceScale,
+        valueLabel: formatCurrency(openMargin),
+      },
+      {
+        label: "Unrealized PnL",
+        tone: unrealizedPnl >= 0 ? "positive" : "danger",
+        value: Math.abs(unrealizedPnl) / balanceScale,
+        valueLabel: formatCurrency(unrealizedPnl),
+      },
+    ],
+    capitalBalances: [],
+    closedTrades: closedTrades.map(paperClosedTradeRow),
+    detailSections: [
+      {
+        icon: WalletCards,
+        title: "Account Details",
+        rows: [
+          { label: "Status", value: account.enabled ? "enabled" : "disabled" },
+          { label: "Created", value: formatDate(account.createdAt) },
+          { label: "Updated", value: formatDate(account.updatedAt) },
+          { label: "Open positions", value: formatInteger(account.openPositionCount) },
+        ],
+      },
+    ],
     marketRows: buildMarketRows(positions),
     metrics,
-    positions,
-    recentFills,
+    metricTiles: [
+      {
+        detail: `${formatCurrency(account.cashBalanceUsd)} cash`,
+        icon: WalletCards,
+        label: "Net equity",
+        value: formatCurrency(metrics.netEquityUsd),
+      },
+      {
+        detail: formatPercent(metrics.returnPct),
+        icon: totalPnl >= 0 ? TrendingUp : TrendingDown,
+        label: "Total PnL",
+        tone: totalPnl >= 0 ? "positive" : "danger",
+        value: formatCurrency(totalPnl),
+      },
+      {
+        detail: `${formatCurrency(account.feeUsd)} fees`,
+        icon: realizedPnl >= 0 ? TrendingUp : TrendingDown,
+        label: "Realized",
+        tone: realizedPnl >= 0 ? "positive" : "danger",
+        value: formatCurrency(realizedPnl),
+      },
+      {
+        detail: `${formatInteger(account.openPositionCount)} open positions`,
+        icon: unrealizedPnl >= 0 ? TrendingUp : TrendingDown,
+        label: "Unrealized",
+        tone: unrealizedPnl >= 0 ? "positive" : "danger",
+        value: formatCurrency(unrealizedPnl),
+      },
+      {
+        detail: `${formatPercent(metrics.exposureRatio)} of net equity`,
+        icon: Target,
+        label: "Open notional",
+        value: formatCurrency(account.openNotionalUsd),
+      },
+      {
+        detail: `${formatCurrency(metrics.remainingAllocationUsd)} available`,
+        icon: Layers,
+        label: "Allocation used",
+        value: formatPercent(metrics.allocationUsedPct),
+      },
+    ],
+    positions: positions.map(paperPositionRow),
+    recentActivity: recentFills.map(paperExecutionRow),
     sourceRows,
-    timeline: buildTimeline(closedTrades),
+    timeline: buildTimeline(closedTrades.map(paperClosedTradeRow)),
+  };
+}
+
+function buildLiveAccountView(
+  summary: PaperTradingSummaryResponse,
+  tradingAccounts: TradingAccountsResponse,
+  account: TradingAccount,
+): AccountView {
+  const sourceLabels = buildSourceLabelMap(summary);
+  const allPositions = tradingAccounts.positions.filter((item) => item.accountKey === account.key);
+  const displayPositions = displayAccountLivePositions(allPositions);
+  const sourcePositions = allPositions.filter((position) => !isLiveExchangeSource(position.sourceWallet));
+  const sourcePerformancePositions = sourcePositions.length > 0 ? sourcePositions : displayPositions;
+  const closedTrades = tradingAccounts.closedTrades.filter((item) => item.accountKey === account.key);
+  const recentFills = tradingAccounts.recentFills.filter((item) => item.accountKey === account.key);
+  const recentOrders = tradingAccounts.recentOrders.filter((item) => item.accountKey === account.key);
+  const sourceRows = buildLiveSourceRows({
+    closedTrades,
+    positions: sourcePerformancePositions,
+    recentFills,
+    recentOrders,
+    sourceLabels,
+  });
+  const metrics = buildLiveAccountMetrics({
+    account,
+    closedTrades,
+    positions: displayPositions,
+    recentFills,
+    recentOrders,
+  });
+  const equity = liveAccountEquity(account);
+  const cash = decimal(account.cashBalanceUsd);
+  const tradable = decimal(account.tradableEquityUsd);
+  const perpEquity = decimal(account.perpEquityUsd);
+  const openMargin = sumNumbers(displayPositions.map((position) => position.marginUsd));
+  const balanceScale = Math.max(equity, cash, tradable, perpEquity, openMargin, 1);
+  const realizedPnl = decimal(account.realizedPnlUsd);
+  const feeUsd = decimal(account.feeUsd);
+  const capitalMode = formatCapitalMode(account.capitalMode);
+
+  return {
+    accountType: "live",
+    allocations: [],
+    balanceLines: [
+      {
+        label: "Equity",
+        tone: "neutral",
+        value: equity / balanceScale,
+        valueLabel: formatCurrency(equity),
+      },
+      {
+        label: "Tradable",
+        tone: "positive",
+        value: tradable / balanceScale,
+        valueLabel: formatCurrency(tradable),
+      },
+      {
+        label: "Cash balance",
+        tone: "neutral",
+        value: cash / balanceScale,
+        valueLabel: formatCurrency(cash),
+      },
+      {
+        label: "Perp equity",
+        tone: "neutral",
+        value: perpEquity / balanceScale,
+        valueLabel: formatCurrency(perpEquity),
+      },
+      {
+        label: "Open margin",
+        tone: "warning",
+        value: openMargin / balanceScale,
+        valueLabel: formatCurrency(openMargin),
+      },
+    ],
+    capitalBalances: account.capitalBalances,
+    closedTrades: closedTrades.map((trade) => liveClosedTradeRow(trade, sourceLabels)),
+    detailSections: [
+      {
+        icon: WalletCards,
+        title: "Account Details",
+        rows: [
+          { label: "Status", value: formatLiveAccountStatus(account.status) },
+          { label: "Network", value: account.network },
+          { label: "Capital mode", value: capitalMode },
+          { label: "Abstraction", value: account.userAbstraction ?? "unknown" },
+          { label: "Created", value: formatDate(account.createdAt) },
+          { label: "Updated", value: formatDate(account.updatedAt) },
+        ],
+      },
+      {
+        icon: Activity,
+        title: "Exchange Routing",
+        rows: [
+          { label: "Wallet address", value: account.walletAddress ?? "config wallet" },
+          { label: "Vault address", value: account.vaultAddress ?? "none" },
+          { label: "Internal key", value: account.key },
+          { label: "Last reconcile", value: formatDate(account.lastReconciledAt) },
+        ],
+      },
+    ],
+    marketRows: buildMarketRows(displayPositions),
+    metrics,
+    metricTiles: [
+      {
+        detail: `${formatLiveAccountStatus(account.status)} on ${account.network}, ${capitalMode}`,
+        icon: WalletCards,
+        label: "Equity",
+        value: formatCurrency(equity),
+      },
+      {
+        detail: "Sizing capital",
+        icon: Target,
+        label: "Tradable",
+        value: formatCurrency(account.tradableEquityUsd),
+      },
+      {
+        detail: "Available balance",
+        icon: Layers,
+        label: "Cash",
+        value: formatCurrency(account.cashBalanceUsd),
+      },
+      {
+        detail: "Exchange reconciled",
+        icon: realizedPnl >= 0 ? TrendingUp : TrendingDown,
+        label: "Realized",
+        tone: realizedPnl >= 0 ? "positive" : "danger",
+        value: formatCurrency(realizedPnl),
+      },
+      {
+        detail: "Recorded fees",
+        icon: Activity,
+        label: "Fees",
+        tone: feeUsd > 0 ? "warning" : "neutral",
+        value: formatCurrency(feeUsd),
+      },
+      {
+        detail: formatDate(account.lastReconciledAt),
+        icon: Clock,
+        label: "Reconciled",
+        value: account.lastReconciledAt ? "synced" : "pending",
+      },
+    ],
+    positions: displayPositions.map((position) => livePositionRow(position, sourceLabels)),
+    recentActivity: buildLiveAccountExecutionRows(recentFills, recentOrders, sourceLabels),
+    sourceRows,
+    timeline: buildTimeline(closedTrades.map((trade) => liveClosedTradeRow(trade, sourceLabels))),
   };
 }
 
@@ -1916,6 +2123,242 @@ function buildAccountMetrics({
           : null,
     skippedFillCount,
     winRate: closedTrades.length > 0 ? winningClosedTradeCount / closedTrades.length : null,
+  };
+}
+
+function buildLiveAccountMetrics({
+  account,
+  closedTrades,
+  positions,
+  recentFills,
+  recentOrders,
+}: {
+  account: TradingAccount;
+  closedTrades: TradingClosedTrade[];
+  positions: TradingPosition[];
+  recentFills: TradingFill[];
+  recentOrders: TradingOrder[];
+}): AccountMetrics {
+  const netEquityUsd = liveAccountEquity(account);
+  const openMarginUsd = sumNumbers(positions.map((position) => position.marginUsd));
+  const openNotionalUsd = sumNumbers(
+    positions.map((position) => position.currentNotionalUsd ?? position.notionalUsd),
+  );
+  const closedNetPnlUsd = sumNumbers(closedTrades.map((trade) => trade.netPnlUsd));
+  const winningClosedTradeCount = closedTrades.filter((trade) => decimal(trade.netPnlUsd) > 0).length;
+  const skippedFillCount = recentOrders.filter((order) => order.orderType === "skip").length;
+
+  return {
+    allocationUsd: netEquityUsd,
+    allocationUsedPct: netEquityUsd > 0 ? openMarginUsd / netEquityUsd : null,
+    averageClosedPnlUsd: closedTrades.length > 0 ? closedNetPnlUsd / closedTrades.length : 0,
+    closedNetPnlUsd,
+    copiedFillCount: recentFills.length,
+    exposureRatio: netEquityUsd > 0 ? openNotionalUsd / netEquityUsd : null,
+    netEquityUsd,
+    remainingAllocationUsd: Math.max(netEquityUsd - openMarginUsd, 0),
+    returnPct: netEquityUsd > 0 ? decimal(account.realizedPnlUsd) / netEquityUsd : null,
+    skippedFillCount,
+    winRate: closedTrades.length > 0 ? winningClosedTradeCount / closedTrades.length : null,
+  };
+}
+
+function paperPositionRow(position: PaperPosition): AccountPositionRow {
+  return {
+    accountType: "paper",
+    coin: position.coin,
+    detail: `opened ${formatDate(position.openedAt)}`,
+    entryDetail: `mark ${formatPrice(position.markPrice)}`,
+    entryPrice: position.entryPrice,
+    executionDetail: "source to open",
+    executionValue: formatExecutionMs(position.entryExecutionDelayMs),
+    id: position.id,
+    leverage: position.leverage,
+    notionalUsd: position.currentNotionalUsd ?? position.notionalUsd,
+    side: position.side,
+    sourceHref: `/wallets/${position.sourceWallet}`,
+    sourceLabel: sourceDisplayName(position.sourceLabel, position.sourceWallet),
+    unrealizedPnlUsd: position.unrealizedPnlUsd,
+  };
+}
+
+function livePositionRow(
+  position: TradingPosition,
+  sourceLabels: Map<string, string>,
+): AccountPositionRow {
+  const isExchange = isLiveExchangeSource(position.sourceWallet);
+  return {
+    accountType: "live",
+    coin: position.coin,
+    detail: `opened ${formatDate(position.openedAt)}`,
+    entryDetail: `mark ${formatPrice(position.markPrice)}`,
+    entryPrice: position.entryPrice,
+    executionDetail: "live position",
+    executionValue: "-",
+    id: position.id,
+    leverage: position.leverage,
+    notionalUsd: position.currentNotionalUsd ?? position.notionalUsd,
+    side: position.side,
+    sourceHref: isExchange ? null : `/wallets/${position.sourceWallet}`,
+    sourceLabel: isExchange
+      ? "Exchange position"
+      : sourceDisplayName(sourceLabels.get(position.sourceWallet.toLowerCase()), position.sourceWallet),
+    unrealizedPnlUsd: position.unrealizedPnlUsd,
+  };
+}
+
+function paperClosedTradeRow(trade: PaperClosedTrade): AccountClosedTradeRow {
+  return {
+    badges: [
+      ...(trade.side ? [{ label: trade.side, tone: trade.side === "long" ? "positive" as Tone : "warning" as Tone }] : []),
+      ...(trade.isSourceLiquidation ? [{ label: "liquidation", tone: "danger" as Tone }] : []),
+    ],
+    closedAt: trade.closedAt,
+    coin: trade.coin,
+    detail: `${formatCloseType(trade.closeType)}, ${formatDuration(trade.durationMs)}`,
+    exitDetail: `size ${formatSize(trade.size)}`,
+    exitPrice: trade.exitPrice,
+    id: trade.id,
+    netPnlUsd: trade.netPnlUsd,
+    sourceHref: `/wallets/${trade.sourceWallet}`,
+    sourceLabel: sourceDisplayName(trade.sourceLabel, trade.sourceWallet),
+  };
+}
+
+function liveClosedTradeRow(
+  trade: TradingClosedTrade,
+  sourceLabels: Map<string, string>,
+): AccountClosedTradeRow {
+  const isExchange = isLiveExchangeSource(trade.sourceWallet);
+  return {
+    badges: [
+      { label: "live", tone: "positive" },
+      { label: trade.side, tone: trade.side === "long" ? "positive" : "warning" },
+    ],
+    closedAt: trade.closedAt,
+    coin: trade.coin,
+    detail: `closed trade, ${formatDuration(trade.durationMs)}`,
+    exitDetail: `size ${formatSize(trade.size)}`,
+    exitPrice: trade.exitPrice,
+    id: trade.id,
+    netPnlUsd: trade.netPnlUsd,
+    sourceHref: isExchange ? null : `/wallets/${trade.sourceWallet}`,
+    sourceLabel: isExchange
+      ? "Exchange position"
+      : sourceDisplayName(sourceLabels.get(trade.sourceWallet.toLowerCase()), trade.sourceWallet),
+  };
+}
+
+function paperExecutionRow(fill: PaperCopyFill): AccountExecutionRow {
+  return {
+    badges: [
+      { label: "paper", tone: "neutral" },
+      { label: fill.action, tone: fill.action === "skip" ? "warning" : "neutral" },
+      ...(fill.side ? [{ label: fill.side, tone: fill.side === "long" ? "positive" as Tone : "warning" as Tone }] : []),
+      ...(fill.minOrderAdjusted ? [{ label: "min order adjusted", tone: "warning" as Tone }] : []),
+    ],
+    coin: fill.coin,
+    detail: fill.skippedReason ? humanReason(fill.skippedReason) : formatShortDateTime(fill.filledAt),
+    id: `paper:${fill.id}`,
+    notionalDetail: paperFillNotionalDetail(fill),
+    notionalUsd: fill.notionalUsd,
+    price: fill.price,
+    priceDetail: paperFillPriceDetail(fill),
+    realizedPnlUsd: fill.realizedPnlUsd,
+    sourceHref: `/wallets/${fill.sourceWallet}`,
+    sourceLabel: sourceDisplayName(fill.sourceLabel, fill.sourceWallet),
+  };
+}
+
+function buildLiveAccountExecutionRows(
+  liveFills: TradingFill[],
+  liveOrders: TradingOrder[],
+  sourceLabels: Map<string, string>,
+): AccountExecutionRow[] {
+  const fillOrderIds = new Set(
+    liveFills.map((fill) => fill.orderId).filter((value): value is string => Boolean(value)),
+  );
+  const fillRows = liveFills.map((fill) => liveFillExecutionRow(fill, sourceLabels));
+  const orderRows = liveOrders
+    .filter((order) => !fillOrderIds.has(order.id))
+    .map((order) => liveOrderExecutionRow(order, sourceLabels));
+  return [...fillRows, ...orderRows]
+    .sort((left, right) => dateMs(right.detailDate ?? "") - dateMs(left.detailDate ?? ""))
+    .map(accountExecutionRow)
+    .slice(0, 100);
+}
+
+type DatedAccountExecutionRow = AccountExecutionRow & { detailDate?: string };
+
+function accountExecutionRow(row: DatedAccountExecutionRow): AccountExecutionRow {
+  return {
+    badges: row.badges,
+    coin: row.coin,
+    detail: row.detail,
+    id: row.id,
+    notionalDetail: row.notionalDetail,
+    notionalUsd: row.notionalUsd,
+    price: row.price,
+    priceDetail: row.priceDetail,
+    realizedPnlUsd: row.realizedPnlUsd,
+    sourceHref: row.sourceHref,
+    sourceLabel: row.sourceLabel,
+  };
+}
+
+function liveFillExecutionRow(
+  fill: TradingFill,
+  sourceLabels: Map<string, string>,
+): DatedAccountExecutionRow {
+  const isExchange = isLiveExchangeSource(fill.sourceWallet);
+  return {
+    badges: [
+      { label: "live", tone: "positive" },
+      { label: fill.action, tone: fill.action.includes("close") ? "neutral" : "positive" },
+      { label: fill.side, tone: fill.side === "long" ? "positive" : "warning" },
+    ],
+    coin: fill.coin,
+    detail: formatShortDateTime(fill.filledAt),
+    detailDate: fill.filledAt,
+    id: `live:${fill.id}`,
+    notionalDetail: `size ${formatSize(fill.size)}`,
+    notionalUsd: fill.notionalUsd,
+    price: fill.price,
+    priceDetail: `fee ${formatCurrency(fill.feeUsd)}`,
+    realizedPnlUsd: fill.realizedPnlUsd,
+    sourceHref: isExchange ? null : `/wallets/${fill.sourceWallet}`,
+    sourceLabel: isExchange
+      ? "Exchange fill"
+      : sourceDisplayName(sourceLabels.get(fill.sourceWallet.toLowerCase()), fill.sourceWallet),
+  };
+}
+
+function liveOrderExecutionRow(
+  order: TradingOrder,
+  sourceLabels: Map<string, string>,
+): DatedAccountExecutionRow {
+  const isExchange = isLiveExchangeSource(order.sourceWallet);
+  const error = order.error?.trim();
+  const sortAt = order.orderType === "skip" ? order.createdAt : order.filledAt ?? order.updatedAt ?? order.createdAt;
+  return {
+    badges: [
+      { label: order.orderType === "skip" ? "live skip" : "live order", tone: order.orderType === "skip" ? "warning" : "neutral" },
+      { label: order.action, tone: order.action.includes("close") ? "neutral" : "positive" },
+      { label: order.status, tone: liveOrderStatusTone(order.status) },
+    ],
+    coin: order.coin,
+    detail: error ? humanReason(error.replace(/^skip:/, "")) : formatShortDateTime(sortAt),
+    detailDate: sortAt,
+    id: `live-order:${order.id}`,
+    notionalDetail: `filled ${formatCurrency(order.filledNotionalUsd)}`,
+    notionalUsd: order.requestedNotionalUsd,
+    price: order.limitPrice,
+    priceDetail: order.averageFillPrice ? `avg ${formatPrice(order.averageFillPrice)}` : formatLeverage(order.leverage),
+    realizedPnlUsd: "0",
+    sourceHref: isExchange ? null : `/wallets/${order.sourceWallet}`,
+    sourceLabel: isExchange
+      ? "Exchange order"
+      : sourceDisplayName(sourceLabels.get(order.sourceWallet.toLowerCase()), order.sourceWallet),
   };
 }
 
@@ -2024,7 +2467,103 @@ function buildSourceRows({
     });
 }
 
-function buildMarketRows(positions: PaperPosition[]): MarketRow[] {
+function buildLiveSourceRows({
+  closedTrades,
+  positions,
+  recentFills,
+  recentOrders,
+  sourceLabels,
+}: {
+  closedTrades: TradingClosedTrade[];
+  positions: TradingPosition[];
+  recentFills: TradingFill[];
+  recentOrders: TradingOrder[];
+  sourceLabels: Map<string, string>;
+}) {
+  const rows = new Map<string, SourceRow>();
+  const ensureRow = (sourceWallet: string): SourceRow => {
+    const source = sourceWallet.toLowerCase();
+    const existing = rows.get(source);
+    if (existing) {
+      return existing;
+    }
+    const row: SourceRow = {
+      allocationUsd: 0,
+      closedNetPnlUsd: 0,
+      closedTradeCount: 0,
+      copiedFillCount: 0,
+      lastActivityAt: null,
+      openMarginUsd: 0,
+      openNotionalUsd: 0,
+      openPositionCount: 0,
+      poolRank: null,
+      remainingAllocationUsd: 0,
+      score: null,
+      skippedFillCount: 0,
+      sourceLabel: isLiveExchangeSource(sourceWallet)
+        ? "Exchange"
+        : sourceLabels.get(source) ?? null,
+      sourceStatus: "history",
+      sourceWallet: sourceWallet,
+      totalPnlUsd: 0,
+      unrealizedPnlUsd: 0,
+      winRate: null,
+    };
+    rows.set(source, row);
+    return row;
+  };
+
+  for (const position of positions) {
+    const row = ensureRow(position.sourceWallet);
+    row.openPositionCount += 1;
+    row.openMarginUsd += decimal(position.marginUsd);
+    row.openNotionalUsd += decimal(position.currentNotionalUsd ?? position.notionalUsd);
+    row.unrealizedPnlUsd += decimal(position.unrealizedPnlUsd);
+    row.lastActivityAt = latestDate(row.lastActivityAt, position.updatedAt);
+    row.sourceStatus = "trading";
+  }
+
+  const winsBySource = new Map<string, number>();
+  for (const trade of closedTrades) {
+    const row = ensureRow(trade.sourceWallet);
+    row.closedTradeCount += 1;
+    row.closedNetPnlUsd += decimal(trade.netPnlUsd);
+    row.lastActivityAt = latestDate(row.lastActivityAt, trade.closedAt);
+    if (decimal(trade.netPnlUsd) > 0) {
+      const source = trade.sourceWallet.toLowerCase();
+      winsBySource.set(source, (winsBySource.get(source) ?? 0) + 1);
+    }
+  }
+
+  for (const fill of recentFills) {
+    const row = ensureRow(fill.sourceWallet);
+    row.copiedFillCount += 1;
+    row.lastActivityAt = latestDate(row.lastActivityAt, fill.filledAt);
+  }
+
+  for (const order of recentOrders) {
+    const row = ensureRow(order.sourceWallet);
+    if (order.orderType === "skip") {
+      row.skippedFillCount += 1;
+    }
+    row.lastActivityAt = latestDate(row.lastActivityAt, order.createdAt);
+  }
+
+  return Array.from(rows.values())
+    .map((row) => ({
+      ...row,
+      totalPnlUsd: row.closedNetPnlUsd + row.unrealizedPnlUsd,
+      winRate: row.closedTradeCount > 0 ? (winsBySource.get(row.sourceWallet.toLowerCase()) ?? 0) / row.closedTradeCount : null,
+    }))
+    .sort((left, right) => {
+      if (left.openPositionCount !== right.openPositionCount) {
+        return right.openPositionCount - left.openPositionCount;
+      }
+      return right.totalPnlUsd - left.totalPnlUsd;
+    });
+}
+
+function buildMarketRows(positions: Array<PaperPosition | TradingPosition>): MarketRow[] {
   const rows = new Map<string, MarketRow>();
   for (const position of positions) {
     const row = rows.get(position.coin) ?? {
@@ -2050,7 +2589,7 @@ function buildMarketRows(positions: PaperPosition[]): MarketRow[] {
   return Array.from(rows.values()).sort((left, right) => right.notionalUsd - left.notionalUsd);
 }
 
-function buildTimeline(closedTrades: PaperClosedTrade[]): TimelinePoint[] {
+function buildTimeline(closedTrades: AccountClosedTradeRow[]): TimelinePoint[] {
   let cumulativePnl = 0;
   return [...closedTrades]
     .sort((left, right) => dateMs(left.closedAt) - dateMs(right.closedAt))
@@ -2063,8 +2602,65 @@ function buildTimeline(closedTrades: PaperClosedTrade[]): TimelinePoint[] {
     });
 }
 
+function buildSourceLabelMap(summary: PaperTradingSummaryResponse) {
+  const labels = new Map<string, string>();
+  const addLabel = (wallet: string, label: string | null | undefined) => {
+    const trimmed = label?.trim();
+    if (trimmed) {
+      labels.set(wallet.toLowerCase(), trimmed);
+    }
+  };
+  for (const allocation of summary.allocations) {
+    addLabel(allocation.sourceWallet, allocation.sourceLabel);
+  }
+  for (const position of summary.positions) {
+    addLabel(position.sourceWallet, position.sourceLabel);
+  }
+  for (const fill of summary.recentFills) {
+    addLabel(fill.sourceWallet, fill.sourceLabel);
+  }
+  for (const trade of summary.closedTrades) {
+    addLabel(trade.sourceWallet, trade.sourceLabel);
+  }
+  return labels;
+}
+
+function displayAccountLivePositions(positions: TradingPosition[]) {
+  const exchangeCoins = new Set(
+    positions
+      .filter((position) => isLiveExchangeSource(position.sourceWallet))
+      .map((position) => position.coin),
+  );
+  return positions.filter(
+    (position) =>
+      isLiveExchangeSource(position.sourceWallet) ||
+      !exchangeCoins.has(position.coin),
+  );
+}
+
 function accountNetEquity(account: PaperTradingAccount) {
   return decimal(account.equityUsd) + decimal(account.unrealizedPnlUsd);
+}
+
+function liveAccountEquity(account: TradingAccount) {
+  return decimal(account.equityUsd ?? account.perpEquityUsd ?? account.tradableEquityUsd);
+}
+
+function isLiveExchangeSource(sourceWallet: string) {
+  return sourceWallet === "__exchange__";
+}
+
+function liveOrderStatusTone(status: string): Tone {
+  if (status === "filled" || status === "accepted") {
+    return "positive";
+  }
+  if (status === "rejected" || status === "failed") {
+    return "danger";
+  }
+  if (status === "submitted") {
+    return "warning";
+  }
+  return "neutral";
 }
 
 function decimal(value: string | number | null | undefined) {
@@ -2202,7 +2798,7 @@ function formatBps(value: string | number | null | undefined) {
   )} bps`;
 }
 
-function fillPriceDetail(fill: PaperCopyFill) {
+function paperFillPriceDetail(fill: PaperCopyFill) {
   if (fill.skippedReason && fill.priceDriftBps) {
     const maxDrift = fill.maxPriceDriftBps ? ` | max ${formatBps(fill.maxPriceDriftBps)}` : "";
     return `drift ${formatBps(fill.priceDriftBps)}${maxDrift} | live ${formatPrice(fill.observedPrice)}`;
@@ -2215,7 +2811,7 @@ function fillPriceDetail(fill: PaperCopyFill) {
   return parts.join(" | ");
 }
 
-function fillNotionalDetail(fill: PaperCopyFill) {
+function paperFillNotionalDetail(fill: PaperCopyFill) {
   if (!fill.minOrderAdjusted || !fill.originalNotionalUsd) {
     return undefined;
   }

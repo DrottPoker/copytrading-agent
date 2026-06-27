@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
 from app.core.config import Settings
 from app.db.models import TradingAccount, TradingOrder, TradingPosition
@@ -16,11 +17,13 @@ from app.services.live_copy_service import (
     live_pending_close_size_from_orders,
     live_skip,
     live_source_position_is_final_close,
+    record_live_skip,
     submit_live_copy_intent,
 )
 from app.services.live_trading_service import LiveOrderSubmitError
 from app.services.paper_trading_service import (
     PaperSourceAccountState,
+    PaperSourceAllocation,
     PaperSourceCurrentPosition,
     SourceFillPart,
 )
@@ -292,6 +295,62 @@ async def test_submit_live_copy_intent_reports_submit_error(monkeypatch) -> None
 
     assert result.skipped_fills == 1
     assert result.skip_reasons == {"live_order_submit_error": 1}
+
+
+@pytest.mark.asyncio
+async def test_record_live_skip_persists_diagnostic_order() -> None:
+    class CaptureSession:
+        statement = None
+
+        async def execute(self, statement):
+            self.statement = statement
+
+    session = CaptureSession()
+
+    result = await record_live_skip(
+        session,
+        account=live_account(last_reconciled_at=datetime(2026, 1, 1, tzinfo=UTC)),
+        allocation=PaperSourceAllocation(
+            source_wallet="0xsource",
+            source_label="Source",
+            rank=1,
+            pool_rank=1,
+            score=Decimal("90"),
+            allocation_pct=Decimal("0.2"),
+            active=True,
+            has_realtime_slot=True,
+            status_reason="trading",
+        ),
+        fill={
+            "externalFillId": "fill-1",
+            "coin": "HYPE",
+            "price": "100",
+            "time": 1_725_000_000_000,
+        },
+        part=SourceFillPart(
+            action="open",
+            side="long",
+            source_size=Decimal("0.1"),
+            source_notional_usd=Decimal("10"),
+            sequence_index=0,
+            close_ratio=None,
+            start_position=Decimal("0"),
+        ),
+        reason="live_price_drift_too_high",
+        leverage=Decimal("10"),
+    )
+
+    assert result.skipped_fills == 1
+    assert result.skip_reasons == {"live_price_drift_too_high": 1}
+    assert session.statement is not None
+    compiled = session.statement.compile(dialect=postgresql.dialect())
+    params = compiled.params
+    assert params["order_type"] == "skip"
+    assert params["status"] == "failed"
+    assert params["source_fill_id"] == "fill-1"
+    assert params["error"] == "skip:live_price_drift_too_high"
+    assert "submitted_at" not in params
+    assert params["filled_size"] == Decimal("0")
 
 
 def live_account(*, last_reconciled_at: datetime | None) -> TradingAccount:

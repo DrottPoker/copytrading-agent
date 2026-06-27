@@ -146,30 +146,31 @@ type WalletPerformanceRow = {
   lastFillAt: string | null;
 };
 
-type DashboardFill =
-  | {
-      accountType: "paper";
-      id: string;
-      filledAt: string;
-      paperFill: PaperCopyFill;
-      liveFill?: never;
-    }
-  | {
-      accountType: "live";
-      id: string;
-      filledAt: string;
-      liveFill: TradingFill;
-      paperFill?: never;
-      liveOrder?: never;
-    }
-  | {
-      accountType: "live_order";
-      id: string;
-      filledAt: string;
-      liveOrder: TradingOrder;
-      liveFill?: never;
-      paperFill?: never;
-    };
+type RowPill = {
+  label: string;
+  tone: Tone;
+};
+
+type RowIdentity = {
+  href: string | null;
+  label: string;
+  meta: string;
+};
+
+type RowStatItem = {
+  detail?: string;
+  label: string;
+  tone?: Tone;
+  value: string;
+};
+
+type ExecutionActivityItem = {
+  id: string;
+  identity: RowIdentity;
+  pills: RowPill[];
+  sortAt: string;
+  stats: RowStatItem[];
+};
 
 export function TradingDashboard({
   initialSummary,
@@ -381,8 +382,18 @@ export function TradingDashboard({
     () =>
       tradingMode === "paper"
         ? buildPaperDashboardFills(summary.recentFills)
-        : buildLiveDashboardFills(tradingAccounts.recentFills, tradingAccounts.recentOrders),
-    [summary.recentFills, tradingAccounts.recentFills, tradingAccounts.recentOrders, tradingMode],
+        : buildLiveDashboardFills(
+            tradingAccounts.recentFills,
+            tradingAccounts.recentOrders,
+            sourceLabels,
+          ),
+    [
+      sourceLabels,
+      summary.recentFills,
+      tradingAccounts.recentFills,
+      tradingAccounts.recentOrders,
+      tradingMode,
+    ],
   );
   const metrics = useMemo(
     () =>
@@ -1331,180 +1342,52 @@ function LiveClosedTradeRow({ trade }: { trade: TradingClosedTrade }) {
   );
 }
 
-function FillRow({ fill }: { fill: DashboardFill }) {
-  if (fill.accountType === "paper") {
-    return <PaperFillRow fill={fill.paperFill} />;
-  }
-  if (fill.accountType === "live_order") {
-    return <LiveOrderRow order={fill.liveOrder} />;
-  }
-  return <LiveFillRow fill={fill.liveFill} />;
-}
-
-function PaperFillRow({ fill }: { fill: PaperCopyFill }) {
-  const realizedPnl = numberValue(fill.realizedPnlUsd);
-  const actionTone: Tone =
-    fill.action === "skip" ? "warning" : fill.action.includes("close") ? "neutral" : "positive";
-
+function FillRow({ fill }: { fill: ExecutionActivityItem }) {
   return (
     <ListRow>
       <div className="grid gap-2 xl:grid-cols-[1.05fr_0.7fr_0.85fr_0.85fr_0.85fr_0.9fr] xl:items-center">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-1">
-            <Link
-              href={`/wallets/${fill.sourceWallet}`}
-              className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold text-ink hover:text-[#297c73]"
-            >
-              {sourceDisplayName(fill.sourceLabel, fill.sourceWallet)}
-            </Link>
-            <StatusPill label={fill.action} tone={actionTone} />
-            {fill.side ? (
-              <StatusPill label={fill.side} tone={fill.side === "long" ? "positive" : "warning"} />
-            ) : null}
-            {fill.minOrderAdjusted ? (
-              <StatusPill label="min order adjusted" tone="warning" />
-            ) : null}
-          </div>
-          <p className="mt-1 truncate font-mono text-xs text-[#5b6770]">
-            {shortAddress(fill.sourceWallet)} | {fill.accountKey}
-          </p>
-        </div>
-        <RowStat label="Market" value={fill.coin} detail={formatDate(fill.filledAt)} />
-        <RowStat label="Notional" value={formatCurrency(fill.notionalUsd)} detail={fillNotionalDetail(fill)} />
-        <RowStat label="Realized" value={formatCurrency(fill.realizedPnlUsd)} tone={realizedPnl >= 0 ? "positive" : "danger"} />
-        <RowStat label="Price" value={formatPrice(fill.price)} detail={fillPriceDetail(fill)} />
-        <RowStat
-          label={fill.skippedReason ? "Skip reason" : "Fee"}
-          value={fill.skippedReason ? reasonLabel(fill.skippedReason) : formatCurrency(fill.feeUsd)}
-          detail={fill.skippedReason ? fillSkipDetail(fill) : formatLeverage(fill.leverage)}
-        />
+        <RowIdentityBlock identity={fill.identity} pills={fill.pills} />
+        {fill.stats.map((stat) => (
+          <RowStat
+            key={stat.label}
+            detail={stat.detail}
+            label={stat.label}
+            tone={stat.tone}
+            value={stat.value}
+          />
+        ))}
       </div>
     </ListRow>
   );
 }
 
-function LiveFillRow({ fill }: { fill: TradingFill }) {
-  const realizedPnl = numberValue(fill.realizedPnlUsd);
-  const actionTone: Tone = fill.action.includes("close") || fill.action.includes("reduce")
-    ? "neutral"
-    : "positive";
-  const sourceName = isLiveExchangeSource(fill.sourceWallet)
-    ? "Exchange fill"
-    : shortAddress(fill.sourceWallet);
-  return (
-    <ListRow>
-      <div className="grid gap-2 xl:grid-cols-[1.05fr_0.7fr_0.85fr_0.85fr_0.85fr_0.9fr] xl:items-center">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-1">
-            {isLiveExchangeSource(fill.sourceWallet) ? (
-              <p className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold text-ink">
-                {sourceName}
-              </p>
-            ) : (
-              <Link
-                href={`/wallets/${fill.sourceWallet}`}
-                className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold text-ink hover:text-[#297c73]"
-              >
-                {sourceName}
-              </Link>
-            )}
-            <StatusPill label="live" tone="positive" />
-            <StatusPill label={fill.action} tone={actionTone} />
-            <StatusPill label={fill.side} tone={fill.side === "long" ? "positive" : "warning"} />
-          </div>
-          <p className="mt-1 truncate font-mono text-xs text-[#5b6770]">
-            {isLiveExchangeSource(fill.sourceWallet) ? "exchange" : shortAddress(fill.sourceWallet)} | {fill.accountKey}
-          </p>
-        </div>
-        <RowStat label="Market" value={fill.coin} detail={formatDate(fill.filledAt)} />
-        <RowStat label="Notional" value={formatCurrency(fill.notionalUsd)} detail={`size ${formatSize(fill.size)}`} />
-        <RowStat label="Realized" value={formatCurrency(fill.realizedPnlUsd)} tone={realizedPnl >= 0 ? "positive" : "danger"} />
-        <RowStat label="Price" value={formatPrice(fill.price)} detail={`fee ${formatCurrency(fill.feeUsd)}`} />
-        <RowStat
-          label="Exchange fill"
-          value={fill.exchangeFillId ? shortIdentifier(fill.exchangeFillId) : "-"}
-          detail={fill.sourceFillId ? `source ${shortIdentifier(fill.sourceFillId)}` : "reconciled live fill"}
-        />
-      </div>
-    </ListRow>
-  );
-}
-
-function LiveOrderRow({ order }: { order: TradingOrder }) {
-  const sourceName = isLiveExchangeSource(order.sourceWallet)
-    ? "Exchange order"
-    : shortAddress(order.sourceWallet);
-  const statusTone = liveOrderStatusTone(order.status);
-  const actionTone: Tone = order.action.includes("close") || order.action.includes("reduce")
-    ? "neutral"
-    : "positive";
-
-  return (
-    <ListRow>
-      <div className="grid gap-2 xl:grid-cols-[1.05fr_0.7fr_0.85fr_0.85fr_0.85fr_0.9fr] xl:items-center">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-1">
-            {isLiveExchangeSource(order.sourceWallet) ? (
-              <p className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold text-ink">
-                {sourceName}
-              </p>
-            ) : (
-              <Link
-                href={`/wallets/${order.sourceWallet}`}
-                className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold text-ink hover:text-[#297c73]"
-              >
-                {sourceName}
-              </Link>
-            )}
-            <StatusPill label="live order" tone="neutral" />
-            <StatusPill label={order.action} tone={actionTone} />
-            <StatusPill label={order.status} tone={statusTone} />
-          </div>
-          <p className="mt-1 truncate font-mono text-xs text-[#5b6770]">
-            {isLiveExchangeSource(order.sourceWallet) ? "exchange" : shortAddress(order.sourceWallet)} | {order.accountKey}
-          </p>
-        </div>
-        <RowStat label="Market" value={order.coin} detail={formatDate(order.createdAt)} />
-        <RowStat
-          label="Requested"
-          value={formatCurrency(order.requestedNotionalUsd)}
-          detail={`size ${formatSize(order.requestedSize)}`}
-        />
-        <RowStat
-          label="Filled"
-          value={formatCurrency(order.filledNotionalUsd)}
-          detail={`size ${formatSize(order.filledSize)}`}
-        />
-        <RowStat
-          label="Price"
-          value={formatPrice(order.limitPrice)}
-          detail={order.averageFillPrice ? `avg ${formatPrice(order.averageFillPrice)}` : formatLeverage(order.leverage)}
-        />
-        <OrderResultStat order={order} />
-      </div>
-    </ListRow>
-  );
-}
-
-function OrderResultStat({ order }: { order: TradingOrder }) {
-  const error = order.error?.trim();
-  const detail = order.exchangeOrderId
-    ? `exchange ${shortIdentifier(order.exchangeOrderId)}`
-    : `client ${shortIdentifier(order.clientOrderId)}`;
+function RowIdentityBlock({
+  identity,
+  pills,
+}: {
+  identity: RowIdentity;
+  pills: RowPill[];
+}) {
   return (
     <div className="min-w-0">
-      <p className="truncate text-[11px] font-medium uppercase text-[#5b6770]">Result</p>
-      <p
-        className={`mt-0.5 whitespace-normal break-words font-mono text-xs font-semibold ${
-          error ? "text-danger" : "text-ink"
-        }`}
-        title={error || order.status}
-      >
-        {error ? reasonLabel(error) : reasonLabel(order.status)}
-      </p>
-      <p className="mt-0.5 whitespace-normal break-words text-[11px] text-[#5b6770]">
-        {detail}
-      </p>
+      <div className="flex flex-wrap items-center gap-1">
+        {identity.href ? (
+          <Link
+            href={identity.href}
+            className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold text-ink hover:text-[#297c73]"
+          >
+            {identity.label}
+          </Link>
+        ) : (
+          <p className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold text-ink">
+            {identity.label}
+          </p>
+        )}
+        {pills.map((pill) => (
+          <StatusPill key={`${pill.label}:${pill.tone}`} label={pill.label} tone={pill.tone} />
+        ))}
+      </div>
+      <p className="mt-1 truncate font-mono text-xs text-[#5b6770]">{identity.meta}</p>
     </div>
   );
 }
@@ -1557,8 +1440,8 @@ function RowStat({
   return (
     <div className="min-w-0">
       <p className="truncate text-[11px] font-medium uppercase text-[#5b6770]">{label}</p>
-      <p className={`mt-0.5 truncate font-mono text-xs font-semibold ${valueClass}`}>{value}</p>
-      {detail ? <p className="mt-0.5 truncate text-[11px] text-[#5b6770]">{detail}</p> : null}
+      <p className={`mt-0.5 whitespace-normal break-words font-mono text-xs font-semibold ${valueClass}`}>{value}</p>
+      {detail ? <p className="mt-0.5 whitespace-normal break-words text-[11px] text-[#5b6770]">{detail}</p> : null}
     </div>
   );
 }
@@ -1685,27 +1568,57 @@ function buildLiveDashboardPositions(
   })).sort((left, right) => dateMs(right.updatedAt) - dateMs(left.updatedAt));
 }
 
-function buildPaperDashboardFills(paperFills: PaperCopyFill[]): DashboardFill[] {
+function buildPaperDashboardFills(paperFills: PaperCopyFill[]): ExecutionActivityItem[] {
   return paperFills
-    .map<DashboardFill>((fill) => ({
-      accountType: "paper",
-      filledAt: fill.filledAt,
-      id: `paper:${fill.id}`,
-      paperFill: fill,
-    }))
+    .map<ExecutionActivityItem>((fill) => {
+      const realizedPnl = numberValue(fill.realizedPnlUsd);
+      const actionTone: Tone =
+        fill.action === "skip" ? "warning" : fill.action.includes("close") ? "neutral" : "positive";
+      return {
+        identity: {
+          href: `/wallets/${fill.sourceWallet}`,
+          label: sourceDisplayName(fill.sourceLabel, fill.sourceWallet),
+          meta: `${shortAddress(fill.sourceWallet)} | ${fill.accountKey}`,
+        },
+        id: `paper:${fill.id}`,
+        pills: [
+          { label: "paper", tone: "neutral" },
+          { label: fill.action, tone: actionTone },
+          ...(fill.side
+            ? [{ label: fill.side, tone: fill.side === "long" ? "positive" as Tone : "warning" as Tone }]
+            : []),
+          ...(fill.minOrderAdjusted ? [{ label: "min order adjusted", tone: "warning" as Tone }] : []),
+        ],
+        sortAt: fill.filledAt,
+        stats: [
+          { label: "Market", value: fill.coin, detail: formatDate(fill.filledAt) },
+          { label: "Notional", value: formatCurrency(fill.notionalUsd), detail: fillNotionalDetail(fill) },
+          {
+            label: "Realized",
+            value: formatCurrency(fill.realizedPnlUsd),
+            tone: realizedPnl >= 0 ? "positive" : "danger",
+          },
+          { label: "Price", value: formatPrice(fill.price), detail: fillPriceDetail(fill) },
+          {
+            label: "Result",
+            value: fill.skippedReason ? reasonLabel(fill.skippedReason) : "filled",
+            detail: fill.skippedReason
+              ? fillSkipDetail(fill)
+              : `fee ${formatCurrency(fill.feeUsd)} | ${formatLeverage(fill.leverage)}`,
+            tone: fill.skippedReason ? "danger" : "positive",
+          },
+        ],
+      };
+    })
     .slice(0, 100);
 }
 
 function buildLiveDashboardFills(
   liveFills: TradingFill[],
   liveOrders: TradingOrder[],
-): DashboardFill[] {
-  const liveRows = liveFills.map<DashboardFill>((fill) => ({
-    accountType: "live",
-    filledAt: fill.filledAt,
-    id: `live:${fill.id}`,
-    liveFill: fill,
-  }));
+  sourceLabels: Map<string, string>,
+): ExecutionActivityItem[] {
+  const liveRows = liveFills.map<ExecutionActivityItem>((fill) => buildLiveFillActivity(fill, sourceLabels));
   const liveFillOrderIds = new Set(
     liveFills
       .map((fill) => fill.orderId)
@@ -1718,15 +1631,112 @@ function buildLiveDashboardFills(
         !liveFillOrderIds.has(order.id) &&
         !liveFillSourceKeys.has(liveActivitySourceKey(order)),
     )
-    .map<DashboardFill>((order) => ({
-      accountType: "live_order",
-      filledAt: order.filledAt ?? order.updatedAt ?? order.createdAt,
-      id: `live-order:${order.id}`,
-      liveOrder: order,
-    }));
+    .map<ExecutionActivityItem>((order) => buildLiveOrderActivity(order, sourceLabels));
   return [...liveRows, ...liveOrderRows]
-    .sort((left, right) => dateMs(right.filledAt) - dateMs(left.filledAt))
+    .sort((left, right) => dateMs(right.sortAt) - dateMs(left.sortAt))
     .slice(0, 100);
+}
+
+function buildLiveFillActivity(
+  fill: TradingFill,
+  sourceLabels: Map<string, string>,
+): ExecutionActivityItem {
+  const realizedPnl = numberValue(fill.realizedPnlUsd);
+  const actionTone: Tone = fill.action.includes("close") || fill.action.includes("reduce")
+    ? "neutral"
+    : "positive";
+  const isExchange = isLiveExchangeSource(fill.sourceWallet);
+  return {
+    identity: {
+      href: isExchange ? null : `/wallets/${fill.sourceWallet}`,
+      label: isExchange
+        ? "Exchange fill"
+        : sourceDisplayName(sourceLabels.get(fill.sourceWallet.toLowerCase()), fill.sourceWallet),
+      meta: `${isExchange ? "exchange" : shortAddress(fill.sourceWallet)} | ${fill.accountKey}`,
+    },
+    id: `live:${fill.id}`,
+    pills: [
+      { label: "live", tone: "positive" },
+      { label: fill.action, tone: actionTone },
+      { label: fill.side, tone: fill.side === "long" ? "positive" : "warning" },
+    ],
+    sortAt: fill.filledAt,
+    stats: [
+      { label: "Market", value: fill.coin, detail: formatDate(fill.filledAt) },
+      { label: "Notional", value: formatCurrency(fill.notionalUsd), detail: `size ${formatSize(fill.size)}` },
+      {
+        label: "Realized",
+        value: formatCurrency(fill.realizedPnlUsd),
+        tone: realizedPnl >= 0 ? "positive" : "danger",
+      },
+      { label: "Price", value: formatPrice(fill.price), detail: `fee ${formatCurrency(fill.feeUsd)}` },
+      {
+        label: "Result",
+        value: "filled",
+        detail: fill.sourceFillId ? `source ${shortIdentifier(fill.sourceFillId)}` : "reconciled live fill",
+        tone: "positive",
+      },
+    ],
+  };
+}
+
+function buildLiveOrderActivity(
+  order: TradingOrder,
+  sourceLabels: Map<string, string>,
+): ExecutionActivityItem {
+  const error = order.error?.trim();
+  const isSkip = order.orderType === "skip" || error?.startsWith("skip:");
+  const isExchange = isLiveExchangeSource(order.sourceWallet);
+  const actionTone: Tone = order.action.includes("close") || order.action.includes("reduce")
+    ? "neutral"
+    : "positive";
+  const resultDetail = order.exchangeOrderId
+    ? `exchange ${shortIdentifier(order.exchangeOrderId)}`
+    : isSkip
+      ? `source ${shortIdentifier(order.sourceFillId)}`
+      : `client ${shortIdentifier(order.clientOrderId)}`;
+  return {
+    identity: {
+      href: isExchange ? null : `/wallets/${order.sourceWallet}`,
+      label: isExchange
+        ? "Exchange order"
+        : sourceDisplayName(sourceLabels.get(order.sourceWallet.toLowerCase()), order.sourceWallet),
+      meta: `${isExchange ? "exchange" : shortAddress(order.sourceWallet)} | ${order.accountKey}`,
+    },
+    id: `live-order:${order.id}`,
+    pills: [
+      { label: order.orderType === "skip" ? "live skip" : "live order", tone: order.orderType === "skip" ? "warning" : "neutral" },
+      { label: order.action, tone: actionTone },
+      { label: order.status, tone: liveOrderStatusTone(order.status) },
+    ],
+    sortAt: order.orderType === "skip" ? order.createdAt : order.filledAt ?? order.updatedAt ?? order.createdAt,
+    stats: [
+      { label: "Market", value: order.coin, detail: formatDate(order.createdAt) },
+      {
+        label: "Requested",
+        value: formatCurrency(order.requestedNotionalUsd),
+        detail: `size ${formatSize(order.requestedSize)}`,
+      },
+      {
+        label: "Filled",
+        value: formatCurrency(order.filledNotionalUsd),
+        detail: `size ${formatSize(order.filledSize)}`,
+      },
+      {
+        label: "Price",
+        value: formatPrice(order.limitPrice),
+        detail: order.averageFillPrice
+          ? `avg ${formatPrice(order.averageFillPrice)}`
+          : formatLeverage(order.leverage),
+      },
+      {
+        label: "Result",
+        value: error ? reasonLabel(error.replace(/^skip:/, "")) : reasonLabel(order.status),
+        detail: resultDetail,
+        tone: error ? "danger" : "neutral",
+      },
+    ],
+  };
 }
 
 function liveActivitySourceKey(item: TradingFill | TradingOrder) {

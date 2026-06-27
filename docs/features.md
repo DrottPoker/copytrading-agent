@@ -732,9 +732,11 @@ What it does:
   without mixing rows from the other mode. Paper mode shows paper accounts,
   paper positions, paper closed trades, and paper fills. Live mode shows live
   accounts, live positions, live source activity, reconstructed closed live
-  trades, live fills, and live order attempts that do not yet have matching
-  fills. Individual live reduce and close fills stay in Recent Execution
-  Activity.
+  trades, live exchange fills, rejected live orders, and live pre-submit skips
+  with skip reasons. Recent Execution Activity uses the same result-oriented
+  row semantics in both modes, so filled, skipped, rejected, and failed attempts
+  are visible without mixing paper and live rows. Individual live reduce and
+  close fills stay in Recent Execution Activity.
 - Copy source monitor slots and source eligibility are shared across paper and
   live execution, but each mode renders its own exposure, PnL, activity, and
   execution status. A retained source remains retained in live mode unless the

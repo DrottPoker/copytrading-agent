@@ -3,6 +3,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
 from app.core.config import Settings
 from app.db.models import TradingAccount, TradingFill, TradingOrder, TradingPosition
@@ -77,6 +78,34 @@ def test_apply_live_order_result_updates_submitted_wire_values() -> None:
     assert order.filled_size == Decimal("0.16")
     assert order.filled_notional_usd == Decimal("10.2288")
     assert order.status == "filled"
+
+
+@pytest.mark.asyncio
+async def test_live_account_recent_order_count_ignores_unsubmitted_skip_rows() -> None:
+    class CaptureSession:
+        statement = None
+
+        async def scalar(self, statement):
+            self.statement = statement
+            return 0
+
+    session = CaptureSession()
+
+    count = await live_trading_service.live_account_recent_order_count(
+        session,
+        account_key="live_test",
+        now=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+    assert count == 0
+    assert session.statement is not None
+    sql = str(
+        session.statement.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    assert "trading_orders.submitted_at IS NOT NULL" in sql
 
 
 def test_live_closed_trades_from_fills_groups_complete_trade() -> None:
