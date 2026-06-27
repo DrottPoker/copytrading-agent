@@ -1583,6 +1583,69 @@ class LivePositionReconciliationResult:
     removed_positions: int
 
 
+def source_unrealized_pnl_from_mark(position: TradingPosition, mark_price: Decimal) -> Decimal:
+    if position.side == "short":
+        return (position.entry_price - mark_price) * position.size
+    return (mark_price - position.entry_price) * position.size
+
+
+def sync_live_source_positions_from_exchange_positions(
+    *,
+    source_positions: list[TradingPosition],
+    exchange_positions: list[TradingPosition],
+    reconciled_at: datetime,
+) -> int:
+    exchange_by_market = {
+        (position.account_key, position.coin, position.side): position
+        for position in exchange_positions
+        if position.size > POSITION_EPSILON
+    }
+    updated = 0
+    for position in source_positions:
+        if position.size <= POSITION_EPSILON:
+            continue
+        exchange_position = exchange_by_market.get(
+            (position.account_key, position.coin, position.side)
+        )
+        if exchange_position is None:
+            continue
+        mark_price = live_position_mark_price(exchange_position)
+        if mark_price is None or mark_price <= ZERO:
+            continue
+
+        current_notional = mark_price * position.size
+        unrealized_pnl = source_unrealized_pnl_from_mark(position, mark_price)
+        return_on_equity = (
+            unrealized_pnl / position.margin_usd
+            if position.margin_usd > ZERO
+            else live_position_unrealized_pnl_pct(exchange_position)
+        )
+        position.raw_payload = merge_raw_payload(
+            position.raw_payload,
+            {
+                "position": {
+                    "coin": position.coin,
+                    "entryPx": str(position.entry_price),
+                    "markPx": str(mark_price),
+                    "positionValue": str(current_notional),
+                    "returnOnEquity": str(return_on_equity)
+                    if return_on_equity is not None
+                    else None,
+                    "szi": str(position.size if position.side == "long" else -position.size),
+                    "source": "live_source_reconciliation",
+                    "unrealizedPnl": str(unrealized_pnl),
+                },
+                "sourceReconciliation": {
+                    "exchangePositionId": str(exchange_position.id),
+                    "reconciledAt": reconciled_at.isoformat(),
+                },
+            },
+        )
+        position.last_reconciled_at = reconciled_at
+        updated += 1
+    return updated
+
+
 async def reconcile_live_positions(
     session: AsyncSession,
     *,
@@ -1609,6 +1672,7 @@ async def reconcile_live_positions(
         )
     )
     existing = {position.coin: position for position in existing_result.all()}
+    exchange_positions: list[TradingPosition] = []
     for snapshot in snapshots:
         position = existing.get(snapshot.coin)
         if position is None:
@@ -1630,6 +1694,7 @@ async def reconcile_live_positions(
                 last_reconciled_at=reconciled_at,
             )
             session.add(position)
+            exchange_positions.append(position)
             continue
         position.side = snapshot.side
         position.size = snapshot.size
@@ -1639,6 +1704,7 @@ async def reconcile_live_positions(
         position.margin_usd = snapshot.margin_usd
         position.raw_payload = snapshot.raw_payload
         position.last_reconciled_at = reconciled_at
+        exchange_positions.append(position)
 
     active_coins = {snapshot.coin for snapshot in snapshots}
     delete_stmt = delete(TradingPosition).where(
@@ -1649,6 +1715,19 @@ async def reconcile_live_positions(
     if active_coins:
         delete_stmt = delete_stmt.where(~TradingPosition.coin.in_(active_coins))
     delete_result = await session.execute(delete_stmt)
+
+    source_result = await session.scalars(
+        select(TradingPosition).where(
+            TradingPosition.account_key == account.key,
+            TradingPosition.account_type == "live",
+            TradingPosition.source_wallet != LIVE_EXCHANGE_SOURCE,
+        )
+    )
+    sync_live_source_positions_from_exchange_positions(
+        source_positions=list(source_result.all()),
+        exchange_positions=exchange_positions,
+        reconciled_at=reconciled_at,
+    )
     await session.flush()
     return LivePositionReconciliationResult(
         open_positions=len(active_coins),

@@ -852,15 +852,19 @@ semantics in both modes, so filled, skipped, rejected, and failed attempts are
 visible without mixing paper and live rows. The frontend keeps mode-specific
 logic in paper and live view-model builders, while shared presentational
 components render the active mode. Live source allocation bars reuse the shared
-source allocation percentage against live tradable equity, and source rank,
-pool rank, score, and labels are resolved from the shared paper summary metadata
-when live activity only carries source addresses. The trading API reconstructs live
-closed trades from stored live fills by grouping open and close executions into
-complete trade windows; individual reduce and close fills remain in Recent
-Execution Activity. Live position rows use reconciled Hyperliquid position
-payloads for mark price, current notional, unrealized PnL, and ROE, and can
-submit an individual reduce-only close order. Paginated history sections show
-10 rows per page in both modes.
+source allocation percentage against live tradable equity. Source rank, pool
+rank, score, and labels are resolved from the trading API source metadata and
+merged with paper summary metadata, so live-only fills and orders do not lose
+pool context. The trading API reconstructs live closed trades from stored live
+fills by grouping open and close executions into complete trade windows;
+individual reduce and close fills remain in Recent Execution Activity. Live
+exchange position rows use reconciled Hyperliquid position payloads for mark
+price, current notional, unrealized PnL, and ROE. Source-attributed live
+position rows are refreshed from the matching exchange mark on reconciliation,
+so source performance and copy source rows show current unrealized PnL instead
+of stale fill-time values. Live position rows can submit an individual
+reduce-only close order. Paginated history sections show 10 rows per page in
+both modes.
 Account reset actions restore the configured starting capital and clear
 account-level realized PnL and fee counters, but they do not delete open paper
 positions, copied fills, or closed trade history.

@@ -166,6 +166,15 @@ class TradingClosedTradeRead(CamelModel):
     close_fill_count: int
 
 
+class TradingSourceMetadataRead(CamelModel):
+    source_wallet: str
+    source_label: str | None = None
+    rank: int | None = None
+    pool_rank: int | None = None
+    score: Decimal | None = None
+    allocation_pct: Decimal | None = None
+
+
 class TradingAccountsResponse(CamelModel):
     accounts: list[TradingAccountRead]
     live_trading_enabled: bool = False
@@ -174,6 +183,7 @@ class TradingAccountsResponse(CamelModel):
     recent_fills: list[TradingFillRead] = Field(default_factory=list)
     recent_orders: list[TradingOrderRead] = Field(default_factory=list)
     closed_trades: list[TradingClosedTradeRead] = Field(default_factory=list)
+    source_metadata: list[TradingSourceMetadataRead] = Field(default_factory=list)
     updated_at: datetime
 
 

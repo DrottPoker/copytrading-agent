@@ -1949,8 +1949,8 @@ function buildLiveAccountView(
   tradingAccounts: TradingAccountsResponse,
   account: TradingAccount,
 ): AccountView {
-  const sourceMetadata = buildSourceMetadataMap(summary);
-  const sourceLabels = buildSourceLabelMap(summary);
+  const sourceMetadata = buildSourceMetadataMap(summary, tradingAccounts);
+  const sourceLabels = buildSourceLabelMap(summary, tradingAccounts);
   const allPositions = tradingAccounts.positions.filter((item) => item.accountKey === account.key);
   const displayPositions = displayAccountLivePositions(allPositions);
   const sourcePositions = allPositions.filter((position) => !isLiveExchangeSource(position.sourceWallet));
@@ -2623,9 +2623,12 @@ function buildTimeline(closedTrades: AccountClosedTradeRow[]): TimelinePoint[] {
     });
 }
 
-function buildSourceLabelMap(summary: PaperTradingSummaryResponse) {
+function buildSourceLabelMap(
+  summary: PaperTradingSummaryResponse,
+  tradingAccounts?: TradingAccountsResponse,
+) {
   const labels = new Map<string, string>();
-  for (const [source, metadata] of buildSourceMetadataMap(summary)) {
+  for (const [source, metadata] of buildSourceMetadataMap(summary, tradingAccounts)) {
     if (metadata.label) {
       labels.set(source, metadata.label);
     }
@@ -2633,7 +2636,10 @@ function buildSourceLabelMap(summary: PaperTradingSummaryResponse) {
   return labels;
 }
 
-function buildSourceMetadataMap(summary: PaperTradingSummaryResponse) {
+function buildSourceMetadataMap(
+  summary: PaperTradingSummaryResponse,
+  tradingAccounts?: TradingAccountsResponse,
+) {
   const metadata = new Map<string, SourceMetadata>();
   const ensureMetadata = (wallet: string): SourceMetadata => {
     const source = wallet.toLowerCase();
@@ -2681,6 +2687,14 @@ function buildSourceMetadataMap(summary: PaperTradingSummaryResponse) {
   }
   for (const trade of summary.closedTrades) {
     addLabel(trade.sourceWallet, trade.sourceLabel);
+  }
+  for (const source of tradingAccounts?.sourceMetadata ?? []) {
+    const item = ensureMetadata(source.sourceWallet);
+    addLabel(source.sourceWallet, source.sourceLabel);
+    item.allocationPct ??= firstNumber([source.allocationPct]);
+    item.poolRank = minNullable(item.poolRank, source.poolRank);
+    item.rank = minNullable(item.rank, source.rank);
+    item.score ??= source.score;
   }
   return metadata;
 }

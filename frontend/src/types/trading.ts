@@ -132,6 +132,15 @@ export type TradingClosedTrade = {
   closeFillCount: number;
 };
 
+export type TradingSourceMetadata = {
+  sourceWallet: string;
+  sourceLabel: string | null;
+  rank: number | null;
+  poolRank: number | null;
+  score: string | null;
+  allocationPct: string | null;
+};
+
 export type TradingAccountsResponse = {
   accounts: TradingAccount[];
   liveTradingEnabled: boolean;
@@ -140,5 +149,6 @@ export type TradingAccountsResponse = {
   recentFills: TradingFill[];
   recentOrders: TradingOrder[];
   closedTrades: TradingClosedTrade[];
+  sourceMetadata: TradingSourceMetadata[];
   updatedAt: string;
 };

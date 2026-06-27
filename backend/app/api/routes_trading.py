@@ -4,12 +4,20 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import db_session
 from app.core.config import Settings, get_settings
-from app.db.models import TradingAccount, TradingFill, TradingOrder, TradingPosition
+from app.db.models import (
+    DiscoveryWalletCandidate,
+    TradingAccount,
+    TradingFill,
+    TradingOrder,
+    TradingPosition,
+    WalletScore,
+    WatchedWallet,
+)
 from app.schemas.trading import (
     LiveCloseAllResponse,
     LiveOrderSubmitResponse,
@@ -24,6 +32,7 @@ from app.schemas.trading import (
     TradingFillRead,
     TradingOrderRead,
     TradingPositionRead,
+    TradingSourceMetadataRead,
 )
 from app.services.live_trading_service import (
     LiveTradingServiceError,
@@ -55,12 +64,125 @@ from app.services.live_trading_service import (
     validate_live_trading_configuration,
 )
 from app.services.trading_account_service import list_trading_accounts
+from app.services.wallet_service import wallet_pool_rank_cte
 
 router = APIRouter(prefix="/trading", tags=["trading"])
 
 TRADING_ACTIVITY_LIMIT = 100
 TRADING_CLOSED_TRADE_LIMIT = 100
 TRADING_CLOSED_TRADE_FILL_SCAN_LIMIT = 5000
+
+
+def source_allocation_pct_for_rank(
+    pool_rank: int | None,
+    *,
+    settings: Settings,
+) -> Decimal | None:
+    if pool_rank is None:
+        return None
+    if pool_rank <= max(settings.trading_copy_top_tier_wallet_count, 0):
+        return settings.trading_copy_top_tier_allocation_pct
+    return settings.trading_copy_standard_allocation_pct
+
+
+def normalize_source_wallet(value: str | None) -> str | None:
+    source = str(value or "").strip().lower()
+    if not source or source == "__exchange__":
+        return None
+    return source
+
+
+def collect_live_source_wallets(
+    positions: list[TradingPosition],
+    fills: list[TradingFill],
+    orders: list[TradingOrder],
+    closed_trades: list[object],
+) -> list[str]:
+    sources: set[str] = set()
+    for item in [*positions, *fills, *orders, *closed_trades]:
+        source = normalize_source_wallet(getattr(item, "source_wallet", None))
+        if source is not None:
+            sources.add(source)
+    return sorted(sources)
+
+
+async def load_trading_source_metadata(
+    session: AsyncSession,
+    *,
+    source_wallets: list[str],
+    settings: Settings,
+) -> list[TradingSourceMetadataRead]:
+    normalized_sources = sorted(
+        source
+        for source in {normalize_source_wallet(source_wallet) for source_wallet in source_wallets}
+        if source is not None
+    )
+    if not normalized_sources:
+        return []
+
+    ranked_scores = wallet_pool_rank_cte()
+    result = await session.execute(
+        select(
+            WalletScore.wallet_address.label("source_wallet"),
+            WatchedWallet.label.label("source_label"),
+            WalletScore.score.label("score"),
+            ranked_scores.c.pool_rank.label("pool_rank"),
+        )
+        .outerjoin(WatchedWallet, WatchedWallet.address == WalletScore.wallet_address)
+        .outerjoin(ranked_scores, ranked_scores.c.wallet_address == WalletScore.wallet_address)
+        .where(func.lower(WalletScore.wallet_address).in_(normalized_sources))
+    )
+
+    metadata: dict[str, TradingSourceMetadataRead] = {}
+    for row in result.mappings().all():
+        source_wallet = str(row["source_wallet"]).lower()
+        pool_rank = int(row["pool_rank"]) if row["pool_rank"] is not None else None
+        metadata[source_wallet] = TradingSourceMetadataRead(
+            source_wallet=source_wallet,
+            source_label=str(row["source_label"]) if row["source_label"] else None,
+            rank=pool_rank,
+            pool_rank=pool_rank,
+            score=row["score"],
+            allocation_pct=source_allocation_pct_for_rank(pool_rank, settings=settings),
+        )
+
+    missing_label_sources = [
+        source
+        for source in normalized_sources
+        if source not in metadata or metadata[source].source_label is None
+    ]
+    if missing_label_sources:
+        label_result = await session.execute(
+            select(
+                DiscoveryWalletCandidate.wallet_address,
+                DiscoveryWalletCandidate.source_label,
+            )
+            .where(
+                func.lower(DiscoveryWalletCandidate.wallet_address).in_(missing_label_sources),
+                DiscoveryWalletCandidate.source_label.is_not(None),
+            )
+            .order_by(
+                DiscoveryWalletCandidate.source_rank.asc().nulls_last(),
+                DiscoveryWalletCandidate.updated_at.desc(),
+            )
+        )
+        for wallet_address, source_label in label_result.all():
+            source_wallet = str(wallet_address).lower()
+            if not source_wallet or not source_label:
+                continue
+            existing = metadata.get(source_wallet)
+            if existing is None:
+                metadata[source_wallet] = TradingSourceMetadataRead(
+                    source_wallet=source_wallet,
+                    source_label=str(source_label),
+                )
+                continue
+            if existing.source_label is None:
+                metadata[source_wallet] = existing.model_copy(
+                    update={"source_label": str(source_label)}
+                )
+
+    return [metadata[source] for source in normalized_sources if source in metadata]
 
 
 async def trading_account_read(
@@ -198,6 +320,19 @@ async def list_trading_accounts_route(
         limit=TRADING_CLOSED_TRADE_LIMIT,
         fill_scan_limit=TRADING_CLOSED_TRADE_FILL_SCAN_LIMIT,
     )
+    positions = list(position_result.all())
+    recent_fills = list(fill_result.all())
+    recent_orders = list(order_result.all())
+    source_metadata = await load_trading_source_metadata(
+        session,
+        source_wallets=collect_live_source_wallets(
+            positions,
+            recent_fills,
+            recent_orders,
+            closed_trades,
+        ),
+        settings=settings,
+    )
     return TradingAccountsResponse(
         accounts=[
             enriched_trading_account_read(account, settings=settings)
@@ -207,20 +342,21 @@ async def list_trading_accounts_route(
         live_trading_enabled=settings.live_trading_enabled,
         positions=[
             trading_position_read(position)
-            for position in position_result.all()
+            for position in positions
         ],
         recent_fills=[
             TradingFillRead.model_validate(fill)
-            for fill in fill_result.all()
+            for fill in recent_fills
         ],
         recent_orders=[
             TradingOrderRead.model_validate(order)
-            for order in order_result.all()
+            for order in recent_orders
         ],
         closed_trades=[
             TradingClosedTradeRead.model_validate(trade)
             for trade in closed_trades
         ],
+        source_metadata=source_metadata,
         updated_at=datetime.now(UTC),
     )
 

@@ -27,6 +27,7 @@ from app.services.live_trading_service import (
     parse_live_fill,
     parse_live_position,
     resolve_live_account_wallet_address,
+    sync_live_source_positions_from_exchange_positions,
     update_live_account_from_state,
 )
 
@@ -264,6 +265,49 @@ def test_live_position_unrealized_pct_falls_back_to_margin() -> None:
     )
 
     assert live_position_unrealized_pnl_pct(position) == Decimal("0.195")
+
+
+def test_sync_live_source_positions_from_exchange_mark_updates_unrealized() -> None:
+    reconciled_at = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    exchange_position = live_position(
+        raw_payload={
+            "position": {
+                "positionValue": "99.54",
+                "unrealizedPnl": "4.80",
+                "returnOnEquity": "0.48",
+            }
+        }
+    )
+    exchange_position.id = uuid4()
+    source_position = TradingPosition(
+        account_key="live_test",
+        account_type="live",
+        source_wallet="0xsource",
+        coin="HYPE",
+        side="long",
+        size=Decimal("1"),
+        entry_price=Decimal("60"),
+        notional_usd=Decimal("60"),
+        leverage=Decimal("10"),
+        margin_usd=Decimal("6"),
+        realized_pnl_usd=Decimal("0"),
+        fee_usd=Decimal("0"),
+        raw_payload={"source": "live_fill"},
+        opened_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+    updated = sync_live_source_positions_from_exchange_positions(
+        source_positions=[source_position],
+        exchange_positions=[exchange_position],
+        reconciled_at=reconciled_at,
+    )
+
+    assert updated == 1
+    assert live_position_mark_price(source_position) == Decimal("63")
+    assert live_position_current_notional(source_position) == Decimal("63")
+    assert live_position_unrealized_pnl(source_position) == Decimal("3")
+    assert live_position_unrealized_pnl_pct(source_position) == Decimal("0.5")
+    assert source_position.last_reconciled_at == reconciled_at
 
 
 def test_build_testnet_live_trade_intent_is_reduce_only_when_requested() -> None:

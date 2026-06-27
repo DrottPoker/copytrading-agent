@@ -371,8 +371,14 @@ export function TradingDashboard({
     () => displayLivePositions(tradingAccounts.positions),
     [tradingAccounts.positions],
   );
-  const sourceLabels = useMemo(() => buildSourceLabels(summary), [summary]);
-  const sourceMetadata = useMemo(() => buildSourceMetadata(summary), [summary]);
+  const sourceLabels = useMemo(
+    () => buildSourceLabels(summary, tradingAccounts),
+    [summary, tradingAccounts],
+  );
+  const sourceMetadata = useMemo(
+    () => buildSourceMetadata(summary, tradingAccounts),
+    [summary, tradingAccounts],
+  );
   const dashboardAccounts = useMemo(
     () =>
       tradingMode === "paper"
@@ -1955,7 +1961,7 @@ function buildLiveMonitoredSources(
   enabledLiveAccountCount: number,
   livePositions: TradingPosition[],
 ): MonitoredSource[] {
-  const metadataBySource = buildSourceMetadata(summary);
+  const metadataBySource = buildSourceMetadata(summary, tradingAccounts);
   const liveCopyReady =
     tradingAccounts.liveTradingEnabled &&
     tradingAccounts.liveCopyEnabled &&
@@ -2179,9 +2185,12 @@ function countSourcesWithDashboardOpenPositions(positions: DashboardPosition[]) 
   ).size;
 }
 
-function buildSourceLabels(summary: PaperTradingSummaryResponse) {
+function buildSourceLabels(
+  summary: PaperTradingSummaryResponse,
+  tradingAccounts?: TradingAccountsResponse,
+) {
   const labels = new Map<string, string>();
-  for (const [source, metadata] of buildSourceMetadata(summary)) {
+  for (const [source, metadata] of buildSourceMetadata(summary, tradingAccounts)) {
     if (metadata.label) {
       labels.set(source, metadata.label);
     }
@@ -2189,7 +2198,10 @@ function buildSourceLabels(summary: PaperTradingSummaryResponse) {
   return labels;
 }
 
-function buildSourceMetadata(summary: PaperTradingSummaryResponse) {
+function buildSourceMetadata(
+  summary: PaperTradingSummaryResponse,
+  tradingAccounts?: TradingAccountsResponse,
+) {
   const metadata = new Map<string, SourceMetadata>();
   const ensureMetadata = (wallet: string): SourceMetadata => {
     const source = wallet.toLowerCase();
@@ -2232,6 +2244,14 @@ function buildSourceMetadata(summary: PaperTradingSummaryResponse) {
   }
   for (const trade of summary.closedTrades) {
     ensureMetadata(trade.sourceWallet).label ??= trade.sourceLabel;
+  }
+  for (const source of tradingAccounts?.sourceMetadata ?? []) {
+    const item = ensureMetadata(source.sourceWallet);
+    item.allocationPct ??= firstNumber([source.allocationPct]);
+    item.label ??= source.sourceLabel;
+    item.poolRank = minNumber([item.poolRank, source.poolRank]);
+    item.rank = minNumber([item.rank, source.rank]);
+    item.score ??= source.score;
   }
   return metadata;
 }
