@@ -862,12 +862,15 @@ exchange position rows use reconciled Hyperliquid position payloads for mark
 price, current notional, unrealized PnL, and ROE. Source-attributed live
 position rows are refreshed from the matching exchange mark on reconciliation,
 so source performance and copy source rows show current unrealized PnL instead
-of stale fill-time values. Live position rows can submit an individual
+of stale fill-time values. If exchange reconciliation no longer has a matching
+market and side, the source-attributed row is removed, and if manual exchange
+activity partially reduced the market, source exposure is scaled down to match
+the reconciled exchange size. Live position rows can submit an individual
 reduce-only close order. If that manual close submit returns an uncertain
-post-submit error, the backend immediately reconciles the account and treats the
-request as successful when the target position is closed, reduced, or the order
-is found accepted by exchange state. Paginated history sections show 10 rows
-per page in both modes.
+post-submit error, the backend immediately reconciles the account and treats
+the request as successful when the target position is closed, reduced, or the
+order is found accepted by exchange state. Paginated history sections show 10
+rows per page in both modes.
 Account reset actions restore the configured starting capital and clear
 account-level realized PnL and fee counters, but they do not delete open paper
 positions, copied fills, or closed trade history.

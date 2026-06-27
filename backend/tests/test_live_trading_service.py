@@ -303,12 +303,86 @@ def test_sync_live_source_positions_from_exchange_mark_updates_unrealized() -> N
         reconciled_at=reconciled_at,
     )
 
-    assert updated == 1
+    assert updated.updated_positions == 1
+    assert updated.stale_positions == []
     assert live_position_mark_price(source_position) == Decimal("63")
     assert live_position_current_notional(source_position) == Decimal("63")
     assert live_position_unrealized_pnl(source_position) == Decimal("3")
     assert live_position_unrealized_pnl_pct(source_position) == Decimal("0.5")
     assert source_position.last_reconciled_at == reconciled_at
+
+
+def test_sync_live_source_positions_marks_missing_exchange_market_stale() -> None:
+    source_position = TradingPosition(
+        account_key="live_test",
+        account_type="live",
+        source_wallet="0xsource",
+        coin="ETH",
+        side="short",
+        size=Decimal("0.02"),
+        entry_price=Decimal("1600"),
+        notional_usd=Decimal("32"),
+        leverage=Decimal("20"),
+        margin_usd=Decimal("1.6"),
+        realized_pnl_usd=Decimal("0"),
+        fee_usd=Decimal("0"),
+        raw_payload={"source": "live_fill"},
+        opened_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+    result = sync_live_source_positions_from_exchange_positions(
+        source_positions=[source_position],
+        exchange_positions=[],
+        reconciled_at=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
+    )
+
+    assert result.updated_positions == 0
+    assert result.stale_positions == [source_position]
+
+
+def test_sync_live_source_positions_scales_source_exposure_to_exchange_size() -> None:
+    reconciled_at = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    exchange_position = live_position(
+        raw_payload={
+            "position": {
+                "positionValue": "31.5",
+                "unrealizedPnl": "1.5",
+                "returnOnEquity": "0.25",
+            }
+        }
+    )
+    exchange_position.id = uuid4()
+    exchange_position.size = Decimal("0.5")
+    source_position = TradingPosition(
+        account_key="live_test",
+        account_type="live",
+        source_wallet="0xsource",
+        coin="HYPE",
+        side="long",
+        size=Decimal("1"),
+        entry_price=Decimal("60"),
+        notional_usd=Decimal("60"),
+        leverage=Decimal("10"),
+        margin_usd=Decimal("6"),
+        realized_pnl_usd=Decimal("0"),
+        fee_usd=Decimal("0"),
+        raw_payload={"source": "live_fill"},
+        opened_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+    result = sync_live_source_positions_from_exchange_positions(
+        source_positions=[source_position],
+        exchange_positions=[exchange_position],
+        reconciled_at=reconciled_at,
+    )
+
+    assert result.updated_positions == 1
+    assert result.stale_positions == []
+    assert source_position.size == Decimal("0.5")
+    assert source_position.notional_usd == Decimal("30.0")
+    assert source_position.margin_usd == Decimal("3.0")
+    assert live_position_current_notional(source_position) == Decimal("31.5")
+    assert live_position_unrealized_pnl(source_position) == Decimal("1.5")
 
 
 def test_manual_live_close_recovery_marks_missing_position_filled() -> None:
