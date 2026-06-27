@@ -2204,8 +2204,9 @@ function livePositionRow(
     detail: `opened ${formatDate(position.openedAt)}`,
     entryDetail: `mark ${formatPrice(position.markPrice)}`,
     entryPrice: position.entryPrice,
-    executionDetail: "live position",
-    executionValue: "-",
+    executionDetail:
+      position.entryExecutionDelayMs !== null ? "source to open" : "live position",
+    executionValue: formatExecutionMs(position.entryExecutionDelayMs),
     id: position.id,
     leverage: position.leverage,
     notionalUsd: position.currentNotionalUsd ?? position.notionalUsd,

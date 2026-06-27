@@ -15,6 +15,7 @@ from app.db.models import (
     TradingFill,
     TradingOrder,
     TradingPosition,
+    WalletFill,
     WalletScore,
     WatchedWallet,
 )
@@ -35,6 +36,7 @@ from app.schemas.trading import (
     TradingSourceMetadataRead,
 )
 from app.services.live_trading_service import (
+    LIVE_EXCHANGE_SOURCE,
     LiveTradingServiceError,
     account_last_reconciliation,
     build_testnet_live_trade_intent,
@@ -273,7 +275,144 @@ def live_capital_balance_rows(
     return rows
 
 
-def trading_position_read(position: TradingPosition) -> TradingPositionRead:
+LIVE_OPEN_ACTIONS = {"open", "add", "flip_open"}
+
+
+def datetime_to_ms(value: datetime) -> int:
+    resolved = value
+    if resolved.tzinfo is None:
+        resolved = resolved.replace(tzinfo=UTC)
+    return int(resolved.timestamp() * 1000)
+
+
+def live_entry_delay_ms(*, source_timestamp_ms: int | None, filled_at: datetime) -> int | None:
+    if source_timestamp_ms is None or source_timestamp_ms <= 0:
+        return None
+    return max(datetime_to_ms(filled_at) - source_timestamp_ms, 0)
+
+
+async def load_live_position_entry_execution_delays(
+    session: AsyncSession,
+    positions: list[TradingPosition],
+) -> dict[UUID, int]:
+    live_positions = [position for position in positions if position.account_type == "live"]
+    if not live_positions:
+        return {}
+
+    account_keys = sorted({position.account_key for position in live_positions})
+    coins = sorted({position.coin for position in live_positions})
+    source_result = await session.execute(
+        select(
+            TradingFill.account_key,
+            TradingFill.source_wallet,
+            TradingFill.coin,
+            TradingFill.side,
+            TradingFill.filled_at,
+            WalletFill.timestamp_ms.label("source_timestamp_ms"),
+        )
+        .join(
+            WalletFill,
+            (func.lower(WalletFill.wallet_address) == func.lower(TradingFill.source_wallet))
+            & (WalletFill.external_fill_id == TradingFill.source_fill_id),
+        )
+        .where(
+            TradingFill.account_type == "live",
+            TradingFill.account_key.in_(account_keys),
+            TradingFill.coin.in_(coins),
+            TradingFill.action.in_(LIVE_OPEN_ACTIONS),
+            TradingFill.source_wallet != LIVE_EXCHANGE_SOURCE,
+        )
+        .order_by(TradingFill.filled_at.asc(), TradingFill.created_at.asc())
+    )
+
+    by_source: dict[tuple[str, str, str, str], list[tuple[datetime, int]]] = {}
+    by_market: dict[tuple[str, str, str], list[tuple[datetime, int]]] = {}
+    for row in source_result.all():
+        delay_ms = live_entry_delay_ms(
+            source_timestamp_ms=int(row.source_timestamp_ms)
+            if row.source_timestamp_ms is not None
+            else None,
+            filled_at=row.filled_at,
+        )
+        if delay_ms is None:
+            continue
+        source_key = (
+            str(row.account_key),
+            str(row.source_wallet).lower(),
+            str(row.coin),
+            str(row.side),
+        )
+        market_key = (str(row.account_key), str(row.coin), str(row.side))
+        by_source.setdefault(source_key, []).append((row.filled_at, delay_ms))
+        by_market.setdefault(market_key, []).append((row.filled_at, delay_ms))
+
+    source_position_delays: dict[tuple[str, str, str, str], int] = {}
+    for position in live_positions:
+        if position.source_wallet == LIVE_EXCHANGE_SOURCE:
+            continue
+        source_key = (
+            position.account_key,
+            position.source_wallet.lower(),
+            position.coin,
+            position.side,
+        )
+        delay_ms = matching_live_entry_delay(
+            by_source.get(source_key, []),
+            opened_at=position.opened_at,
+        )
+        if delay_ms is not None:
+            source_position_delays[source_key] = delay_ms
+
+    delays: dict[UUID, int] = {}
+    for position in live_positions:
+        if position.source_wallet == LIVE_EXCHANGE_SOURCE:
+            matching_source_delays = [
+                delay_ms
+                for (account_key, _source_wallet, coin, side), delay_ms
+                in source_position_delays.items()
+                if account_key == position.account_key
+                and coin == position.coin
+                and side == position.side
+            ]
+            if matching_source_delays:
+                delays[position.id] = min(matching_source_delays)
+                continue
+            market_key = (position.account_key, position.coin, position.side)
+            delay_ms = matching_live_entry_delay(
+                by_market.get(market_key, []),
+                opened_at=position.opened_at,
+            )
+        else:
+            source_key = (
+                position.account_key,
+                position.source_wallet.lower(),
+                position.coin,
+                position.side,
+            )
+            delay_ms = source_position_delays.get(source_key)
+        if delay_ms is not None:
+            delays[position.id] = delay_ms
+    return delays
+
+
+def matching_live_entry_delay(
+    entries: list[tuple[datetime, int]],
+    *,
+    opened_at: datetime,
+) -> int | None:
+    if not entries:
+        return None
+    previous_entries = [entry for entry in entries if entry[0] <= opened_at]
+    if previous_entries:
+        return previous_entries[-1][1]
+    return entries[0][1]
+
+
+def trading_position_read(
+    position: TradingPosition,
+    *,
+    entry_execution_delay_ms: int | None = None,
+) -> TradingPositionRead:
     read = TradingPositionRead.model_validate(position)
     if position.account_type != "live":
         return read
@@ -284,6 +423,7 @@ def trading_position_read(position: TradingPosition) -> TradingPositionRead:
             "unrealized_pnl_usd": live_position_unrealized_pnl(position),
             "unrealized_pnl_pct": live_position_unrealized_pnl_pct(position),
             "price_updated_at": position.last_reconciled_at,
+            "entry_execution_delay_ms": entry_execution_delay_ms,
         }
     )
 
@@ -332,6 +472,10 @@ async def list_trading_accounts_route(
         fill_scan_limit=TRADING_CLOSED_TRADE_FILL_SCAN_LIMIT,
     )
     positions = list(position_result.all())
+    entry_execution_delays = await load_live_position_entry_execution_delays(
+        session,
+        positions,
+    )
     recent_fills = list(fill_result.all())
     recent_orders = list(order_result.all())
     source_metadata = await load_trading_source_metadata(
@@ -352,7 +496,10 @@ async def list_trading_accounts_route(
         live_copy_enabled=settings.live_trading_copy_enabled,
         live_trading_enabled=settings.live_trading_enabled,
         positions=[
-            trading_position_read(position)
+            trading_position_read(
+                position,
+                entry_execution_delay_ms=entry_execution_delays.get(position.id),
+            )
             for position in positions
         ],
         recent_fills=[

@@ -437,7 +437,9 @@ Sizing policy:
   per-fill drift limit, and min-order adjustment markers when execution details
   are available.
 - Open paper position rows show entry execution delay in milliseconds, measured
-  from the source fill timestamp to when the paper position was created.
+  from the source fill timestamp to when the paper position was created. Open
+  live position rows show the same source-to-open delay when a matching live
+  fill and source wallet fill are available.
 - Same-timestamp source fills are processed with close and flip-close fills first
   by descending source `startPosition`, so split source exits reduce paper
   positions in a stable order.

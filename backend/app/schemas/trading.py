@@ -85,6 +85,7 @@ class TradingPositionRead(CamelModel):
     realized_pnl_usd: Decimal
     fee_usd: Decimal
     opened_at: datetime
+    entry_execution_delay_ms: int | None = None
     last_reconciled_at: datetime | None
     created_at: datetime
     updated_at: datetime

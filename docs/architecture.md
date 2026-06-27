@@ -667,7 +667,10 @@ stored margin proportionally. Current notional is calculated separately from mar
 price for live unrealized PnL.
 Open position summaries expose entry execution delay as `created_at - opened_at`,
 where `opened_at` is the source fill timestamp and `created_at` is when the
-paper position row was created.
+paper position row was created. Live open position summaries expose the same
+source-to-open delay by matching stored live open fills back to the copied
+source wallet fill timestamp. Exchange aggregate live position rows reuse the
+matching source-position delay when available.
 When multiple source fills have the same timestamp, paper-copy processing orders
 close and flip-close fills first by descending source `startPosition` before
 falling back to the fill id. This keeps large split exits deterministic.

@@ -658,7 +658,9 @@ What it does:
   and min-order adjustment markers in Recent Fills when execution details are
   available.
 - Shows entry execution delay on open paper position rows. The delay is measured
-  from the source fill timestamp to when the paper position was created.
+  from the source fill timestamp to when the paper position was created. Open
+  live position rows show the same source-to-open delay when a matching live
+  fill and source wallet fill are available.
 - Tracks open paper positions by account, source wallet, and coin.
 - Keeps stored paper position notional and margin as simulated entry exposure.
   Adds increase stored margin by the new fill margin, and partial closes reduce
@@ -939,6 +941,9 @@ What it does:
   market allow/block lists before submitting a live entry order.
 - Reconciles matched live fills back into source-attributed live positions so
   exit-only accounts can continue to reduce or close copied exposure.
+- Exposes live open-position entry execution delay by matching live open fills
+  back to the copied source wallet fill timestamp. Exchange aggregate position
+  rows reuse the matching source-position delay when available.
 - Adds testnet-only manual order submission through `POST /trading/testnet/orders`
   so lifecycle and reconciliation can be tested before mainnet.
 

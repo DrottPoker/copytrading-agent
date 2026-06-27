@@ -1236,7 +1236,11 @@ function PositionRow({
         <RowStat
           label="Execution"
           value={formatExecutionMs(position.entryExecutionDelayMs)}
-          detail={position.accountType === "paper" ? "source to open" : "live position"}
+          detail={
+            position.accountType === "paper" || position.entryExecutionDelayMs !== null
+              ? "source to open"
+              : "live position"
+          }
         />
         <RowStat label="Mark" value={formatPrice(position.markPrice)} detail={formatDate(position.priceUpdatedAt ?? position.updatedAt)} />
         {paperPosition || livePosition ? (
@@ -1570,7 +1574,7 @@ function buildLiveDashboardPositions(
     accountType: "live",
     coin: position.coin,
     currentNotionalUsd: position.currentNotionalUsd ?? position.notionalUsd,
-    entryExecutionDelayMs: null,
+    entryExecutionDelayMs: position.entryExecutionDelayMs,
     entryPrice: position.entryPrice,
     id: position.id,
     leverage: position.leverage,
