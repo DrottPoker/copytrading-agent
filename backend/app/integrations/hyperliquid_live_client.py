@@ -221,6 +221,9 @@ class HyperliquidLiveTradingClient:
                 self.settings.trading_copy_min_order_notional_usd,
                 self.settings.live_trading_min_order_notional_usd,
             ),
+            min_order_notional_buffer_usd=(
+                self.settings.live_trading_min_order_notional_buffer_usd
+            ),
             adjust_to_min_order=self.settings.trading_copy_adjust_small_orders_to_min_order,
         )
         if (
@@ -368,6 +371,7 @@ def live_order_wire_values(
     *,
     exchange: Any | None = None,
     min_order_notional_usd: Decimal = Decimal("0"),
+    min_order_notional_buffer_usd: Decimal = Decimal("0"),
     adjust_to_min_order: bool = False,
 ) -> LiveOrderWireValues:
     precision = live_market_precision(exchange, intent.coin)
@@ -384,22 +388,34 @@ def live_order_wire_values(
         rounding=ROUND_DOWN,
     )
     notional_usd = size * limit_price
-    min_order_notional = max(min_order_notional_usd, Decimal("0"))
+    exchange_min_order_notional = max(min_order_notional_usd, Decimal("0"))
+    min_order_buffer = max(min_order_notional_buffer_usd, Decimal("0"))
+    wire_min_order_notional = (
+        exchange_min_order_notional
+        if intent.reduce_only
+        else exchange_min_order_notional + min_order_buffer
+    )
 
     if (
         not intent.reduce_only
         and adjust_to_min_order
-        and min_order_notional > Decimal("0")
-        and intent.notional_usd >= min_order_notional
-        and notional_usd < min_order_notional
+        and wire_min_order_notional > Decimal("0")
+        and notional_usd < wire_min_order_notional
     ):
-        adjusted_size = live_order_wire_size(
-            intent.size,
-            size_decimals=size_decimals,
-            rounding=ROUND_UP,
+        adjusted_size = max(
+            live_order_wire_size(
+                intent.size,
+                size_decimals=size_decimals,
+                rounding=ROUND_UP,
+            ),
+            live_order_wire_min_size(
+                wire_min_order_notional,
+                limit_price=limit_price,
+                size_decimals=size_decimals,
+            ),
         )
         adjusted_notional = adjusted_size * limit_price
-        if adjusted_notional >= min_order_notional:
+        if adjusted_notional >= wire_min_order_notional:
             size = adjusted_size
             notional_usd = adjusted_notional
 
@@ -411,7 +427,12 @@ def live_order_wire_values(
         raise HyperliquidLiveTradingConfigurationError(
             "Live order limit price is below Hyperliquid tick precision."
         )
-    if min_order_notional > Decimal("0") and notional_usd < min_order_notional:
+    minimum_after_rounding = (
+        wire_min_order_notional
+        if not intent.reduce_only and adjust_to_min_order
+        else exchange_min_order_notional
+    )
+    if minimum_after_rounding > Decimal("0") and notional_usd < minimum_after_rounding:
         raise HyperliquidLiveTradingConfigurationError(
             "Live order notional is below the configured minimum after lot rounding."
         )
@@ -520,6 +541,21 @@ def live_order_wire_size(
     rounding: str,
 ) -> Decimal:
     return size.quantize(decimal_quantum(size_decimals), rounding=rounding)
+
+
+def live_order_wire_min_size(
+    notional_usd: Decimal,
+    *,
+    limit_price: Decimal,
+    size_decimals: int,
+) -> Decimal:
+    if limit_price <= Decimal("0"):
+        return Decimal("0")
+    return live_order_wire_size(
+        notional_usd / limit_price,
+        size_decimals=size_decimals,
+        rounding=ROUND_UP,
+    )
 
 
 def live_order_wire_price(

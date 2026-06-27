@@ -11,6 +11,7 @@
   "hyperliquid_info_retry_max_delay_seconds": 20,
   "hyperliquid_info_min_request_interval_seconds": 0.5,
   "paper_trading_enabled": true,
+  "wallet_pool_page_limit": 300,
   "active_copy_wallets": 10,
   "max_realtime_wallets": 10,
   "realtime_subscription_refresh_seconds": 15,

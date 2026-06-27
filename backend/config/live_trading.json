@@ -20,6 +20,7 @@
   },
   "risk": {
     "min_order_notional_usd": 10,
+    "min_order_notional_buffer_usd": 0.1,
     "max_order_notional_usd": 1000,
     "max_account_open_notional_usd": 5000,
     "max_open_positions": 50,

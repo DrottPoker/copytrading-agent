@@ -64,19 +64,21 @@ router = APIRouter(prefix="/wallets", tags=["wallets"])
 @router.get("", response_model=WalletListResponse)
 async def list_wallets_route(
     session: Annotated[AsyncSession, Depends(db_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
     enabled: Annotated[bool | None, Query()] = None,
     q: Annotated[str | None, Query(min_length=1, max_length=128)] = None,
-    limit: Annotated[int, Query(ge=1, le=250)] = 100,
+    limit: Annotated[int | None, Query(ge=1, le=1000)] = None,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> WalletListResponse:
+    resolved_limit = limit if limit is not None else settings.wallet_pool_page_limit
     wallets, total = await list_wallets(
         session=session,
         enabled=enabled,
         query=q,
-        limit=limit,
+        limit=resolved_limit,
         offset=offset,
     )
-    return WalletListResponse(items=wallets, total=total, limit=limit, offset=offset)
+    return WalletListResponse(items=wallets, total=total, limit=resolved_limit, offset=offset)
 
 
 @router.post("/fills/import-pool", response_model=PoolFillImportResponse)

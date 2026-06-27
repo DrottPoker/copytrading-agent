@@ -28,6 +28,7 @@ def test_live_trading_config_is_loaded_from_dedicated_file(
     assert settings.live_trading_copy_enabled is True
     assert settings.live_trading_limit_slippage_bps == Decimal("20")
     assert settings.live_trading_min_order_notional_usd == Decimal("10")
+    assert settings.live_trading_min_order_notional_buffer_usd == Decimal("0.1")
     assert settings.live_trading_max_order_notional_usd == Decimal("1000")
     assert settings.live_trading_max_account_open_notional_usd == Decimal("5000")
     assert settings.live_trading_max_open_positions == 50
@@ -39,6 +40,14 @@ def test_live_trading_config_is_loaded_from_dedicated_file(
     assert settings.live_trading_reconciliation_lookback_minutes == 120
     assert settings.live_trading_allowed_coins == []
     assert settings.live_trading_blocked_coins == []
+
+
+def test_app_config_loads_wallet_pool_page_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_required_live_env(monkeypatch)
+    config = load_app_config()
+    settings = Settings(_env_file=None, **config)
+
+    assert settings.wallet_pool_page_limit == 300
 
 
 def test_shared_trading_config_is_loaded_from_dedicated_file(
@@ -65,6 +74,16 @@ def test_shared_trading_config_is_loaded_from_dedicated_file(
     assert "paper_copy_max_total_allocation_pct" not in config
     assert "paper_copy_min_order_notional_usd" not in config
     assert "paper_copy_max_entry_age_seconds" not in config
+
+
+def test_prune_config_loads_low_score_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_required_live_env(monkeypatch)
+    config = load_app_config()
+    settings = Settings(_env_file=None, **config)
+
+    assert settings.wallet_prune_low_score_min_closed_trades == 50
+    assert settings.wallet_prune_low_score_threshold == Decimal("50")
+    assert settings.wallet_prune_low_score_operator == "lt"
 
 
 def test_paper_config_does_not_seed_accounts(monkeypatch: pytest.MonkeyPatch) -> None:

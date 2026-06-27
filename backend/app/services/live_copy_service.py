@@ -20,10 +20,14 @@ from app.db.models import (
 from app.integrations.hyperliquid_client import HyperliquidClient
 from app.integrations.hyperliquid_live_client import HyperliquidLiveTradingClient
 from app.services.live_trading_service import (
+    LIVE_CAPITAL_MODE_UNIFIED,
     LIVE_EXCHANGE_SOURCE,
     POSITION_EPSILON,
     LiveOrderSubmitError,
+    live_capital_mode,
+    live_perp_equity_usd,
     live_tradable_equity_usd,
+    live_unified_equity_usd,
     load_live_source_position,
     reconcile_live_trading_account,
     submit_live_trade_intent,
@@ -73,6 +77,18 @@ def live_skip(reason: str, count: int = 1) -> PaperCopyBatchResult:
         skipped_fills=count,
         skip_reasons={reason: count} if count > 0 else {},
     )
+
+
+def live_copy_allocation_equity_usd(
+    account: TradingAccount,
+    *,
+    settings: Settings,
+    dex: str | None = None,
+) -> Decimal:
+    if live_capital_mode(settings) == LIVE_CAPITAL_MODE_UNIFIED:
+        equity_usd = live_unified_equity_usd(account)
+        return equity_usd if equity_usd > ZERO else account.equity_usd or ZERO
+    return live_perp_equity_usd(account, dex=dex)
 
 
 async def process_live_copy_fills(
@@ -426,9 +442,10 @@ async def apply_live_open_part(
             leverage=source_leverage,
         )
     coin = str(fill.get("coin") or "")
+    dex = dex_from_coin(coin)
     tradable_equity_usd = live_tradable_equity_usd(
         account,
-        dex=dex_from_coin(coin),
+        dex=dex,
         settings=settings,
     )
     if tradable_equity_usd <= ZERO:
@@ -439,6 +456,22 @@ async def apply_live_open_part(
             fill=fill,
             part=part,
             reason="live_account_no_tradable_equity",
+            leverage=source_leverage,
+        )
+
+    allocation_equity_usd = live_copy_allocation_equity_usd(
+        account,
+        dex=dex,
+        settings=settings,
+    )
+    if allocation_equity_usd <= ZERO:
+        return await record_live_skip(
+            session,
+            account=account,
+            allocation=allocation,
+            fill=fill,
+            part=part,
+            reason="live_account_no_allocation_equity",
             leverage=source_leverage,
         )
 
@@ -546,7 +579,7 @@ async def apply_live_open_part(
         )
 
     price = execution_context.execution_price
-    allocation_usd = tradable_equity_usd * allocation.allocation_pct
+    allocation_usd = allocation_equity_usd * allocation.allocation_pct
     source_exposure_pct = part.source_notional_usd / source_perp_equity
     target_notional = allocation_usd * source_exposure_pct
     target_margin = margin_from_notional(target_notional, source_leverage)
@@ -560,7 +593,7 @@ async def apply_live_open_part(
         ZERO,
     )
     global_remaining = max(
-        tradable_equity_usd * settings.trading_copy_max_total_allocation_pct
+        allocation_equity_usd * settings.trading_copy_max_total_allocation_pct
         - await live_open_margin_for_account(session, account_key=account.key),
         ZERO,
     )

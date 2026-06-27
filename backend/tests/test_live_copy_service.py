@@ -12,6 +12,7 @@ from app.services.live_copy_service import (
     live_close_below_min_order_notional,
     live_close_size_for_part,
     live_copy_account_snapshot_is_stale,
+    live_copy_allocation_equity_usd,
     live_exchange_position_conflict,
     live_min_order_notional_usd,
     live_pending_close_size_from_orders,
@@ -131,6 +132,43 @@ def test_live_close_below_min_order_notional_blocks_sub_min_closes() -> None:
 
     assert live_close_below_min_order_notional(Decimal("9.99"), settings=settings)
     assert not live_close_below_min_order_notional(Decimal("10"), settings=settings)
+
+
+def test_live_copy_allocation_equity_uses_unified_equity_not_available() -> None:
+    settings = Settings(live_trading_capital_mode="unified")
+    account = live_account(last_reconciled_at=datetime(2026, 1, 1, tzinfo=UTC))
+    account.equity_usd = Decimal("200")
+    account.cash_balance_usd = Decimal("50")
+    account.config_payload = {
+        "lastReconciliation": {
+            "unifiedAvailableUsd": "50",
+            "unifiedEquityUsd": "200",
+        }
+    }
+
+    assert (
+        live_copy_allocation_equity_usd(account, settings=settings)
+        == Decimal("200")
+    )
+
+
+def test_live_copy_allocation_equity_uses_standard_dex_equity() -> None:
+    settings = Settings(live_trading_capital_mode="standard_per_dex")
+    account = live_account(last_reconciled_at=datetime(2026, 1, 1, tzinfo=UTC))
+    account.equity_usd = Decimal("500")
+    account.config_payload = {
+        "lastReconciliation": {
+            "perpStates": [
+                {"dex": "default", "accountValue": "120"},
+                {"dex": "xyz", "accountValue": "80"},
+            ],
+        }
+    }
+
+    assert (
+        live_copy_allocation_equity_usd(account, dex="xyz", settings=settings)
+        == Decimal("80")
+    )
 
 
 def test_live_close_size_uses_ratio_while_source_position_remains_open() -> None:

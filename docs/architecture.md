@@ -256,13 +256,16 @@ Tweakable non-secret config lives in JSON files:
 
 The backend config files are grouped by operational area:
 
+- `app.json` owns non-secret runtime defaults such as worker mode, wallet pool
+  page limit, network, and shared infrastructure request settings.
 - `discovery.json` owns source discovery, candidate filtering, backfill quality
   checks, and promotion.
 - `database.json` owns manual database maintenance defaults such as fill
   retention days, retention batch size, max rows, and protected top scored
   wallets.
 - `live_trading.json` owns live trading enablement, acknowledgements, live
-  execution guardrails, account risk limits, and market allow/block lists.
+  execution guardrails, min-order wire buffer, account risk limits, and market
+  allow/block lists.
 - `trading.json` owns copy policy shared by paper and live copy, including
   source ranking limits, allocation pockets, minimum copy notional, optional
   min-order adjustment, price drift guard, and live mid-price cache settings.
@@ -852,9 +855,12 @@ semantics in both modes, so filled, skipped, rejected, and failed attempts are
 visible without mixing paper and live rows. The frontend keeps mode-specific
 logic in paper and live view-model builders, while shared presentational
 components render the active mode. Live source allocation bars reuse the shared
-source allocation percentage against live tradable equity. Source rank, pool
-rank, score, and labels are resolved from the trading API source metadata and
-merged with paper summary metadata, so live-only fills and orders do not lose
+source allocation percentage against live account equity. Live account Equity
+and Net equity labels use exchange equity consistently across Trading and
+Accounts, while allocation usage and sizing use account equity. Tradable equity
+is still used as the order availability guard before submitting new live orders.
+Source rank, pool rank, score, and labels are resolved from the trading API source metadata
+and merged with paper summary metadata, so live-only fills and orders do not lose
 pool context. The trading API reconstructs live closed trades from stored live
 fills by grouping open and close executions into complete trade windows;
 individual reduce and close fills remain in Recent Execution Activity. Live

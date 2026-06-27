@@ -173,21 +173,25 @@ export async function getDiscoveryRuns(limit = 25): Promise<DiscoveryImportRunLi
 }
 
 export async function getWallets(query?: string): Promise<WalletListResponse> {
-  const params = new URLSearchParams({ limit: "250" });
+  const params = new URLSearchParams();
   if (query?.trim()) {
     params.set("q", query.trim());
   }
+  const queryString = params.toString();
+  const url = queryString
+    ? `${getApiBaseUrl()}/wallets?${queryString}`
+    : `${getApiBaseUrl()}/wallets`;
 
   try {
-    const response = await backendGet(`${getApiBaseUrl()}/wallets?${params.toString()}`);
+    const response = await backendGet(url);
 
     if (!response.ok) {
-      return { items: [], total: 0, limit: 250, offset: 0 };
+      return { items: [], total: 0, limit: 0, offset: 0 };
     }
 
     return (await response.json()) as WalletListResponse;
   } catch {
-    return { items: [], total: 0, limit: 250, offset: 0 };
+    return { items: [], total: 0, limit: 0, offset: 0 };
   }
 }
 

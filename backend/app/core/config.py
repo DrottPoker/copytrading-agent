@@ -307,6 +307,9 @@ LIVE_TRADING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("reconciliation", "lookback_minutes"): ("live_trading_reconciliation_lookback_minutes"),
     ("copy_execution", "enabled"): "live_trading_copy_enabled",
     ("risk", "min_order_notional_usd"): "live_trading_min_order_notional_usd",
+    ("risk", "min_order_notional_buffer_usd"): (
+        "live_trading_min_order_notional_buffer_usd"
+    ),
     ("risk", "max_order_notional_usd"): "live_trading_max_order_notional_usd",
     ("risk", "max_account_open_notional_usd"): ("live_trading_max_account_open_notional_usd"),
     ("risk", "max_open_positions"): "live_trading_max_open_positions",
@@ -340,6 +343,7 @@ class Settings(BaseSettings):
     backup_status_enabled: bool = True
     backup_status_directory: str = "/app/backups/postgres"
     backup_status_stale_seconds: int = Field(default=129600, ge=3600, le=2592000)
+    wallet_pool_page_limit: int = Field(default=300, ge=1, le=1000)
 
     database_url: str | None = None
     database_url_direct: str | None = None
@@ -366,6 +370,10 @@ class Settings(BaseSettings):
     live_trading_reconciliation_lookback_minutes: int = Field(default=120, ge=1, le=10080)
     live_trading_copy_enabled: bool = False
     live_trading_min_order_notional_usd: Decimal = Field(default=Decimal("10"), ge=0)
+    live_trading_min_order_notional_buffer_usd: Decimal = Field(
+        default=Decimal("0.10"),
+        ge=0,
+    )
     live_trading_max_order_notional_usd: Decimal = Field(default=Decimal("100"), ge=0)
     live_trading_max_account_open_notional_usd: Decimal = Field(
         default=Decimal("500"),

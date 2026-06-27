@@ -420,7 +420,7 @@ What it does:
   trade count at or above the configured minimum.
 - Compares final score with the configured threshold using `lt`, `lte`, `gt`,
   or `gte`. The default is `lt`, so the default rule prunes wallets with at
-  least 5 closed trades and score below 30.
+  least 50 closed trades and score below 50.
 - Excludes copy-enabled, active, exit-only, and never-polled wallets.
 - Runs as a dry run by default and supports `dry_run=false` for deletion.
 - Adds deleted addresses to the discovery ignore list so they are not imported
@@ -877,7 +877,10 @@ What it does:
 - Normalizes live order size and limit price to Hyperliquid tick and lot
   precision before SDK submission. Entry orders can round up to the next valid
   lot only when min-order adjustment is enabled and lot rounding would otherwise
-  put the order below the configured minimum notional.
+  put the order below the configured minimum notional. Live entries also add the
+  configured minimum-notional buffer before wire rounding so orders near the
+  exchange minimum do not fall back under the limit after tick and lot
+  normalization.
 - Persists live order intents before submission and reconciles active live
   orders from Hyperliquid `orderStatus`, `userFillsByTime`, and
   `clearinghouseState`.
@@ -949,6 +952,7 @@ Config:
 - `live_trading_reconciliation_lookback_minutes`
 - `live_trading_copy_enabled`
 - `live_trading_min_order_notional_usd`
+- `live_trading_min_order_notional_buffer_usd`
 - `live_trading_max_order_notional_usd`
 - `live_trading_max_account_open_notional_usd`
 - `live_trading_max_open_positions`
@@ -1028,6 +1032,9 @@ What it does:
 - Makes common system tuning possible without editing environment variables.
 - Environment variables override JSON config. This allows compose and deployment
   environments to change runtime behavior without editing tracked config files.
+- `backend/config/app.json` owns non-secret runtime defaults such as worker
+  mode, wallet pool page limit, network, and shared infrastructure request
+  settings.
 - `backend/config/discovery.json` owns source discovery, candidate filtering,
   backfill quality checks, and promotion.
 - `backend/config/database.json` owns manual database maintenance defaults such

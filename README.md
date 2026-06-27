@@ -579,6 +579,9 @@ Tweakable non-secret settings live in config files:
 component weights, profitability, consistency, risk, copyability, recency,
 penalties, and window scores.
 
+`backend/config/app.json` owns non-secret runtime defaults such as worker mode,
+wallet pool page limit, network, and shared infrastructure request settings.
+
 `backend/config/prune.json` uses organized sections for prune rules, scheduled
 worker behavior, and worker execution defaults.
 
@@ -731,7 +734,10 @@ execution and risk guardrails from `backend/config/live_trading.json`. Before
 submission, the live adapter normalizes order size and limit price to
 Hyperliquid tick and lot precision from market metadata. If lot rounding would
 push an adjusted entry below the configured minimum notional, the adapter rounds
-to the next valid lot only when min-order adjustment is enabled.
+to the next valid lot only when min-order adjustment is enabled. Live entries
+also add `live_trading_min_order_notional_buffer_usd` before wire rounding so
+orders near the exchange minimum do not fall back under the limit after tick and
+lot normalization.
 Live entries use IOC-limit orders with `live_trading_limit_slippage_bps` applied
 to the live mid-price. The default is 20 bps so copied entries are more likely
 to cross resting liquidity, while `live_trading_max_slippage_bps` remains the

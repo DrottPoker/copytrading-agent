@@ -216,6 +216,37 @@ def test_live_order_wire_values_adjust_min_order_after_lot_rounding() -> None:
     assert values.price_decimals == 4
 
 
+def test_live_order_wire_values_adds_buffer_after_price_and_lot_rounding() -> None:
+    exchange = FakeExchange(
+        info=FakeInfo(
+            assets={"HYPE": 0},
+            size_decimals={0: 4},
+        )
+    )
+    intent = live_test_intent(
+        coin="HYPE",
+        size=Decimal("0.064797"),
+        limit_price=Decimal("154.32804"),
+        notional_usd=Decimal("10"),
+        source_price=Decimal("154.32804"),
+        observed_price=Decimal("154.32804"),
+    )
+
+    values = live_order_wire_values(
+        intent,
+        exchange=exchange,
+        min_order_notional_usd=Decimal("10"),
+        min_order_notional_buffer_usd=Decimal("0.10"),
+        adjust_to_min_order=True,
+    )
+
+    assert values.size == Decimal("0.0655")
+    assert values.limit_price == Decimal("154.32")
+    assert values.notional_usd == Decimal("10.107960")
+    assert values.size_decimals == 4
+    assert values.price_decimals == 2
+
+
 @pytest.mark.asyncio
 async def test_live_client_submits_hyperliquid_wire_safe_values() -> None:
     exchange = FakeExchange(

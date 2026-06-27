@@ -512,7 +512,11 @@ export function TradingDashboard({
           icon={WalletCards}
           label="Net equity"
           value={formatCurrency(metrics.netEquity)}
-          detail={`${formatCurrency(metrics.cashEquity)} account capital`}
+          detail={
+            tradingMode === "live"
+              ? `${formatCurrency(metrics.cashEquity)} allocation equity`
+              : `${formatCurrency(metrics.cashEquity)} account capital`
+          }
           tone={metrics.totalPnl >= 0 ? "positive" : "danger"}
         />
         <HeroMetric
@@ -2311,10 +2315,10 @@ function accountNetEquity(account: { equityUsd: string; unrealizedPnlUsd: string
 
 function liveAccountEquity(account: TradingAccount) {
   return numberValue(
-    account.tradableEquityUsd ??
-      account.equityUsd ??
+    account.equityUsd ??
+      account.perpEquityUsd ??
+      account.tradableEquityUsd ??
       account.cashBalanceUsd ??
-      account.spotUsdcAvailableUsd ??
       0,
   );
 }
