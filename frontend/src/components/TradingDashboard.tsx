@@ -61,8 +61,8 @@ type MonitoredSource = {
   rank: number | null;
   poolRank: number | null;
   score: string | null;
-  monitorStatus: "monitored" | "waiting" | "history";
-  sourceStatus: "trading" | "retained" | "waiting_for_trades" | "waiting_for_slot" | "history";
+  monitorStatus: "monitored" | "waiting";
+  sourceStatus: "trading" | "retained" | "waiting_for_trades" | "waiting_for_slot";
   sourceStatusReason: string | null;
   hasRealtimeSlot: boolean;
   canOpenNewPositions: boolean;
@@ -1995,8 +1995,6 @@ function buildLiveMonitoredSources(
   const sources = new Set([
     ...liveReadySources,
     ...livePositionsBySource.keys(),
-    ...liveFillsBySource.keys(),
-    ...liveOrdersBySource.keys(),
   ]);
 
   return Array.from(sources)
@@ -2009,18 +2007,14 @@ function buildLiveMonitoredSources(
       const hasRealtimeSlot = allocations.some((allocation) => allocation.hasRealtimeSlot);
       const canOpenNewPositions = liveSourceCanOpenNewPositions(allocations, liveCopyReady);
       const openPositionCount = liveOpenPositions.length;
-      const hasLiveHistory = liveFills.length > 0 || liveOrders.length > 0;
       const sourceStatus = resolveLiveSourceStatus({
         canOpenNewPositions,
-        hasLiveHistory,
         hasRealtimeSlot,
         openPositionCount,
       });
-      const monitorStatus = liveMonitorStatus({
-        hasLiveHistory,
-        hasRealtimeSlot,
-        sourceStatus,
-      });
+      const monitorStatus: MonitoredSource["monitorStatus"] = hasRealtimeSlot
+        ? "monitored"
+        : "waiting";
       const realizedPnl = sumNumbers(liveFills.map((fill) => fill.realizedPnlUsd));
       const unrealizedPnl = sumNumbers(liveOpenPositions.map((position) => position.unrealizedPnlUsd));
       const allocationPct =
@@ -2433,12 +2427,10 @@ function liveSourceCanOpenNewPositions(
 
 function resolveLiveSourceStatus({
   canOpenNewPositions,
-  hasLiveHistory,
   hasRealtimeSlot,
   openPositionCount,
 }: {
   canOpenNewPositions: boolean;
-  hasLiveHistory: boolean;
   hasRealtimeSlot: boolean;
   openPositionCount: number;
 }): MonitoredSource["sourceStatus"] {
@@ -2449,27 +2441,9 @@ function resolveLiveSourceStatus({
     return "retained";
   }
   if (!hasRealtimeSlot) {
-    return hasLiveHistory ? "history" : "waiting_for_slot";
+    return "waiting_for_slot";
   }
   return canOpenNewPositions ? "waiting_for_trades" : "waiting_for_slot";
-}
-
-function liveMonitorStatus({
-  hasLiveHistory,
-  hasRealtimeSlot,
-  sourceStatus,
-}: {
-  hasLiveHistory: boolean;
-  hasRealtimeSlot: boolean;
-  sourceStatus: MonitoredSource["sourceStatus"];
-}): MonitoredSource["monitorStatus"] {
-  if (hasRealtimeSlot) {
-    return "monitored";
-  }
-  if (sourceStatus === "history" || hasLiveHistory) {
-    return "history";
-  }
-  return "waiting";
 }
 
 function resolveSourceStatusReason(allocations: PaperCopyAllocation[]) {
@@ -2536,9 +2510,6 @@ function sourceStatusDetail(source: MonitoredSource, mode: TradingMode) {
   }
   if (source.sourceStatus === "waiting_for_trades") {
     return mode === "live" ? "ready for live entries" : "ready for new entries";
-  }
-  if (source.sourceStatus === "history") {
-    return mode === "live" ? "recent live activity" : "history";
   }
   return reason;
 }
@@ -2657,10 +2628,7 @@ function statusOrder(status: MonitoredSource["sourceStatus"]) {
   if (status === "waiting_for_trades") {
     return 2;
   }
-  if (status === "waiting_for_slot") {
-    return 3;
-  }
-  return 4;
+  return 3;
 }
 
 function clampPercent(value: number) {

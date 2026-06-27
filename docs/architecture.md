@@ -856,13 +856,14 @@ source history from live positions, live fills, live orders, and persisted live
 pre-submit skips, while reusing known wallet labels for display names only. Copy
 source monitor slots and source eligibility are shared across paper and live
 execution, then rendered with mode-specific exposure, PnL, activity, and
-execution status. Live-only sources from recent fills or orders are rendered as
-history rows, not as realtime slot waiters. Recent Execution Activity uses the
-same result-oriented row semantics in both modes, so filled, skipped, rejected,
-and failed attempts are visible without mixing paper and live rows. The frontend
-keeps mode-specific logic in paper and live view-model builders, while shared
-presentational components render the active mode. Live source allocation bars
-reuse the shared source allocation percentage against live account equity. Live account Equity
+execution status. Live-only sources from recent fills or orders are excluded
+from Copy Sources and remain visible through Wallet PnL history and Recent
+Execution Activity. Recent Execution Activity uses the same result-oriented row
+semantics in both modes, so filled, skipped, rejected, and failed attempts are
+visible without mixing paper and live rows. The frontend keeps mode-specific
+logic in paper and live view-model builders, while shared presentational
+components render the active mode. Live source allocation bars reuse the shared
+source allocation percentage against live account equity. Live account Equity
 and Net equity labels use exchange equity consistently across Trading and
 Accounts, while allocation usage and sizing use account equity. Tradable equity
 is still used as the order availability guard before submitting new live orders.
