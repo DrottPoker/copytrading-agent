@@ -146,6 +146,14 @@ type WalletPerformanceRow = {
   lastFillAt: string | null;
 };
 
+type SourceMetadata = {
+  allocationPct: number | null;
+  label: string | null;
+  poolRank: number | null;
+  rank: number | null;
+  score: string | null;
+};
+
 type RowPill = {
   label: string;
   tone: Tone;
@@ -364,6 +372,7 @@ export function TradingDashboard({
     [tradingAccounts.positions],
   );
   const sourceLabels = useMemo(() => buildSourceLabels(summary), [summary]);
+  const sourceMetadata = useMemo(() => buildSourceMetadata(summary), [summary]);
   const dashboardAccounts = useMemo(
     () =>
       tradingMode === "paper"
@@ -426,11 +435,11 @@ export function TradingDashboard({
             tradingAccounts.recentFills,
             tradingAccounts.recentOrders,
             liveSourcePositions,
-            sourceLabels,
+            sourceMetadata,
           ),
     [
       liveSourcePositions,
-      sourceLabels,
+      sourceMetadata,
       summary.walletPerformance,
       tradingAccounts.recentFills,
       tradingAccounts.recentOrders,
@@ -1047,15 +1056,18 @@ function SourceRow({
             </>
           ) : (
             <>
-              <CompactSourceStat
-                label="Open margin"
-                value={formatCurrency(source.openMarginUsd)}
-                detail={`${formatCurrency(source.openNotionalUsd)} notional, ${formatInteger(source.openLivePositionCount)} open`}
+              <SourcePocketStat
+                label="Allocation"
+                remaining={formatCurrency(source.remainingAllocationUsd)}
+                tone={usedPct >= 0.9 ? "danger" : usedPct >= 0.7 ? "warning" : "positive"}
+                used={formatCurrency(source.openMarginUsd)}
+                usedPct={usedPct}
+                value={formatPercent(source.pocketUsedPct)}
               />
               <CompactSourceStat
                 label="Activity"
                 value={`${formatInteger(source.recentLiveFillCount)} fills`}
-                detail={`${formatInteger(source.recentLiveOrderCount)} orders, ${formatInteger(source.enabledLiveAccountCount)} live accounts`}
+                detail={`${formatCurrency(source.openNotionalUsd)} notional, ${formatInteger(source.recentLiveOrderCount)} orders`}
               />
             </>
           )}
@@ -1117,12 +1129,14 @@ function CompactSourceStat({
 }
 
 function SourcePocketStat({
+  label = "Allocation",
   remaining,
   tone,
   used,
   usedPct,
   value,
 }: {
+  label?: string;
   remaining: string;
   tone: "positive" | "warning" | "danger";
   used: string;
@@ -1135,7 +1149,7 @@ function SourcePocketStat({
     <div className="min-w-0">
       <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5">
         <p className="text-[10px] font-medium uppercase leading-4 text-[#5b6770]">
-          Pocket
+          {label}
         </p>
         <p className="whitespace-normal break-words font-mono text-xs font-semibold leading-4 text-ink">
           {value}
@@ -1941,11 +1955,18 @@ function buildLiveMonitoredSources(
   enabledLiveAccountCount: number,
   livePositions: TradingPosition[],
 ): MonitoredSource[] {
-  const labels = buildSourceLabels(summary);
+  const metadataBySource = buildSourceMetadata(summary);
   const liveCopyReady =
     tradingAccounts.liveTradingEnabled &&
     tradingAccounts.liveCopyEnabled &&
     enabledLiveAccountCount > 0;
+  const liveAllocationCapital = tradingAccounts.accounts
+    .filter(
+      (account) =>
+        account.accountType === "live" &&
+        (account.status === "enabled" || account.status === "exit_only"),
+    )
+    .reduce((total, account) => total + liveAccountEquity(account), 0);
   const allocationsBySource = new Map<string, PaperCopyAllocation[]>();
   for (const allocation of summary.allocations) {
     const source = allocation.sourceWallet.toLowerCase();
@@ -1970,6 +1991,7 @@ function buildLiveMonitoredSources(
       const liveOpenPositions = livePositionsBySource.get(source) ?? [];
       const liveFills = liveFillsBySource.get(source) ?? [];
       const liveOrders = liveOrdersBySource.get(source) ?? [];
+      const metadata = metadataBySource.get(source);
       const hasRealtimeSlot = allocations.some((allocation) => allocation.hasRealtimeSlot);
       const canOpenNewPositions = liveSourceCanOpenNewPositions(allocations, liveCopyReady);
       const openPositionCount = liveOpenPositions.length;
@@ -1978,6 +2000,15 @@ function buildLiveMonitoredSources(
         : "waiting";
       const realizedPnl = sumNumbers(liveFills.map((fill) => fill.realizedPnlUsd));
       const unrealizedPnl = sumNumbers(liveOpenPositions.map((position) => position.unrealizedPnlUsd));
+      const allocationPct =
+        metadata?.allocationPct ??
+        firstNumber(allocations.map((allocation) => allocation.allocationPct)) ??
+        0;
+      const allocationUsd =
+        liveAllocationCapital > 0 && allocationPct > 0
+          ? liveAllocationCapital * allocationPct
+          : 0;
+      const openMarginUsd = sumNumbers(liveOpenPositions.map((position) => position.marginUsd));
       const accounts = new Set([
         ...liveOpenPositions.map((position) => position.accountKey),
         ...liveFills.map((fill) => fill.accountKey),
@@ -1986,12 +2017,12 @@ function buildLiveMonitoredSources(
       return {
         sourceWallet: source,
         sourceLabel:
-          labels.get(source) ??
+          metadata?.label ??
           firstString(allocations.map((allocation) => allocation.sourceLabel)) ??
           null,
-        rank: minNumber(allocations.map((allocation) => allocation.rank)),
-        poolRank: minNumber(allocations.map((allocation) => allocation.poolRank)),
-        score: firstString(allocations.map((allocation) => allocation.score)),
+        rank: metadata?.rank ?? minNumber(allocations.map((allocation) => allocation.rank)),
+        poolRank: metadata?.poolRank ?? minNumber(allocations.map((allocation) => allocation.poolRank)),
+        score: metadata?.score ?? firstString(allocations.map((allocation) => allocation.score)),
         monitorStatus,
         sourceStatus: resolveLiveSourceStatus({
           canOpenNewPositions,
@@ -2011,14 +2042,14 @@ function buildLiveMonitoredSources(
         openLivePositionCount: openPositionCount,
         openPaperPositionCount: 0,
         openPositionCount,
-        allocationPct: null,
-        allocationUsd: 0,
-        openMarginUsd: sumNumbers(liveOpenPositions.map((position) => position.marginUsd)),
+        allocationPct: allocationPct > 0 ? allocationPct : null,
+        allocationUsd,
+        openMarginUsd,
         openNotionalUsd: sumNumbers(
           liveOpenPositions.map((position) => position.currentNotionalUsd ?? position.notionalUsd),
         ),
-        remainingAllocationUsd: 0,
-        pocketUsedPct: null,
+        remainingAllocationUsd: Math.max(allocationUsd - openMarginUsd, 0),
+        pocketUsedPct: allocationUsd > 0 ? openMarginUsd / allocationUsd : null,
         recentLiveFillCount: liveFills.length,
         recentLiveOrderCount: liveOrders.length,
         realizedPnlUsd: String(realizedPnl),
@@ -2067,7 +2098,7 @@ function buildLiveWalletHistory(
   liveFills: TradingFill[],
   liveOrders: TradingOrder[],
   livePositions: TradingPosition[],
-  sourceLabels: Map<string, string>,
+  sourceMetadata: Map<string, SourceMetadata>,
 ): WalletPerformanceRow[] {
   const positionsBySource = groupLivePositionsBySource(livePositions);
   const fillsBySource = groupLiveFillsBySource(liveFills);
@@ -2089,13 +2120,16 @@ function buildLiveWalletHistory(
         ...fills.map((fill) => fill.accountKey),
         ...orders.map((order) => order.accountKey),
       ]);
+      const metadata = sourceMetadata.get(source);
       return {
         sourceWallet: source,
-        sourceLabel: sourceLabels.get(source) ?? null,
-        rank: null,
-        poolRank: null,
-        score: null,
-        allocationPct: null,
+        sourceLabel: metadata?.label ?? null,
+        rank: metadata?.rank ?? null,
+        poolRank: metadata?.poolRank ?? null,
+        score: metadata?.score ?? null,
+        allocationPct: metadata?.allocationPct === null || metadata?.allocationPct === undefined
+          ? null
+          : String(metadata.allocationPct),
         active: positions.length > 0,
         monitorStatus: positions.length > 0 ? "monitored" : "history",
         accountCount: accountKeys.size,
@@ -2147,27 +2181,59 @@ function countSourcesWithDashboardOpenPositions(positions: DashboardPosition[]) 
 
 function buildSourceLabels(summary: PaperTradingSummaryResponse) {
   const labels = new Map<string, string>();
-  for (const allocation of summary.allocations) {
-    if (allocation.sourceLabel) {
-      labels.set(allocation.sourceWallet.toLowerCase(), allocation.sourceLabel);
-    }
-  }
-  for (const wallet of summary.walletPerformance) {
-    if (wallet.sourceLabel) {
-      labels.set(wallet.sourceWallet.toLowerCase(), wallet.sourceLabel);
-    }
-  }
-  for (const position of summary.positions) {
-    if (position.sourceLabel) {
-      labels.set(position.sourceWallet.toLowerCase(), position.sourceLabel);
-    }
-  }
-  for (const fill of summary.recentFills) {
-    if (fill.sourceLabel) {
-      labels.set(fill.sourceWallet.toLowerCase(), fill.sourceLabel);
+  for (const [source, metadata] of buildSourceMetadata(summary)) {
+    if (metadata.label) {
+      labels.set(source, metadata.label);
     }
   }
   return labels;
+}
+
+function buildSourceMetadata(summary: PaperTradingSummaryResponse) {
+  const metadata = new Map<string, SourceMetadata>();
+  const ensureMetadata = (wallet: string): SourceMetadata => {
+    const source = wallet.toLowerCase();
+    const existing = metadata.get(source);
+    if (existing) {
+      return existing;
+    }
+    const item: SourceMetadata = {
+      allocationPct: null,
+      label: null,
+      poolRank: null,
+      rank: null,
+      score: null,
+    };
+    metadata.set(source, item);
+    return item;
+  };
+
+  for (const allocation of summary.allocations) {
+    const item = ensureMetadata(allocation.sourceWallet);
+    item.allocationPct ??= firstNumber([allocation.allocationPct]);
+    item.label ??= allocation.sourceLabel;
+    item.poolRank = minNumber([item.poolRank, allocation.poolRank]);
+    item.rank = minNumber([item.rank, allocation.rank]);
+    item.score ??= allocation.score;
+  }
+  for (const wallet of summary.walletPerformance) {
+    const item = ensureMetadata(wallet.sourceWallet);
+    item.allocationPct ??= firstNumber([wallet.allocationPct]);
+    item.label ??= wallet.sourceLabel;
+    item.poolRank = minNumber([item.poolRank, wallet.poolRank]);
+    item.rank = minNumber([item.rank, wallet.rank]);
+    item.score ??= wallet.score;
+  }
+  for (const position of summary.positions) {
+    ensureMetadata(position.sourceWallet).label ??= position.sourceLabel;
+  }
+  for (const fill of summary.recentFills) {
+    ensureMetadata(fill.sourceWallet).label ??= fill.sourceLabel;
+  }
+  for (const trade of summary.closedTrades) {
+    ensureMetadata(trade.sourceWallet).label ??= trade.sourceLabel;
+  }
+  return metadata;
 }
 
 function groupLivePositionsBySource(positions: TradingPosition[]) {

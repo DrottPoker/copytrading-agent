@@ -135,6 +135,14 @@ type SourceRow = {
   winRate: number | null;
 };
 
+type SourceMetadata = {
+  allocationPct: number | null;
+  label: string | null;
+  poolRank: number | null;
+  rank: number | null;
+  score: string | null;
+};
+
 type AccountPositionRow = {
   accountType: "paper" | "live";
   coin: string;
@@ -1941,6 +1949,7 @@ function buildLiveAccountView(
   tradingAccounts: TradingAccountsResponse,
   account: TradingAccount,
 ): AccountView {
+  const sourceMetadata = buildSourceMetadataMap(summary);
   const sourceLabels = buildSourceLabelMap(summary);
   const allPositions = tradingAccounts.positions.filter((item) => item.accountKey === account.key);
   const displayPositions = displayAccountLivePositions(allPositions);
@@ -1954,7 +1963,9 @@ function buildLiveAccountView(
     positions: sourcePerformancePositions,
     recentFills,
     recentOrders,
+    sourceMetadata,
     sourceLabels,
+    allocationCapitalUsd: liveAccountEquity(account),
   });
   const metrics = buildLiveAccountMetrics({
     account,
@@ -2468,16 +2479,20 @@ function buildSourceRows({
 }
 
 function buildLiveSourceRows({
+  allocationCapitalUsd,
   closedTrades,
   positions,
   recentFills,
   recentOrders,
+  sourceMetadata,
   sourceLabels,
 }: {
+  allocationCapitalUsd: number;
   closedTrades: TradingClosedTrade[];
   positions: TradingPosition[];
   recentFills: TradingFill[];
   recentOrders: TradingOrder[];
+  sourceMetadata: Map<string, SourceMetadata>;
   sourceLabels: Map<string, string>;
 }) {
   const rows = new Map<string, SourceRow>();
@@ -2487,8 +2502,13 @@ function buildLiveSourceRows({
     if (existing) {
       return existing;
     }
+    const metadata = sourceMetadata.get(source);
+    const allocationUsd =
+      allocationCapitalUsd > 0 && metadata?.allocationPct
+        ? allocationCapitalUsd * metadata.allocationPct
+        : 0;
     const row: SourceRow = {
-      allocationUsd: 0,
+      allocationUsd,
       closedNetPnlUsd: 0,
       closedTradeCount: 0,
       copiedFillCount: 0,
@@ -2496,13 +2516,13 @@ function buildLiveSourceRows({
       openMarginUsd: 0,
       openNotionalUsd: 0,
       openPositionCount: 0,
-      poolRank: null,
-      remainingAllocationUsd: 0,
-      score: null,
+      poolRank: metadata?.poolRank ?? null,
+      remainingAllocationUsd: allocationUsd,
+      score: metadata?.score ?? null,
       skippedFillCount: 0,
       sourceLabel: isLiveExchangeSource(sourceWallet)
         ? "Exchange"
-        : sourceLabels.get(source) ?? null,
+        : metadata?.label ?? sourceLabels.get(source) ?? null,
       sourceStatus: "history",
       sourceWallet: sourceWallet,
       totalPnlUsd: 0,
@@ -2552,6 +2572,7 @@ function buildLiveSourceRows({
   return Array.from(rows.values())
     .map((row) => ({
       ...row,
+      remainingAllocationUsd: Math.max(row.allocationUsd - row.openMarginUsd, 0),
       totalPnlUsd: row.closedNetPnlUsd + row.unrealizedPnlUsd,
       winRate: row.closedTradeCount > 0 ? (winsBySource.get(row.sourceWallet.toLowerCase()) ?? 0) / row.closedTradeCount : null,
     }))
@@ -2604,14 +2625,53 @@ function buildTimeline(closedTrades: AccountClosedTradeRow[]): TimelinePoint[] {
 
 function buildSourceLabelMap(summary: PaperTradingSummaryResponse) {
   const labels = new Map<string, string>();
+  for (const [source, metadata] of buildSourceMetadataMap(summary)) {
+    if (metadata.label) {
+      labels.set(source, metadata.label);
+    }
+  }
+  return labels;
+}
+
+function buildSourceMetadataMap(summary: PaperTradingSummaryResponse) {
+  const metadata = new Map<string, SourceMetadata>();
+  const ensureMetadata = (wallet: string): SourceMetadata => {
+    const source = wallet.toLowerCase();
+    const existing = metadata.get(source);
+    if (existing) {
+      return existing;
+    }
+    const item: SourceMetadata = {
+      allocationPct: null,
+      label: null,
+      poolRank: null,
+      rank: null,
+      score: null,
+    };
+    metadata.set(source, item);
+    return item;
+  };
   const addLabel = (wallet: string, label: string | null | undefined) => {
     const trimmed = label?.trim();
     if (trimmed) {
-      labels.set(wallet.toLowerCase(), trimmed);
+      ensureMetadata(wallet).label = trimmed;
     }
   };
   for (const allocation of summary.allocations) {
+    const item = ensureMetadata(allocation.sourceWallet);
     addLabel(allocation.sourceWallet, allocation.sourceLabel);
+    item.allocationPct ??= firstNumber([allocation.allocationPct]);
+    item.poolRank = minNullable(item.poolRank, allocation.poolRank);
+    item.rank = minNullable(item.rank, allocation.rank);
+    item.score ??= allocation.score;
+  }
+  for (const wallet of summary.walletPerformance) {
+    const item = ensureMetadata(wallet.sourceWallet);
+    addLabel(wallet.sourceWallet, wallet.sourceLabel);
+    item.allocationPct ??= firstNumber([wallet.allocationPct]);
+    item.poolRank = minNullable(item.poolRank, wallet.poolRank);
+    item.rank = minNullable(item.rank, wallet.rank);
+    item.score ??= wallet.score;
   }
   for (const position of summary.positions) {
     addLabel(position.sourceWallet, position.sourceLabel);
@@ -2622,7 +2682,7 @@ function buildSourceLabelMap(summary: PaperTradingSummaryResponse) {
   for (const trade of summary.closedTrades) {
     addLabel(trade.sourceWallet, trade.sourceLabel);
   }
-  return labels;
+  return metadata;
 }
 
 function displayAccountLivePositions(positions: TradingPosition[]) {
@@ -2673,6 +2733,15 @@ function decimal(value: string | number | null | undefined) {
 
 function sumNumbers(values: Array<string | number | null | undefined>): number {
   return values.reduce<number>((total, value) => total + decimal(value), 0);
+}
+
+function firstNumber(values: Array<string | number | null | undefined>): number | null {
+  for (const value of values) {
+    if (value !== null && value !== undefined) {
+      return decimal(value);
+    }
+  }
+  return null;
 }
 
 function minNullable(left: number | null, right: number | null) {

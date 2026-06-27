@@ -851,7 +851,10 @@ execution status. Recent Execution Activity uses the same result-oriented row
 semantics in both modes, so filled, skipped, rejected, and failed attempts are
 visible without mixing paper and live rows. The frontend keeps mode-specific
 logic in paper and live view-model builders, while shared presentational
-components render the active mode. The trading API reconstructs live
+components render the active mode. Live source allocation bars reuse the shared
+source allocation percentage against live tradable equity, and source rank,
+pool rank, score, and labels are resolved from the shared paper summary metadata
+when live activity only carries source addresses. The trading API reconstructs live
 closed trades from stored live fills by grouping open and close executions into
 complete trade windows; individual reduce and close fills remain in Recent
 Execution Activity. Live position rows use reconciled Hyperliquid position
