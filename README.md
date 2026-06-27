@@ -601,6 +601,10 @@ wallet pool page limit, network, and shared infrastructure request settings.
 `backend/config/prune.json` uses organized sections for prune rules, scheduled
 worker behavior, and worker execution defaults.
 
+`frontend/config/app.json` owns non-secret dashboard defaults such as browser
+proxy URL, server backend URL, polling intervals, and server-side backend fetch
+timeout.
+
 `backend/config/discovery.json` uses organized sections for discovery sources,
 discovery import, prefiltering, candidate backfill, quality checks, and
 promotion.

@@ -52,20 +52,22 @@ export default async function DiscoveryPage({ searchParams }: DiscoveryPageProps
   const selectedSource = searchParamValue(params?.source);
   const selectedStatus = searchParamValue(params?.status);
   const hasFilters = Boolean(query || selectedSource || selectedStatus);
+  const overviewCandidatesPromise = getDiscoveryCandidates({ limit: 500 });
+  const filteredCandidatesPromise = hasFilters
+    ? getDiscoveryCandidates({
+        limit: 500,
+        query,
+        source: selectedSource,
+        status: selectedStatus,
+      })
+    : overviewCandidatesPromise;
 
   const [sources, overviewCandidates, runs, operations, filteredCandidates] = await Promise.all([
     getDiscoverySources(),
-    getDiscoveryCandidates({ limit: 500 }),
+    overviewCandidatesPromise,
     getDiscoveryRuns(20),
     getOperationStatuses(),
-    hasFilters
-      ? getDiscoveryCandidates({
-          limit: 500,
-          query,
-          source: selectedSource,
-          status: selectedStatus,
-        })
-      : getDiscoveryCandidates({ limit: 500 }),
+    filteredCandidatesPromise,
   ]);
 
   const overview = buildOverview(overviewCandidates.items);

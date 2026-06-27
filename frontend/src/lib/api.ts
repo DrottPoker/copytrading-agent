@@ -41,10 +41,23 @@ function getBackendAuthHeaders(): HeadersInit {
 }
 
 function backendGet(url: string) {
+  const startedAt = Date.now();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    controller.abort();
+  }, frontendConfig.serverApiTimeoutMs);
+
   return fetch(url, {
     cache: "no-store",
     next: { revalidate: 0 },
     headers: getBackendAuthHeaders(),
+    signal: controller.signal,
+  }).finally(() => {
+    clearTimeout(timeoutId);
+    const durationMs = Date.now() - startedAt;
+    if (durationMs >= 2000) {
+      console.warn(`Slow backend dashboard fetch: ${durationMs}ms ${url}`);
+    }
   });
 }
 

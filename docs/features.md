@@ -309,6 +309,9 @@ What it does:
 - Uses `SERVER_API_BASE_URL` as the only dashboard backend proxy upstream in
   production containers. Local development can fall back to the configured
   local backend URL.
+- Applies `frontend/config/app.json` server API timeout to server-rendered
+  dashboard backend fetches so slow endpoints fail quickly instead of blocking
+  page navigation.
 - Uses a shared `wallet_prune` job lock, so manual pruning and scheduled maintenance worker
   pruning cannot run concurrently.
 

@@ -187,6 +187,11 @@ The dashboard enforces Basic Auth in Next.js middleware before serving pages or
 route that attaches the same backend auth on the server side and streams SSE
 responses without buffering.
 
+Server-rendered dashboard data fetches use `serverApiTimeoutMs` from
+`frontend/config/app.json`, defaulting to 15000 ms, so slow backend endpoints
+cannot block page navigation for minutes. Fetches slower than 2000 ms are
+logged by the frontend container for diagnosis.
+
 The Analytics page reads `GET /analytics`. The endpoint intentionally returns
 pre-aggregated rows so the dashboard can render pool coverage, score buckets,
 opportunity and risk wallet lists, 30D source and coin performance, paper skip
