@@ -656,9 +656,11 @@ whose adverse observed drift exceeds the configured max drift limit. Favorable
 price drift is allowed and recorded as 0 bps. New open or add fills are also
 skipped when the source fill age exceeds
 `trading_copy_max_entry_age_seconds`, so snapshot or recovery entries cannot
-open exposure minutes after the source traded. Paper fees use Hyperliquid's base
-perp taker fee by default, 0.045%, because paper execution models immediate
-taker-style fills rather than resting maker orders.
+open exposure minutes after the source traded. Live copy persists old
+stale-entry skips as idempotent markers and hides them from Recent Execution
+Activity after `trading_copy_stale_entry_skip_activity_seconds`. Paper fees use
+Hyperliquid's base perp taker fee by default, 0.045%, because paper execution
+models immediate taker-style fills rather than resting maker orders.
 Stored paper position notional and margin represent simulated entry exposure.
 Adds increase stored margin by the new fill margin, and partial closes reduce
 stored margin proportionally. Current notional is calculated separately from mark

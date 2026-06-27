@@ -4160,12 +4160,21 @@ def source_fill_age_exceeds_entry_limit(
     max_age_seconds = settings.trading_copy_max_entry_age_seconds
     if max_age_seconds <= 0:
         return False
+    age_seconds = source_fill_age_seconds(fill, now=now)
+    return age_seconds is not None and age_seconds > max_age_seconds
+
+
+def source_fill_age_seconds(
+    fill: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> float | None:
     timestamp_ms = int(fill.get("timestampMs") or 0)
     if timestamp_ms <= 0:
-        return False
+        return None
     observed_at = now or datetime.now(UTC)
     fill_at = datetime.fromtimestamp(timestamp_ms / 1000, tz=UTC)
-    return (observed_at - fill_at).total_seconds() > max_age_seconds
+    return (observed_at - fill_at).total_seconds()
 
 
 def timestamp_ms(value: datetime) -> int:

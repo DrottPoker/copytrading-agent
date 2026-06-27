@@ -64,6 +64,7 @@ def test_shared_trading_config_is_loaded_from_dedicated_file(
     assert Decimal(str(config["trading_copy_min_order_notional_usd"])) == Decimal("10")
     assert config["trading_copy_adjust_small_orders_to_min_order"] is True
     assert config["trading_copy_max_entry_age_seconds"] == 15
+    assert config["trading_copy_stale_entry_skip_activity_seconds"] == 300
     assert Decimal(str(config["trading_copy_max_price_drift_bps"])) == Decimal("50")
     assert config["trading_copy_use_live_mid_price"] is True
     assert config["trading_copy_market_price_cache_enabled"] is True

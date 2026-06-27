@@ -1,10 +1,10 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import db_session
@@ -294,6 +294,9 @@ async def list_trading_accounts_route(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> TradingAccountsResponse:
     accounts = await list_trading_accounts(session)
+    stale_skip_activity_cutoff = datetime.now(UTC) - timedelta(
+        seconds=settings.trading_copy_stale_entry_skip_activity_seconds
+    )
     position_result = await session.scalars(
         select(TradingPosition)
         .where(TradingPosition.account_type == "live")
@@ -311,7 +314,15 @@ async def list_trading_accounts_route(
     )
     order_result = await session.scalars(
         select(TradingOrder)
-        .where(TradingOrder.account_type == "live")
+        .where(
+            TradingOrder.account_type == "live",
+            TradingOrder.raw_payload["hiddenFromActivity"].as_boolean().is_not(true()),
+            or_(
+                TradingOrder.error.is_(None),
+                TradingOrder.error != "skip:live_source_fill_too_old",
+                TradingOrder.created_at >= stale_skip_activity_cutoff,
+            ),
+        )
         .order_by(TradingOrder.updated_at.desc(), TradingOrder.created_at.desc())
         .limit(TRADING_ACTIVITY_LIMIT)
     )

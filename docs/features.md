@@ -633,7 +633,10 @@ What it does:
 - Skips new opens or adds when the source fill is older than
   `trading_copy_max_entry_age_seconds`. This prevents late snapshot or recovery
   entries from opening exposure minutes after the source traded. Older close and
-  reduce fills can still be processed to catch up existing exposure.
+  reduce fills can still be processed to catch up existing exposure. Live copy
+  still stores old stale-entry skips as idempotent markers, but hides them from
+  Recent Execution Activity after
+  `trading_copy_stale_entry_skip_activity_seconds`.
 - Applies the configured paper fee rate to opens and closes. The default is
   0.045% to match Hyperliquid's base perp taker fee because paper fills model
   immediate taker-style execution.
@@ -823,6 +826,7 @@ Config:
 - `trading_copy_min_order_notional_usd`
 - `trading_copy_adjust_small_orders_to_min_order`
 - `trading_copy_max_entry_age_seconds`
+- `trading_copy_stale_entry_skip_activity_seconds`
 - `trading_copy_max_price_drift_bps`, defaults to 50 bps
 - `trading_copy_use_live_mid_price`
 - `trading_copy_market_price_cache_enabled`

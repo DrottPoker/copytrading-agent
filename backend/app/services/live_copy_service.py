@@ -55,6 +55,7 @@ from app.services.paper_trading_service import (
     resolve_source_current_position,
     sorted_paper_source_fills,
     source_fill_age_exceeds_entry_limit,
+    source_fill_age_seconds,
     source_state_available_for_reconciliation,
 )
 from app.services.trading_core import (
@@ -343,6 +344,19 @@ def live_copy_account_snapshot_is_stale(
     return (now - last_reconciled_at).total_seconds() >= max_age_seconds
 
 
+def live_stale_entry_skip_hidden_from_activity(
+    fill: dict[str, Any],
+    *,
+    settings: Settings,
+    now: datetime | None = None,
+) -> bool:
+    activity_seconds = settings.trading_copy_stale_entry_skip_activity_seconds
+    if activity_seconds <= 0:
+        return True
+    age_seconds = source_fill_age_seconds(fill, now=now)
+    return age_seconds is not None and age_seconds > activity_seconds
+
+
 async def apply_live_copy_part(
     session: AsyncSession,
     *,
@@ -432,6 +446,7 @@ async def apply_live_open_part(
             leverage=source_leverage,
         )
     if source_fill_age_exceeds_entry_limit(fill, settings=settings):
+        fill_age_seconds = source_fill_age_seconds(fill)
         return await record_live_skip(
             session,
             account=account,
@@ -440,6 +455,11 @@ async def apply_live_open_part(
             part=part,
             reason="live_source_fill_too_old",
             leverage=source_leverage,
+            hidden_from_activity=live_stale_entry_skip_hidden_from_activity(
+                fill,
+                settings=settings,
+            ),
+            source_fill_age_seconds=fill_age_seconds,
         )
     coin = str(fill.get("coin") or "")
     dex = dex_from_coin(coin)
@@ -867,6 +887,8 @@ async def record_live_skip(
     margin_usd: Decimal | None = None,
     requested_notional_usd: Decimal | None = None,
     requested_size: Decimal | None = None,
+    hidden_from_activity: bool = False,
+    source_fill_age_seconds: float | None = None,
 ) -> PaperCopyBatchResult:
     source_fill_id = str(fill.get("externalFillId") or "")
     if not source_fill_id:
@@ -890,6 +912,20 @@ async def record_live_skip(
         resolved_notional = resolved_size * resolved_price
     resolved_leverage = leverage if leverage is not None and leverage > ZERO else Decimal("1")
     reduce_only = part.action in {"reduce", "close", "flip_close"}
+    raw_payload: dict[str, Any] = {
+        "skipReason": reason,
+        "sourceFill": {
+            "externalFillId": source_fill_id,
+            "coin": coin,
+            "price": str(fill.get("price") or ""),
+            "time": fill.get("time"),
+        },
+    }
+    if hidden_from_activity:
+        raw_payload["hiddenFromActivity"] = True
+    if source_fill_age_seconds is not None:
+        raw_payload["sourceFillAgeSeconds"] = max(round(source_fill_age_seconds, 3), 0)
+
     stmt = insert(TradingOrder).values(
         account_key=account.key,
         account_type="live",
@@ -919,15 +955,7 @@ async def record_live_skip(
         filled_notional_usd=ZERO,
         fee_usd=ZERO,
         error=f"skip:{reason}",
-        raw_payload={
-            "skipReason": reason,
-            "sourceFill": {
-                "externalFillId": source_fill_id,
-                "coin": coin,
-                "price": str(fill.get("price") or ""),
-                "time": fill.get("time"),
-            },
-        },
+        raw_payload=raw_payload,
         created_at=fill_datetime(fill),
     )
     await session.execute(

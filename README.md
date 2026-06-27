@@ -417,7 +417,10 @@ Sizing policy:
 - New entry fills older than `trading_copy_max_entry_age_seconds` are skipped
   before opening or adding exposure. This prevents snapshot or recovery fills
   from creating late entries minutes after the source traded. Close and reduce
-  processing still runs for older fills so exits can catch up safely.
+  processing still runs for older fills so exits can catch up safely. Live copy
+  keeps old stale-entry skips as idempotent processing markers, but hides them
+  from Recent Execution Activity once they are older than
+  `trading_copy_stale_entry_skip_activity_seconds`.
 - Paper execution starts the configured simulated latency immediately while
   source account state is fetched in parallel.
   It then reads live mids and applies adverse slippage to the execution price.

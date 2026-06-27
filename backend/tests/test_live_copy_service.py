@@ -18,6 +18,7 @@ from app.services.live_copy_service import (
     live_pending_close_size_from_orders,
     live_skip,
     live_source_position_is_final_close,
+    live_stale_entry_skip_hidden_from_activity,
     record_live_skip,
     submit_live_copy_intent,
 )
@@ -73,6 +74,32 @@ def test_live_skip_records_reason_count() -> None:
 
     assert result.skipped_fills == 3
     assert result.skip_reasons == {"live_account_no_tradable_equity": 3}
+
+
+def test_old_live_stale_entry_skip_is_hidden_from_activity() -> None:
+    now = datetime(2026, 1, 1, 12, tzinfo=UTC)
+    fill = {
+        "timestampMs": int((now - timedelta(minutes=10)).timestamp() * 1000),
+    }
+
+    assert live_stale_entry_skip_hidden_from_activity(
+        fill,
+        settings=Settings(trading_copy_stale_entry_skip_activity_seconds=300),
+        now=now,
+    )
+
+
+def test_recent_live_stale_entry_skip_stays_visible_for_diagnostics() -> None:
+    now = datetime(2026, 1, 1, 12, tzinfo=UTC)
+    fill = {
+        "timestampMs": int((now - timedelta(seconds=30)).timestamp() * 1000),
+    }
+
+    assert not live_stale_entry_skip_hidden_from_activity(
+        fill,
+        settings=Settings(trading_copy_stale_entry_skip_activity_seconds=300),
+        now=now,
+    )
 
 
 def test_live_copy_combine_batch_results_merges_skip_reasons() -> None:
@@ -376,6 +403,8 @@ async def test_record_live_skip_persists_diagnostic_order() -> None:
         ),
         reason="live_price_drift_too_high",
         leverage=Decimal("10"),
+        hidden_from_activity=True,
+        source_fill_age_seconds=600.1234,
     )
 
     assert result.skipped_fills == 1
@@ -387,6 +416,8 @@ async def test_record_live_skip_persists_diagnostic_order() -> None:
     assert params["status"] == "failed"
     assert params["source_fill_id"] == "fill-1"
     assert params["error"] == "skip:live_price_drift_too_high"
+    assert params["raw_payload"]["hiddenFromActivity"] is True
+    assert params["raw_payload"]["sourceFillAgeSeconds"] == 600.123
     assert "submitted_at" not in params
     assert params["filled_size"] == Decimal("0")
 
