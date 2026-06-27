@@ -131,6 +131,14 @@ Follow logs:
 docker compose -f docker-compose.vps.yml logs -f backend trading-worker maintenance-worker frontend caddy postgres postgres-backup
 ```
 
+Check internal backend routing if dashboard API calls fail:
+
+```bash
+docker compose -f docker-compose.vps.yml ps
+docker compose -f docker-compose.vps.yml exec frontend wget -qO- http://backend:8000/health
+docker compose -f docker-compose.vps.yml logs --tail=100 backend frontend
+```
+
 Open:
 
 ```text

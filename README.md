@@ -303,6 +303,9 @@ Notes:
 - The Database dashboard surfaces backend proxy and validation errors directly
   when manual prune cannot run, so a missing backend process or invalid request
   is visible instead of a generic failure banner.
+- The frontend backend proxy uses `SERVER_API_BASE_URL` as the only upstream in
+  production containers. In local development it can fall back to the configured
+  local backend URL.
 - Pruning excludes source wallets that still have open paper positions. If a
   source was pruned earlier while paper exposure remains open, paper allocation
   refresh restores it as a neutral `pool` row.

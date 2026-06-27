@@ -308,6 +308,9 @@ What it does:
 - Returns totals and per-rule results for review in the Database dashboard.
 - Shows backend proxy and validation error details in the dashboard if the
   manual prune request cannot run.
+- Uses `SERVER_API_BASE_URL` as the only dashboard backend proxy upstream in
+  production containers. Local development can fall back to the configured
+  local backend URL.
 - Reports current drawdown fetch errors separately. Those wallets are shown in
   the response but are not counted as delete candidates.
 - Uses a shared `wallet_prune` job lock, so manual pruning and scheduled maintenance worker
