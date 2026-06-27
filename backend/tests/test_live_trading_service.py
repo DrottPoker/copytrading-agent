@@ -24,6 +24,7 @@ from app.services.live_trading_service import (
     live_position_unrealized_pnl,
     live_position_unrealized_pnl_pct,
     live_tradable_equity_usd,
+    manual_live_close_recovery_status,
     parse_live_fill,
     parse_live_position,
     resolve_live_account_wallet_address,
@@ -308,6 +309,46 @@ def test_sync_live_source_positions_from_exchange_mark_updates_unrealized() -> N
     assert live_position_unrealized_pnl(source_position) == Decimal("3")
     assert live_position_unrealized_pnl_pct(source_position) == Decimal("0.5")
     assert source_position.last_reconciled_at == reconciled_at
+
+
+def test_manual_live_close_recovery_marks_missing_position_filled() -> None:
+    order = live_order(status="failed")
+
+    status = manual_live_close_recovery_status(
+        close_size_before_submit=Decimal("1"),
+        current_position=None,
+        order=order,
+    )
+
+    assert status == "filled"
+
+
+def test_manual_live_close_recovery_marks_reduced_position_partial() -> None:
+    order = live_order(status="failed")
+    current_position = live_position(raw_payload={})
+    current_position.size = Decimal("0.4")
+
+    status = manual_live_close_recovery_status(
+        close_size_before_submit=Decimal("1"),
+        current_position=current_position,
+        order=order,
+    )
+
+    assert status == "partially_filled"
+
+
+def test_manual_live_close_recovery_ignores_unchanged_position() -> None:
+    order = live_order(status="failed")
+    current_position = live_position(raw_payload={})
+    current_position.size = Decimal("1")
+
+    status = manual_live_close_recovery_status(
+        close_size_before_submit=Decimal("1"),
+        current_position=current_position,
+        order=order,
+    )
+
+    assert status is None
 
 
 def test_build_testnet_live_trade_intent_is_reduce_only_when_requested() -> None:

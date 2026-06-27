@@ -541,12 +541,13 @@ async def close_live_position_route(
             position_id=position_id,
             settings=settings,
         )
-        await session.commit()
-        return LiveOrderSubmitResponse(
-            order=result.order,
+        response = LiveOrderSubmitResponse(
+            order=TradingOrderRead.model_validate(result.order),
             submitted=result.submitted,
             updated_at=datetime.now(UTC),
         )
+        await session.commit()
+        return response
     except LiveTradingServiceError as exc:
         await session.rollback()
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
@@ -583,12 +584,13 @@ async def submit_testnet_live_order_route(
             intent=intent,
             settings=settings,
         )
-        await session.commit()
-        return LiveOrderSubmitResponse(
-            order=result.order,
+        response = LiveOrderSubmitResponse(
+            order=TradingOrderRead.model_validate(result.order),
             submitted=result.submitted,
             updated_at=datetime.now(UTC),
         )
+        await session.commit()
+        return response
     except LiveTradingServiceError as exc:
         await session.rollback()
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc

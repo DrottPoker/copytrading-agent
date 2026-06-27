@@ -592,6 +592,7 @@ async def close_live_account_position(
         position = await load_live_position_for_update(session, position_id=position_id)
         if position.account_key != account.key:
             raise LiveTradingServiceError("Live position account changed during reconcile.")
+        close_size_before_submit = position.size
 
         mids = await load_live_close_mids(client, positions=[position])
         mid_price = decimal_or_none(mids.get(position.coin)) or live_position_mark_price(
@@ -605,7 +606,6 @@ async def close_live_account_position(
             account.status = "exit_only"
             await session.flush()
 
-        live_client = trading_client or HyperliquidLiveTradingClient(settings=settings)
         intent = build_live_close_position_intent(
             account=account,
             position=position,
@@ -614,20 +614,127 @@ async def close_live_account_position(
             source_fill_prefix="manual-close",
             price_source="manual_live_close",
         )
-        result = await submit_live_trade_intent(
-            session,
-            account=account,
-            intent=intent,
-            settings=settings,
-            client=live_client,
-        )
-        if previous_status == "disabled":
-            account.status = "disabled"
-            await session.flush()
-        return result
+        try:
+            live_client = trading_client or HyperliquidLiveTradingClient(settings=settings)
+            return await submit_live_trade_intent(
+                session,
+                account=account,
+                intent=intent,
+                settings=settings,
+                client=live_client,
+            )
+        except LiveOrderSubmitError as exc:
+            recovered = await recover_manual_live_close_after_submit_error(
+                session,
+                account=account,
+                close_size_before_submit=close_size_before_submit,
+                error=exc,
+                info_client=client,
+                intent=intent,
+                position_id=position_id,
+                settings=settings,
+            )
+            if recovered is not None:
+                return recovered
+            raise
+        finally:
+            if previous_status == "disabled":
+                account.status = "disabled"
+                await session.flush()
     finally:
         if client_created:
             await client.__aexit__(None, None, None)
+
+
+async def recover_manual_live_close_after_submit_error(
+    session: AsyncSession,
+    *,
+    account: TradingAccount,
+    close_size_before_submit: Decimal,
+    error: LiveOrderSubmitError,
+    info_client: HyperliquidClient,
+    intent: TradeIntent,
+    position_id: UUID,
+    settings: Settings,
+) -> LiveOrderLifecycleResult | None:
+    await reconcile_live_trading_account(
+        session,
+        account=account,
+        settings=settings,
+        info_client=info_client,
+    )
+    order = await load_live_order_by_client_order_id(
+        session,
+        client_order_id=intent.client_order_id,
+    )
+    current_position = await get_live_position(session, position_id=position_id)
+    recovery_status = manual_live_close_recovery_status(
+        close_size_before_submit=close_size_before_submit,
+        current_position=current_position,
+        order=order,
+    )
+    if order is None or recovery_status is None:
+        return None
+
+    if order.status in {"failed", "planned", "submitted"}:
+        order.status = recovery_status
+        order.error = None
+        if recovery_status == "filled":
+            order.filled_at = order.filled_at or datetime.now(UTC)
+        order.raw_payload = merge_raw_payload(
+            order.raw_payload,
+            {
+                "manualCloseRecovery": {
+                    "message": str(error),
+                    "status": recovery_status,
+                }
+            },
+        )
+        await session.flush()
+    return LiveOrderLifecycleResult(order=order, exchange_result=None, submitted=True)
+
+
+def manual_live_close_recovery_status(
+    *,
+    close_size_before_submit: Decimal,
+    current_position: TradingPosition | None,
+    order: TradingOrder | None,
+) -> str | None:
+    if order is None:
+        return None
+    if order.status in {"accepted", "filled", "partially_filled"}:
+        return order.status
+    if current_position is None:
+        return "filled"
+    if close_size_before_submit - current_position.size > POSITION_EPSILON:
+        return "partially_filled"
+    return None
+
+
+async def load_live_order_by_client_order_id(
+    session: AsyncSession,
+    *,
+    client_order_id: str,
+) -> TradingOrder | None:
+    return await session.scalar(
+        select(TradingOrder).where(
+            TradingOrder.account_type == "live",
+            TradingOrder.client_order_id == client_order_id,
+        )
+    )
+
+
+async def get_live_position(
+    session: AsyncSession,
+    *,
+    position_id: UUID,
+) -> TradingPosition | None:
+    return await session.scalar(
+        select(TradingPosition).where(
+            TradingPosition.id == position_id,
+            TradingPosition.account_type == "live",
+        )
+    )
 
 
 async def load_live_close_mids(
