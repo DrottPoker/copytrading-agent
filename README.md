@@ -300,6 +300,10 @@ Notes:
 - Manual pruning runs through `POST /wallets/prune-all`, which applies orphan-fill,
   zero-fill, stale-fill, minimum closed-trades, realized drawdown, low-score,
   and current drawdown cleanup in one reviewed operation.
+- Manual prune limits the live Hyperliquid current-drawdown scan with
+  `manual.current_drawdown_limit` in `backend/config/prune.json`, so the
+  dashboard request stays responsive while worker prune can still use its full
+  configured limit.
 - The Database dashboard surfaces backend proxy and validation errors directly
   when manual prune cannot run, so a missing backend process or invalid request
   is visible instead of a generic failure banner.

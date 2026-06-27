@@ -140,6 +140,7 @@ async def prune_all_wallets_route(
     settings: Annotated[Settings, Depends(get_settings)],
     dry_run: Annotated[bool, Query()] = True,
     limit: Annotated[int, Query(ge=1, le=1000)] = 1000,
+    current_drawdown_limit: Annotated[int | None, Query(ge=1, le=1000)] = None,
     concurrency: Annotated[int | None, Query(ge=1, le=25)] = None,
 ) -> WalletPruneAllResponse:
     return await prune_all_wallets(
@@ -154,6 +155,9 @@ async def prune_all_wallets_route(
         current_drawdown_threshold_ratio=settings.wallet_prune_unrealized_loss_ratio,
         current_drawdown_concurrency=(
             concurrency or settings.wallet_prune_current_state_concurrency
+        ),
+        current_drawdown_limit=(
+            current_drawdown_limit or settings.wallet_prune_manual_current_drawdown_limit
         ),
         limit=limit,
     )

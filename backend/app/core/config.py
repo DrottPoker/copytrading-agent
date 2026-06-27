@@ -98,6 +98,7 @@ DATABASE_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
 PRUNE_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("rules", "current_drawdown", "unrealized_loss_ratio"): ("wallet_prune_unrealized_loss_ratio"),
     ("rules", "current_drawdown", "concurrency"): ("wallet_prune_current_state_concurrency"),
+    ("manual", "current_drawdown_limit"): "wallet_prune_manual_current_drawdown_limit",
     ("rules", "minimum_closed_trades", "min_closed_trades"): ("wallet_prune_min_closed_trades"),
     ("rules", "stale_fills", "min_days_without_fill"): ("wallet_prune_stale_fill_days"),
     ("rules", "realized_drawdown", "max_drawdown_pct"): ("wallet_prune_max_drawdown_pct"),
@@ -484,6 +485,7 @@ class Settings(BaseSettings):
     pool_fill_import_overlap_seconds: int = Field(default=300, ge=0, le=86400)
     wallet_prune_unrealized_loss_ratio: Decimal = Field(default=Decimal("0.80"), ge=0, le=1)
     wallet_prune_current_state_concurrency: int = Field(default=8, ge=1, le=25)
+    wallet_prune_manual_current_drawdown_limit: int = Field(default=50, ge=1, le=1000)
     wallet_prune_min_closed_trades: int = Field(default=5, ge=0)
     wallet_prune_stale_fill_days: int = Field(default=30, ge=1, le=3650)
     wallet_prune_max_drawdown_pct: Decimal = Field(default=Decimal("0.60"), ge=0, le=1)

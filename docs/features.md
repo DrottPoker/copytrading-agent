@@ -306,6 +306,9 @@ What it does:
   for sources that still have open paper positions.
 - Runs as a dry run by default and supports `dry_run=false` for deletion.
 - Returns totals and per-rule results for review in the Database dashboard.
+- Uses `manual.current_drawdown_limit` for dashboard-triggered prune-all current
+  drawdown scans, so slow live Hyperliquid checks cannot hold the whole UI
+  request hostage.
 - Shows backend proxy and validation error details in the dashboard if the
   manual prune request cannot run.
 - Uses `SERVER_API_BASE_URL` as the only dashboard backend proxy upstream in

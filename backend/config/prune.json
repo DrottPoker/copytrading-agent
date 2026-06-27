@@ -19,6 +19,9 @@
       "operator": "lt"
     }
   },
+  "manual": {
+    "current_drawdown_limit": 50
+  },
   "schedule": {
     "after_pool_import_enabled": true
   },

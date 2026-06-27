@@ -60,6 +60,7 @@ async def prune_all_wallets(
     max_drawdown_threshold_pct: Decimal = Decimal("0.60"),
     current_drawdown_threshold_ratio: Decimal = Decimal("0.80"),
     current_drawdown_concurrency: int = 8,
+    current_drawdown_limit: int | None = None,
     limit: int = 1000,
     use_lock: bool = True,
 ) -> WalletPruneAllResponse:
@@ -76,6 +77,7 @@ async def prune_all_wallets(
                 max_drawdown_threshold_pct=max_drawdown_threshold_pct,
                 current_drawdown_threshold_ratio=current_drawdown_threshold_ratio,
                 current_drawdown_concurrency=current_drawdown_concurrency,
+                current_drawdown_limit=current_drawdown_limit,
                 limit=limit,
                 use_lock=False,
             )
@@ -126,7 +128,7 @@ async def prune_all_wallets(
         session,
         dry_run=dry_run,
         threshold_ratio=current_drawdown_threshold_ratio,
-        limit=limit,
+        limit=current_drawdown_limit or limit,
         concurrency=current_drawdown_concurrency,
         use_lock=False,
     )

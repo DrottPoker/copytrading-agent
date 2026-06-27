@@ -536,6 +536,9 @@ sequenceDiagram
   unrealized perp loss is at least the configured share of account value.
   Unified wallets use unified USDC from `spotClearinghouseState`; standard
   wallets use perps account value.
+- Dashboard-triggered prune-all uses `manual.current_drawdown_limit` from
+  `backend/config/prune.json` for current drawdown checks, while scheduled
+  worker prune keeps using the worker limit.
 - Current drawdown fetch errors are reported separately and are never included in
   the delete list.
 - Low-score pruning removes polled, scored wallets whose reconstructed closed
