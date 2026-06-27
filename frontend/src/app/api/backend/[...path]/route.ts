@@ -57,13 +57,23 @@ async function proxyBackendRequest(request: Request, context: RouteContext) {
     headers.set("Authorization", authHeader);
   }
 
-  const upstreamResponse = await fetch(upstreamUrl, {
-    method: request.method,
-    headers,
-    body: requestHasBody(request.method) ? await request.arrayBuffer() : undefined,
-    cache: "no-store",
-    redirect: "manual",
-  });
+  let upstreamResponse: Response;
+  try {
+    upstreamResponse = await fetch(upstreamUrl, {
+      method: request.method,
+      headers,
+      body: requestHasBody(request.method) ? await request.arrayBuffer() : undefined,
+      cache: "no-store",
+      redirect: "manual",
+    });
+  } catch (error) {
+    return Response.json(
+      {
+        detail: `Could not reach backend API at ${upstreamUrl.origin}. ${errorMessage(error)}`,
+      },
+      { status: 502 },
+    );
+  }
 
   return new Response(upstreamResponse.body, {
     status: upstreamResponse.status,
@@ -108,4 +118,8 @@ function filteredResponseHeaders(source: Headers) {
 
 function requestHasBody(method: string) {
   return method !== "GET" && method !== "HEAD";
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : "Upstream request failed.";
 }

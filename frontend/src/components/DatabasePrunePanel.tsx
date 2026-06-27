@@ -42,13 +42,15 @@ export function DatabasePrunePanel() {
         `${getPublicApiBaseUrl()}/wallets/prune-all?dry_run=${dryRun}&limit=1000`,
         { method: "POST" },
       );
-      const payload = (await response.json().catch(() => null)) as
+      const responseText = await response.text();
+      const payload = parseJson(responseText) as
         | WalletPruneAllResponse
-        | { detail?: string }
+        | { detail?: unknown }
         | null;
 
       if (!response.ok) {
-        setError(errorDetail(payload) ?? "Could not run prune.");
+        const fallbackError = responseText.trim() || "Could not run prune.";
+        setError(errorDetail(payload) ?? fallbackError);
         return;
       }
 
@@ -250,5 +252,30 @@ function errorDetail(value: unknown) {
     return null;
   }
   const detail = (value as { detail?: unknown }).detail;
-  return typeof detail === "string" ? detail : null;
+  if (typeof detail === "string") {
+    return detail;
+  }
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        if (!item || typeof item !== "object") {
+          return String(item);
+        }
+        const message = (item as { msg?: unknown }).msg;
+        return typeof message === "string" ? message : JSON.stringify(item);
+      })
+      .join(" ");
+  }
+  return null;
+}
+
+function parseJson(value: string) {
+  if (!value) {
+    return null;
+  }
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
 }

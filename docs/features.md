@@ -306,6 +306,8 @@ What it does:
   for sources that still have open paper positions.
 - Runs as a dry run by default and supports `dry_run=false` for deletion.
 - Returns totals and per-rule results for review in the Database dashboard.
+- Shows backend proxy and validation error details in the dashboard if the
+  manual prune request cannot run.
 - Reports current drawdown fetch errors separately. Those wallets are shown in
   the response but are not counted as delete candidates.
 - Uses a shared `wallet_prune` job lock, so manual pruning and scheduled maintenance worker

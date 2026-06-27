@@ -300,6 +300,9 @@ Notes:
 - Manual pruning runs through `POST /wallets/prune-all`, which applies orphan-fill,
   zero-fill, stale-fill, minimum closed-trades, realized drawdown, low-score,
   and current drawdown cleanup in one reviewed operation.
+- The Database dashboard surfaces backend proxy and validation errors directly
+  when manual prune cannot run, so a missing backend process or invalid request
+  is visible instead of a generic failure banner.
 - Pruning excludes source wallets that still have open paper positions. If a
   source was pruned earlier while paper exposure remains open, paper allocation
   refresh restores it as a neutral `pool` row.
