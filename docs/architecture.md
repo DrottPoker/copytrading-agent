@@ -652,8 +652,9 @@ before any paper position is created. The default minimum is 10 USD to match
 Hyperliquid's live perp minimum order value. Paper execution starts the
 configured latency while source account state is fetched in parallel, then
 prices from live mids when enabled, applies adverse slippage, and skips fills
-whose observed drift exceeds the configured max drift limit. New open or add
-fills are also skipped when the source fill age exceeds
+whose adverse observed drift exceeds the configured max drift limit. Favorable
+price drift is allowed and recorded as 0 bps. New open or add fills are also
+skipped when the source fill age exceeds
 `trading_copy_max_entry_age_seconds`, so snapshot or recovery entries cannot
 open exposure minutes after the source traded. Paper fees use Hyperliquid's base
 perp taker fee by default, 0.045%, because paper execution models immediate

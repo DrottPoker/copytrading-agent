@@ -2884,7 +2884,7 @@ function formatBps(value: string | number | null | undefined) {
 function paperFillPriceDetail(fill: PaperCopyFill) {
   if (fill.skippedReason && fill.priceDriftBps) {
     const maxDrift = fill.maxPriceDriftBps ? ` | max ${formatBps(fill.maxPriceDriftBps)}` : "";
-    return `drift ${formatBps(fill.priceDriftBps)}${maxDrift} | live ${formatPrice(fill.observedPrice)}`;
+    return `adverse drift ${formatBps(fill.priceDriftBps)}${maxDrift} | live ${formatPrice(fill.observedPrice)}`;
   }
   const parts = [
     fill.sourcePrice ? `src ${formatPrice(fill.sourcePrice)}` : null,

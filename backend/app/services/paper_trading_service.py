@@ -4071,7 +4071,12 @@ def build_execution_context(
         source_price=source_price,
         observed_price=observed_price,
         execution_price=execution_price,
-        price_drift_bps=price_drift_bps(source_price=source_price, observed_price=observed_price),
+        price_drift_bps=adverse_price_drift_bps(
+            source_price=source_price,
+            observed_price=observed_price,
+            side=part.side,
+            action=part.action,
+        ),
         slippage_bps=resolved_slippage_bps,
         latency_ms=resolved_latency_ms,
         price_source=(
@@ -4102,10 +4107,21 @@ def is_buy_execution(*, side: str, action: str) -> bool:
     return not is_open
 
 
-def price_drift_bps(*, source_price: Decimal, observed_price: Decimal) -> Decimal:
+def adverse_price_drift_bps(
+    *,
+    source_price: Decimal,
+    observed_price: Decimal,
+    side: str,
+    action: str,
+) -> Decimal:
     if source_price <= ZERO:
         return ZERO
-    return (observed_price - source_price).copy_abs() / source_price * BPS_DENOMINATOR
+    drift = observed_price - source_price
+    if is_buy_execution(side=side, action=action):
+        adverse_drift = max(drift, ZERO)
+    else:
+        adverse_drift = max(-drift, ZERO)
+    return adverse_drift / source_price * BPS_DENOMINATOR
 
 
 def raw_json_from_fill(fill: dict[str, Any]) -> dict[str, Any]:

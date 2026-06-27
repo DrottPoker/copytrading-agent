@@ -647,11 +647,12 @@ What it does:
 - Falls back to HTTP `allMids`, then dex-specific `allMids`, then Hyperliquid
   `metaAndAssetCtxs`, for missing or stale cache prices.
 - Applies adverse slippage from `paper_copy_slippage_bps` to the observed price.
-- Skips paper fills when the observed price has moved more than
+- Skips paper fills when adverse observed price movement is more than
   `trading_copy_max_price_drift_bps` from the source fill price. The default
-  drift guard is 50 bps.
-- Shows source price, live mid, drift bps, the per-fill drift limit, and
-  min-order adjustment markers in Recent Fills when execution details are
+  adverse drift guard is 50 bps. Favorable drift is allowed and recorded as
+  0 bps.
+- Shows source price, live mid, adverse drift bps, the per-fill drift limit,
+  and min-order adjustment markers in Recent Fills when execution details are
   available.
 - Shows entry execution delay on open paper position rows. The delay is measured
   from the source fill timestamp to when the paper position was created.

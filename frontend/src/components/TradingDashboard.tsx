@@ -946,7 +946,7 @@ function PolicyRow({
         <RowStat label="Fee" value={formatPercent(summary.policy.feeRate)} />
         <RowStat label="Slippage" value={formatBps(summary.policy.slippageBps)} />
         <RowStat label="Latency" value={`${formatInteger(summary.policy.latencyMs)} ms`} />
-        <RowStat label="Max drift" value={formatBps(summary.policy.maxPriceDriftBps)} />
+        <RowStat label="Max adverse drift" value={formatBps(summary.policy.maxPriceDriftBps)} />
         <RowStat
           label="Price cache"
           value={summary.policy.marketPriceCacheEnabled ? "enabled" : "disabled"}
@@ -1437,7 +1437,7 @@ function fillNotionalDetail(fill: PaperCopyFill) {
 
 function fillSkipDetail(fill: PaperCopyFill) {
   const parts = [
-    fill.priceDriftBps ? `drift ${formatBps(fill.priceDriftBps)}` : null,
+    fill.priceDriftBps ? `adverse drift ${formatBps(fill.priceDriftBps)}` : null,
     fill.maxPriceDriftBps ? `max ${formatBps(fill.maxPriceDriftBps)}` : null,
     formatLeverage(fill.leverage),
   ].filter((item) => item && item !== "-");

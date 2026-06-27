@@ -427,11 +427,12 @@ Sizing policy:
   batch.
 - If the cache is stale or missing a coin, paper copy falls back to HTTP
   `allMids`, then dex-specific `allMids`, then `metaAndAssetCtxs`.
-- Paper fills are skipped when live mid price drift from the source fill price
-  is above `trading_copy_max_price_drift_bps`, which defaults to 50 bps.
-- Recent paper fill rows show source price, live mid, drift bps, the per-fill
-  drift limit, and min-order adjustment markers when execution details are
-  available.
+- Paper fills are skipped when adverse live mid price drift from the source fill
+  price is above `trading_copy_max_price_drift_bps`, which defaults to 50 bps.
+  Favorable drift is allowed and recorded as 0 bps.
+- Recent paper fill rows show source price, live mid, adverse drift bps, the
+  per-fill drift limit, and min-order adjustment markers when execution details
+  are available.
 - Open paper position rows show entry execution delay in milliseconds, measured
   from the source fill timestamp to when the paper position was created.
 - Same-timestamp source fills are processed with close and flip-close fills first

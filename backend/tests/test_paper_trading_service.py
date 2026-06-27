@@ -5,6 +5,9 @@ import pytest
 
 from app.core.config import Settings
 from app.services.paper_trading_service import (
+    ExecutionMarketPrices,
+    SourceFillPart,
+    build_execution_context,
     load_source_account_state,
     source_fill_age_exceeds_entry_limit,
 )
@@ -152,6 +155,66 @@ def test_trade_is_buy_matches_side_and_reduce_only() -> None:
     assert trade_is_buy(side="short", reduce_only=True) is True
 
 
+def test_execution_context_uses_adverse_drift_for_long_entries() -> None:
+    favorable = build_execution_context(
+        fill={"coin": "HYPE", "price": "100"},
+        part=source_part(side="long", action="open"),
+        market_prices=ExecutionMarketPrices(
+            prices={"HYPE": Decimal("99")},
+            sources={"HYPE": "test_mid"},
+        ),
+        settings=Settings(),
+        slippage_bps=Decimal("0"),
+        latency_ms=0,
+    )
+    adverse = build_execution_context(
+        fill={"coin": "HYPE", "price": "100"},
+        part=source_part(side="long", action="open"),
+        market_prices=ExecutionMarketPrices(
+            prices={"HYPE": Decimal("101")},
+            sources={"HYPE": "test_mid"},
+        ),
+        settings=Settings(),
+        slippage_bps=Decimal("0"),
+        latency_ms=0,
+    )
+
+    assert favorable is not None
+    assert favorable.price_drift_bps == Decimal("0")
+    assert adverse is not None
+    assert adverse.price_drift_bps == Decimal("100")
+
+
+def test_execution_context_uses_adverse_drift_for_short_entries() -> None:
+    favorable = build_execution_context(
+        fill={"coin": "HYPE", "price": "100"},
+        part=source_part(side="short", action="open"),
+        market_prices=ExecutionMarketPrices(
+            prices={"HYPE": Decimal("101")},
+            sources={"HYPE": "test_mid"},
+        ),
+        settings=Settings(),
+        slippage_bps=Decimal("0"),
+        latency_ms=0,
+    )
+    adverse = build_execution_context(
+        fill={"coin": "HYPE", "price": "100"},
+        part=source_part(side="short", action="open"),
+        market_prices=ExecutionMarketPrices(
+            prices={"HYPE": Decimal("99")},
+            sources={"HYPE": "test_mid"},
+        ),
+        settings=Settings(),
+        slippage_bps=Decimal("0"),
+        latency_ms=0,
+    )
+
+    assert favorable is not None
+    assert favorable.price_drift_bps == Decimal("0")
+    assert adverse is not None
+    assert adverse.price_drift_bps == Decimal("100")
+
+
 @pytest.mark.asyncio
 async def test_load_source_account_state_uses_unified_spot_equity_when_perp_zero() -> None:
     client = FakeUnifiedSourceClient()
@@ -190,3 +253,15 @@ class FakeUnifiedSourceClient:
             "balances": [{"coin": "USDC", "total": "200", "hold": "0"}],
             "tokenToAvailableAfterMaintenance": [[0, "200"]],
         }
+
+
+def source_part(*, side: str, action: str) -> SourceFillPart:
+    return SourceFillPart(
+        action=action,
+        side=side,
+        source_size=Decimal("1"),
+        source_notional_usd=Decimal("100"),
+        sequence_index=0,
+        close_ratio=None,
+        start_position=Decimal("0"),
+    )
