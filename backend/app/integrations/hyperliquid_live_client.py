@@ -102,9 +102,13 @@ class HyperliquidLiveTradingClient:
             raise HyperliquidLiveTradingConfigurationError(
                 "Only live accounts can cancel live orders."
             )
-        exchange = self._build_exchange(account)
+        exchange = self._build_exchange(account, coin=coin)
         cloid = self._build_cloid(client_order_id)
-        response = await asyncio.to_thread(exchange.cancel_by_cloid, coin, cloid)
+        response = await asyncio.to_thread(
+            exchange.cancel_by_cloid,
+            live_order_exchange_coin(coin),
+            cloid,
+        )
         return response if isinstance(response, dict) else {"response": response}
 
     def validate_account_order(
@@ -213,10 +217,13 @@ class HyperliquidLiveTradingClient:
         account: TradingAccount,
         intent: TradeIntent,
     ) -> LiveOrderResult:
-        exchange = self._build_exchange(account)
+        exchange = self._build_exchange(account, coin=intent.coin)
+        order_coin = live_order_exchange_coin(intent.coin)
+        validate_live_order_market(exchange, order_coin, display_coin=intent.coin)
         wire_values = live_order_wire_values(
             intent,
             exchange=exchange,
+            market_coin=order_coin,
             min_order_notional_usd=max(
                 self.settings.trading_copy_min_order_notional_usd,
                 self.settings.live_trading_min_order_notional_usd,
@@ -241,15 +248,20 @@ class HyperliquidLiveTradingClient:
                 int(time.time() * 1000) + self.settings.live_trading_order_expires_after_ms
             )
         cloid = self._build_cloid(intent.client_order_id)
-        response = exchange.order(
-            intent.coin,
-            intent.is_buy,
-            float(wire_values.size),
-            float(wire_values.limit_price),
-            {"limit": {"tif": "Ioc"}},
-            reduce_only=intent.reduce_only,
-            cloid=cloid,
-        )
+        try:
+            response = exchange.order(
+                order_coin,
+                intent.is_buy,
+                float(wire_values.size),
+                float(wire_values.limit_price),
+                {"limit": {"tif": "Ioc"}},
+                reduce_only=intent.reduce_only,
+                cloid=cloid,
+            )
+        except KeyError as exc:
+            raise HyperliquidLiveOrderRejectedError(
+                live_order_market_unavailable_message(intent.coin)
+            ) from exc
         if not isinstance(response, dict):
             raise HyperliquidLiveOrderRejectedError(
                 "Hyperliquid order returned an invalid response."
@@ -267,7 +279,7 @@ class HyperliquidLiveTradingClient:
             submitted_notional_usd=wire_values.notional_usd,
         )
 
-    def _build_exchange(self, account: TradingAccount) -> Any:
+    def _build_exchange(self, account: TradingAccount, *, coin: str | None = None) -> Any:
         if self._exchange_factory is not None:
             return self._exchange_factory(account)
 
@@ -278,6 +290,7 @@ class HyperliquidLiveTradingClient:
             base_url=self.settings.hyperliquid_api_url,
             account_address=account.wallet_address or self.settings.hyperliquid_wallet_address,
             vault_address=account.vault_address,
+            perp_dexs=live_order_perp_dexs(coin),
         )
 
     def _build_cloid(self, client_order_id: str) -> Any:
@@ -370,11 +383,12 @@ def live_order_wire_values(
     intent: TradeIntent,
     *,
     exchange: Any | None = None,
+    market_coin: str | None = None,
     min_order_notional_usd: Decimal = Decimal("0"),
     min_order_notional_buffer_usd: Decimal = Decimal("0"),
     adjust_to_min_order: bool = False,
 ) -> LiveOrderWireValues:
-    precision = live_market_precision(exchange, intent.coin)
+    precision = live_market_precision(exchange, market_coin or intent.coin)
     size_decimals = precision.size_decimals if precision else FALLBACK_SIZE_DECIMALS
     price_decimals = precision.price_decimals if precision else FALLBACK_PRICE_DECIMALS
     limit_price = live_order_wire_price(
@@ -461,6 +475,50 @@ def live_market_precision(exchange: Any | None, coin: str) -> LiveMarketPrecisio
         size_decimals=max(size_decimals, 0),
         price_decimals=max(max_price_decimals - size_decimals, 0),
     )
+
+
+def validate_live_order_market(
+    exchange: Any | None,
+    coin: str,
+    *,
+    display_coin: str | None = None,
+) -> None:
+    info = getattr(exchange, "info", None)
+    if info is None or not live_info_has_market_metadata(info):
+        return
+    if live_asset_id(info, coin) is not None:
+        return
+    raise HyperliquidLiveOrderRejectedError(
+        live_order_market_unavailable_message(display_coin or coin)
+    )
+
+
+def live_info_has_market_metadata(info: Any) -> bool:
+    for attr_name in ("name_to_asset", "coin_to_asset", "name_to_coin", "meta"):
+        if getattr(info, attr_name, None) is not None:
+            return True
+    return False
+
+
+def live_order_market_unavailable_message(coin: str) -> str:
+    return f"Live order market is not available for exchange submission: {coin}."
+
+
+def live_order_exchange_coin(coin: str) -> str:
+    value = str(coin or "").strip()
+    if ":" not in value:
+        return value
+    return value.split(":", maxsplit=1)[1].strip()
+
+
+def live_order_perp_dexs(coin: str | None) -> list[str] | None:
+    value = str(coin or "").strip()
+    if ":" not in value:
+        return None
+    dex = value.split(":", maxsplit=1)[0].strip()
+    if not dex:
+        return None
+    return [dex]
 
 
 def live_asset_id(info: Any, coin: str) -> Any | None:

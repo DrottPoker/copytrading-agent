@@ -915,6 +915,11 @@ What it does:
   acknowledgements are present, the live account network matches the configured
   network, the live account is enabled or exit-only, and the intent is a live
   intent for that account.
+- Routes prefixed HIP-3 live markets such as `xyz:SNDK` through the matching
+  Hyperliquid SDK `perp_dexs` metadata and submits the SDK order coin as `SNDK`.
+- Checks that a live order market exists in the Hyperliquid SDK metadata before
+  submission. Missing markets are recorded as clear live order errors instead of
+  raw SDK key lookup messages.
 - Allows exit-only live accounts to submit reduce-only exits, but blocks new
   entries and adds.
 - Runs automatic live copy only when `live_trading_enabled` and

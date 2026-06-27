@@ -739,13 +739,17 @@ trading are all enabled. Live copy uses shared allocation, minimum notional,
 min-order adjustment, price drift, and mid-price cache policy from
 `backend/config/trading.json`, while live order submission uses live-only
 execution and risk guardrails from `backend/config/live_trading.json`. Before
-submission, the live adapter normalizes order size and limit price to
-Hyperliquid tick and lot precision from market metadata. If lot rounding would
-push an adjusted entry below the configured minimum notional, the adapter rounds
-to the next valid lot only when min-order adjustment is enabled. Live entries
-also add `live_trading_min_order_notional_buffer_usd` before wire rounding so
-orders near the exchange minimum do not fall back under the limit after tick and
-lot normalization.
+submission, the live adapter routes prefixed HIP-3 markets such as `xyz:SNDK`
+through the matching SDK `perp_dexs` metadata and sends the SDK order coin as
+`SNDK`. It then normalizes order size and limit price to Hyperliquid tick and
+lot precision from that market metadata. Markets still missing from the live SDK
+metadata are rejected before submission, so SDK lookup misses are stored as
+actionable live order errors instead of raw Python key errors. If lot rounding
+would push an adjusted entry below the configured minimum notional, the adapter
+rounds to the next valid lot only when min-order adjustment is enabled. Live
+entries also add `live_trading_min_order_notional_buffer_usd` before wire
+rounding so orders near the exchange minimum do not fall back under the limit
+after tick and lot normalization.
 Live entries use IOC-limit orders with `live_trading_limit_slippage_bps` applied
 to the live mid-price. The default is 20 bps so copied entries are more likely
 to cross resting liquidity, while `live_trading_max_slippage_bps` remains the
