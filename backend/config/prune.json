@@ -1,9 +1,5 @@
 {
   "rules": {
-    "current_drawdown": {
-      "unrealized_loss_ratio": 0.9,
-      "concurrency": 8
-    },
     "minimum_closed_trades": {
       "min_closed_trades": 5
     },
@@ -18,9 +14,6 @@
       "threshold": 50,
       "operator": "lt"
     }
-  },
-  "manual": {
-    "current_drawdown_limit": 50
   },
   "schedule": {
     "after_pool_import_enabled": true

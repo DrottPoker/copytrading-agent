@@ -298,12 +298,10 @@ Notes:
 - Discovery retries Hyperliquid 429 responses with backoff and stops the current
   backfill batch cleanly if rate limits persist.
 - Manual pruning runs through `POST /wallets/prune-all`, which applies orphan-fill,
-  zero-fill, stale-fill, minimum closed-trades, realized drawdown, low-score,
-  and current drawdown cleanup in one reviewed operation.
-- Manual prune limits the live Hyperliquid current-drawdown scan with
-  `manual.current_drawdown_limit` in `backend/config/prune.json`, so the
-  dashboard request stays responsive while worker prune can still use its full
-  configured limit.
+  zero-fill, stale-fill, minimum closed-trades, realized drawdown, and low-score
+  cleanup in one reviewed operation.
+- Current drawdown is handled by scoring and paper allocation filters, not by
+  the normal manual prune flow.
 - The Database dashboard surfaces backend proxy and validation errors directly
   when manual prune cannot run, so a missing backend process or invalid request
   is visible instead of a generic failure banner.

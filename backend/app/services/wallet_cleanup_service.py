@@ -58,9 +58,6 @@ async def prune_all_wallets(
     min_closed_trades: int = 5,
     stale_fill_days: int = 30,
     max_drawdown_threshold_pct: Decimal = Decimal("0.60"),
-    current_drawdown_threshold_ratio: Decimal = Decimal("0.80"),
-    current_drawdown_concurrency: int = 8,
-    current_drawdown_limit: int | None = None,
     limit: int = 1000,
     use_lock: bool = True,
 ) -> WalletPruneAllResponse:
@@ -75,9 +72,6 @@ async def prune_all_wallets(
                 min_closed_trades=min_closed_trades,
                 stale_fill_days=stale_fill_days,
                 max_drawdown_threshold_pct=max_drawdown_threshold_pct,
-                current_drawdown_threshold_ratio=current_drawdown_threshold_ratio,
-                current_drawdown_concurrency=current_drawdown_concurrency,
-                current_drawdown_limit=current_drawdown_limit,
                 limit=limit,
                 use_lock=False,
             )
@@ -124,14 +118,6 @@ async def prune_all_wallets(
         limit=limit,
         use_lock=False,
     )
-    current_drawdown_result = await prune_current_drawdown_wallets(
-        session,
-        dry_run=dry_run,
-        threshold_ratio=current_drawdown_threshold_ratio,
-        limit=current_drawdown_limit or limit,
-        concurrency=current_drawdown_concurrency,
-        use_lock=False,
-    )
     rules = [
         orphan_fill_rule_result(orphan_fill_result),
         zero_fill_rule_result(zero_fill_result),
@@ -139,7 +125,6 @@ async def prune_all_wallets(
         min_closed_trades_rule_result(min_closed_trades_result),
         max_drawdown_rule_result(max_drawdown_result),
         low_score_rule_result(low_score_result),
-        current_drawdown_rule_result(current_drawdown_result),
     ]
 
     return WalletPruneAllResponse(

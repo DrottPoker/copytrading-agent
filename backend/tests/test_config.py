@@ -85,7 +85,6 @@ def test_prune_config_loads_low_score_rule(monkeypatch: pytest.MonkeyPatch) -> N
     assert settings.wallet_prune_low_score_min_closed_trades == 50
     assert settings.wallet_prune_low_score_threshold == Decimal("50")
     assert settings.wallet_prune_low_score_operator == "lt"
-    assert settings.wallet_prune_manual_current_drawdown_limit == 50
 
 
 def test_paper_config_does_not_seed_accounts(monkeypatch: pytest.MonkeyPatch) -> None:

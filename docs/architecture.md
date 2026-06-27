@@ -531,19 +531,13 @@ sequenceDiagram
 - Realized drawdown pruning uses stored reconstructed closed-trade scores and
   removes non-active, non-copy wallets at or above the configured drawdown
   threshold.
-- Current drawdown pruning checks live Hyperliquid `clearinghouseState` and
-  `userAbstraction`, then removes non-active, non-copy wallets whose total
-  unrealized perp loss is at least the configured share of account value.
-  Unified wallets use unified USDC from `spotClearinghouseState`; standard
-  wallets use perps account value.
-- Dashboard-triggered prune-all uses `manual.current_drawdown_limit` from
-  `backend/config/prune.json` for current drawdown checks, while scheduled
-  worker prune keeps using the worker limit.
-- Current drawdown fetch errors are reported separately and are never included in
-  the delete list.
 - Low-score pruning removes polled, scored wallets whose reconstructed closed
   trade count is at least the configured minimum and whose final score matches
   the configured cutoff in `backend/config/prune.json`.
+- Current drawdown is not part of `POST /wallets/prune-all`. It is handled by
+  wallet scoring and paper allocation filters during normal operation. The
+  standalone `POST /wallets/prune-current-drawdown` endpoint remains available
+  for isolated maintenance.
 - All pruning rules exclude source wallets with open `paper_positions`. Orphan
   fill pruning also keeps fill rows for those sources even if their
   `watched_wallets` row is missing.

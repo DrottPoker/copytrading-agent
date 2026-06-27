@@ -74,7 +74,7 @@ export function DatabasePrunePanel() {
             <h2 className="text-base font-semibold">Manual Prune</h2>
             <p className="mt-1 text-sm leading-6 text-[#5b6770]">
               Runs all active cleanup rules in order: orphan fills, zero-fill, stale fills,
-              minimum closed trades, realized drawdown, low-score, then current drawdown.
+              minimum closed trades, realized drawdown, then low-score.
             </p>
           </div>
         </div>

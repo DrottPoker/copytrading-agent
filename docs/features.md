@@ -299,23 +299,16 @@ What it does:
 - Low-score cleanup removes polled wallets whose reconstructed closed trade
   count is at least the configured minimum and whose final score matches the
   configured cutoff in `backend/config/prune.json`.
-- Current drawdown cleanup removes wallets whose live unrealized loss breaches
-  the configured account-value threshold.
 - Excludes copy-enabled, active, exit-only, and open paper-position source
   wallets from cleanup candidates. Orphan-fill cleanup also keeps fill history
   for sources that still have open paper positions.
 - Runs as a dry run by default and supports `dry_run=false` for deletion.
 - Returns totals and per-rule results for review in the Database dashboard.
-- Uses `manual.current_drawdown_limit` for dashboard-triggered prune-all current
-  drawdown scans, so slow live Hyperliquid checks cannot hold the whole UI
-  request hostage.
 - Shows backend proxy and validation error details in the dashboard if the
   manual prune request cannot run.
 - Uses `SERVER_API_BASE_URL` as the only dashboard backend proxy upstream in
   production containers. Local development can fall back to the configured
   local backend URL.
-- Reports current drawdown fetch errors separately. Those wallets are shown in
-  the response but are not counted as delete candidates.
 - Uses a shared `wallet_prune` job lock, so manual pruning and scheduled maintenance worker
   pruning cannot run concurrently.
 
@@ -361,7 +354,8 @@ Individual endpoint:
 
 - `POST /wallets/prune-current-drawdown`
 
-Normal manual pruning runs this through `POST /wallets/prune-all`.
+Normal manual pruning does not run this rule. Current drawdown is handled by
+wallet scoring and paper allocation filters in the regular workflow.
 
 What it does:
 
