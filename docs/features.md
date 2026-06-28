@@ -969,7 +969,10 @@ What it does:
   exit-only accounts can continue to reduce or close copied exposure.
 - Exposes live open-position entry execution delay by matching live open fills
   back to the copied source wallet fill timestamp. Exchange aggregate position
-  rows reuse the matching source-position delay when available.
+  rows reuse the matching source-position delay when available and label it as
+  source-to-exchange in the dashboard. Realtime live-copy execution runs before
+  paper-copy simulation so live orders do not wait for paper latency or
+  paper-only bookkeeping.
 - Adds testnet-only manual order submission through `POST /trading/testnet/orders`
   so lifecycle and reconciliation can be tested before mainnet.
 

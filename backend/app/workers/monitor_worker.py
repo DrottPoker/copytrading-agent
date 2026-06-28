@@ -1233,50 +1233,6 @@ async def handle_websocket_message(
             },
         )
 
-    if settings.paper_trading_enabled and settings.paper_copy_enabled and stored.inserted_rows:
-        try:
-            if price_cache is not None:
-                await price_cache.request_dexes(
-                    dex_from_coin(fill.get("coin")) for fill in stored.inserted_rows
-                )
-            async with sessionmaker() as session:
-                paper_result = await process_paper_copy_fills(
-                    session,
-                    source_wallet=stored.wallet_address,
-                    fills=stored.inserted_rows,
-                    settings=settings,
-                    price_cache=price_cache,
-                )
-            if paper_result.processed_fills > 0 or paper_result.skipped_fills > 0:
-                await publish_event(
-                    redis,
-                    event_type="paper_copy",
-                    channel="events:fills",
-                    message=(
-                        f"Paper copied {paper_result.processed_fills} fills from "
-                        f"{short_address(stored.wallet_address)}"
-                        f"{skip_reason_suffix(paper_result.skip_reasons)}."
-                    ),
-                    payload={
-                        "walletAddress": stored.wallet_address,
-                        "processedFills": paper_result.processed_fills,
-                        "skippedFills": paper_result.skipped_fills,
-                        "accountsUpdated": paper_result.accounts_updated,
-                        "realizedPnlUsd": str(paper_result.realized_pnl_usd),
-                        "feeUsd": str(paper_result.fee_usd),
-                        "skipReasons": paper_result.skip_reasons,
-                    },
-                )
-        except Exception as exc:
-            logger.exception("paper copy processing failed wallet=%s", stored.wallet_address)
-            await publish_event(
-                redis,
-                event_type="paper_copy_error",
-                channel="events:system",
-                message="Paper copy processing failed.",
-                payload={"walletAddress": stored.wallet_address, "error": str(exc)},
-            )
-
     if (
         settings.live_trading_enabled
         and settings.live_trading_copy_enabled
@@ -1320,6 +1276,50 @@ async def handle_websocket_message(
                 event_type="live_copy_error",
                 channel="events:system",
                 message="Live copy processing failed.",
+                payload={"walletAddress": stored.wallet_address, "error": str(exc)},
+            )
+
+    if settings.paper_trading_enabled and settings.paper_copy_enabled and stored.inserted_rows:
+        try:
+            if price_cache is not None:
+                await price_cache.request_dexes(
+                    dex_from_coin(fill.get("coin")) for fill in stored.inserted_rows
+                )
+            async with sessionmaker() as session:
+                paper_result = await process_paper_copy_fills(
+                    session,
+                    source_wallet=stored.wallet_address,
+                    fills=stored.inserted_rows,
+                    settings=settings,
+                    price_cache=price_cache,
+                )
+            if paper_result.processed_fills > 0 or paper_result.skipped_fills > 0:
+                await publish_event(
+                    redis,
+                    event_type="paper_copy",
+                    channel="events:fills",
+                    message=(
+                        f"Paper copied {paper_result.processed_fills} fills from "
+                        f"{short_address(stored.wallet_address)}"
+                        f"{skip_reason_suffix(paper_result.skip_reasons)}."
+                    ),
+                    payload={
+                        "walletAddress": stored.wallet_address,
+                        "processedFills": paper_result.processed_fills,
+                        "skippedFills": paper_result.skipped_fills,
+                        "accountsUpdated": paper_result.accounts_updated,
+                        "realizedPnlUsd": str(paper_result.realized_pnl_usd),
+                        "feeUsd": str(paper_result.fee_usd),
+                        "skipReasons": paper_result.skip_reasons,
+                    },
+                )
+        except Exception as exc:
+            logger.exception("paper copy processing failed wallet=%s", stored.wallet_address)
+            await publish_event(
+                redis,
+                event_type="paper_copy_error",
+                channel="events:system",
+                message="Paper copy processing failed.",
                 payload={"walletAddress": stored.wallet_address, "error": str(exc)},
             )
 

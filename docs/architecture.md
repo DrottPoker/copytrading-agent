@@ -677,7 +677,10 @@ where `opened_at` is the source fill timestamp and `created_at` is when the
 paper position row was created. Live open position summaries expose the same
 source-to-open delay by matching stored live open fills back to the copied
 source wallet fill timestamp. Exchange aggregate live position rows reuse the
-matching source-position delay when available.
+matching source-position delay when available and the dashboard labels that
+aggregate-row value as source-to-exchange. Realtime live-copy execution runs
+before paper-copy simulation so live orders do not wait for paper latency or
+paper-only bookkeeping.
 When multiple source fills have the same timestamp, paper-copy processing orders
 close and flip-close fills first by descending source `startPosition` before
 falling back to the fill id. This keeps large split exits deterministic.

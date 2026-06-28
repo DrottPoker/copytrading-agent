@@ -1237,7 +1237,11 @@ function PositionRow({
           label="Execution"
           value={formatExecutionMs(position.entryExecutionDelayMs)}
           detail={
-            position.accountType === "paper" || position.entryExecutionDelayMs !== null
+            position.accountType === "live" &&
+            isLiveExchangeSource(position.sourceWallet) &&
+            position.entryExecutionDelayMs !== null
+              ? "source to exchange"
+              : position.accountType === "paper" || position.entryExecutionDelayMs !== null
               ? "source to open"
               : "live position"
           }

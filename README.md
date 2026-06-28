@@ -452,7 +452,9 @@ Sizing policy:
 - Open paper position rows show entry execution delay in milliseconds, measured
   from the source fill timestamp to when the paper position was created. Open
   live position rows show the same source-to-open delay when a matching live
-  fill and source wallet fill are available.
+  fill and source wallet fill are available. Realtime live-copy execution runs
+  before paper-copy simulation so live orders do not wait for paper latency or
+  paper-only bookkeeping.
 - Same-timestamp source fills are processed with close and flip-close fills first
   by descending source `startPosition`, so split source exits reduce paper
   positions in a stable order.
