@@ -16,6 +16,7 @@ from app.services.live_trading_service import (
     build_testnet_live_trade_intent,
     create_live_trading_account,
     fetch_live_fills_by_time,
+    is_retryable_live_order_submit_failure,
     live_account_key_for_route,
     live_closed_trades_from_fills,
     live_perp_equity_usd,
@@ -27,6 +28,7 @@ from app.services.live_trading_service import (
     manual_live_close_recovery_status,
     parse_live_fill,
     parse_live_position,
+    reset_live_order_for_retry,
     resolve_live_account_wallet_address,
     sync_live_source_positions_from_exchange_positions,
     update_live_account_from_state,
@@ -80,6 +82,61 @@ def test_apply_live_order_result_updates_submitted_wire_values() -> None:
     assert order.filled_size == Decimal("0.16")
     assert order.filled_notional_usd == Decimal("10.2288")
     assert order.status == "filled"
+
+
+def test_retryable_live_order_submit_failure_matches_market_metadata_error() -> None:
+    order = live_order(status="failed")
+    order.error = "Live order market is not available for exchange submission: xyz:MU."
+    order.submitted_at = datetime(2026, 1, 1, tzinfo=UTC)
+    order.raw_payload = {
+        "submitError": {
+            "type": "HyperliquidLiveOrderRejectedError",
+            "message": order.error,
+        }
+    }
+
+    assert is_retryable_live_order_submit_failure(order) is True
+
+    reset_live_order_for_retry(
+        order,
+        intent=build_testnet_live_trade_intent(
+            account=TradingAccount(
+                key="live_test",
+                account_type="live",
+                label="Live Test",
+                status="enabled",
+                network="testnet",
+            ),
+            coin="ETH",
+            side="long",
+            notional_usd=Decimal("100"),
+            limit_price=Decimal("100"),
+            leverage=Decimal("1"),
+            reduce_only=False,
+            source_fill_id="fill-1",
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        ),
+    )
+
+    assert order.status == "planned"
+    assert order.error is None
+    assert order.submitted_at is None
+    assert order.raw_payload["retry"]["reason"] == (
+        "market_metadata_available_after_previous_submit_failure"
+    )
+
+
+def test_retryable_live_order_submit_failure_ignores_exchange_rejection() -> None:
+    order = live_order(status="failed")
+    order.error = "Insufficient margin."
+    order.raw_payload = {
+        "submitError": {
+            "type": "HyperliquidLiveOrderRejectedError",
+            "message": order.error,
+        }
+    }
+
+    assert is_retryable_live_order_submit_failure(order) is False
 
 
 @pytest.mark.asyncio

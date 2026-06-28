@@ -64,6 +64,8 @@ ExchangeFactory = Callable[[TradingAccount], Any]
 CloidFactory = Callable[[str], Any]
 PERP_MAX_PRICE_DECIMALS = 6
 SPOT_MAX_PRICE_DECIMALS = 8
+SPOT_ASSET_OFFSET = 10_000
+BUILDER_PERP_ASSET_OFFSET = 110_000
 PRICE_SIGNIFICANT_DIGITS = 5
 FALLBACK_SIZE_DECIMALS = 8
 FALLBACK_PRICE_DECIMALS = 6
@@ -103,10 +105,11 @@ class HyperliquidLiveTradingClient:
                 "Only live accounts can cancel live orders."
             )
         exchange = self._build_exchange(account, coin=coin)
+        order_coin = resolve_live_order_exchange_coin(exchange, coin)
         cloid = self._build_cloid(client_order_id)
         response = await asyncio.to_thread(
             exchange.cancel_by_cloid,
-            live_order_exchange_coin(coin),
+            order_coin,
             cloid,
         )
         return response if isinstance(response, dict) else {"response": response}
@@ -218,7 +221,7 @@ class HyperliquidLiveTradingClient:
         intent: TradeIntent,
     ) -> LiveOrderResult:
         exchange = self._build_exchange(account, coin=intent.coin)
-        order_coin = live_order_exchange_coin(intent.coin)
+        order_coin = resolve_live_order_exchange_coin(exchange, intent.coin)
         validate_live_order_market(exchange, order_coin, display_coin=intent.coin)
         wire_values = live_order_wire_values(
             intent,
@@ -511,6 +514,26 @@ def live_order_exchange_coin(coin: str) -> str:
     return value.split(":", maxsplit=1)[1].strip()
 
 
+def resolve_live_order_exchange_coin(exchange: Any | None, coin: str) -> str:
+    fallback = live_order_exchange_coin(coin)
+    info = getattr(exchange, "info", None)
+    if info is None or not live_info_has_market_metadata(info):
+        return fallback
+    for candidate in live_order_exchange_coin_candidates(coin):
+        if live_asset_id(info, candidate) is not None:
+            return candidate
+    return fallback
+
+
+def live_order_exchange_coin_candidates(coin: str) -> list[str]:
+    value = str(coin or "").strip()
+    base = live_order_exchange_coin(value)
+    candidates = [base]
+    if value and value != base:
+        candidates.append(value)
+    return unique_values(candidates)
+
+
 def live_order_perp_dexs(coin: str | None) -> list[str] | None:
     value = str(coin or "").strip()
     if ":" not in value:
@@ -587,9 +610,20 @@ def size_decimals_from_meta(meta: Any, coin: str) -> Any | None:
 
 def asset_is_spot(asset: Any | None) -> bool:
     try:
-        return int(asset) >= 10_000
+        asset_id = int(asset)
     except (TypeError, ValueError):
         return False
+    return SPOT_ASSET_OFFSET <= asset_id < BUILDER_PERP_ASSET_OFFSET
+
+
+def unique_values(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for value in values:
+        if value not in seen:
+            seen.add(value)
+            unique.append(value)
+    return unique
 
 
 def live_order_wire_size(

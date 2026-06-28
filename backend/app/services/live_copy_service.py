@@ -24,6 +24,7 @@ from app.services.live_trading_service import (
     LIVE_EXCHANGE_SOURCE,
     POSITION_EPSILON,
     LiveOrderSubmitError,
+    is_retryable_live_order_submit_failure,
     live_capital_mode,
     live_perp_equity_usd,
     live_tradable_equity_usd,
@@ -1056,7 +1057,7 @@ async def live_order_exists(
     sequence_index: int,
 ) -> bool:
     existing = await session.scalar(
-        select(TradingOrder.id).where(
+        select(TradingOrder).where(
             TradingOrder.account_key == account_key,
             TradingOrder.account_type == "live",
             TradingOrder.source_wallet == source_wallet,
@@ -1064,7 +1065,7 @@ async def live_order_exists(
             TradingOrder.sequence_index == sequence_index,
         )
     )
-    return existing is not None
+    return existing is not None and not is_retryable_live_order_submit_failure(existing)
 
 
 async def live_pending_close_size_for_position(

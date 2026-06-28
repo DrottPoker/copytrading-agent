@@ -820,7 +820,10 @@ async def submit_live_trade_intent(
 
     order = await get_or_create_live_order(session, intent=intent)
     if order.status in TERMINAL_ORDER_STATUSES:
-        return LiveOrderLifecycleResult(order=order, exchange_result=None, submitted=False)
+        if is_retryable_live_order_submit_failure(order):
+            reset_live_order_for_retry(order, intent=intent)
+        else:
+            return LiveOrderLifecycleResult(order=order, exchange_result=None, submitted=False)
 
     order.status = "submitted"
     order.submitted_at = datetime.now(UTC)
@@ -1020,6 +1023,41 @@ async def get_or_create_live_order(
     session.add(order)
     await session.flush()
     return order
+
+
+def is_retryable_live_order_submit_failure(order: TradingOrder) -> bool:
+    if order.status != "failed":
+        return False
+    if order.exchange_order_id or order.filled_size > ZERO or order.filled_notional_usd > ZERO:
+        return False
+    payload = order.raw_payload if isinstance(order.raw_payload, dict) else {}
+    submit_error = payload.get("submitError")
+    if not isinstance(submit_error, dict):
+        return False
+    if submit_error.get("type") != "HyperliquidLiveOrderRejectedError":
+        return False
+    message = str(submit_error.get("message") or order.error or "")
+    return message.startswith("Live order market is not available for exchange submission:")
+
+
+def reset_live_order_for_retry(order: TradingOrder, *, intent: TradeIntent) -> None:
+    order.status = "planned"
+    order.error = None
+    order.submitted_at = None
+    order.requested_size = intent.size
+    order.requested_notional_usd = intent.notional_usd
+    order.margin_usd = intent.margin_usd
+    order.leverage = intent.leverage
+    order.limit_price = intent.limit_price
+    order.raw_payload = merge_raw_payload(
+        order.raw_payload,
+        {
+            "retry": {
+                "reason": "market_metadata_available_after_previous_submit_failure",
+                "requestedAt": datetime.now(UTC).isoformat(),
+            }
+        },
+    )
 
 
 def apply_live_order_result(

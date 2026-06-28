@@ -757,11 +757,12 @@ min-order adjustment, price drift, and mid-price cache policy from
 `backend/config/trading.json`, while live order submission uses live-only
 execution and risk guardrails from `backend/config/live_trading.json`. Before
 submission, the live adapter routes prefixed HIP-3 markets such as `xyz:SNDK`
-through the matching SDK `perp_dexs` metadata and sends the SDK order coin as
-`SNDK`. It then normalizes order size and limit price to Hyperliquid tick and
-lot precision from that market metadata. Markets still missing from the live SDK
-metadata are rejected before submission, so SDK lookup misses are stored as
-actionable live order errors instead of raw Python key errors. If lot rounding
+through the matching SDK `perp_dexs` metadata and resolves whichever SDK order
+coin name is present for that market, either `SNDK` or `xyz:SNDK`. It then
+normalizes order size and limit price to Hyperliquid perp tick and lot precision
+from that market metadata. Markets still missing from the live SDK metadata are
+rejected before submission, so SDK lookup misses are stored as actionable live
+order errors instead of raw Python key errors. If lot rounding
 would push an adjusted entry below the configured minimum notional, the adapter
 rounds to the next valid lot only when min-order adjustment is enabled. Live
 entries also add `live_trading_min_order_notional_buffer_usd` before wire

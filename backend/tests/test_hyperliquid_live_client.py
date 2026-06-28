@@ -338,6 +338,40 @@ async def test_live_client_submits_prefixed_dex_market_as_sdk_base_coin() -> Non
 
 
 @pytest.mark.asyncio
+async def test_live_client_submits_prefixed_dex_market_as_sdk_prefixed_coin() -> None:
+    exchange = FakeExchange(
+        info=FakeInfo(
+            assets={"xyz:SNDK": 110000},
+            size_decimals={110000: 4},
+        )
+    )
+    settings = live_test_settings()
+    client = HyperliquidLiveTradingClient(
+        settings=settings,
+        exchange_factory=lambda _account: exchange,
+        cloid_factory=lambda value: value,
+    )
+    account = live_test_account(status="enabled")
+    intent = live_test_intent(
+        coin="xyz:SNDK",
+        size=Decimal("0.004752"),
+        limit_price=Decimal("2104.4004"),
+        notional_usd=Decimal("10"),
+        source_price=Decimal("2104.4004"),
+        observed_price=Decimal("2104.4004"),
+    )
+
+    result = await client.submit_order(account=account, intent=intent)
+
+    assert result.status == "filled"
+    assert exchange.orders[0]["coin"] == "xyz:SNDK"
+    assert result.submitted_size == Decimal("0.0048")
+    assert result.submitted_limit_price == Decimal("2104.4")
+    assert result.submitted_notional_usd == Decimal("10.10112")
+    assert result.raw_response["clientOrderRequest"]["priceDecimals"] == 2
+
+
+@pytest.mark.asyncio
 async def test_live_client_rejects_market_missing_from_sdk_metadata() -> None:
     exchange = FakeExchange(
         info=FakeInfo(

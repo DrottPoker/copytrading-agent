@@ -15,6 +15,7 @@ from app.services.live_copy_service import (
     live_copy_allocation_equity_usd,
     live_exchange_position_conflict,
     live_min_order_notional_usd,
+    live_order_exists,
     live_pending_close_size_from_orders,
     live_skip,
     live_source_position_is_final_close,
@@ -363,6 +364,43 @@ async def test_submit_live_copy_intent_reports_submit_error(monkeypatch) -> None
 
 
 @pytest.mark.asyncio
+async def test_live_order_exists_ignores_retryable_market_metadata_failure() -> None:
+    class ExistingOrderSession:
+        async def scalar(self, statement):
+            return retryable_market_metadata_order()
+
+    exists = await live_order_exists(
+        ExistingOrderSession(),
+        account_key="live_test",
+        source_wallet="0xsource",
+        source_fill_id="fill-1",
+        sequence_index=0,
+    )
+
+    assert exists is False
+
+
+@pytest.mark.asyncio
+async def test_live_order_exists_blocks_non_retryable_failed_order() -> None:
+    class ExistingOrderSession:
+        async def scalar(self, statement):
+            order = retryable_market_metadata_order()
+            order.raw_payload["submitError"]["message"] = "Insufficient margin."
+            order.error = "Insufficient margin."
+            return order
+
+    exists = await live_order_exists(
+        ExistingOrderSession(),
+        account_key="live_test",
+        source_wallet="0xsource",
+        source_fill_id="fill-1",
+        sequence_index=0,
+    )
+
+    assert exists is True
+
+
+@pytest.mark.asyncio
 async def test_record_live_skip_persists_diagnostic_order() -> None:
     class CaptureSession:
         statement = None
@@ -485,6 +523,22 @@ def live_order(
         filled_notional_usd=Decimal("0"),
         fee_usd=Decimal("0"),
     )
+
+
+def retryable_market_metadata_order() -> TradingOrder:
+    order = live_order(
+        status="failed",
+        requested_size=Decimal("0.01"),
+        filled_size=Decimal("0"),
+    )
+    order.error = "Live order market is not available for exchange submission: xyz:MU."
+    order.raw_payload = {
+        "submitError": {
+            "type": "HyperliquidLiveOrderRejectedError",
+            "message": order.error,
+        }
+    }
+    return order
 
 
 def live_close_part(close_ratio: Decimal | None) -> SourceFillPart:
