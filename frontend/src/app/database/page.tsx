@@ -52,6 +52,13 @@ export default async function DatabasePage() {
     stats.databaseSizeBytes > 0 && stats.tables.length > 0
       ? stats.tables[0].totalSizeBytes / stats.databaseSizeBytes
       : 0;
+  const fillCountLabel = stats.fills.exact ? "Stored fills" : "Estimated fills";
+  const snapshotFillValue = stats.fills.exact
+    ? formatInteger(stats.fills.snapshot)
+    : "Exact scan skipped";
+  const realtimeFillValue = stats.fills.exact
+    ? formatInteger(stats.fills.realtime)
+    : "Exact scan skipped";
 
   return (
     <>
@@ -66,7 +73,7 @@ export default async function DatabasePage() {
         />
         <MetricTile
           icon={Database}
-          label="Stored fills"
+          label={fillCountLabel}
           value={formatCompact(stats.fills.total)}
           detail={`${formatInteger(stats.fills.poolWalletCount)} pool, ${formatInteger(
             stats.fills.orphanWalletCount,
@@ -99,8 +106,8 @@ export default async function DatabasePage() {
             <DataPoint label="Notional" value={formatCurrency(stats.fills.totalNotionalUsd)} />
             <DataPoint label="PnL" value={formatCurrency(stats.fills.totalPnlUsd)} />
             <DataPoint label="Fees" value={formatCurrency(stats.fills.totalFeeUsd)} />
-            <DataPoint label="Snapshot fills" value={formatInteger(stats.fills.snapshot)} />
-            <DataPoint label="Realtime fills" value={formatInteger(stats.fills.realtime)} />
+            <DataPoint label="Snapshot fills" value={snapshotFillValue} />
+            <DataPoint label="Realtime fills" value={realtimeFillValue} />
             <DataPoint label="Last inserted" value={formatDate(stats.fills.lastInsertedAt)} />
           </div>
           <div className="mt-4 border-t border-line pt-4">

@@ -22,7 +22,7 @@ from app.schemas.ops import (
     OpsServiceConfig,
     OpsWorkerHeartbeat,
 )
-from app.services.database_stats_service import get_database_stats
+from app.services.database_stats_service import get_database_summary_stats
 from app.services.operation_status_service import list_operation_statuses
 from app.services.worker_heartbeat_service import load_worker_heartbeat_values
 
@@ -134,21 +134,26 @@ async def load_database_backed_ops(
 
 
 async def load_database_summary(session: AsyncSession) -> OpsDatabaseSummary:
-    stats = await get_database_stats(session)
-    largest_table = stats.tables[0] if stats.tables else None
+    stats = await get_database_summary_stats(session)
+    overview = stats["overview"]
+    table_rows = stats["table_rows"]
+    connections = stats["connections"]
+    largest_table = table_rows[0] if table_rows else None
     return OpsDatabaseSummary(
         status="ok",
-        database_name=stats.database_name,
-        database_size_bytes=stats.database_size_bytes,
-        database_size_pretty=stats.database_size_pretty,
-        table_count=stats.table_count,
-        connection_total=stats.connections.total,
-        connection_max=stats.connections.max_connections,
-        connection_usage_pct=stats.connections.usage_pct,
-        fill_count=stats.fills.total,
-        largest_table_name=largest_table.name if largest_table else None,
-        largest_table_size_bytes=largest_table.total_size_bytes if largest_table else None,
-        measured_at=stats.measured_at,
+        database_name=str(overview["database_name"]),
+        database_size_bytes=int(overview["database_size_bytes"] or 0),
+        database_size_pretty=str(overview["database_size_pretty"]),
+        table_count=len(table_rows),
+        connection_total=connections.total,
+        connection_max=connections.max_connections,
+        connection_usage_pct=connections.usage_pct,
+        fill_count=stats["fill_count"],
+        largest_table_name=str(largest_table["name"]) if largest_table else None,
+        largest_table_size_bytes=(
+            int(largest_table["total_size_bytes"] or 0) if largest_table else None
+        ),
+        measured_at=overview["measured_at"],
     )
 
 

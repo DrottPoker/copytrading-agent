@@ -48,7 +48,11 @@ GROUPED_COUNT_QUERIES = {
 }
 
 
-async def get_database_stats(session: AsyncSession) -> DatabaseStatsResponse:
+async def get_database_stats(
+    session: AsyncSession,
+    *,
+    exact_fill_stats: bool = False,
+) -> DatabaseStatsResponse:
     overview = await one_mapping(
         session,
         """
@@ -89,7 +93,11 @@ async def get_database_stats(session: AsyncSession) -> DatabaseStatsResponse:
         table_count=len(table_rows),
         connections=await get_connection_stats(session),
         wallets=await get_wallet_stats(session),
-        fills=await get_fill_stats(session),
+        fills=await get_fill_stats(
+            session,
+            table_rows=table_rows,
+            exact=exact_fill_stats,
+        ),
         scores=await get_score_stats(session),
         copy_trades=await get_copy_trade_stats(session),
         signals=await get_signal_stats(session),
@@ -207,7 +215,75 @@ async def get_wallet_stats(session: AsyncSession) -> DatabaseWalletStats:
     )
 
 
-async def get_fill_stats(session: AsyncSession) -> DatabaseFillStats:
+async def get_fill_stats(
+    session: AsyncSession,
+    *,
+    table_rows: list[dict[str, Any]] | None = None,
+    exact: bool = False,
+) -> DatabaseFillStats:
+    if exact:
+        return await get_exact_fill_stats(session)
+
+    table_row = table_row_by_name(table_rows or [], "wallet_fills")
+    estimated_total = int_value(table_row["estimated_rows"]) if table_row else 0
+    sync_row = await one_mapping(
+        session,
+        """
+        select
+          coalesce(sum(sts.fill_count), 0) as synced_total,
+          count(*) filter (where sts.fill_count > 0) as wallet_count,
+          count(*) filter (
+            where sts.fill_count > 0 and ww.address is not null
+          ) as pool_wallet_count,
+          count(*) filter (
+            where sts.fill_count > 0 and ww.address is null
+          ) as orphan_wallet_count,
+          min(sts.last_fill_timestamp_ms) filter (
+            where sts.fill_count > 0
+          ) as first_fill_time_ms,
+          max(sts.last_fill_timestamp_ms) filter (
+            where sts.fill_count > 0
+          ) as last_fill_time_ms,
+          max(sts.synced_at) as last_inserted_at
+        from source_trade_sync_states sts
+        left join watched_wallets ww on ww.address = sts.wallet_address
+        """,
+    )
+    trade_row = await one_mapping(
+        session,
+        """
+        select
+          count(distinct coin) as coin_count,
+          coalesce(sum(entry_notional_usd), 0) as total_notional_usd,
+          coalesce(sum(fee_usd), 0) as total_fee_usd,
+          coalesce(sum(net_pnl_usd), 0) as total_pnl_usd
+        from source_trades
+        """,
+    )
+    synced_total = int_value(sync_row["synced_total"])
+    total = max(estimated_total, synced_total)
+    wallet_count = int_value(sync_row["wallet_count"])
+    pool_wallet_count = int_value(sync_row["pool_wallet_count"])
+    orphan_wallet_count = int_value(sync_row["orphan_wallet_count"])
+    return DatabaseFillStats(
+        exact=False,
+        total=total,
+        snapshot=0,
+        realtime=0,
+        wallet_count=wallet_count,
+        pool_wallet_count=pool_wallet_count,
+        orphan_wallet_count=orphan_wallet_count,
+        coin_count=int_value(trade_row["coin_count"]),
+        total_notional_usd=decimal_value(trade_row["total_notional_usd"]),
+        total_fee_usd=decimal_value(trade_row["total_fee_usd"]),
+        total_pnl_usd=decimal_value(trade_row["total_pnl_usd"]),
+        first_fill_time_ms=optional_int(sync_row["first_fill_time_ms"]),
+        last_fill_time_ms=optional_int(sync_row["last_fill_time_ms"]),
+        last_inserted_at=optional_datetime(sync_row["last_inserted_at"]),
+    )
+
+
+async def get_exact_fill_stats(session: AsyncSession) -> DatabaseFillStats:
     row = await one_mapping(
         session,
         """
@@ -234,6 +310,7 @@ async def get_fill_stats(session: AsyncSession) -> DatabaseFillStats:
         """,
     )
     return DatabaseFillStats(
+        exact=True,
         total=int_value(row["total"]),
         snapshot=int_value(row["snapshot"]),
         realtime=int_value(row["realtime"]),
@@ -248,6 +325,39 @@ async def get_fill_stats(session: AsyncSession) -> DatabaseFillStats:
         last_fill_time_ms=optional_int(row["last_fill_time_ms"]),
         last_inserted_at=optional_datetime(row["last_inserted_at"]),
     )
+
+
+async def get_database_summary_stats(session: AsyncSession) -> dict[str, Any]:
+    overview = await one_mapping(
+        session,
+        """
+        select
+          now() as measured_at,
+          current_database() as database_name,
+          pg_database_size(current_database()) as database_size_bytes,
+          pg_size_pretty(pg_database_size(current_database())) as database_size_pretty
+        """,
+    )
+    table_rows = await all_mappings(
+        session,
+        """
+        select
+          relname as name,
+          n_live_tup as estimated_rows,
+          pg_total_relation_size(relid) as total_size_bytes
+        from pg_stat_user_tables
+        where schemaname = 'public'
+        order by pg_total_relation_size(relid) desc, relname asc
+        """,
+    )
+    return {
+        "overview": overview,
+        "table_rows": table_rows,
+        "connections": await get_connection_stats(session),
+        "fill_count": int_value(
+            (table_row_by_name(table_rows, "wallet_fills") or {}).get("estimated_rows")
+        ),
+    }
 
 
 async def get_score_stats(session: AsyncSession) -> DatabaseScoreStats:
@@ -379,6 +489,10 @@ def table_stats(row: dict[str, Any]) -> DatabaseTableStats:
         last_analyze_at=optional_datetime(row["last_analyze_at"]),
         last_autoanalyze_at=optional_datetime(row["last_autoanalyze_at"]),
     )
+
+
+def table_row_by_name(rows: list[dict[str, Any]], name: str) -> dict[str, Any] | None:
+    return next((row for row in rows if row.get("name") == name), None)
 
 
 async def one_mapping(session: AsyncSession, sql: str) -> dict[str, Any]:

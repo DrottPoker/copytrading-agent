@@ -142,6 +142,9 @@ Notes:
 - `targetFills` is counted after filtering, so `targetFills: 10000` means up to
   10k stored perp fills, not 10k raw spot/perp fills.
 - Fill rows store only compact configured raw payload fields to keep database growth under control.
+- Database stats use a fast fill summary by default. Add
+  `exact_fill_stats=true` to `GET /database/stats` when an exact
+  `wallet_fills` scan is needed for diagnostics.
 - The Database page exposes per-index storage and scan counts so large unused
   indexes can be reviewed before any schema change.
 - Docker Compose gives the Postgres container a 512 MB shared memory limit so
@@ -253,7 +256,9 @@ API:
 `GET /trading/accounts` returns the generic paper/live account registry plus
 live positions, recent live fills, and recent live order attempts for Trading
 dashboards. `GET /paper-trading` remains the paper simulator summary and manual
-paper action API.
+paper action API. Use `include_market_prices=false` for fast server-rendered
+navigation and `refresh_allocations=true` only when the caller explicitly needs
+to rewrite copy allocations.
 
 Dashboard:
 

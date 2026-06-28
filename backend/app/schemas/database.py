@@ -52,6 +52,7 @@ class DatabaseWalletStats(CamelModel):
 
 
 class DatabaseFillStats(CamelModel):
+    exact: bool = True
     total: int
     snapshot: int
     realtime: int

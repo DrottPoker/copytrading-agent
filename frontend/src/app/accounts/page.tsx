@@ -5,6 +5,7 @@ export default async function AccountsPage() {
   const [summary, tradingAccounts] = await Promise.all([
     getPaperTradingSummary({
       closedTradeLimit: 250,
+      includeMarketPrices: false,
       recentFillLimit: 250,
     }),
     getTradingAccounts(),

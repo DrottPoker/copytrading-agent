@@ -36,12 +36,16 @@ async def get_paper_trading_route(
     settings: Annotated[Settings, Depends(get_settings)],
     recent_fill_limit: Annotated[int, Query(ge=1, le=1000)] = 100,
     closed_trade_limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+    include_market_prices: Annotated[bool, Query()] = True,
+    refresh_allocations: Annotated[bool, Query()] = False,
 ) -> PaperTradingSummaryResponse:
     return await get_paper_trading_summary(
         session,
         settings=settings,
         recent_fill_limit=recent_fill_limit,
         closed_trade_limit=closed_trade_limit,
+        include_market_prices=include_market_prices,
+        refresh_allocations=refresh_allocations,
     )
 
 
@@ -64,7 +68,12 @@ async def create_paper_account_route(
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
     async with HyperliquidClient(settings) as client:
-        return await get_paper_trading_summary(session, settings=settings, client=client)
+        return await get_paper_trading_summary(
+            session,
+            settings=settings,
+            client=client,
+            refresh_allocations=True,
+        )
 
 
 @router.delete("/accounts/{account_key}", status_code=status.HTTP_204_NO_CONTENT)
@@ -104,7 +113,12 @@ async def close_paper_position_route(
             await session.rollback()
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
-        return await get_paper_trading_summary(session, settings=settings, client=client)
+        return await get_paper_trading_summary(
+            session,
+            settings=settings,
+            client=client,
+            refresh_allocations=True,
+        )
 
 
 @router.post("/sources/{source_wallet}/close", response_model=PaperTradingSummaryResponse)
@@ -126,7 +140,12 @@ async def close_paper_source_positions_route(
             await session.rollback()
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
-        return await get_paper_trading_summary(session, settings=settings, client=client)
+        return await get_paper_trading_summary(
+            session,
+            settings=settings,
+            client=client,
+            refresh_allocations=True,
+        )
 
 
 @router.post("/accounts/{account_key}/reset", response_model=PaperTradingSummaryResponse)
@@ -147,7 +166,12 @@ async def reset_paper_account_balance_route(
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
     async with HyperliquidClient(settings) as client:
-        return await get_paper_trading_summary(session, settings=settings, client=client)
+        return await get_paper_trading_summary(
+            session,
+            settings=settings,
+            client=client,
+            refresh_allocations=True,
+        )
 
 
 @router.post("/accounts/{account_key}/start", response_model=PaperTradingSummaryResponse)
@@ -169,7 +193,12 @@ async def start_paper_account_trading_route(
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
     async with HyperliquidClient(settings) as client:
-        return await get_paper_trading_summary(session, settings=settings, client=client)
+        return await get_paper_trading_summary(
+            session,
+            settings=settings,
+            client=client,
+            refresh_allocations=True,
+        )
 
 
 @router.post("/accounts/{account_key}/stop", response_model=PaperTradingSummaryResponse)
@@ -191,7 +220,12 @@ async def stop_paper_account_trading_route(
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
     async with HyperliquidClient(settings) as client:
-        return await get_paper_trading_summary(session, settings=settings, client=client)
+        return await get_paper_trading_summary(
+            session,
+            settings=settings,
+            client=client,
+            refresh_allocations=True,
+        )
 
 
 @router.post(
@@ -231,4 +265,9 @@ async def close_all_and_stop_paper_account_trading_route(
                 detail=f"Account trading was stopped, but position close failed: {exc.detail}",
             ) from exc
 
-        return await get_paper_trading_summary(session, settings=settings, client=client)
+        return await get_paper_trading_summary(
+            session,
+            settings=settings,
+            client=client,
+            refresh_allocations=True,
+        )

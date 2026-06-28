@@ -46,6 +46,7 @@ export type DatabaseWalletStats = {
 };
 
 export type DatabaseFillStats = {
+  exact: boolean;
   total: number;
   snapshot: number;
   realtime: number;

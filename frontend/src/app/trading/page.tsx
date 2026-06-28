@@ -3,7 +3,7 @@ import { getPaperTradingSummary, getTradingAccounts } from "@/lib/api";
 
 export default async function TradingPage() {
   const [summary, tradingAccounts] = await Promise.all([
-    getPaperTradingSummary(),
+    getPaperTradingSummary({ includeMarketPrices: false }),
     getTradingAccounts(),
   ]);
   return <TradingDashboard initialSummary={summary} initialTradingAccounts={tradingAccounts} />;

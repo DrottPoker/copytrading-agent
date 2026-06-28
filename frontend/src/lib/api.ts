@@ -347,7 +347,9 @@ export async function getOperationStatuses(): Promise<OperationStatusListRespons
 
 type PaperTradingSummaryOptions = {
   closedTradeLimit?: number;
+  includeMarketPrices?: boolean;
   recentFillLimit?: number;
+  refreshAllocations?: boolean;
 };
 
 export async function getPaperTradingSummary(
@@ -360,6 +362,12 @@ export async function getPaperTradingSummary(
     }
     if (options.recentFillLimit) {
       url.searchParams.set("recent_fill_limit", String(options.recentFillLimit));
+    }
+    if (options.includeMarketPrices !== undefined) {
+      url.searchParams.set("include_market_prices", String(options.includeMarketPrices));
+    }
+    if (options.refreshAllocations !== undefined) {
+      url.searchParams.set("refresh_allocations", String(options.refreshAllocations));
     }
     const response = await backendGet(url.toString());
 

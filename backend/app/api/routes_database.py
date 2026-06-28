@@ -25,8 +25,9 @@ logger = logging.getLogger(__name__)
 @router.get("/stats", response_model=DatabaseStatsResponse)
 async def get_database_stats_route(
     session: Annotated[AsyncSession, Depends(db_session)],
+    exact_fill_stats: Annotated[bool, Query()] = False,
 ) -> DatabaseStatsResponse:
-    return await get_database_stats(session)
+    return await get_database_stats(session, exact_fill_stats=exact_fill_stats)
 
 
 @router.post("/fills/compact-raw-json", response_model=FillRawJsonCompactResponse)

@@ -217,12 +217,15 @@ Historical import counts `targetFills` after this filter, so a 10k target means
 up to 10k stored perp fills even when raw Hyperliquid pages also contain spot
 fills.
 The Database page also exposes per-index storage and usage stats from Postgres,
-so index cost can be reviewed before changing schema. Manual fill retention
-cleanup deletes old unprotected `wallet_fills`, old closed `source_trades`, and
-old `source_trade_ignored_fills` in batches. It protects active, realtime-slot,
-copy-enabled, open paper-position, open position snapshot, and top scored
-wallets. Deleted space becomes reusable after vacuum, but total database file
-size may not shrink immediately on managed Postgres.
+so index cost can be reviewed before changing schema. Dashboard stats use a fast
+fill summary by default, based on Postgres table estimates, source trade sync
+state, and materialized source trades. Use `GET /database/stats?exact_fill_stats=true`
+only when an exact `wallet_fills` scan is needed for diagnostics. Manual fill
+retention cleanup deletes old unprotected `wallet_fills`, old closed
+`source_trades`, and old `source_trade_ignored_fills` in batches. It protects
+active, realtime-slot, copy-enabled, open paper-position, open position
+snapshot, and top scored wallets. Deleted space becomes reusable after vacuum,
+but total database file size may not shrink immediately on managed Postgres.
 The Database page also has ignored-fill cleanup. It deletes raw fills that were
 classified as pre-existing-position adds or close-only fills and are not needed
 for reconstructed source trades. Unmatched close fills are kept when they line up
@@ -598,8 +601,10 @@ sequenceDiagram
   Worker->>Redis: publish paper_copy event
   Worker->>DB: recover missed paper fills after restart or snapshot
   UI->>API: GET /paper-trading
-  API->>DB: sync configured accounts and load paper state
-  API->>HL: current market prices for open paper positions
+  API->>DB: load paper state
+  opt include_market_prices=true
+    API->>HL: current market prices for open paper positions
+  end
   API->>API: compute unrealized PnL and source-wallet PnL
   API-->>UI: accounts, allocations, positions, wallet PnL, closed trades, recent fills
   UI->>API: POST /paper-trading/accounts

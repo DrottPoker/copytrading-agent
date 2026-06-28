@@ -72,6 +72,7 @@ RETRIABLE_EXIT_SKIP_REASONS = frozenset(
         "execution_price_unavailable",
     }
 )
+SUMMARY_MARKET_PRICE_CACHE = MarketPriceCache()
 
 
 class PaperPositionCloseError(Exception):
@@ -212,13 +213,17 @@ async def get_paper_trading_summary(
     recent_fill_limit: int = 100,
     closed_trade_limit: int = 100,
     client: HyperliquidClient | None = None,
+    include_market_prices: bool = True,
+    refresh_allocations: bool = False,
 ) -> PaperTradingSummaryResponse:
     resolved_settings = settings or get_settings()
-    source_allocations = await refresh_paper_copy_allocations(
-        session,
-        settings=resolved_settings,
-    )
-    await session.commit()
+    source_allocations: dict[str, PaperSourceAllocation] = {}
+    if refresh_allocations:
+        source_allocations = await refresh_paper_copy_allocations(
+            session,
+            settings=resolved_settings,
+        )
+        await session.commit()
 
     accounts_result = await session.execute(
         select(PaperTradingAccount).order_by(PaperTradingAccount.key.asc())
@@ -293,6 +298,11 @@ async def get_paper_trading_summary(
             *(allocation.source_wallet for allocation in source_allocations.values()),
         ],
     )
+    if not source_allocations:
+        source_allocations = paper_source_allocations_from_copy_rows(
+            allocations=allocations,
+            source_labels=source_labels,
+        )
     liquidation_source_fill_ids = await load_liquidation_source_fill_ids(
         session,
         fills=closed_trades,
@@ -302,21 +312,22 @@ async def get_paper_trading_summary(
         fills=closed_trades,
     )
 
-    if client is None:
+    market_prices: dict[str, Decimal] = {}
+    if include_market_prices and client is None:
         async with HyperliquidClient(resolved_settings) as hyperliquid_client:
-            return await get_paper_trading_summary(
-                session,
-                settings=resolved_settings,
-                recent_fill_limit=recent_fill_limit,
-                closed_trade_limit=closed_trade_limit,
+            market_prices = await load_open_position_market_prices(
                 client=hyperliquid_client,
+                positions=positions,
+                price_cache=SUMMARY_MARKET_PRICE_CACHE,
             )
+    elif include_market_prices and client is not None:
+        market_prices = await load_open_position_market_prices(
+            client=client,
+            positions=positions,
+            price_cache=SUMMARY_MARKET_PRICE_CACHE,
+        )
 
     updated_at = datetime.now(UTC)
-    market_prices = await load_open_position_market_prices(
-        client=client,
-        positions=positions,
-    )
     position_rows = [
         paper_position_read(
             position,
@@ -365,31 +376,45 @@ async def load_open_position_market_prices(
     *,
     client: HyperliquidClient,
     positions: list[PaperPosition],
+    price_cache: MarketPriceCache | None = None,
+    max_age_seconds: float = 15.0,
 ) -> dict[str, Decimal]:
     coins = {position.coin for position in positions if position.coin}
     if not coins:
         return {}
+
+    market_prices: dict[str, Decimal] = {}
+    missing_coins = set(coins)
+    if price_cache is not None:
+        cached = await price_cache.get_many(coins, max_age_seconds=max_age_seconds)
+        market_prices.update(cached.prices)
+        missing_coins = cached.missing_coins
+        if not missing_coins:
+            return market_prices
 
     try:
         mids = await client.all_mids()
     except Exception as exc:
         logger.warning("paper summary allMids fetch failed error=%s", exc)
         mids = {}
+    if price_cache is not None:
+        await price_cache.update_mids(mids)
 
-    market_prices: dict[str, Decimal] = {}
-    for coin in coins:
+    for coin in missing_coins:
         price = resolve_coin_decimal(mids, coin)
         if price is not None and price > ZERO:
             market_prices[coin] = price
 
     missing_dexes = {
         dex_from_coin(coin)
-        for coin in coins
+        for coin in missing_coins
         if coin not in market_prices and dex_from_coin(coin)
     }
     for dex in sorted(missing_dexes):
         dex_prices = await load_dex_market_prices(client=client, dex=dex)
-        for coin in coins:
+        if price_cache is not None:
+            await price_cache.update_mids(dex_prices, dex=dex)
+        for coin in missing_coins:
             if coin in market_prices or dex_from_coin(coin) != dex:
                 continue
             price = resolve_coin_decimal(dex_prices, coin)
@@ -874,6 +899,31 @@ def paper_allocation_reads(
                 ),
                 "updated_at": allocation.updated_at,
             }
+        )
+    return rows
+
+
+def paper_source_allocations_from_copy_rows(
+    *,
+    allocations: list[PaperCopyAllocation],
+    source_labels: dict[str, str],
+) -> dict[str, PaperSourceAllocation]:
+    rows: dict[str, PaperSourceAllocation] = {}
+    for allocation in sorted(allocations, key=lambda row: (row.rank, row.account_key)):
+        source_wallet = allocation.source_wallet.lower()
+        existing = rows.get(source_wallet)
+        if existing is not None and (existing.active or not allocation.active):
+            continue
+        rows[source_wallet] = PaperSourceAllocation(
+            source_wallet=source_wallet,
+            source_label=source_labels.get(source_wallet),
+            rank=allocation.rank,
+            pool_rank=allocation.rank,
+            score=allocation.score,
+            allocation_pct=allocation.allocation_pct,
+            active=allocation.active,
+            has_realtime_slot=allocation.active,
+            status_reason="copy_candidate" if allocation.active else "existing_exposure_only",
         )
     return rows
 

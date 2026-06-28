@@ -258,6 +258,10 @@ What it does:
 
 - Shows table storage and per-index storage, scan counts, tuples read, tuples
   fetched, and primary or unique flags.
+- Uses a fast fill summary by default so the dashboard does not scan all
+  `wallet_fills` rows on every navigation. Add `exact_fill_stats=true` to
+  `GET /database/stats` when exact fill counts and snapshot/realtime split are
+  needed.
 - Compacts old `wallet_fills.raw_json` payloads to the current configured field
   set used by new imports.
 - Runs manual fill retention cleanup with dry-run by default.
@@ -578,6 +582,8 @@ Query parameters:
 
 - `recent_fill_limit`, default 100, max 1000
 - `closed_trade_limit`, default 100, max 1000
+- `include_market_prices`, default true
+- `refresh_allocations`, default false
 
 Dashboard page:
 
