@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -82,6 +82,25 @@ def test_apply_live_order_result_updates_submitted_wire_values() -> None:
     assert order.filled_size == Decimal("0.16")
     assert order.filled_notional_usd == Decimal("10.2288")
     assert order.status == "filled"
+
+
+@pytest.mark.asyncio
+async def test_live_fill_reconciliation_start_time_uses_forced_lookback() -> None:
+    class UnexpectedSessionRead:
+        async def scalar(self, _statement: object) -> object:
+            raise AssertionError("Forced lookback should not read latest fill state.")
+
+    now = datetime(2026, 6, 28, 12, 0, tzinfo=UTC)
+
+    start_time_ms = await live_trading_service.live_fill_reconciliation_start_time_ms(
+        UnexpectedSessionRead(),
+        account_key="live_test",
+        settings=Settings(),
+        now=now,
+        lookback_minutes=4320,
+    )
+
+    assert start_time_ms == int((now - timedelta(minutes=4320)).timestamp() * 1000)
 
 
 def test_retryable_live_order_submit_failure_matches_market_metadata_error() -> None:
@@ -228,6 +247,81 @@ def test_live_closed_trades_from_fills_groups_complete_trade() -> None:
     assert trade.close_fill_count == 2
     assert trade.opened_at == opened_at
     assert trade.closed_at == datetime(2026, 1, 1, 10, 15, tzinfo=UTC)
+
+
+def test_live_closed_trades_from_fills_includes_exchange_trade() -> None:
+    opened_at = datetime(2026, 1, 1, 10, 0, tzinfo=UTC)
+    fills = [
+        live_fill(
+            action="open",
+            filled_at=opened_at,
+            fee_usd=Decimal("0.004"),
+            notional_usd=Decimal("31.103"),
+            price=Decimal("1628.7"),
+            realized_pnl_usd=Decimal("0"),
+            sequence_index=0,
+            size=Decimal("0.0191"),
+            source_wallet="__exchange__",
+            coin="ETH",
+            side="short",
+        ),
+        live_fill(
+            action="close",
+            filled_at=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
+            fee_usd=Decimal("0.014022"),
+            notional_usd=Decimal("31.16146"),
+            price=Decimal("1581.8"),
+            realized_pnl_usd=Decimal("0.925112"),
+            sequence_index=1,
+            size=Decimal("0.0197"),
+            source_wallet="__exchange__",
+            coin="ETH",
+            side="short",
+        ),
+    ]
+
+    trades = live_closed_trades_from_fills(fills)
+
+    assert len(trades) == 1
+    assert trades[0].coin == "ETH"
+    assert trades[0].source_wallet == "__exchange__"
+
+
+def test_live_closed_trades_from_fills_includes_exchange_close_only_fill() -> None:
+    closed_at = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    fills = [
+        live_fill(
+            action="close",
+            filled_at=closed_at,
+            fee_usd=Decimal("0.014022"),
+            notional_usd=Decimal("31.16146"),
+            price=Decimal("1581.8"),
+            realized_pnl_usd=Decimal("0.925112"),
+            sequence_index=1,
+            size=Decimal("0.0197"),
+            source_wallet="__exchange__",
+            coin="ETH",
+            side="short",
+        ),
+    ]
+
+    trades = live_closed_trades_from_fills(fills)
+
+    assert len(trades) == 1
+    trade = trades[0]
+    assert trade.source_wallet == "__exchange__"
+    assert trade.source_label == "Exchange position"
+    assert trade.coin == "ETH"
+    assert trade.side == "short"
+    assert trade.entry_price is not None
+    assert trade.entry_price == Decimal("1628.76")
+    assert trade.exit_price == Decimal("1581.8")
+    assert trade.realized_pnl_usd == Decimal("0.925112")
+    assert trade.net_pnl_usd == Decimal("0.911090")
+    assert trade.open_fill_count == 0
+    assert trade.close_fill_count == 1
+    assert trade.opened_at == closed_at
+    assert trade.closed_at == closed_at
 
 
 def test_live_closed_trades_from_fills_skips_incomplete_close_only_fill() -> None:
@@ -752,19 +846,22 @@ def live_fill(
     realized_pnl_usd: Decimal,
     sequence_index: int,
     size: Decimal,
+    source_wallet: str = "0xsource",
+    coin: str = "HYPE",
+    side: str = "long",
 ) -> TradingFill:
     return TradingFill(
         id=uuid4(),
         order_id=None,
         account_key="live_test",
         account_type="live",
-        source_wallet="0xsource",
+        source_wallet=source_wallet,
         source_fill_id=f"source-fill-{sequence_index}",
         sequence_index=sequence_index,
         exchange_fill_id=f"exchange-fill-{sequence_index}",
-        coin="HYPE",
+        coin=coin,
         action=action,
-        side="long",
+        side=side,
         price=price,
         size=size,
         notional_usd=notional_usd,

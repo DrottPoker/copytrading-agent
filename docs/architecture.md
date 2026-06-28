@@ -880,8 +880,11 @@ is still used as the order availability guard before submitting new live orders.
 Source rank, pool rank, score, and labels are resolved from the trading API source metadata
 and merged with paper summary metadata, so live-only fills and orders do not lose
 pool context. The trading API reconstructs live closed trades from stored live
-fills by grouping open and close executions into complete trade windows;
-individual reduce and close fills remain in Recent Execution Activity. Live
+fills by grouping open and close executions into complete trade windows; manual
+exchange position closes are included too, and close-only exchange fills use
+Hyperliquid realized PnL to estimate the entry price when no local open fill is
+available. Individual reduce and close fills remain in Recent Execution
+Activity. Live
 exchange position rows use reconciled Hyperliquid position payloads for mark
 price, current notional, unrealized PnL, and ROE. Source-attributed live
 position rows are refreshed from the matching exchange mark on reconciliation,
@@ -893,8 +896,13 @@ the reconciled exchange size. Live position rows can submit an individual
 reduce-only close order. If that manual close submit returns an uncertain
 post-submit error, the backend immediately reconciles the account and treats
 the request as successful when the target position is closed, reduced, or the
-order is found accepted by exchange state. Paginated history sections show 10
+order is found accepted by exchange state. Successful manual close submissions
+also reconcile immediately so the exchange fill and closed trade row can show
+up without waiting for the next worker loop. Paginated history sections show 10
 rows per page in both modes.
+Manual reconciliation can pass a bounded `lookback_minutes` query parameter to
+force a historical live fill backfill when the normal latest-fill overlap would
+start too late.
 Account reset actions restore the configured starting capital and clear
 account-level realized PnL and fee counters, but they do not delete open paper
 positions, copied fills, or closed trade history.

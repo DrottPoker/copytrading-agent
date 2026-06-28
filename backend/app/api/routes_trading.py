@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -672,6 +672,7 @@ async def reconcile_live_account_route(
     account_key: str,
     session: Annotated[AsyncSession, Depends(db_session)],
     settings: Annotated[Settings, Depends(get_settings)],
+    lookback_minutes: Annotated[int | None, Query(ge=1, le=10080)] = None,
 ) -> LiveReconciliationResponse:
     try:
         account = await load_live_account_for_update(session, account_key=account_key)
@@ -679,6 +680,7 @@ async def reconcile_live_account_route(
             session,
             account=account,
             settings=settings,
+            lookback_minutes=lookback_minutes,
         )
         await session.commit()
         return LiveReconciliationResponse.model_validate(result)

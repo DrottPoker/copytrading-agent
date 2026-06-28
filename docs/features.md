@@ -754,6 +754,10 @@ What it does:
   row semantics in both modes, so filled, skipped, rejected, and failed attempts
   are visible without mixing paper and live rows. Individual live reduce and
   close fills stay in Recent Execution Activity.
+- Closed live trade history includes copied source trades and manual exchange
+  position closes. If only an exchange close fill is available locally, the
+  backend shows a close-only row and estimates the entry price from Hyperliquid
+  realized PnL.
 - Copy source monitor slots and source eligibility are shared across paper and
   live execution, but each mode renders its own exposure, PnL, activity, and
   execution status. A retained source remains retained in live mode unless the
@@ -763,7 +767,9 @@ What it does:
 - Live open position rows include reconciled current notional, mark price,
   unrealized PnL, and ROE when Hyperliquid supplies the fields. They also expose
   an individual Close action that submits a reduce-only live close order for
-  that position.
+  that position. Successful manual closes immediately reconcile the live account
+  so the exchange fill and closed trade row can appear without waiting for the
+  next worker loop.
 - The Accounts page filters account data to one selected paper or live account.
   It keeps the last selected account in browser storage and falls back to the
   first synced account. For paper accounts it shows account KPIs, balance and
@@ -773,7 +779,8 @@ What it does:
   wallet routing, and vault routing.
   The live Reconciled card includes a manual refresh icon that posts to
   `POST /trading/accounts/{account_key}/reconcile` and refreshes the selected
-  account snapshot.
+  account snapshot. Operators can pass `lookback_minutes` to backfill older
+  live fills when a previous reconciliation window missed exchange history.
 - The Accounts page can create new paper and live accounts from the dashboard.
   Paper accounts choose a USD starting balance. Live accounts choose a wallet
   name, optional wallet address, and optional vault address. Empty wallet
@@ -1002,6 +1009,7 @@ Live trading API:
 - `POST /trading/accounts/{account_key}/stop`
 - `POST /trading/accounts/{account_key}/close-all-and-stop`
 - `POST /trading/accounts/{account_key}/reconcile`
+  Optional query parameter: `lookback_minutes`.
 - `POST /trading/positions/{position_id}/close`
 - `POST /trading/testnet/orders`
 

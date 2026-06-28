@@ -616,13 +616,21 @@ async def close_live_account_position(
         )
         try:
             live_client = trading_client or HyperliquidLiveTradingClient(settings=settings)
-            return await submit_live_trade_intent(
+            result = await submit_live_trade_intent(
                 session,
                 account=account,
                 intent=intent,
                 settings=settings,
                 client=live_client,
             )
+            if result.submitted:
+                await reconcile_live_trading_account(
+                    session,
+                    account=account,
+                    settings=settings,
+                    info_client=client,
+                )
+            return result
         except LiveOrderSubmitError as exc:
             recovered = await recover_manual_live_close_after_submit_error(
                 session,
@@ -1098,6 +1106,7 @@ async def reconcile_live_trading_account(
     account: TradingAccount,
     settings: Settings,
     info_client: HyperliquidClient | None = None,
+    lookback_minutes: int | None = None,
 ) -> LiveReconciliationResult:
     if account.account_type != "live":
         raise LiveReconciliationError("Only live accounts can be reconciled.")
@@ -1120,6 +1129,7 @@ async def reconcile_live_trading_account(
             account_key=account.key,
             settings=settings,
             now=reconciled_at,
+            lookback_minutes=lookback_minutes,
         )
         fills = await fetch_live_fills_by_time(
             client,
@@ -1428,7 +1438,6 @@ async def load_live_closed_trades(
         .where(
             TradingFill.account_type == "live",
             TradingFill.source_wallet != "",
-            TradingFill.source_wallet != LIVE_EXCHANGE_SOURCE,
         )
         .order_by(TradingFill.filled_at.desc(), TradingFill.created_at.desc())
         .limit(fill_scan_limit)
@@ -1445,8 +1454,6 @@ def live_closed_trades_from_fills(
     open_trades: dict[tuple[str, str, str, str], LiveTradeAccumulator] = {}
     closed_trades: list[LiveClosedTrade] = []
     for fill in sorted(fills, key=live_fill_chronology_key):
-        if fill.source_wallet == LIVE_EXCHANGE_SOURCE:
-            continue
         key = live_fill_trade_key(fill)
         if live_fill_is_open(fill):
             trade = open_trades.get(key) or live_trade_accumulator(fill)
@@ -1463,6 +1470,9 @@ def live_closed_trades_from_fills(
             continue
         trade = open_trades.get(key)
         if trade is None:
+            close_only_trade = live_exchange_close_only_trade(fill)
+            if close_only_trade is not None:
+                closed_trades.append(close_only_trade)
             continue
         fill_size = decimal_or_none(fill.size) or ZERO
         close_size = min(fill_size, trade.remaining_size)
@@ -1481,6 +1491,69 @@ def live_closed_trades_from_fills(
             closed_trades.append(finish_live_closed_trade(trade))
             del open_trades[key]
     return sorted(closed_trades, key=lambda trade: trade.closed_at, reverse=True)[:limit]
+
+
+def live_exchange_close_only_trade(fill: TradingFill) -> LiveClosedTrade | None:
+    if fill.source_wallet != LIVE_EXCHANGE_SOURCE or not live_fill_is_close(fill):
+        return None
+    fill_size = decimal_or_none(fill.size) or ZERO
+    if fill_size <= ZERO:
+        return None
+    exit_notional_usd = decimal_or_none(fill.notional_usd) or ZERO
+    realized_pnl_usd = decimal_or_none(fill.realized_pnl_usd) or ZERO
+    fee_usd = decimal_or_none(fill.fee_usd) or ZERO
+    exit_price = (
+        exit_notional_usd / fill_size
+        if exit_notional_usd > ZERO
+        else decimal_or_none(fill.price)
+    )
+    entry_price = live_close_only_entry_price(
+        side=fill.side,
+        exit_price=exit_price,
+        realized_pnl_usd=realized_pnl_usd,
+        size=fill_size,
+    )
+    entry_notional_usd = entry_price * fill_size if entry_price is not None else exit_notional_usd
+    return LiveClosedTrade(
+        id=f"live-closed:{fill.account_key}:{fill.source_wallet}:{fill.coin}:{fill.side}:{fill.id}",
+        account_key=fill.account_key,
+        source_wallet=fill.source_wallet,
+        source_label="Exchange position",
+        coin=fill.coin,
+        side=fill.side,
+        entry_price=entry_price,
+        exit_price=exit_price,
+        size=fill_size,
+        entry_notional_usd=entry_notional_usd,
+        exit_notional_usd=exit_notional_usd,
+        fee_usd=fee_usd,
+        realized_pnl_usd=realized_pnl_usd,
+        net_pnl_usd=realized_pnl_usd - fee_usd,
+        opened_at=fill.filled_at,
+        closed_at=fill.filled_at,
+        duration_ms=0,
+        open_fill_count=0,
+        close_fill_count=1,
+    )
+
+
+def live_close_only_entry_price(
+    *,
+    side: str,
+    exit_price: Decimal | None,
+    realized_pnl_usd: Decimal,
+    size: Decimal,
+) -> Decimal | None:
+    if exit_price is None or exit_price <= ZERO or size <= ZERO:
+        return None
+    pnl_per_unit = realized_pnl_usd / size
+    if side == "short":
+        entry_price = exit_price + pnl_per_unit
+    elif side == "long":
+        entry_price = exit_price - pnl_per_unit
+    else:
+        return None
+    return entry_price if entry_price > ZERO else None
 
 
 def live_trade_accumulator(fill: TradingFill) -> LiveTradeAccumulator:
@@ -1966,7 +2039,11 @@ async def live_fill_reconciliation_start_time_ms(
     account_key: str,
     settings: Settings,
     now: datetime,
+    lookback_minutes: int | None = None,
 ) -> int:
+    if lookback_minutes is not None:
+        start_at = now - timedelta(minutes=max(lookback_minutes, 1))
+        return int(start_at.timestamp() * 1000)
     latest_fill_at = await session.scalar(
         select(func.max(TradingFill.filled_at)).where(
             TradingFill.account_key == account_key,

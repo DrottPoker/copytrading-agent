@@ -469,6 +469,10 @@ Sizing policy:
   row semantics in both modes, so filled, skipped, rejected, and failed attempts
   are visible without mixing paper and live rows. Individual live reduce and
   close fills stay in Recent Execution Activity.
+- Closed live trade history includes copied source trades and manual exchange
+  position closes. If only an exchange close fill is available locally, the
+  backend shows a close-only row and estimates the entry price from Hyperliquid
+  realized PnL.
 - Copy source monitor slots and source eligibility are shared across paper and
   live execution, but each mode renders its own exposure, PnL, activity, and
   execution status. A retained source remains retained in live mode unless the
@@ -482,7 +486,8 @@ Sizing policy:
   and shows live account equity, balance, reconciliation, and routing details.
   The live Reconciled card includes a manual refresh icon that posts to
   `POST /trading/accounts/{account_key}/reconcile` and refreshes the selected
-  account snapshot.
+  account snapshot. Operators can pass `lookback_minutes` to backfill older
+  live fills when a previous reconciliation window missed exchange history.
 - The Accounts page can create dashboard-managed paper accounts with a selected
   USD starting balance and live accounts with a wallet name, optional wallet
   address, and optional vault address. Empty wallet address fields use and save
@@ -542,6 +547,9 @@ Sizing policy:
 - Open position rows include a manual close action. Manual closes use the same
   live mark, adverse slippage, and fee model as automated paper closes, then
   record a normal `close` row in `paper_copy_fills`.
+- Successful manual live closes immediately reconcile the live account so the
+  exchange fill and closed trade row can appear without waiting for the next
+  worker loop.
 - Copy source rows with open exposure include a close-all action. It closes all
   open paper positions for that source wallet across paper accounts using the
   same manual close execution model.
@@ -785,6 +793,8 @@ Enabled and exit-only live accounts reconcile on
 `live_trading_reconciliation_interval_seconds`. Live copy also refreshes a stale
 account snapshot before sizing a new fill, so deposits are picked up before copy
 order sizing if the background loop is late.
+Manual reconciliation accepts `lookback_minutes` for historical live fill
+backfills, for example `POST /trading/accounts/{account_key}/reconcile?lookback_minutes=4320`.
 
 Source wallets can also be unified. When their per-dex `clearinghouseState`
 reports zero perp equity, paper and live copy check `userAbstraction` and use
