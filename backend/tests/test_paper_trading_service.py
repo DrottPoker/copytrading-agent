@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
 from app.core.config import Settings
 from app.services.paper_trading_service import (
@@ -9,6 +10,7 @@ from app.services.paper_trading_service import (
     SourceFillPart,
     build_execution_context,
     load_source_account_state,
+    open_copy_source_select,
     source_fill_age_exceeds_entry_limit,
 )
 from app.services.trading_core import (
@@ -153,6 +155,20 @@ def test_trade_is_buy_matches_side_and_reduce_only() -> None:
     assert trade_is_buy(side="long", reduce_only=True) is False
     assert trade_is_buy(side="short", reduce_only=False) is False
     assert trade_is_buy(side="short", reduce_only=True) is True
+
+
+def test_open_copy_source_select_includes_live_source_positions() -> None:
+    compiled = str(
+        open_copy_source_select().compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+
+    assert "paper_positions" in compiled
+    assert "trading_positions" in compiled
+    assert "trading_positions.account_type = 'live'" in compiled
+    assert "trading_positions.source_wallet != '__exchange__'" in compiled
 
 
 def test_execution_context_uses_adverse_drift_for_long_entries() -> None:

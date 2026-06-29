@@ -8,7 +8,7 @@ from sqlalchemy import case, desc, func, select
 
 from app.core.config import get_settings
 from app.core.logging import configure_logging
-from app.db.models import PaperPosition, TradingAccount, WalletScore, WatchedWallet
+from app.db.models import PaperPosition, TradingAccount, TradingPosition, WalletScore, WatchedWallet
 from app.db.session import get_sessionmaker
 from app.integrations.hyperliquid_ws_client import (
     HyperliquidWebSocketError,
@@ -20,6 +20,7 @@ from app.services.discovery_service import run_discovery_import
 from app.services.job_lock_service import JobLockAlreadyHeldError, job_lock
 from app.services.live_copy_service import process_live_copy_fills, process_live_copy_recovery
 from app.services.live_trading_service import (
+    LIVE_EXCHANGE_SOURCE,
     LiveReconciliationResult,
     reconcile_live_trading_account,
 )
@@ -517,14 +518,24 @@ async def load_realtime_wallets(
         else_=4,
     )
     async with sessionmaker() as session:
+        paper_sources = select(
+            func.lower(PaperPosition.source_wallet).label("source_wallet")
+        ).where(PaperPosition.source_wallet != "")
+        live_sources = select(
+            func.lower(TradingPosition.source_wallet).label("source_wallet")
+        ).where(
+            TradingPosition.account_type == "live",
+            TradingPosition.source_wallet != "",
+            TradingPosition.source_wallet != LIVE_EXCHANGE_SOURCE,
+        )
+        open_sources = paper_sources.union_all(live_sources).subquery("open_copy_sources")
         retained_result = await session.execute(
-            select(PaperPosition.source_wallet)
-            .outerjoin(WalletScore, WalletScore.wallet_address == PaperPosition.source_wallet)
-            .where(PaperPosition.source_wallet != "")
-            .group_by(PaperPosition.source_wallet)
+            select(open_sources.c.source_wallet)
+            .outerjoin(WalletScore, WalletScore.wallet_address == open_sources.c.source_wallet)
+            .group_by(open_sources.c.source_wallet)
             .order_by(
                 func.max(WalletScore.score).desc().nulls_last(),
-                PaperPosition.source_wallet.asc(),
+                open_sources.c.source_wallet.asc(),
             )
             .limit(max_wallets)
         )

@@ -1993,11 +1993,11 @@ function buildLiveMonitoredSources(
   const livePositionsBySource = groupLivePositionsBySource(livePositions);
   const liveFillsBySource = groupLiveFillsBySource(tradingAccounts.recentFills);
   const liveOrdersBySource = groupLiveOrdersBySource(tradingAccounts.recentOrders);
-  const liveReadySources = Array.from(allocationsBySource.entries())
-    .filter(([, allocations]) => liveSourceCanOpenNewPositions(allocations, liveCopyReady))
+  const liveVisibleAllocationSources = Array.from(allocationsBySource.entries())
+    .filter(([, allocations]) => liveAllocationSourceVisible(allocations, liveCopyReady))
     .map(([source]) => source);
   const sources = new Set([
-    ...liveReadySources,
+    ...liveVisibleAllocationSources,
     ...livePositionsBySource.keys(),
   ]);
 
@@ -2426,6 +2426,21 @@ function liveSourceCanOpenNewPositions(
     (allocation) =>
       allocation.hasRealtimeSlot &&
       allocation.sourceStatusReason === "paper_account_disabled",
+  );
+}
+
+function liveAllocationSourceVisible(
+  allocations: PaperCopyAllocation[],
+  liveCopyReady: boolean,
+) {
+  if (!liveCopyReady) {
+    return false;
+  }
+  return allocations.some(
+    (allocation) =>
+      allocation.canOpenNewPositions ||
+      allocation.hasRealtimeSlot ||
+      allocation.sourceStatus === "waiting_for_slot",
   );
 }
 

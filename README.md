@@ -353,8 +353,9 @@ Notes:
 - Non-snapshot realtime fills for selected scored wallets feed paper copy and
   live copy when live execution is enabled.
 - A source wallet that falls out of the top 10 stays monitored while any paper
-  account still has an open position from that source. When those positions are
-  closed, the slot is released to the next highest eligible wallet.
+  account or live source-attributed account still has an open position from that
+  source. When those positions are closed, the slot is released to the next
+  highest eligible wallet.
 - Sources with open paper positions are immune to pruning until every paper
   position for that source is closed.
 

@@ -601,14 +601,16 @@ What it does:
 - Builds allocations from the top 10 positive wallet scores in the enabled wallet pool.
 - When current drawdown scoring is enabled, allocation only uses wallets whose
   latest score has `current_drawdown_status = "ok"`.
-- Keeps source wallets with open paper positions subscribed until all copied
-  positions from that source are closed, even if the source falls out of the top 10.
+- Keeps source wallets with open paper or live source-attributed positions
+  subscribed until all copied positions from that source are closed, even if the
+  source falls out of the top 10.
 - Makes newly promoted top 10 wallets wait when all realtime slots are occupied
   by retained open-position sources.
-- Allocation refresh follows the realtime slot model: open paper-position
-  sources reserve slots first, then remaining slots go to highest scored
-  candidates. Top candidates without a slot are marked as waiting and cannot
-  open new paper positions until a realtime slot is available.
+- Allocation refresh follows the realtime slot model: open paper-position and
+  live source-attributed position sources reserve slots first, then remaining
+  slots go to highest scored candidates. Top candidates without a slot are
+  marked as waiting and cannot open new copy positions until a realtime slot is
+  available.
 - Gives all top 10 ranks a 20% account pocket each.
 - Caps total open copied margin at 80% of each paper account equity.
 - Converts new non-snapshot realtime source fills into simulated paper fills.

@@ -117,9 +117,9 @@ updates do not overwrite each other when API and worker activity overlap.
 Trading worker responsibilities:
 
 - Refresh paper allocations and select up to `max_realtime_wallets` wallets from
-  that same allocation result. Source wallets with open paper positions are
-  retained first, then remaining slots are filled by the highest scored eligible
-  copy candidates.
+  that same allocation result. Source wallets with open paper positions or live
+  source-attributed positions are retained first, then remaining slots are
+  filled by the highest scored eligible copy candidates.
 - Check the desired realtime subscription list every
   `realtime_subscription_refresh_seconds`; keep the current WebSocket open when
   the list is unchanged and reconnect only when selected wallets change.
@@ -153,8 +153,9 @@ The trading worker does not maintain a separate realtime wallet ranking for
 paper copy. The paper allocation refresh is the source of truth for monitored
 wallets, dashboard allocation state, and realtime subscription slots. If a
 monitored wallet falls out of the top 10 while paper positions are still open,
-it keeps management priority until those positions are closed. New top 10
-wallets wait until a slot is available.
+or while live source-attributed positions are still open, it keeps management
+priority until those positions are closed. New top 10 wallets wait until a slot
+is available.
 
 ## Frontend
 

@@ -31,6 +31,7 @@ from app.schemas.paper_trading import (
 )
 from app.schemas.wallet import normalize_wallet_address
 from app.services.live_trading_service import (
+    LIVE_EXCHANGE_SOURCE,
     live_spot_usdc_available,
     live_spot_usdc_total,
     user_abstraction_is_unified,
@@ -2076,11 +2077,8 @@ async def refresh_paper_copy_allocations(
 
 
 async def ensure_open_paper_sources_watched(session: AsyncSession) -> None:
-    open_source_query = (
-        select(PaperPosition.source_wallet)
-        .where(PaperPosition.source_wallet != "")
-        .distinct()
-    )
+    open_sources = open_copy_source_select().subquery("open_copy_sources")
+    open_source_query = select(open_sources.c.source_wallet).distinct()
     insert_stmt = insert(WatchedWallet).from_select(
         [
             "address",
@@ -2091,17 +2089,16 @@ async def ensure_open_paper_sources_watched(session: AsyncSession) -> None:
             "notes",
         ],
         select(
-            PaperPosition.source_wallet,
+            open_sources.c.source_wallet,
             literal(True),
             literal(False),
             literal(False),
             literal("pool"),
-            literal("Restored automatically because paper positions are still open."),
+            literal("Restored automatically because copy positions are still open."),
         )
-        .where(PaperPosition.source_wallet != "")
         .where(
             ~select(WatchedWallet.id)
-            .where(WatchedWallet.address == PaperPosition.source_wallet)
+            .where(WatchedWallet.address == open_sources.c.source_wallet)
             .exists()
         )
         .distinct(),
@@ -2115,6 +2112,20 @@ async def ensure_open_paper_sources_watched(session: AsyncSession) -> None:
         )
         .values(enabled=True, polling_tier="pool")
     )
+
+
+def open_copy_source_select() -> Any:
+    paper_sources = select(
+        func.lower(PaperPosition.source_wallet).label("source_wallet")
+    ).where(PaperPosition.source_wallet != "")
+    live_sources = select(
+        func.lower(TradingPosition.source_wallet).label("source_wallet")
+    ).where(
+        TradingPosition.account_type == "live",
+        TradingPosition.source_wallet != "",
+        TradingPosition.source_wallet != LIVE_EXCHANGE_SOURCE,
+    )
+    return paper_sources.union_all(live_sources)
 
 
 async def sync_paper_trading_accounts(
@@ -2442,9 +2453,10 @@ async def load_paper_source_allocations(
         .limit(settings.trading_copy_top_wallet_count)
     )
     candidate_rows = list(candidate_result.mappings().all())
+    open_sources = open_copy_source_select().subquery("open_copy_sources")
     open_source_result = await session.execute(
         select(
-            PaperPosition.source_wallet,
+            open_sources.c.source_wallet,
             WatchedWallet.label.label("source_label"),
             WalletScore.score.label("score"),
             WalletScore.current_drawdown_status.label("current_drawdown_status"),
@@ -2453,16 +2465,15 @@ async def load_paper_source_allocations(
             ranked_pool.c.pool_rank.label("pool_rank"),
             func.max(PaperCopyAllocation.allocation_pct).label("allocation_pct"),
         )
-        .outerjoin(WatchedWallet, WatchedWallet.address == PaperPosition.source_wallet)
-        .outerjoin(WalletScore, WalletScore.wallet_address == PaperPosition.source_wallet)
-        .outerjoin(ranked_pool, ranked_pool.c.address == PaperPosition.source_wallet)
+        .outerjoin(WatchedWallet, WatchedWallet.address == open_sources.c.source_wallet)
+        .outerjoin(WalletScore, WalletScore.wallet_address == open_sources.c.source_wallet)
+        .outerjoin(ranked_pool, ranked_pool.c.address == open_sources.c.source_wallet)
         .outerjoin(
             PaperCopyAllocation,
-            PaperCopyAllocation.source_wallet == PaperPosition.source_wallet,
+            PaperCopyAllocation.source_wallet == open_sources.c.source_wallet,
         )
-        .where(PaperPosition.source_wallet != "")
         .group_by(
-            PaperPosition.source_wallet,
+            open_sources.c.source_wallet,
             WatchedWallet.label,
             WalletScore.score,
             WalletScore.current_drawdown_status,
@@ -2473,7 +2484,7 @@ async def load_paper_source_allocations(
         .order_by(
             ranked_pool.c.pool_rank.asc().nulls_last(),
             WalletScore.score.desc().nulls_last(),
-            PaperPosition.source_wallet.asc(),
+            open_sources.c.source_wallet.asc(),
         )
     )
     open_source_rows = list(open_source_result.mappings().all())
