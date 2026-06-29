@@ -2008,9 +2008,11 @@ function buildLiveMonitoredSources(
       const liveFills = liveFillsBySource.get(source) ?? [];
       const liveOrders = liveOrdersBySource.get(source) ?? [];
       const metadata = metadataBySource.get(source);
-      const hasRealtimeSlot = allocations.some((allocation) => allocation.hasRealtimeSlot);
       const canOpenNewPositions = liveSourceCanOpenNewPositions(allocations, liveCopyReady);
       const openPositionCount = liveOpenPositions.length;
+      const hasRealtimeSlot =
+        allocations.some((allocation) => allocation.hasRealtimeSlot) ||
+        (allocations.length === 0 && openPositionCount > 0);
       const sourceStatus = resolveLiveSourceStatus({
         canOpenNewPositions,
         hasRealtimeSlot,
@@ -2077,6 +2079,8 @@ function buildLiveMonitoredSources(
     .filter(
       (source) =>
         source.canOpenNewPositions ||
+        source.hasRealtimeSlot ||
+        source.sourceStatus === "waiting_for_slot" ||
         source.openPositionCount > 0 ||
         source.recentLiveFillCount > 0 ||
         source.recentLiveOrderCount > 0,

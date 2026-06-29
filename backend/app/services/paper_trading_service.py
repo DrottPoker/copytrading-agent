@@ -225,15 +225,20 @@ async def get_paper_trading_summary(
             settings=resolved_settings,
         )
         await session.commit()
+    else:
+        source_allocations = {
+            allocation.source_wallet.lower(): allocation
+            for allocation in await load_paper_source_allocations(
+                session,
+                settings=resolved_settings,
+            )
+        }
 
     accounts_result = await session.execute(
         select(PaperTradingAccount).order_by(PaperTradingAccount.key.asc())
     )
-    open_position_sources = (
-        select(PaperPosition.source_wallet)
-        .where(PaperPosition.source_wallet != "")
-        .distinct()
-    )
+    open_sources = open_copy_source_select().subquery("summary_open_copy_sources")
+    open_position_sources = select(open_sources.c.source_wallet).distinct()
     allocations_result = await session.execute(
         select(PaperCopyAllocation)
         .where(
