@@ -802,6 +802,10 @@ Reduce-only dust closes are adjusted independently from the small-entry
 adjustment toggle because exits must be able to clear residual exposure.
 Recovery can retry older local `live_close_below_min_order_notional` skip rows
 so existing dust positions are not left open after this final-close check.
+If a copied source-position row is missing but the exchange still has matching
+orphan exposure, recovery can submit a reduce-only close only when source state
+is flat, the same source has historical live open fills, and no other source
+position owns that market.
 Enabled and exit-only live accounts reconcile on
 `live_trading_reconciliation_interval_seconds`. Live copy also refreshes a stale
 account snapshot before sizing a new fill, so deposits are picked up before copy

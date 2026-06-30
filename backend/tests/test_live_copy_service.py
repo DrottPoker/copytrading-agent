@@ -413,6 +413,112 @@ async def test_final_live_dust_close_submits_min_notional_order(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
+async def test_orphan_exchange_close_submits_when_source_position_is_missing(
+    monkeypatch,
+) -> None:
+    submitted_intents = []
+
+    async def fake_load_live_source_position(*_args, **kwargs):
+        if kwargs["source_wallet"] == "__exchange__":
+            return live_position(
+                source_wallet="__exchange__",
+                side="short",
+                size=Decimal("303"),
+            )
+        return None
+
+    async def fake_source_has_open_fill_history(*_args, **_kwargs):
+        return True
+
+    async def fake_any_source_position_exists(*_args, **_kwargs):
+        return False
+
+    async def fake_submit_live_copy_intent(_session, *, account, intent, settings, trading_client):
+        submitted_intents.append(intent)
+        return PaperCopyBatchResult(processed_fills=1)
+
+    monkeypatch.setattr(
+        live_copy_service,
+        "load_live_source_position",
+        fake_load_live_source_position,
+    )
+    monkeypatch.setattr(
+        live_copy_service,
+        "live_source_has_open_fill_history",
+        fake_source_has_open_fill_history,
+    )
+    monkeypatch.setattr(
+        live_copy_service,
+        "live_any_source_position_exists_for_market",
+        fake_any_source_position_exists,
+    )
+    monkeypatch.setattr(
+        live_copy_service,
+        "submit_live_copy_intent",
+        fake_submit_live_copy_intent,
+    )
+
+    result = await live_copy_service.apply_live_close_part(
+        object(),
+        account=live_account(last_reconciled_at=datetime(2026, 1, 1, tzinfo=UTC)),
+        allocation=PaperSourceAllocation(
+            source_wallet="0xsource",
+            source_label="Source",
+            rank=1,
+            pool_rank=1,
+            score=Decimal("90"),
+            allocation_pct=Decimal("0.2"),
+            active=True,
+            has_realtime_slot=True,
+            status_reason="trading",
+        ),
+        fill={
+            "externalFillId": "bio-final-close",
+            "coin": "BIO",
+            "price": "0.031077",
+            "timestampMs": 1_725_000_000_000,
+        },
+        part=SourceFillPart(
+            action="close",
+            side="short",
+            source_size=Decimal("801"),
+            source_notional_usd=Decimal("26.4"),
+            sequence_index=0,
+            close_ratio=Decimal("1"),
+            start_position=Decimal("-801"),
+        ),
+        source_account_state=PaperSourceAccountState(
+            dex="",
+            perp_equity=Decimal("1000"),
+            leverage_by_coin={"BIO": Decimal("3")},
+            positions_by_coin={},
+            skip_reason=None,
+        ),
+        source_perp_equity=Decimal("1000"),
+        source_leverages={"BIO": Decimal("3")},
+        market_prices=ExecutionMarketPrices(
+            prices={"BIO": Decimal("0.031077")},
+            sources={"BIO": "test"},
+        ),
+        settings=Settings(
+            trading_copy_min_order_notional_usd=Decimal("10"),
+            live_trading_min_order_notional_usd=Decimal("10"),
+        ),
+        trading_client=object(),
+    )
+
+    assert result.processed_fills == 1
+    assert result.skipped_fills == 0
+    assert len(submitted_intents) == 1
+    intent = submitted_intents[0]
+    assert intent.source_wallet == "0xsource"
+    assert intent.reduce_only is True
+    assert intent.size == Decimal("303")
+    assert intent.notional_usd == Decimal("10")
+    assert intent.price_source == "orphan_exchange_close"
+
+
+@pytest.mark.asyncio
 async def test_submit_live_copy_intent_reports_submit_error(monkeypatch) -> None:
     async def fake_submit_live_trade_intent(*args, **kwargs):
         raise LiveOrderSubmitError("Rejected by exchange.")

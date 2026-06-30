@@ -12,6 +12,7 @@ from app.core.config import Settings, get_settings
 from app.db.models import (
     PaperCopyAllocation,
     TradingAccount,
+    TradingFill,
     TradingOrder,
     TradingPosition,
     WalletFill,
@@ -699,7 +700,33 @@ async def apply_live_close_part(
         source_wallet=allocation.source_wallet,
         coin=coin,
     )
-    if position is None or position.side != part.side:
+    if position is None:
+        orphan_result = await apply_live_orphan_exchange_close_part(
+            session,
+            account=account,
+            allocation=allocation,
+            fill=fill,
+            part=part,
+            source_account_state=source_account_state,
+            source_perp_equity=source_perp_equity,
+            source_leverages=source_leverages,
+            market_prices=market_prices,
+            settings=settings,
+            trading_client=trading_client,
+        )
+        if orphan_result is not None:
+            return orphan_result
+        source_leverage = leverage_for_fill(fill=fill, source_leverages=source_leverages)
+        return await record_live_skip(
+            session,
+            account=account,
+            allocation=allocation,
+            fill=fill,
+            part=part,
+            reason="live_matching_position_missing",
+            leverage=source_leverage,
+        )
+    if position.side != part.side:
         source_leverage = leverage_for_fill(fill=fill, source_leverages=source_leverages)
         return await record_live_skip(
             session,
@@ -843,6 +870,109 @@ async def apply_live_close_part(
         observed_price=execution_context.observed_price,
         price_drift_bps=execution_context.price_drift_bps,
         price_source=execution_context.price_source,
+        allocation_pct=allocation.allocation_pct,
+        allocation_usd=None,
+        source_perp_equity_usd=source_perp_equity if source_perp_equity > ZERO else None,
+        source_exposure_pct=None,
+        created_at=fill_datetime(fill),
+    )
+    return await submit_live_copy_intent(
+        session,
+        account=account,
+        intent=intent,
+        settings=settings,
+        trading_client=trading_client,
+    )
+
+
+async def apply_live_orphan_exchange_close_part(
+    session: AsyncSession,
+    *,
+    account: TradingAccount,
+    allocation: PaperSourceAllocation,
+    fill: dict[str, Any],
+    part: SourceFillPart,
+    source_account_state: PaperSourceAccountState | None,
+    source_perp_equity: Decimal,
+    source_leverages: dict[str, Decimal],
+    market_prices: ExecutionMarketPrices,
+    settings: Settings,
+    trading_client: HyperliquidLiveTradingClient,
+) -> PaperCopyBatchResult | None:
+    coin = str(fill.get("coin") or "")
+    if not live_source_position_is_final_close(
+        source_account_state,
+        coin=coin,
+        side=part.side,
+    ):
+        return None
+    if not await live_source_has_open_fill_history(
+        session,
+        account_key=account.key,
+        source_wallet=allocation.source_wallet,
+        coin=coin,
+        side=part.side,
+    ):
+        return None
+    if await live_any_source_position_exists_for_market(
+        session,
+        account_key=account.key,
+        coin=coin,
+        side=part.side,
+    ):
+        return None
+    exchange_position = await load_live_source_position(
+        session,
+        account_key=account.key,
+        source_wallet=LIVE_EXCHANGE_SOURCE,
+        coin=coin,
+    )
+    if exchange_position is None or exchange_position.side != part.side:
+        return None
+
+    execution_context = build_execution_context(
+        fill=fill,
+        part=part,
+        market_prices=market_prices,
+        settings=settings,
+        slippage_bps=settings.live_trading_limit_slippage_bps,
+        latency_ms=0,
+    )
+    if execution_context is None:
+        return None
+    if execution_context.price_drift_bps > settings.trading_copy_max_price_drift_bps:
+        return None
+
+    close_size = exchange_position.size
+    if close_size <= ZERO:
+        return None
+    price = execution_context.execution_price
+    notional_usd = close_size * price
+    leverage = (
+        exchange_position.leverage
+        if exchange_position.leverage > ZERO
+        else leverage_for_fill(fill=fill, source_leverages=source_leverages)
+    )
+    min_order_notional = live_min_order_notional_usd(settings)
+    order_notional_usd = max(notional_usd, min_order_notional)
+    intent = build_copy_trade_intent(
+        account_key=account.key,
+        account_type="live",
+        source_wallet=allocation.source_wallet,
+        source_fill_id=str(fill.get("externalFillId") or ""),
+        sequence_index=part.sequence_index,
+        coin=coin,
+        action=part.action,
+        side=part.side,
+        size=close_size,
+        notional_usd=order_notional_usd,
+        margin_usd=margin_from_notional(order_notional_usd, leverage),
+        leverage=leverage,
+        limit_price=price,
+        source_price=execution_context.source_price,
+        observed_price=execution_context.observed_price,
+        price_drift_bps=execution_context.price_drift_bps,
+        price_source="orphan_exchange_close",
         allocation_pct=allocation.allocation_pct,
         allocation_usd=None,
         source_perp_equity_usd=source_perp_equity if source_perp_equity > ZERO else None,
@@ -1136,6 +1266,50 @@ async def live_market_is_reserved_by_other_source(
         .limit(1)
     )
     return existing_position_id is not None
+
+
+async def live_any_source_position_exists_for_market(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    coin: str,
+    side: str,
+) -> bool:
+    existing_position_id = await session.scalar(
+        select(TradingPosition.id)
+        .where(
+            TradingPosition.account_key == account_key,
+            TradingPosition.account_type == "live",
+            TradingPosition.coin == coin,
+            TradingPosition.side == side,
+            TradingPosition.source_wallet != LIVE_EXCHANGE_SOURCE,
+        )
+        .limit(1)
+    )
+    return existing_position_id is not None
+
+
+async def live_source_has_open_fill_history(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    source_wallet: str,
+    coin: str,
+    side: str,
+) -> bool:
+    fill_id = await session.scalar(
+        select(TradingFill.id)
+        .where(
+            TradingFill.account_key == account_key,
+            TradingFill.account_type == "live",
+            TradingFill.source_wallet == source_wallet,
+            TradingFill.coin == coin,
+            TradingFill.side == side,
+            TradingFill.action.in_(("open", "add", "flip_open")),
+        )
+        .limit(1)
+    )
+    return fill_id is not None
 
 
 def live_exchange_position_conflict(

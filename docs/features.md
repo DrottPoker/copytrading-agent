@@ -967,6 +967,9 @@ What it does:
 - Retries older local `live_close_below_min_order_notional` skip rows during
   recovery so existing dust positions are not left open after the final-close
   check is available.
+- Can close orphan exchange exposure during recovery when source state is flat,
+  the same source has historical live open fills, and no other source position
+  owns that market.
 - Reserves one source per live account and market while exposure is open.
   Another source opening the same market is skipped until the market is free,
   even if it is the same side, because Hyperliquid nets exchange position and
