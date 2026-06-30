@@ -93,3 +93,91 @@ async def test_handle_websocket_message_prioritizes_live_copy(monkeypatch) -> No
 
     assert calls == ["live", "paper"]
     assert published_events == ["fill", "live_copy", "paper_copy"]
+
+
+@pytest.mark.asyncio
+async def test_handle_websocket_snapshot_prioritizes_live_recovery(monkeypatch) -> None:
+    calls: list[str] = []
+
+    async def fake_store_realtime_fills(*_args: object, **_kwargs: object) -> StoredRealtimeFills:
+        return StoredRealtimeFills(
+            wallet_address="0xsource",
+            fetched=1,
+            inserted=0,
+            duplicate=1,
+            is_snapshot=True,
+            latest_fill_time_ms=1,
+            inserted_rows=[],
+        )
+
+    async def fake_live_recovery_once(*_args: object, **_kwargs: object) -> PaperCopyBatchResult:
+        calls.append("live")
+        return PaperCopyBatchResult()
+
+    async def fake_paper_recovery_once(*_args: object, **_kwargs: object) -> PaperCopyBatchResult:
+        calls.append("paper")
+        return PaperCopyBatchResult()
+
+    async def fake_publish_event(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(monitor_worker, "store_realtime_fills", fake_store_realtime_fills)
+    monkeypatch.setattr(monitor_worker, "run_live_copy_recovery_once", fake_live_recovery_once)
+    monkeypatch.setattr(monitor_worker, "run_paper_copy_recovery_once", fake_paper_recovery_once)
+    monkeypatch.setattr(monitor_worker, "publish_event", fake_publish_event)
+
+    settings = SimpleNamespace(
+        live_trading_enabled=True,
+        live_trading_copy_enabled=True,
+        paper_trading_enabled=True,
+        paper_copy_enabled=True,
+    )
+    message: dict[str, Any] = {
+        "channel": "userFills",
+        "data": {
+            "user": "0xsource",
+            "fills": [{"coin": "HYPE", "externalFillId": "fill-1"}],
+            "isSnapshot": True,
+        },
+    }
+
+    await monitor_worker.handle_websocket_message(
+        message,
+        sessionmaker=dummy_sessionmaker,
+        redis=object(),
+        wallet_addresses=["0xsource"],
+        settings=settings,
+    )
+
+    assert calls == ["live", "paper"]
+
+
+@pytest.mark.asyncio
+async def test_startup_copy_recovery_prioritizes_live_recovery(monkeypatch) -> None:
+    calls: list[str] = []
+
+    async def fake_live_recovery_once(*_args: object, **_kwargs: object) -> PaperCopyBatchResult:
+        calls.append("live")
+        return PaperCopyBatchResult()
+
+    async def fake_paper_recovery_once(*_args: object, **_kwargs: object) -> PaperCopyBatchResult:
+        calls.append("paper")
+        return PaperCopyBatchResult()
+
+    monkeypatch.setattr(monitor_worker, "run_live_copy_recovery_once", fake_live_recovery_once)
+    monkeypatch.setattr(monitor_worker, "run_paper_copy_recovery_once", fake_paper_recovery_once)
+
+    settings = SimpleNamespace(
+        live_trading_enabled=True,
+        live_trading_copy_enabled=True,
+        paper_trading_enabled=True,
+        paper_copy_enabled=True,
+    )
+
+    await monitor_worker.run_startup_copy_recovery_once(
+        sessionmaker=dummy_sessionmaker,
+        redis=object(),
+        settings=settings,
+    )
+
+    assert calls == ["live", "paper"]

@@ -14,6 +14,7 @@ from app.services.live_trading_service import (
     apply_live_order_result,
     apply_order_status_response,
     build_testnet_live_trade_intent,
+    close_all_live_account_positions,
     create_live_trading_account,
     fetch_live_fills_by_time,
     is_retryable_live_order_submit_failure,
@@ -143,6 +144,48 @@ def test_retryable_live_order_submit_failure_matches_market_metadata_error() -> 
     assert order.raw_payload["retry"]["reason"] == (
         "market_metadata_available_after_previous_submit_failure"
     )
+
+
+def test_retryable_live_order_submit_failure_matches_below_min_close_skip() -> None:
+    order = live_order(status="failed")
+    order.action = "close"
+    order.side = "short"
+    order.is_buy = True
+    order.reduce_only = True
+    order.order_type = "skip"
+    order.error = "skip:live_close_below_min_order_notional"
+
+    assert is_retryable_live_order_submit_failure(order) is True
+
+    reset_live_order_for_retry(
+        order,
+        intent=build_testnet_live_trade_intent(
+            account=TradingAccount(
+                key="live_test",
+                account_type="live",
+                label="Live Test",
+                status="enabled",
+                network="testnet",
+            ),
+            coin="BIO",
+            side="short",
+            notional_usd=Decimal("10"),
+            limit_price=Decimal("0.031077"),
+            leverage=Decimal("3"),
+            reduce_only=True,
+            source_fill_id="fill-1",
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        ),
+    )
+
+    assert order.status == "planned"
+    assert order.error is None
+    assert order.order_type == "ioc"
+    assert order.coin == "BIO"
+    assert order.action == "close"
+    assert order.side == "short"
+    assert order.reduce_only is True
+    assert order.requested_notional_usd == Decimal("10")
 
 
 def test_retryable_live_order_submit_failure_ignores_exchange_rejection() -> None:
@@ -574,6 +617,71 @@ def test_manual_live_close_recovery_ignores_unchanged_position() -> None:
     )
 
     assert status is None
+
+
+@pytest.mark.asyncio
+async def test_close_all_keeps_account_exit_only_when_positions_remain(monkeypatch) -> None:
+    account = TradingAccount(
+        key="live_test",
+        account_type="live",
+        label="Live Test",
+        status="enabled",
+        network="mainnet",
+        realized_pnl_usd=Decimal("0"),
+        fee_usd=Decimal("0"),
+    )
+    position = live_position(raw_payload={"position": {"positionValue": "100"}})
+    order = live_order(status="submitted")
+
+    async def fake_reconcile_live_trading_account(*_args: object, **_kwargs: object) -> object:
+        return object()
+
+    async def fake_load_live_exchange_positions(*_args: object, **_kwargs: object) -> list[object]:
+        return [position]
+
+    async def fake_load_live_close_mids(*_args: object, **_kwargs: object) -> dict[str, Decimal]:
+        return {"HYPE": Decimal("100")}
+
+    async def fake_submit_live_trade_intent(*_args: object, **_kwargs: object) -> object:
+        return live_trading_service.LiveOrderLifecycleResult(
+            order=order,
+            exchange_result=None,
+            submitted=True,
+        )
+
+    monkeypatch.setattr(
+        live_trading_service,
+        "reconcile_live_trading_account",
+        fake_reconcile_live_trading_account,
+    )
+    monkeypatch.setattr(
+        live_trading_service,
+        "load_live_exchange_positions",
+        fake_load_live_exchange_positions,
+    )
+    monkeypatch.setattr(live_trading_service, "load_live_close_mids", fake_load_live_close_mids)
+    monkeypatch.setattr(
+        live_trading_service,
+        "submit_live_trade_intent",
+        fake_submit_live_trade_intent,
+    )
+
+    class FlushSession:
+        async def flush(self) -> None:
+            return None
+
+    result = await close_all_live_account_positions(
+        FlushSession(),
+        account=account,
+        settings=Settings(),
+        info_client=object(),
+        trading_client=object(),
+    )
+
+    assert result.submitted_orders == 1
+    assert result.failed_orders == 1
+    assert result.status == "exit_only"
+    assert account.status == "exit_only"
 
 
 def test_build_testnet_live_trade_intent_is_reduce_only_when_requested() -> None:

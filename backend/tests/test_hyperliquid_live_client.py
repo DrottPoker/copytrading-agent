@@ -537,6 +537,7 @@ async def test_live_client_blocks_entry_above_max_notional() -> None:
 @pytest.mark.asyncio
 async def test_live_client_submits_reduce_only_dust_close_with_min_wire_size() -> None:
     settings = live_test_settings()
+    settings.trading_copy_adjust_small_orders_to_min_order = False
     settings.live_trading_min_order_notional_usd = Decimal("10")
     exchange = FakeExchange(
         info=FakeInfo(

@@ -475,6 +475,23 @@ async def test_live_order_exists_ignores_retryable_market_metadata_failure() -> 
 
 
 @pytest.mark.asyncio
+async def test_live_order_exists_ignores_retryable_below_min_close_skip() -> None:
+    class ExistingOrderSession:
+        async def scalar(self, statement):
+            return retryable_below_min_close_skip_order()
+
+    exists = await live_order_exists(
+        ExistingOrderSession(),
+        account_key="live_test",
+        source_wallet="0xsource",
+        source_fill_id="fill-1",
+        sequence_index=0,
+    )
+
+    assert exists is False
+
+
+@pytest.mark.asyncio
 async def test_live_order_exists_blocks_non_retryable_failed_order() -> None:
     class ExistingOrderSession:
         async def scalar(self, statement):
@@ -632,6 +649,21 @@ def retryable_market_metadata_order() -> TradingOrder:
             "message": order.error,
         }
     }
+    return order
+
+
+def retryable_below_min_close_skip_order() -> TradingOrder:
+    order = live_order(
+        status="failed",
+        requested_size=Decimal("303"),
+        filled_size=Decimal("0"),
+    )
+    order.coin = "BIO"
+    order.side = "short"
+    order.is_buy = True
+    order.order_type = "skip"
+    order.error = "skip:live_close_below_min_order_notional"
+    order.raw_payload = {"skipReason": "live_close_below_min_order_notional"}
     return order
 
 

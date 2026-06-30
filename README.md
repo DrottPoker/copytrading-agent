@@ -222,6 +222,10 @@ Docker Compose runs two dedicated worker services and overrides
   copy, live copy when enabled, copy recovery, and live reconciliation.
 - `maintenance-worker`: discovery, pool reimport, scoring, and pruning.
 
+The trading worker starts realtime subscriptions without waiting for startup
+copy recovery to finish. Startup recovery runs in the background and prioritizes
+live copy before paper copy.
+
 Workers publish lightweight heartbeats to Postgres so the Ops Health page can
 show whether `trading-worker` and `maintenance-worker` are fresh, stale, or
 missing.
@@ -574,6 +578,9 @@ Sizing policy:
 - In split-worker deployments, the trading worker runs paper-copy recovery every
   `paper_copy_recovery_interval_seconds` so maintenance imports cannot block
   trading state reconciliation.
+- Trading-worker startup recovery runs in the background and prioritizes live
+  copy before paper copy, so realtime subscriptions can start without waiting
+  for historical recovery to finish.
 
 Notes:
 
@@ -791,6 +798,10 @@ source state shows the source is flat or on the opposite side, live copy treats
 that close fill as final and closes the full remaining copied source position.
 If that final close is below the configured minimum, the backend submits a
 reduce-only dust close with wire size adjusted up to the minimum notional.
+Reduce-only dust closes are adjusted independently from the small-entry
+adjustment toggle because exits must be able to clear residual exposure.
+Recovery can retry older local `live_close_below_min_order_notional` skip rows
+so existing dust positions are not left open after this final-close check.
 Enabled and exit-only live accounts reconcile on
 `live_trading_reconciliation_interval_seconds`. Live copy also refreshes a stale
 account snapshot before sizing a new fill, so deposits are picked up before copy

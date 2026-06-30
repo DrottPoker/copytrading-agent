@@ -237,7 +237,10 @@ class HyperliquidLiveTradingClient:
             min_order_notional_buffer_usd=(
                 self.settings.live_trading_min_order_notional_buffer_usd
             ),
-            adjust_to_min_order=self.settings.trading_copy_adjust_small_orders_to_min_order,
+            adjust_to_min_order=(
+                intent.reduce_only
+                or self.settings.trading_copy_adjust_small_orders_to_min_order
+            ),
         )
         if (
             not intent.reduce_only

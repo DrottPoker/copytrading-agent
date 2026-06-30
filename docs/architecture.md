@@ -739,12 +739,12 @@ Disabled paper accounts are excluded from new entries and adds, but are still
 included when an existing open position for the source needs a reduce or exit
 fill. Live accounts use `enabled`, `exit_only`, and `disabled` status. The
 close-all-and-stop route sets the selected account to exit-only first, closes
-open positions for that account, and disables the account after successful
-close submission. Account deletion removes local database state for the
-selected account. Paper deletion removes paper positions, fills, allocations,
-and account history. Live deletion removes local live account, order, fill, and
-position snapshots only, requires the account to be stopped first, and does not
-close exchange positions.
+open positions for that account, and disables the account only after a fresh
+exchange reconciliation confirms no exchange positions remain. Account deletion
+removes local database state for the selected account. Paper deletion removes
+paper positions, fills, allocations, and account history. Live deletion removes
+local live account, order, fill, and position snapshots only, requires the
+account to be stopped first, and does not close exchange positions.
 The summary also exposes `poolRank` and `sourceStatusReason`. `poolRank` is the
 source wallet's score rank in the wallet pool, while `sourceStatusReason`
 explains why a source is retained or waiting without relying on monitor-slot
@@ -814,12 +814,19 @@ Live entry orders are submitted as IOC-limit orders priced from live mid plus
 `live_trading_max_slippage_bps` value is the hard safety cap. If the execution
 price is not aggressive enough to cross resting liquidity, Hyperliquid rejects
 the IOC order without opening exposure.
+Trading-worker startup recovery runs in the background and prioritizes live
+copy before paper copy, so realtime subscriptions can start without waiting for
+historical recovery to finish.
 Partial live reduce and close copy parts whose notional is below the configured
 minimum are skipped locally before order creation. When current source state
 shows the source is flat or on the opposite side, live copy treats that close
 fill as final and uses the full remaining copied source-position size. If that
 final close is below the minimum, the backend submits a reduce-only dust close
 with wire size adjusted up to the minimum notional.
+Reduce-only dust closes are adjusted independently from the small-entry
+adjustment toggle because exits must be able to clear residual exposure.
+Recovery can retry older local `live_close_below_min_order_notional` skip rows
+so existing dust positions are not left open after this final-close check.
 Automatic copied live entries also pass account-level guardrails for max order
 notional, max account open notional, max open positions, max daily loss, max
 orders per minute, and market allow/block lists.

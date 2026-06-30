@@ -134,21 +134,19 @@ async def run_monitor_services(
                 )
             )
         )
-    if runs_trading and settings.paper_trading_enabled and settings.paper_copy_enabled:
-        await run_paper_copy_recovery_once(
-            sessionmaker=sessionmaker,
-            redis=redis,
-            settings=settings,
-            source_wallet=None,
-            price_cache=price_cache,
-        )
-    if runs_trading and settings.live_trading_enabled and settings.live_trading_copy_enabled:
-        await run_live_copy_recovery_once(
-            sessionmaker=sessionmaker,
-            redis=redis,
-            settings=settings,
-            source_wallet=None,
-            price_cache=price_cache,
+    if runs_trading and (
+        (settings.paper_trading_enabled and settings.paper_copy_enabled)
+        or (settings.live_trading_enabled and settings.live_trading_copy_enabled)
+    ):
+        tasks.append(
+            asyncio.create_task(
+                run_startup_copy_recovery_once(
+                    sessionmaker=sessionmaker,
+                    redis=redis,
+                    settings=settings,
+                    price_cache=price_cache,
+                )
+            )
         )
 
     tasks.append(
@@ -897,6 +895,31 @@ async def run_live_copy_recovery_loop(
         )
 
 
+async def run_startup_copy_recovery_once(
+    *,
+    sessionmaker: Any,
+    redis: Any,
+    settings: Any,
+    price_cache: MarketPriceCache | None = None,
+) -> None:
+    if settings.live_trading_enabled and settings.live_trading_copy_enabled:
+        await run_live_copy_recovery_once(
+            sessionmaker=sessionmaker,
+            redis=redis,
+            settings=settings,
+            source_wallet=None,
+            price_cache=price_cache,
+        )
+    if settings.paper_trading_enabled and settings.paper_copy_enabled:
+        await run_paper_copy_recovery_once(
+            sessionmaker=sessionmaker,
+            redis=redis,
+            settings=settings,
+            source_wallet=None,
+            price_cache=price_cache,
+        )
+
+
 async def run_live_copy_recovery_once(
     *,
     sessionmaker: Any,
@@ -1196,16 +1219,16 @@ async def handle_websocket_message(
         )
 
     if is_snapshot:
-        if settings.paper_trading_enabled and settings.paper_copy_enabled:
-            await run_paper_copy_recovery_once(
+        if settings.live_trading_enabled and settings.live_trading_copy_enabled:
+            await run_live_copy_recovery_once(
                 sessionmaker=sessionmaker,
                 redis=redis,
                 settings=settings,
                 source_wallet=stored.wallet_address,
                 price_cache=price_cache,
             )
-        if settings.live_trading_enabled and settings.live_trading_copy_enabled:
-            await run_live_copy_recovery_once(
+        if settings.paper_trading_enabled and settings.paper_copy_enabled:
+            await run_paper_copy_recovery_once(
                 sessionmaker=sessionmaker,
                 redis=redis,
                 settings=settings,

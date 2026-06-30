@@ -554,6 +554,15 @@ async def close_all_live_account_positions(
             settings=settings,
             info_client=client,
         )
+        remaining_positions = await load_live_exchange_positions(session, account_key=account.key)
+        if remaining_positions:
+            await session.flush()
+            return LiveCloseAllResult(
+                account_key=account.key,
+                submitted_orders=submitted,
+                failed_orders=len(remaining_positions),
+                status=account.status,
+            )
         account.status = "disabled"
         await session.flush()
         return LiveCloseAllResult(
@@ -1038,6 +1047,8 @@ def is_retryable_live_order_submit_failure(order: TradingOrder) -> bool:
         return False
     if order.exchange_order_id or order.filled_size > ZERO or order.filled_notional_usd > ZERO:
         return False
+    if is_retryable_live_copy_skip(order):
+        return True
     payload = order.raw_payload if isinstance(order.raw_payload, dict) else {}
     submit_error = payload.get("submitError")
     if not isinstance(submit_error, dict):
@@ -1048,10 +1059,24 @@ def is_retryable_live_order_submit_failure(order: TradingOrder) -> bool:
     return message.startswith("Live order market is not available for exchange submission:")
 
 
+def is_retryable_live_copy_skip(order: TradingOrder) -> bool:
+    return (
+        order.error == "skip:live_close_below_min_order_notional"
+        and order.reduce_only
+        and order.action in {"reduce", "close", "flip_close"}
+    )
+
+
 def reset_live_order_for_retry(order: TradingOrder, *, intent: TradeIntent) -> None:
     order.status = "planned"
     order.error = None
     order.submitted_at = None
+    order.coin = intent.coin
+    order.action = intent.action
+    order.side = intent.side
+    order.is_buy = intent.is_buy
+    order.reduce_only = intent.reduce_only
+    order.order_type = "ioc"
     order.requested_size = intent.size
     order.requested_notional_usd = intent.notional_usd
     order.margin_usd = intent.margin_usd

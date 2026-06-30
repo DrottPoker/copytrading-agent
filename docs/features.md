@@ -541,6 +541,8 @@ Worker:
 - `WORKER_ROLE=trading` starts realtime monitoring, copy execution, copy
   recovery, and live reconciliation.
 - `WORKER_ROLE=maintenance` starts discovery, pool reimport, scoring, and pruning only.
+- Trading-worker startup recovery runs in the background and prioritizes live
+  copy before paper copy so realtime subscriptions can start promptly.
 - Each worker writes a lightweight heartbeat to Postgres so `/ops` can show
   fresh, stale, or missing worker state.
 
@@ -799,9 +801,10 @@ What it does:
 - The Accounts page can start, stop, or close all and stop trading for the
   selected account. Start trading enables new entries again. Stop trading
   disables new entries and adds for that account, but still lets reduce and exit
-  fills manage existing positions. Close all and stop trading disables the
-  account and closes every open position for that account. Other accounts are
-  not disabled or closed.
+  fills manage existing positions. Close all and stop trading moves the account
+  to exit-only, submits reduce-only closes, and disables the account only after
+  reconciliation confirms no exchange positions remain. Other accounts are not
+  disabled or closed.
 - The Accounts page can delete the selected account from local database state.
   Paper account deletion removes local positions, fills, allocations, and
   account history. Live account deletion removes local account, order, fill, and
@@ -959,6 +962,11 @@ What it does:
   fill as final and closes the full remaining copied source position. If that
   final close is below the configured minimum, the backend submits a reduce-only
   dust close with wire size adjusted up to the minimum notional.
+- Adjusts reduce-only dust closes independently from the small-entry adjustment
+  toggle because exits must be able to clear residual exposure.
+- Retries older local `live_close_below_min_order_notional` skip rows during
+  recovery so existing dust positions are not left open after the final-close
+  check is available.
 - Reserves one source per live account and market while exposure is open.
   Another source opening the same market is skipped until the market is free,
   even if it is the same side, because Hyperliquid nets exchange position and
