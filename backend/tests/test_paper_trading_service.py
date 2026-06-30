@@ -5,13 +5,18 @@ import pytest
 from sqlalchemy.dialects import postgresql
 
 from app.core.config import Settings
+from app.db.models import WalletMonitoringStat
 from app.services.paper_trading_service import (
     ExecutionMarketPrices,
     SourceFillPart,
+    apply_wallet_monitoring_snapshot,
     build_execution_context,
     load_source_account_state,
+    monitored_hours,
     open_copy_source_select,
+    pnl_per_monitored_hour,
     source_fill_age_exceeds_entry_limit,
+    wallet_monitoring_summary,
 )
 from app.services.trading_core import (
     adjust_open_sizing_to_min_order,
@@ -169,6 +174,78 @@ def test_open_copy_source_select_includes_live_source_positions() -> None:
     assert "trading_positions" in compiled
     assert "trading_positions.account_type = 'live'" in compiled
     assert "trading_positions.source_wallet != '__exchange__'" in compiled
+
+
+def test_wallet_monitoring_snapshot_accumulates_closes_and_restarts() -> None:
+    wallet = "0x1111111111111111111111111111111111111111"
+    started_at = datetime(2026, 1, 1, tzinfo=UTC)
+    stat = WalletMonitoringStat(
+        wallet_address=wallet,
+        first_monitored_at=started_at,
+        current_monitoring_started_at=started_at,
+        last_monitored_at=started_at,
+        total_monitored_seconds=0,
+    )
+
+    apply_wallet_monitoring_snapshot(
+        {wallet: stat},
+        monitored_wallets={wallet},
+        observed_at=started_at + timedelta(seconds=30),
+        max_gap_seconds=60,
+    )
+
+    assert stat.total_monitored_seconds == 30
+    assert stat.current_monitoring_started_at == started_at
+    assert stat.last_monitored_at == started_at + timedelta(seconds=30)
+
+    apply_wallet_monitoring_snapshot(
+        {wallet: stat},
+        monitored_wallets=set(),
+        observed_at=started_at + timedelta(minutes=10),
+        max_gap_seconds=60,
+    )
+
+    assert stat.total_monitored_seconds == 90
+    assert stat.current_monitoring_started_at is None
+    assert stat.last_monitored_at == started_at + timedelta(seconds=90)
+
+    apply_wallet_monitoring_snapshot(
+        {wallet: stat},
+        monitored_wallets={wallet},
+        observed_at=started_at + timedelta(minutes=20),
+        max_gap_seconds=60,
+    )
+
+    assert stat.total_monitored_seconds == 90
+    assert stat.current_monitoring_started_at == started_at + timedelta(minutes=20)
+    assert stat.last_monitored_at == started_at + timedelta(minutes=20)
+
+
+def test_wallet_monitoring_summary_caps_open_session_read_time() -> None:
+    wallet = "0x1111111111111111111111111111111111111111"
+    started_at = datetime(2026, 1, 1, tzinfo=UTC)
+    stat = WalletMonitoringStat(
+        wallet_address=wallet,
+        first_monitored_at=started_at,
+        current_monitoring_started_at=started_at,
+        last_monitored_at=started_at,
+        total_monitored_seconds=120,
+    )
+
+    summary = wallet_monitoring_summary(
+        stat,
+        now=started_at + timedelta(minutes=10),
+        max_gap_seconds=60,
+    )
+
+    assert summary.monitored_seconds == 180
+    assert summary.current_monitoring_started_at == started_at
+
+
+def test_monitored_hour_metrics_use_raw_seconds() -> None:
+    assert monitored_hours(5400) == Decimal("1.5000")
+    assert pnl_per_monitored_hour(Decimal("3"), 5400) == Decimal("2.0000")
+    assert pnl_per_monitored_hour(Decimal("3"), 0) is None
 
 
 def test_execution_context_uses_adverse_drift_for_long_entries() -> None:

@@ -201,6 +201,31 @@ class WalletScoreSnapshot(Base, TimestampMixin):
     score_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
 
 
+class WalletMonitoringStat(Base, TimestampMixin, UpdatedAtMixin):
+    __tablename__ = "wallet_monitoring_stats"
+    __table_args__ = (
+        CheckConstraint(
+            "total_monitored_seconds >= 0",
+            name="ck_wallet_monitoring_stats_total_non_negative",
+        ),
+        Index(
+            "ix_wallet_monitoring_stats_current_started",
+            "current_monitoring_started_at",
+        ),
+        Index("ix_wallet_monitoring_stats_last_monitored", "last_monitored_at"),
+    )
+
+    wallet_address: Mapped[str] = mapped_column(Text, primary_key=True)
+    first_monitored_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    current_monitoring_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    last_monitored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    total_monitored_seconds: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default=text("0")
+    )
+
+
 class ActiveCopyWallet(Base, TimestampMixin):
     __tablename__ = "active_copy_wallets"
     __table_args__ = (

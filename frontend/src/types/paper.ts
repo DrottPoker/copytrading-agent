@@ -138,6 +138,13 @@ export type PaperWalletPerformance = {
   realizedPnlUsd: string;
   unrealizedPnlUsd: string;
   totalPnlUsd: string;
+  monitoredSeconds: number;
+  monitoredHours: string;
+  realizedPnlPerMonitoredHourUsd: string | null;
+  totalPnlPerMonitoredHourUsd: string | null;
+  firstMonitoredAt: string | null;
+  currentMonitoringStartedAt: string | null;
+  lastMonitoredAt: string | null;
   feeUsd: string;
   openNotionalUsd: string;
   openMarginUsd: string;

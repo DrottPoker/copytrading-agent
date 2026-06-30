@@ -1,7 +1,8 @@
 import asyncio
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
@@ -21,6 +22,7 @@ from app.db.models import (
     TradingOrder,
     TradingPosition,
     WalletFill,
+    WalletMonitoringStat,
     WalletScore,
     WatchedWallet,
 )
@@ -59,6 +61,7 @@ POSITION_EPSILON = Decimal("0.00000001")
 BPS_DENOMINATOR = Decimal("10000")
 PAPER_COPY_RECOVERY_OVERLAP_MS = 5 * 60 * 1000
 PAPER_COPY_SOURCE_LOCK_NAMESPACE = "paper_copy_source"
+MONITORING_MIN_SNAPSHOT_GAP_SECONDS = 60
 SOURCE_EQUITY_ACTIONS = frozenset({"open", "add", "flip_open"})
 SOURCE_CLOSE_DIRECTIONS = frozenset(
     {"Close Long", "Close Short", "Long > Short", "Short > Long"}
@@ -167,6 +170,14 @@ class PaperSourceCurrentPosition:
     coin: str
     side: str
     size: Decimal
+
+
+@dataclass(frozen=True)
+class WalletMonitoringSummary:
+    first_monitored_at: datetime | None
+    current_monitoring_started_at: datetime | None
+    last_monitored_at: datetime | None
+    monitored_seconds: int
 
 
 @dataclass(frozen=True)
@@ -293,16 +304,20 @@ async def get_paper_trading_summary(
     recent_fills = list(fills_result.scalars().all())
     closed_trades = list(closed_trades_result.scalars().all())
     fill_performance_rows = list(fill_performance_result.mappings().all())
-    source_labels = await load_paper_source_labels(
+    summary_source_wallets = [
+        *(allocation.source_wallet for allocation in allocations),
+        *(position.source_wallet for position in positions),
+        *(fill.source_wallet for fill in recent_fills),
+        *(fill.source_wallet for fill in closed_trades),
+        *(row["source_wallet"] for row in fill_performance_rows if row["source_wallet"]),
+        *(allocation.source_wallet for allocation in source_allocations.values()),
+    ]
+    source_labels = await load_paper_source_labels(session, source_wallets=summary_source_wallets)
+    monitoring_stats = await load_wallet_monitoring_stats(
         session,
-        source_wallets=[
-            *(allocation.source_wallet for allocation in allocations),
-            *(position.source_wallet for position in positions),
-            *(fill.source_wallet for fill in recent_fills),
-            *(fill.source_wallet for fill in closed_trades),
-            *(row["source_wallet"] for row in fill_performance_rows if row["source_wallet"]),
-            *(allocation.source_wallet for allocation in source_allocations.values()),
-        ],
+        source_wallets=summary_source_wallets,
+        settings=resolved_settings,
+        now=datetime.now(UTC),
     )
     if not source_allocations:
         source_allocations = paper_source_allocations_from_copy_rows(
@@ -360,6 +375,7 @@ async def get_paper_trading_summary(
             fill_performance_rows=fill_performance_rows,
             source_allocations=source_allocations,
             source_labels=source_labels,
+            monitoring_stats=monitoring_stats,
         ),
         closed_trades=paper_closed_trade_reads(
             closed_trades,
@@ -978,6 +994,7 @@ def paper_wallet_performance_reads(
     fill_performance_rows: list[dict[str, Any]],
     source_allocations: dict[str, PaperSourceAllocation],
     source_labels: dict[str, str],
+    monitoring_stats: dict[str, WalletMonitoringSummary],
 ) -> list[dict[str, Any]]:
     sources = {
         allocation.source_wallet.lower()
@@ -994,6 +1011,7 @@ def paper_wallet_performance_reads(
         for row in fill_performance_rows
         if row["source_wallet"]
     )
+    sources.update(monitoring_stats.keys())
 
     allocations_by_source: dict[str, list[PaperCopyAllocation]] = {}
     for allocation in allocations:
@@ -1022,6 +1040,9 @@ def paper_wallet_performance_reads(
             position["unrealized_pnl_usd"] for position in source_positions
         )
         realized_pnl = decimal_or_zero(fill_row.get("realized_pnl_usd"))
+        total_pnl = realized_pnl + unrealized_pnl
+        monitoring = monitoring_stats.get(source)
+        monitored_seconds = monitoring.monitored_seconds if monitoring is not None else 0
         allocation_pct = first_decimal(
             allocation.allocation_pct for allocation in allocation_rows
         )
@@ -1045,7 +1066,28 @@ def paper_wallet_performance_reads(
                 "skipped_fill_count": int(fill_row.get("skipped_fill_count") or 0),
                 "realized_pnl_usd": realized_pnl,
                 "unrealized_pnl_usd": unrealized_pnl,
-                "total_pnl_usd": realized_pnl + unrealized_pnl,
+                "total_pnl_usd": total_pnl,
+                "monitored_seconds": monitored_seconds,
+                "monitored_hours": monitored_hours(monitored_seconds),
+                "realized_pnl_per_monitored_hour_usd": pnl_per_monitored_hour(
+                    realized_pnl,
+                    monitored_seconds,
+                ),
+                "total_pnl_per_monitored_hour_usd": pnl_per_monitored_hour(
+                    total_pnl,
+                    monitored_seconds,
+                ),
+                "first_monitored_at": (
+                    monitoring.first_monitored_at if monitoring is not None else None
+                ),
+                "current_monitoring_started_at": (
+                    monitoring.current_monitoring_started_at
+                    if monitoring is not None
+                    else None
+                ),
+                "last_monitored_at": (
+                    monitoring.last_monitored_at if monitoring is not None else None
+                ),
                 "fee_usd": decimal_or_zero(fill_row.get("fee_usd")),
                 "open_notional_usd": sum_decimal(
                     position["current_notional_usd"] or position["notional_usd"]
@@ -1064,6 +1106,27 @@ def paper_wallet_performance_reads(
             -row["total_pnl_usd"],
             row["pool_rank"] or 9999,
         ),
+    )
+
+
+def monitored_hours(monitored_seconds: int) -> Decimal:
+    if monitored_seconds <= 0:
+        return ZERO
+    return (Decimal(monitored_seconds) / Decimal("3600")).quantize(
+        Decimal("0.0001"),
+        rounding=ROUND_HALF_UP,
+    )
+
+
+def pnl_per_monitored_hour(
+    pnl_usd: Decimal,
+    monitored_seconds: int,
+) -> Decimal | None:
+    if monitored_seconds <= 0:
+        return None
+    return (pnl_usd * Decimal("3600") / Decimal(monitored_seconds)).quantize(
+        Decimal("0.0001"),
+        rounding=ROUND_HALF_UP,
     )
 
 
@@ -2034,6 +2097,198 @@ def combine_skip_reasons(
     return reasons
 
 
+def normalized_wallet_addresses(source_wallets: Iterable[str | None]) -> set[str]:
+    wallets: set[str] = set()
+    for source_wallet in source_wallets:
+        if not source_wallet:
+            continue
+        try:
+            wallets.add(normalize_wallet_address(str(source_wallet)))
+        except ValueError:
+            continue
+    return wallets
+
+
+def wallet_monitoring_snapshot_max_gap_seconds(settings: Settings) -> int:
+    refresh_seconds = int(getattr(settings, "realtime_subscription_refresh_seconds", 15) or 15)
+    return max(refresh_seconds * 3, MONITORING_MIN_SNAPSHOT_GAP_SECONDS)
+
+
+def monitored_delta_seconds(
+    previous_at: datetime | None,
+    observed_at: datetime,
+    *,
+    max_gap_seconds: int,
+) -> int:
+    if previous_at is None:
+        return 0
+    elapsed_seconds = int((observed_at - previous_at).total_seconds())
+    if elapsed_seconds <= 0:
+        return 0
+    return min(elapsed_seconds, max_gap_seconds)
+
+
+def monitored_until(
+    previous_at: datetime | None,
+    observed_at: datetime,
+    *,
+    max_gap_seconds: int,
+) -> datetime:
+    if previous_at is None:
+        return observed_at
+    delta_seconds = monitored_delta_seconds(
+        previous_at,
+        observed_at,
+        max_gap_seconds=max_gap_seconds,
+    )
+    return previous_at + timedelta(seconds=delta_seconds)
+
+
+def apply_wallet_monitoring_snapshot(
+    stats_by_wallet: dict[str, WalletMonitoringStat],
+    *,
+    monitored_wallets: set[str],
+    observed_at: datetime,
+    max_gap_seconds: int,
+) -> None:
+    for wallet in monitored_wallets:
+        stat = stats_by_wallet.get(wallet)
+        if stat is None:
+            continue
+        if stat.current_monitoring_started_at is None:
+            stat.current_monitoring_started_at = observed_at
+            stat.last_monitored_at = observed_at
+            stat.updated_at = observed_at
+            if stat.first_monitored_at is None:
+                stat.first_monitored_at = observed_at
+            continue
+        if stat.first_monitored_at is None:
+            stat.first_monitored_at = observed_at
+        delta_seconds = monitored_delta_seconds(
+            stat.last_monitored_at or stat.current_monitoring_started_at,
+            observed_at,
+            max_gap_seconds=max_gap_seconds,
+        )
+        stat.total_monitored_seconds = int(stat.total_monitored_seconds or 0) + delta_seconds
+        stat.last_monitored_at = observed_at
+        stat.updated_at = observed_at
+
+    for wallet, stat in stats_by_wallet.items():
+        if wallet in monitored_wallets or stat.current_monitoring_started_at is None:
+            continue
+        previous_at = stat.last_monitored_at or stat.current_monitoring_started_at
+        delta_seconds = monitored_delta_seconds(
+            previous_at,
+            observed_at,
+            max_gap_seconds=max_gap_seconds,
+        )
+        stat.total_monitored_seconds = int(stat.total_monitored_seconds or 0) + delta_seconds
+        stat.last_monitored_at = monitored_until(
+            previous_at,
+            observed_at,
+            max_gap_seconds=max_gap_seconds,
+        )
+        stat.current_monitoring_started_at = None
+        stat.updated_at = observed_at
+
+
+async def record_wallet_monitoring_snapshot(
+    session: AsyncSession,
+    *,
+    monitored_wallets: Iterable[str],
+    settings: Settings,
+    observed_at: datetime | None = None,
+) -> None:
+    observed = observed_at or datetime.now(UTC)
+    monitored = normalized_wallet_addresses(monitored_wallets)
+    conditions = [WalletMonitoringStat.current_monitoring_started_at.is_not(None)]
+    if monitored:
+        conditions.append(WalletMonitoringStat.wallet_address.in_(monitored))
+    result = await session.execute(
+        select(WalletMonitoringStat)
+        .where(or_(*conditions))
+        .with_for_update()
+    )
+    existing_stats = list(result.scalars().all())
+    stats_by_wallet = {
+        stat.wallet_address.lower(): stat
+        for stat in existing_stats
+        if stat.wallet_address
+    }
+    missing_wallets = sorted(monitored - set(stats_by_wallet))
+    if missing_wallets:
+        await session.execute(
+            insert(WalletMonitoringStat)
+            .values(
+                [
+                    {
+                        "wallet_address": wallet,
+                        "first_monitored_at": observed,
+                        "current_monitoring_started_at": observed,
+                        "last_monitored_at": observed,
+                        "total_monitored_seconds": 0,
+                        "created_at": observed,
+                        "updated_at": observed,
+                    }
+                    for wallet in missing_wallets
+                ]
+            )
+            .on_conflict_do_nothing(index_elements=["wallet_address"])
+        )
+    apply_wallet_monitoring_snapshot(
+        stats_by_wallet,
+        monitored_wallets=monitored,
+        observed_at=observed,
+        max_gap_seconds=wallet_monitoring_snapshot_max_gap_seconds(settings),
+    )
+
+
+def wallet_monitoring_summary(
+    stat: WalletMonitoringStat,
+    *,
+    now: datetime,
+    max_gap_seconds: int,
+) -> WalletMonitoringSummary:
+    monitored_seconds = int(stat.total_monitored_seconds or 0)
+    if stat.current_monitoring_started_at is not None:
+        monitored_seconds += monitored_delta_seconds(
+            stat.last_monitored_at or stat.current_monitoring_started_at,
+            now,
+            max_gap_seconds=max_gap_seconds,
+        )
+    return WalletMonitoringSummary(
+        first_monitored_at=stat.first_monitored_at,
+        current_monitoring_started_at=stat.current_monitoring_started_at,
+        last_monitored_at=stat.last_monitored_at,
+        monitored_seconds=monitored_seconds,
+    )
+
+
+async def load_wallet_monitoring_stats(
+    session: AsyncSession,
+    *,
+    source_wallets: Iterable[str | None],
+    settings: Settings,
+    now: datetime,
+) -> dict[str, WalletMonitoringSummary]:
+    wallets = sorted(normalized_wallet_addresses(source_wallets))
+    if not wallets:
+        return {}
+    result = await session.execute(
+        select(WalletMonitoringStat).where(WalletMonitoringStat.wallet_address.in_(wallets))
+    )
+    max_gap_seconds = wallet_monitoring_snapshot_max_gap_seconds(settings)
+    return {
+        stat.wallet_address.lower(): wallet_monitoring_summary(
+            stat,
+            now=now,
+            max_gap_seconds=max_gap_seconds,
+        )
+        for stat in result.scalars().all()
+        if stat.wallet_address
+    }
+
+
 async def refresh_paper_copy_allocations(
     session: AsyncSession,
     *,
@@ -2050,6 +2305,15 @@ async def refresh_paper_copy_allocations(
         )
 
     source_allocations = await load_paper_source_allocations(session, settings=settings)
+    await record_wallet_monitoring_snapshot(
+        session,
+        monitored_wallets=(
+            allocation.source_wallet
+            for allocation in source_allocations
+            if allocation.has_realtime_slot
+        ),
+        settings=settings,
+    )
     for account in accounts:
         for allocation in source_allocations:
             source_wallet = allocation.source_wallet.lower()

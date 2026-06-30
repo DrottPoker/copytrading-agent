@@ -153,6 +153,13 @@ class PaperWalletPerformanceRead(CamelModel):
     realized_pnl_usd: Decimal
     unrealized_pnl_usd: Decimal
     total_pnl_usd: Decimal
+    monitored_seconds: int = 0
+    monitored_hours: Decimal = Decimal("0")
+    realized_pnl_per_monitored_hour_usd: Decimal | None = None
+    total_pnl_per_monitored_hour_usd: Decimal | None = None
+    first_monitored_at: datetime | None = None
+    current_monitoring_started_at: datetime | None = None
+    last_monitored_at: datetime | None = None
     fee_usd: Decimal
     open_notional_usd: Decimal
     open_margin_usd: Decimal

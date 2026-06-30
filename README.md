@@ -282,6 +282,9 @@ Notes:
   candidates. The worker checks the desired subscription list every
   `realtime_subscription_refresh_seconds` and reconnects only when the list
   changes.
+- Allocation refresh records monitored time in `wallet_monitoring_stats` for
+  wallets with realtime slots. The trading dashboard exposes monitored duration
+  and PnL per monitored hour for each source wallet.
 - Automated sourcing runs through Discovery using `backend/config/discovery.json`.
 - Discovery defaults to Hyperliquid 1D, 7D, and 30D leaderboard sources,
   Hyperliquid 7D and 30D vault leaders, leaderboard subaccounts, HyperTracker

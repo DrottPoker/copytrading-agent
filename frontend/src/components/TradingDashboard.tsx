@@ -82,6 +82,13 @@ type MonitoredSource = {
   realizedPnlUsd: string;
   unrealizedPnlUsd: string;
   totalPnlUsd: string;
+  monitoredSeconds: number;
+  monitoredHours: string;
+  realizedPnlPerMonitoredHourUsd: string | null;
+  totalPnlPerMonitoredHourUsd: string | null;
+  firstMonitoredAt: string | null;
+  currentMonitoringStartedAt: string | null;
+  lastMonitoredAt: string | null;
 };
 
 type DashboardAccount = {
@@ -140,6 +147,13 @@ type WalletPerformanceRow = {
   realizedPnlUsd: string;
   unrealizedPnlUsd: string;
   totalPnlUsd: string;
+  monitoredSeconds: number;
+  monitoredHours: string;
+  realizedPnlPerMonitoredHourUsd: string | null;
+  totalPnlPerMonitoredHourUsd: string | null;
+  firstMonitoredAt: string | null;
+  currentMonitoringStartedAt: string | null;
+  lastMonitoredAt: string | null;
   feeUsd: string;
   openNotionalUsd: string;
   openMarginUsd: string;
@@ -152,6 +166,13 @@ type SourceMetadata = {
   poolRank: number | null;
   rank: number | null;
   score: string | null;
+  monitoredSeconds: number;
+  monitoredHours: string;
+  realizedPnlPerMonitoredHourUsd: string | null;
+  totalPnlPerMonitoredHourUsd: string | null;
+  firstMonitoredAt: string | null;
+  currentMonitoringStartedAt: string | null;
+  lastMonitoredAt: string | null;
 };
 
 type RowPill = {
@@ -1037,7 +1058,7 @@ function SourceRow({
             </button>
           ) : null}
         </div>
-        <div className="grid min-w-0 gap-x-4 gap-y-1 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="grid min-w-0 gap-x-4 gap-y-1 sm:grid-cols-2 xl:grid-cols-5">
           <CompactSourceStat
             label="Realized"
             value={formatCurrency(source.realizedPnlUsd)}
@@ -1048,6 +1069,12 @@ function SourceRow({
             value={formatCurrency(source.unrealizedPnlUsd)}
             detail={`Total ${formatCurrency(source.totalPnlUsd)}`}
             tone={numberValue(source.unrealizedPnlUsd) >= 0 ? "positive" : "danger"}
+          />
+          <CompactSourceStat
+            label="Monitored"
+            value={formatMonitoringDuration(source.monitoredSeconds)}
+            detail={formatMonitoringPnlPerHour(source.totalPnlPerMonitoredHourUsd)}
+            tone={monitoringTone(source.totalPnlPerMonitoredHourUsd)}
           />
           {mode === "paper" ? (
             <>
@@ -1271,7 +1298,7 @@ function WalletHistoryRow({ wallet }: { wallet: WalletPerformanceRow }) {
   const isMonitored = wallet.monitorStatus === "monitored";
   return (
     <ListRow>
-      <div className="grid gap-2 xl:grid-cols-[1.05fr_repeat(5,minmax(0,0.75fr))] xl:items-center">
+      <div className="grid gap-2 xl:grid-cols-[1.05fr_repeat(6,minmax(0,0.75fr))] xl:items-center">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-1">
             <Link
@@ -1295,6 +1322,12 @@ function WalletHistoryRow({ wallet }: { wallet: WalletPerformanceRow }) {
         <RowStat label="Total" value={formatCurrency(wallet.totalPnlUsd)} tone={totalPnl >= 0 ? "positive" : "danger"} />
         <RowStat label="Realized" value={formatCurrency(wallet.realizedPnlUsd)} tone={numberValue(wallet.realizedPnlUsd) >= 0 ? "positive" : "danger"} />
         <RowStat label="Unrealized" value={formatCurrency(wallet.unrealizedPnlUsd)} tone={numberValue(wallet.unrealizedPnlUsd) >= 0 ? "positive" : "danger"} />
+        <RowStat
+          label="Monitored"
+          value={formatMonitoringDuration(wallet.monitoredSeconds)}
+          detail={formatMonitoringPnlPerHour(wallet.totalPnlPerMonitoredHourUsd)}
+          tone={monitoringTone(wallet.totalPnlPerMonitoredHourUsd)}
+        />
         <RowStat label="Open" value={formatCurrency(wallet.openMarginUsd)} detail={`${formatInteger(wallet.openPositionCount)} positions`} />
         <RowStat label="Fills" value={`${formatInteger(wallet.copiedFillCount)} / ${formatInteger(wallet.skippedFillCount)}`} detail={formatDate(wallet.lastFillAt)} />
       </div>
@@ -1957,6 +1990,13 @@ function buildPaperMonitoredSources(summary: PaperTradingSummaryResponse): Monit
         realizedPnlUsd: wallet?.realizedPnlUsd ?? "0",
         unrealizedPnlUsd: wallet?.unrealizedPnlUsd ?? "0",
         totalPnlUsd: wallet?.totalPnlUsd ?? "0",
+        monitoredSeconds: wallet?.monitoredSeconds ?? 0,
+        monitoredHours: wallet?.monitoredHours ?? "0",
+        realizedPnlPerMonitoredHourUsd: wallet?.realizedPnlPerMonitoredHourUsd ?? null,
+        totalPnlPerMonitoredHourUsd: wallet?.totalPnlPerMonitoredHourUsd ?? null,
+        firstMonitoredAt: wallet?.firstMonitoredAt ?? null,
+        currentMonitoringStartedAt: wallet?.currentMonitoringStartedAt ?? null,
+        lastMonitoredAt: wallet?.lastMonitoredAt ?? null,
       };
     })
     .sort((left, right) => {
@@ -2074,6 +2114,13 @@ function buildLiveMonitoredSources(
         realizedPnlUsd: String(realizedPnl),
         unrealizedPnlUsd: String(unrealizedPnl),
         totalPnlUsd: String(realizedPnl + unrealizedPnl),
+        monitoredSeconds: metadata?.monitoredSeconds ?? 0,
+        monitoredHours: metadata?.monitoredHours ?? "0",
+        realizedPnlPerMonitoredHourUsd: metadata?.realizedPnlPerMonitoredHourUsd ?? null,
+        totalPnlPerMonitoredHourUsd: metadata?.totalPnlPerMonitoredHourUsd ?? null,
+        firstMonitoredAt: metadata?.firstMonitoredAt ?? null,
+        currentMonitoringStartedAt: metadata?.currentMonitoringStartedAt ?? null,
+        lastMonitoredAt: metadata?.lastMonitoredAt ?? null,
       };
     })
     .filter(
@@ -2100,6 +2147,7 @@ function buildWalletHistory(wallets: WalletPerformanceRow[]) {
         wallet.openPositionCount > 0 ||
         wallet.copiedFillCount > 0 ||
         wallet.skippedFillCount > 0 ||
+        wallet.monitoredSeconds > 0 ||
         numberValue(wallet.totalPnlUsd) !== 0,
     )
     .sort((left, right) => {
@@ -2160,6 +2208,13 @@ function buildLiveWalletHistory(
         realizedPnlUsd: String(realizedPnl),
         unrealizedPnlUsd: String(unrealizedPnl),
         totalPnlUsd: String(realizedPnl + unrealizedPnl),
+        monitoredSeconds: metadata?.monitoredSeconds ?? 0,
+        monitoredHours: metadata?.monitoredHours ?? "0",
+        realizedPnlPerMonitoredHourUsd: metadata?.realizedPnlPerMonitoredHourUsd ?? null,
+        totalPnlPerMonitoredHourUsd: metadata?.totalPnlPerMonitoredHourUsd ?? null,
+        firstMonitoredAt: metadata?.firstMonitoredAt ?? null,
+        currentMonitoringStartedAt: metadata?.currentMonitoringStartedAt ?? null,
+        lastMonitoredAt: metadata?.lastMonitoredAt ?? null,
         feeUsd: String(sumNumbers(fills.map((fill) => fill.feeUsd))),
         openNotionalUsd: String(sumNumbers(positions.map((position) => position.currentNotionalUsd ?? position.notionalUsd))),
         openMarginUsd: String(sumNumbers(positions.map((position) => position.marginUsd))),
@@ -2230,6 +2285,13 @@ function buildSourceMetadata(
       poolRank: null,
       rank: null,
       score: null,
+      monitoredSeconds: 0,
+      monitoredHours: "0",
+      realizedPnlPerMonitoredHourUsd: null,
+      totalPnlPerMonitoredHourUsd: null,
+      firstMonitoredAt: null,
+      currentMonitoringStartedAt: null,
+      lastMonitoredAt: null,
     };
     metadata.set(source, item);
     return item;
@@ -2250,6 +2312,13 @@ function buildSourceMetadata(
     item.poolRank = minNumber([item.poolRank, wallet.poolRank]);
     item.rank = minNumber([item.rank, wallet.rank]);
     item.score ??= wallet.score;
+    item.monitoredSeconds = Math.max(item.monitoredSeconds, wallet.monitoredSeconds);
+    item.monitoredHours = wallet.monitoredHours;
+    item.realizedPnlPerMonitoredHourUsd = wallet.realizedPnlPerMonitoredHourUsd;
+    item.totalPnlPerMonitoredHourUsd = wallet.totalPnlPerMonitoredHourUsd;
+    item.firstMonitoredAt ??= wallet.firstMonitoredAt;
+    item.currentMonitoringStartedAt = wallet.currentMonitoringStartedAt;
+    item.lastMonitoredAt = wallet.lastMonitoredAt;
   }
   for (const position of summary.positions) {
     ensureMetadata(position.sourceWallet).label ??= position.sourceLabel;
@@ -2706,6 +2775,38 @@ function formatTradeDuration(value: number | null | undefined) {
   const days = Math.floor(hours / 24);
   const restHours = hours % 24;
   return restHours > 0 ? `duration ${days}d ${restHours}h` : `duration ${days}d`;
+}
+
+function formatMonitoringDuration(value: number | null | undefined) {
+  if (!value || value <= 0) {
+    return "-";
+  }
+  const totalMinutes = Math.max(Math.round(value / 60), 1);
+  if (totalMinutes < 60) {
+    return `${totalMinutes}m`;
+  }
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours < 48) {
+    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  }
+  const days = Math.floor(hours / 24);
+  const restHours = hours % 24;
+  return restHours > 0 ? `${days}d ${restHours}h` : `${days}d`;
+}
+
+function formatMonitoringPnlPerHour(value: string | number | null | undefined) {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+  return `${formatCurrency(value)}/h`;
+}
+
+function monitoringTone(value: string | number | null | undefined): Tone {
+  if (value === null || value === undefined) {
+    return "neutral";
+  }
+  return numberValue(value) >= 0 ? "positive" : "danger";
 }
 
 function formatExecutionMs(value: number | null | undefined) {

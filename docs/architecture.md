@@ -126,6 +126,9 @@ Trading worker responsibilities:
 - A source with a realtime slot is exposed as `monitorStatus = "monitored"`. A
   top candidate without a free slot is exposed as `monitorStatus = "waiting"`
   and `sourceStatus = "waiting_for_slot"`.
+- Allocation refresh writes `wallet_monitoring_stats` snapshots for wallets
+  with realtime slots. Snapshot deltas are capped from the subscription refresh
+  interval so downtime or a stuck worker does not overcount monitored time.
 - Subscribe to Hyperliquid `userFills` over WebSocket.
 - Subscribe to Hyperliquid `allMids` over WebSocket and maintain a short-lived
   price cache for copy execution.

@@ -553,6 +553,9 @@ What it does:
 - Uses paper allocation refresh as the source of truth for realtime
   subscriptions. Sources with open paper positions reserve slots first, then
   remaining slots go to the highest scored eligible copy candidates.
+- Records accumulated monitored time for each realtime-slot wallet in
+  `wallet_monitoring_stats`, with capped snapshot gaps to avoid overcounting
+  worker downtime.
 - Checks the desired realtime subscription list every
   `realtime_subscription_refresh_seconds` and reconnects only when the selected
   wallet list changes.
@@ -728,6 +731,9 @@ What it does:
 - Recovery also compares open paper positions with the source wallet's live perp
   state. If the source no longer has the same coin and side, paper closes the
   position at the current simulated market price with normal fee and slippage.
+- Paper summary wallet performance includes monitored seconds, monitored hours,
+  and realized and total PnL per monitored hour. Trading dashboard source rows
+  use those fields to show monitored efficiency beside allocation and PnL.
 - Retains allocation records for source wallets with open paper positions so
   add, reduce, close, and flip fills can continue after the source falls out of
   the current top 10.
