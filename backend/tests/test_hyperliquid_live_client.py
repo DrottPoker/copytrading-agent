@@ -263,6 +263,38 @@ def test_live_order_wire_values_adds_buffer_after_price_and_lot_rounding() -> No
     assert values.price_decimals == 2
 
 
+def test_live_order_wire_values_adjusts_reduce_only_dust_close_to_min_order() -> None:
+    exchange = FakeExchange(
+        info=FakeInfo(
+            assets={"BIO": 0},
+            size_decimals={0: 0},
+        )
+    )
+    intent = live_test_intent(
+        coin="BIO",
+        action="close",
+        side="short",
+        is_buy=True,
+        reduce_only=True,
+        size=Decimal("303"),
+        limit_price=Decimal("0.031077"),
+        notional_usd=Decimal("9.416331"),
+        source_price=Decimal("0.031077"),
+        observed_price=Decimal("0.031077"),
+    )
+
+    values = live_order_wire_values(
+        intent,
+        exchange=exchange,
+        min_order_notional_usd=Decimal("10"),
+        adjust_to_min_order=True,
+    )
+
+    assert values.size == Decimal("322")
+    assert values.limit_price == Decimal("0.031077")
+    assert values.notional_usd == Decimal("10.006794")
+
+
 @pytest.mark.asyncio
 async def test_live_client_submits_hyperliquid_wire_safe_values() -> None:
     exchange = FakeExchange(
@@ -503,10 +535,15 @@ async def test_live_client_blocks_entry_above_max_notional() -> None:
 
 
 @pytest.mark.asyncio
-async def test_live_client_blocks_reduce_only_below_exchange_minimum() -> None:
+async def test_live_client_submits_reduce_only_dust_close_with_min_wire_size() -> None:
     settings = live_test_settings()
     settings.live_trading_min_order_notional_usd = Decimal("10")
-    exchange = FakeExchange()
+    exchange = FakeExchange(
+        info=FakeInfo(
+            assets={"BIO": 0},
+            size_decimals={0: 0},
+        )
+    )
     client = HyperliquidLiveTradingClient(
         settings=settings,
         exchange_factory=lambda _account: exchange,
@@ -514,16 +551,23 @@ async def test_live_client_blocks_reduce_only_below_exchange_minimum() -> None:
     )
     account = live_test_account(status="exit_only")
     intent = live_test_intent(
+        coin="BIO",
         action="close",
-        is_buy=False,
+        side="short",
+        is_buy=True,
         reduce_only=True,
-        notional_usd=Decimal("5"),
+        size=Decimal("303"),
+        limit_price=Decimal("0.031077"),
+        notional_usd=Decimal("9.416331"),
+        source_price=Decimal("0.031077"),
+        observed_price=Decimal("0.031077"),
     )
 
-    with pytest.raises(HyperliquidLiveTradingConfigurationError):
-        await client.submit_order(account=account, intent=intent)
+    result = await client.submit_order(account=account, intent=intent)
 
-    assert exchange.orders == []
+    assert result.status == "filled"
+    assert exchange.orders[0]["size"] == 322.0
+    assert exchange.orders[0]["reduce_only"] is True
 
 
 def live_test_settings() -> Settings:
@@ -551,6 +595,7 @@ def live_test_intent(
     *,
     coin: str = "BTC",
     action: str = "open",
+    side: str = "long",
     is_buy: bool = True,
     reduce_only: bool = False,
     size: Decimal = Decimal("0.5"),
@@ -568,7 +613,7 @@ def live_test_intent(
         client_order_id="0x" + "a" * 32,
         coin=coin,
         action=action,
-        side="long",
+        side=side,
         is_buy=is_buy,
         reduce_only=reduce_only,
         size=size,

@@ -149,7 +149,10 @@ class HyperliquidLiveTradingClient:
             raise HyperliquidLiveTradingConfigurationError(
                 "Live order limit price must be positive."
             )
-        if intent.notional_usd < self.settings.live_trading_min_order_notional_usd:
+        if (
+            not intent.reduce_only
+            and intent.notional_usd < self.settings.live_trading_min_order_notional_usd
+        ):
             raise HyperliquidLiveTradingConfigurationError(
                 "Live order notional is below the Hyperliquid minimum."
             )
@@ -414,8 +417,7 @@ def live_order_wire_values(
     )
 
     if (
-        not intent.reduce_only
-        and adjust_to_min_order
+        adjust_to_min_order
         and wire_min_order_notional > Decimal("0")
         and notional_usd < wire_min_order_notional
     ):

@@ -788,20 +788,6 @@ async def apply_live_close_part(
         )
     price = execution_context.execution_price
     notional_usd = close_size * price
-    if live_close_below_min_order_notional(notional_usd, settings=settings):
-        return await record_live_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            reason="live_close_below_min_order_notional",
-            leverage=position.leverage,
-            limit_price=price,
-            margin_usd=margin_from_notional(notional_usd, position.leverage),
-            requested_notional_usd=notional_usd,
-            requested_size=close_size,
-        )
     leverage = (
         position.leverage
         if position.leverage > ZERO
@@ -809,6 +795,35 @@ async def apply_live_close_part(
             fill=fill,
             source_leverages=source_leverages,
         )
+    )
+    min_order_notional = live_min_order_notional_usd(settings)
+    final_source_close = live_source_position_is_final_close(
+        source_account_state,
+        coin=coin,
+        side=part.side,
+    )
+    close_below_min_order = live_close_below_min_order_notional(
+        notional_usd,
+        settings=settings,
+    )
+    if close_below_min_order and not final_source_close:
+        return await record_live_skip(
+            session,
+            account=account,
+            allocation=allocation,
+            fill=fill,
+            part=part,
+            reason="live_close_below_min_order_notional",
+            leverage=leverage,
+            limit_price=price,
+            margin_usd=margin_from_notional(notional_usd, leverage),
+            requested_notional_usd=notional_usd,
+            requested_size=close_size,
+        )
+    order_notional_usd = (
+        max(notional_usd, min_order_notional)
+        if final_source_close
+        else notional_usd
     )
     intent = build_copy_trade_intent(
         account_key=account.key,
@@ -820,8 +835,8 @@ async def apply_live_close_part(
         action=part.action,
         side=part.side,
         size=close_size,
-        notional_usd=notional_usd,
-        margin_usd=margin_from_notional(notional_usd, leverage),
+        notional_usd=order_notional_usd,
+        margin_usd=margin_from_notional(order_notional_usd, leverage),
         leverage=leverage,
         limit_price=price,
         source_price=execution_context.source_price,

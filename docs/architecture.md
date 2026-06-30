@@ -814,12 +814,12 @@ Live entry orders are submitted as IOC-limit orders priced from live mid plus
 `live_trading_max_slippage_bps` value is the hard safety cap. If the execution
 price is not aggressive enough to cross resting liquidity, Hyperliquid rejects
 the IOC order without opening exposure.
-Live reduce and close copy parts whose notional is below the configured
-minimum are skipped locally before order creation. Hyperliquid rejects
-sub-minimum reduce-only orders. When current source state shows the source is
-flat or on the opposite side, live copy treats that close fill as final and
-uses the full remaining copied source-position size. If that full remaining
-notional is still below the minimum, the worker skips it locally as dust.
+Partial live reduce and close copy parts whose notional is below the configured
+minimum are skipped locally before order creation. When current source state
+shows the source is flat or on the opposite side, live copy treats that close
+fill as final and uses the full remaining copied source-position size. If that
+final close is below the minimum, the backend submits a reduce-only dust close
+with wire size adjusted up to the minimum notional.
 Automatic copied live entries also pass account-level guardrails for max order
 notional, max account open notional, max open positions, max daily loss, max
 orders per minute, and market allow/block lists.

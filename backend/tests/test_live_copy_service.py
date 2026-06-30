@@ -25,6 +25,8 @@ from app.services.live_copy_service import (
 )
 from app.services.live_trading_service import LiveOrderSubmitError
 from app.services.paper_trading_service import (
+    ExecutionMarketPrices,
+    PaperCopyBatchResult,
     PaperSourceAccountState,
     PaperSourceAllocation,
     PaperSourceCurrentPosition,
@@ -316,6 +318,98 @@ def test_live_source_position_is_final_close_when_source_flipped_side() -> None:
     source_state = live_source_state(position_side="short")
 
     assert live_source_position_is_final_close(source_state, coin="HYPE", side="long")
+
+
+@pytest.mark.asyncio
+async def test_final_live_dust_close_submits_min_notional_order(monkeypatch) -> None:
+    submitted_intents = []
+
+    async def fake_load_live_source_position(*args, **kwargs):
+        return live_position(
+            source_wallet="0xsource",
+            side="short",
+            size=Decimal("303"),
+        )
+
+    async def fake_pending_close_size(*args, **kwargs):
+        return Decimal("0")
+
+    async def fake_submit_live_copy_intent(_session, *, account, intent, settings, trading_client):
+        submitted_intents.append(intent)
+        return PaperCopyBatchResult(processed_fills=1)
+
+    monkeypatch.setattr(
+        live_copy_service,
+        "load_live_source_position",
+        fake_load_live_source_position,
+    )
+    monkeypatch.setattr(
+        live_copy_service,
+        "live_pending_close_size_for_position",
+        fake_pending_close_size,
+    )
+    monkeypatch.setattr(
+        live_copy_service,
+        "submit_live_copy_intent",
+        fake_submit_live_copy_intent,
+    )
+
+    result = await live_copy_service.apply_live_close_part(
+        object(),
+        account=live_account(last_reconciled_at=datetime(2026, 1, 1, tzinfo=UTC)),
+        allocation=PaperSourceAllocation(
+            source_wallet="0xsource",
+            source_label="Source",
+            rank=1,
+            pool_rank=1,
+            score=Decimal("90"),
+            allocation_pct=Decimal("0.2"),
+            active=True,
+            has_realtime_slot=True,
+            status_reason="trading",
+        ),
+        fill={
+            "externalFillId": "bio-final-close",
+            "coin": "BIO",
+            "price": "0.031077",
+            "timestampMs": 1_725_000_000_000,
+        },
+        part=SourceFillPart(
+            action="close",
+            side="short",
+            source_size=Decimal("801"),
+            source_notional_usd=Decimal("26.4"),
+            sequence_index=0,
+            close_ratio=Decimal("1"),
+            start_position=Decimal("-801"),
+        ),
+        source_account_state=PaperSourceAccountState(
+            dex="",
+            perp_equity=Decimal("1000"),
+            leverage_by_coin={"BIO": Decimal("3")},
+            positions_by_coin={},
+            skip_reason=None,
+        ),
+        source_perp_equity=Decimal("1000"),
+        source_leverages={"BIO": Decimal("3")},
+        market_prices=ExecutionMarketPrices(
+            prices={"BIO": Decimal("0.031077")},
+            sources={"BIO": "test"},
+        ),
+        settings=Settings(
+            trading_copy_min_order_notional_usd=Decimal("10"),
+            live_trading_min_order_notional_usd=Decimal("10"),
+        ),
+        trading_client=object(),
+    )
+
+    assert result.processed_fills == 1
+    assert result.skipped_fills == 0
+    assert len(submitted_intents) == 1
+    intent = submitted_intents[0]
+    assert intent.reduce_only is True
+    assert intent.size == Decimal("303")
+    assert intent.notional_usd == Decimal("10")
 
 
 @pytest.mark.asyncio
