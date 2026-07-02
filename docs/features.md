@@ -965,7 +965,9 @@ What it does:
   Hyperliquid can reject the IOC order because it cannot immediately match
   resting liquidity.
 - Skips partial live reduce and close copy orders below the configured minimum
-  notional with `live_close_below_min_order_notional`. When current source state
+  notional with `live_close_below_min_order_notional`. Later partial closes
+  aggregate earlier below-min skips for the same live account, source, coin, and
+  side until the combined reduce can be submitted. When current source state
   shows the source is flat or on the opposite side, live copy treats the close
   fill as final and closes the full remaining copied source position. If that
   final close is below the configured minimum, the backend submits a reduce-only

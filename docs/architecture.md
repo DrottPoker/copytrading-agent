@@ -824,10 +824,13 @@ copy before paper copy, so realtime subscriptions can start without waiting for
 historical recovery to finish.
 Partial live reduce and close copy parts whose notional is below the configured
 minimum are skipped locally before order creation. When current source state
-shows the source is flat or on the opposite side, live copy treats that close
-fill as final and uses the full remaining copied source-position size. If that
-final close is below the minimum, the backend submits a reduce-only dust close
-with wire size adjusted up to the minimum notional.
+remains open, later partial close parts aggregate earlier below-min skips for
+the same live account, source, coin, and side until the combined reduce can be
+submitted. When current source state shows the source is flat or on the
+opposite side, live copy treats that close fill as final and uses the full
+remaining copied source-position size. If that final close is below the minimum,
+the backend submits a reduce-only dust close with wire size adjusted up to the
+minimum notional.
 Reduce-only dust closes are adjusted independently from the small-entry
 adjustment toggle because exits must be able to clear residual exposure.
 Recovery can retry older local `live_close_below_min_order_notional` skip rows

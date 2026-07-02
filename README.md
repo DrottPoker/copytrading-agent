@@ -799,10 +799,13 @@ Hyperliquid can reject the order with "Order could not immediately match
 against any resting orders."
 Partial live reduce and close copy orders below the configured minimum notional
 are skipped locally with `live_close_below_min_order_notional`. When current
-source state shows the source is flat or on the opposite side, live copy treats
-that close fill as final and closes the full remaining copied source position.
-If that final close is below the configured minimum, the backend submits a
-reduce-only dust close with wire size adjusted up to the minimum notional.
+source state remains open, later partial closes aggregate earlier below-min
+skips for the same live account, source, coin, and side until the combined
+reduce can be submitted. When current source state shows the source is flat or
+on the opposite side, live copy treats that close fill as final and closes the
+full remaining copied source position. If that final close is below the
+configured minimum, the backend submits a reduce-only dust close with wire size
+adjusted up to the minimum notional.
 Reduce-only dust closes are adjusted independently from the small-entry
 adjustment toggle because exits must be able to clear residual exposure.
 Recovery can retry older local `live_close_below_min_order_notional` skip rows

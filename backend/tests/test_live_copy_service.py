@@ -9,6 +9,7 @@ from app.db.models import TradingAccount, TradingOrder, TradingPosition
 from app.services import live_copy_service
 from app.services.live_copy_service import (
     combine_batch_results,
+    live_aggregated_below_min_close_size,
     live_close_below_min_order_notional,
     live_close_size_for_part,
     live_copy_account_snapshot_is_stale,
@@ -331,6 +332,130 @@ def test_live_final_close_uses_unreconciled_available_size() -> None:
     )
 
     assert close_size == Decimal("0.25")
+
+
+def test_live_aggregated_below_min_close_size_caps_available_size() -> None:
+    previous = live_order(
+        status="failed",
+        requested_size=Decimal("0.45"),
+        filled_size=Decimal("0"),
+    )
+
+    assert (
+        live_aggregated_below_min_close_size(
+            close_size=Decimal("0.35"),
+            previous_skip_orders=[previous],
+            available_size=Decimal("0.70"),
+        )
+        == Decimal("0.70")
+    )
+
+
+@pytest.mark.asyncio
+async def test_live_partial_close_aggregates_previous_below_min_skips(
+    monkeypatch,
+) -> None:
+    class CaptureSession:
+        async def flush(self):
+            return None
+
+    previous_skip = live_order(
+        status="failed",
+        requested_size=Decimal("0.30"),
+        filled_size=Decimal("0"),
+    )
+    previous_skip.order_type = "skip"
+    previous_skip.error = "skip:live_close_below_min_order_notional"
+    previous_skip.raw_payload = {"skipReason": "live_close_below_min_order_notional"}
+    submitted_intents = []
+
+    async def fake_load_live_source_position(*_args, **_kwargs):
+        return live_position(source_wallet="0xsource", side="long", size=Decimal("1"))
+
+    async def fake_pending_close_size(*_args, **_kwargs):
+        return Decimal("0")
+
+    async def fake_load_previous_skips(*_args, **_kwargs):
+        return [previous_skip]
+
+    async def fake_submit_live_copy_intent(_session, *, account, intent, settings, trading_client):
+        submitted_intents.append(intent)
+        return PaperCopyBatchResult(processed_fills=1)
+
+    monkeypatch.setattr(
+        live_copy_service,
+        "load_live_source_position",
+        fake_load_live_source_position,
+    )
+    monkeypatch.setattr(
+        live_copy_service,
+        "live_pending_close_size_for_position",
+        fake_pending_close_size,
+    )
+    monkeypatch.setattr(
+        live_copy_service,
+        "load_live_below_min_close_skip_orders",
+        fake_load_previous_skips,
+    )
+    monkeypatch.setattr(
+        live_copy_service,
+        "submit_live_copy_intent",
+        fake_submit_live_copy_intent,
+    )
+
+    result = await live_copy_service.apply_live_close_part(
+        CaptureSession(),
+        account=live_account(last_reconciled_at=datetime(2026, 1, 1, tzinfo=UTC)),
+        allocation=PaperSourceAllocation(
+            source_wallet="0xsource",
+            source_label="Source",
+            rank=1,
+            pool_rank=1,
+            score=Decimal("90"),
+            allocation_pct=Decimal("0.2"),
+            active=True,
+            has_realtime_slot=True,
+            status_reason="trading",
+        ),
+        fill={
+            "externalFillId": "fill-2",
+            "coin": "HYPE",
+            "price": "20",
+            "timestampMs": 1_725_000_000_000,
+        },
+        part=SourceFillPart(
+            action="close",
+            side="long",
+            source_size=Decimal("1"),
+            source_notional_usd=Decimal("20"),
+            sequence_index=0,
+            close_ratio=Decimal("0.25"),
+            start_position=Decimal("4"),
+        ),
+        source_account_state=live_source_state(position_side="long"),
+        source_perp_equity=Decimal("1000"),
+        source_leverages={"HYPE": Decimal("10")},
+        market_prices=ExecutionMarketPrices(
+            prices={"HYPE": Decimal("20")},
+            sources={"HYPE": "test"},
+        ),
+        settings=Settings(
+            trading_copy_min_order_notional_usd=Decimal("10"),
+            live_trading_min_order_notional_usd=Decimal("10"),
+        ),
+        trading_client=object(),
+    )
+
+    assert result.processed_fills == 1
+    assert result.skipped_fills == 0
+    assert len(submitted_intents) == 1
+    intent = submitted_intents[0]
+    assert intent.reduce_only is True
+    assert intent.size == Decimal("0.55")
+    assert intent.notional_usd >= Decimal("10")
+    assert previous_skip.error == "skip:live_close_aggregated_into_later_order"
+    assert previous_skip.raw_payload["hiddenFromActivity"] is True
+    assert previous_skip.raw_payload["aggregatedInto"]["sourceFillId"] == "fill-2"
 
 
 def test_live_pending_close_size_counts_filled_reduce_order() -> None:

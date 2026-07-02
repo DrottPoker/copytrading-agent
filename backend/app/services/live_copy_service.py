@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -73,6 +73,7 @@ logger = logging.getLogger(__name__)
 ZERO = Decimal("0")
 LIVE_COPY_RECOVERY_OVERLAP_MS = 5 * 60 * 1000
 PENDING_CLOSE_ORDER_STATUSES = {"submitted", "accepted", "partially_filled", "filled"}
+LIVE_CLOSE_AGGREGATED_SKIP_REASON = "live_close_aggregated_into_later_order"
 
 
 def live_skip(reason: str, count: int = 1) -> PaperCopyBatchResult:
@@ -841,20 +842,44 @@ async def apply_live_close_part(
         notional_usd,
         settings=settings,
     )
+    aggregate_skip_orders: list[TradingOrder] = []
     if close_below_min_order and not final_source_close:
-        return await record_live_skip(
+        aggregate_skip_orders = await load_live_below_min_close_skip_orders(
             session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            reason="live_close_below_min_order_notional",
-            leverage=leverage,
-            limit_price=price,
-            margin_usd=margin_from_notional(notional_usd, leverage),
-            requested_notional_usd=notional_usd,
-            requested_size=close_size,
+            account_key=account.key,
+            source_wallet=allocation.source_wallet,
+            coin=coin,
+            side=part.side,
+            current_source_fill_id=str(fill.get("externalFillId") or ""),
+            current_sequence_index=part.sequence_index,
+            since=position.last_reconciled_at or position.opened_at,
         )
+        aggregate_close_size = live_aggregated_below_min_close_size(
+            close_size=close_size,
+            previous_skip_orders=aggregate_skip_orders,
+            available_size=available_size,
+        )
+        aggregate_notional_usd = aggregate_close_size * price
+        if live_close_below_min_order_notional(
+            aggregate_notional_usd,
+            settings=settings,
+        ):
+            return await record_live_skip(
+                session,
+                account=account,
+                allocation=allocation,
+                fill=fill,
+                part=part,
+                reason="live_close_below_min_order_notional",
+                leverage=leverage,
+                limit_price=price,
+                margin_usd=margin_from_notional(notional_usd, leverage),
+                requested_notional_usd=notional_usd,
+                requested_size=close_size,
+            )
+        close_size = aggregate_close_size
+        notional_usd = aggregate_notional_usd
+        close_below_min_order = False
     order_notional_usd = (
         max(notional_usd, min_order_notional)
         if final_source_close
@@ -884,13 +909,94 @@ async def apply_live_close_part(
         source_exposure_pct=None,
         created_at=fill_datetime(fill),
     )
-    return await submit_live_copy_intent(
+    result = await submit_live_copy_intent(
         session,
         account=account,
         intent=intent,
         settings=settings,
         trading_client=trading_client,
     )
+    if result.processed_fills > 0:
+        await mark_live_close_skips_aggregated(
+            session,
+            orders=aggregate_skip_orders,
+            intent=intent,
+        )
+    return result
+
+
+async def load_live_below_min_close_skip_orders(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    source_wallet: str,
+    coin: str,
+    side: str,
+    current_source_fill_id: str,
+    current_sequence_index: int,
+    since: datetime | None,
+) -> list[TradingOrder]:
+    query = select(TradingOrder).where(
+        TradingOrder.account_key == account_key,
+        TradingOrder.account_type == "live",
+        TradingOrder.source_wallet == source_wallet,
+        TradingOrder.coin == coin,
+        TradingOrder.side == side,
+        TradingOrder.reduce_only.is_(True),
+        TradingOrder.order_type == "skip",
+        TradingOrder.status == "failed",
+        TradingOrder.error == "skip:live_close_below_min_order_notional",
+        TradingOrder.filled_size <= ZERO,
+        TradingOrder.filled_notional_usd <= ZERO,
+        or_(
+            TradingOrder.source_fill_id != current_source_fill_id,
+            TradingOrder.sequence_index != current_sequence_index,
+        ),
+    )
+    if since is not None:
+        query = query.where(TradingOrder.created_at >= since)
+    result = await session.scalars(query.order_by(TradingOrder.created_at.asc()))
+    return list(result.all())
+
+
+def live_aggregated_below_min_close_size(
+    *,
+    close_size: Decimal,
+    previous_skip_orders: list[TradingOrder],
+    available_size: Decimal,
+) -> Decimal:
+    previous_size = sum(
+        (
+            order.requested_size
+            for order in previous_skip_orders
+            if order.requested_size > ZERO
+        ),
+        ZERO,
+    )
+    return min(max(close_size + previous_size, ZERO), available_size)
+
+
+async def mark_live_close_skips_aggregated(
+    session: AsyncSession,
+    *,
+    orders: list[TradingOrder],
+    intent: TradeIntent,
+) -> None:
+    if not orders:
+        return
+    for order in orders:
+        payload = order.raw_payload if isinstance(order.raw_payload, dict) else {}
+        order.error = f"skip:{LIVE_CLOSE_AGGREGATED_SKIP_REASON}"
+        order.raw_payload = {
+            **payload,
+            "hiddenFromActivity": True,
+            "aggregatedInto": {
+                "clientOrderId": intent.client_order_id,
+                "sourceFillId": intent.source_fill_id,
+                "sequenceIndex": intent.sequence_index,
+            },
+        }
+    await session.flush()
 
 
 async def apply_live_orphan_exchange_close_part(
