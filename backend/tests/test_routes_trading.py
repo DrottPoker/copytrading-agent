@@ -46,7 +46,7 @@ def test_trading_position_read_exposes_position_pnl_and_fill_counts() -> None:
         notional_usd=Decimal("20"),
         leverage=Decimal("5"),
         margin_usd=Decimal("4"),
-        realized_pnl_usd=Decimal("1.23"),
+        realized_pnl_usd=Decimal("0"),
         fee_usd=Decimal("0.02"),
         raw_payload={
             "position": {
@@ -66,7 +66,7 @@ def test_trading_position_read_exposes_position_pnl_and_fill_counts() -> None:
     read = trading_position_read(
         position,
         entry_execution_delay_ms=640,
-        fill_counts=(3, 2),
+        fill_metrics=(3, 2, Decimal("1.23")),
     )
 
     assert read.realized_pnl_usd == Decimal("1.23")

@@ -911,9 +911,11 @@ Activity. Live
 exchange position rows use reconciled Hyperliquid position payloads for mark
 price, current notional, unrealized PnL, and ROE. Trading open position rows
 also expose realized PnL plus add and close fill counts for the current position
-window. Source-attributed live position rows are refreshed from the matching
-exchange mark on reconciliation, so source performance and copy source rows show
-current unrealized PnL instead of stale fill-time values. If exchange
+window, with live realized PnL summed from the same close, reduce, and
+flip-close fills used by the counts. Source-attributed live position rows are
+refreshed from the matching exchange mark on reconciliation, so source
+performance and copy source rows show current unrealized PnL instead of stale
+fill-time values. If exchange
 reconciliation no longer has a matching market and side, the source-attributed
 row is removed, and if manual exchange activity partially reduced the market,
 source exposure is scaled down to match the reconciled exchange size. Live

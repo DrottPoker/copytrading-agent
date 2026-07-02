@@ -397,10 +397,10 @@ async def load_live_position_entry_execution_delays(
     return delays
 
 
-async def load_live_position_fill_counts(
+async def load_live_position_fill_metrics(
     session: AsyncSession,
     positions: list[TradingPosition],
-) -> dict[UUID, tuple[int, int]]:
+) -> dict[UUID, tuple[int, int, Decimal]]:
     live_positions = [position for position in positions if position.account_type == "live"]
     if not live_positions:
         return {}
@@ -414,6 +414,12 @@ async def load_live_position_fill_counts(
             func.count(TradingFill.id)
             .filter(TradingFill.action.in_(POSITION_CLOSE_FILL_ACTIONS))
             .label("close_fill_count"),
+            func.coalesce(
+                func.sum(TradingFill.realized_pnl_usd).filter(
+                    TradingFill.action.in_(POSITION_CLOSE_FILL_ACTIONS)
+                ),
+                Decimal("0"),
+            ).label("realized_pnl_usd"),
         )
         .outerjoin(
             TradingFill,
@@ -433,7 +439,11 @@ async def load_live_position_fill_counts(
         .group_by(TradingPosition.id)
     )
     return {
-        row.id: (int(row.add_fill_count or 0), int(row.close_fill_count or 0))
+        row.id: (
+            int(row.add_fill_count or 0),
+            int(row.close_fill_count or 0),
+            row.realized_pnl_usd or Decimal("0"),
+        )
         for row in result.all()
     }
 
@@ -455,14 +465,20 @@ def trading_position_read(
     position: TradingPosition,
     *,
     entry_execution_delay_ms: int | None = None,
-    fill_counts: tuple[int, int] = (0, 0),
+    fill_metrics: tuple[int, int, Decimal] | None = None,
 ) -> TradingPositionRead:
+    add_fill_count, close_fill_count, realized_pnl_usd = (
+        fill_metrics
+        if fill_metrics is not None
+        else (0, 0, position.realized_pnl_usd)
+    )
     read = TradingPositionRead.model_validate(position)
     if position.account_type != "live":
         return read.model_copy(
             update={
-                "add_fill_count": fill_counts[0],
-                "close_fill_count": fill_counts[1],
+                "realized_pnl_usd": realized_pnl_usd,
+                "add_fill_count": add_fill_count,
+                "close_fill_count": close_fill_count,
             }
         )
     return read.model_copy(
@@ -471,10 +487,11 @@ def trading_position_read(
             "mark_price": live_position_mark_price(position),
             "unrealized_pnl_usd": live_position_unrealized_pnl(position),
             "unrealized_pnl_pct": live_position_unrealized_pnl_pct(position),
+            "realized_pnl_usd": realized_pnl_usd,
             "price_updated_at": position.last_reconciled_at,
             "entry_execution_delay_ms": entry_execution_delay_ms,
-            "add_fill_count": fill_counts[0],
-            "close_fill_count": fill_counts[1],
+            "add_fill_count": add_fill_count,
+            "close_fill_count": close_fill_count,
         }
     )
 
@@ -527,7 +544,7 @@ async def list_trading_accounts_route(
         session,
         positions,
     )
-    position_fill_counts = await load_live_position_fill_counts(
+    position_fill_metrics = await load_live_position_fill_metrics(
         session,
         positions,
     )
@@ -554,7 +571,10 @@ async def list_trading_accounts_route(
             trading_position_read(
                 position,
                 entry_execution_delay_ms=entry_execution_delays.get(position.id),
-                fill_counts=position_fill_counts.get(position.id, (0, 0)),
+                fill_metrics=position_fill_metrics.get(
+                    position.id,
+                    (0, 0, position.realized_pnl_usd),
+                ),
             )
             for position in positions
         ],
