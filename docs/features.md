@@ -956,7 +956,9 @@ What it does:
   `live_trading_copy_enabled` are both true. Realtime live copy reuses the
   shared source allocation policy, live mid-price cache, price drift guard,
   optional min-order adjustment, deterministic client order ids, and live risk
-  guardrails.
+  guardrails. Recovery-created stale entry skips are hidden from recent
+  execution activity because they are replay markers, not current execution
+  attempts.
 - Prices live entry IOC-limit orders with `live_trading_limit_slippage_bps`,
   which defaults to 20 bps. `live_trading_max_slippage_bps` remains the hard
   guard against overly aggressive prices. If the execution value is too tight,

@@ -105,6 +105,61 @@ def test_recent_live_stale_entry_skip_stays_visible_for_diagnostics() -> None:
     )
 
 
+@pytest.mark.asyncio
+async def test_recovery_stale_live_entry_skip_is_hidden_from_activity(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_record_live_skip(*_args, **kwargs):
+        captured.update(kwargs)
+        return PaperCopyBatchResult(skipped_fills=1)
+
+    monkeypatch.setattr(live_copy_service, "record_live_skip", fake_record_live_skip)
+
+    result = await live_copy_service.apply_live_open_part(
+        object(),
+        account=live_account(last_reconciled_at=datetime(2026, 1, 1, tzinfo=UTC)),
+        allocation=PaperSourceAllocation(
+            source_wallet="0xsource",
+            source_label="Source",
+            rank=1,
+            pool_rank=1,
+            score=Decimal("90"),
+            allocation_pct=Decimal("0.2"),
+            active=True,
+            has_realtime_slot=True,
+            status_reason="trading",
+        ),
+        fill={
+            "externalFillId": "fill-1",
+            "coin": "HYPE",
+            "price": "100",
+            "timestampMs": int((datetime.now(UTC) - timedelta(seconds=20)).timestamp() * 1000),
+        },
+        part=SourceFillPart(
+            action="open",
+            side="long",
+            source_size=Decimal("0.1"),
+            source_notional_usd=Decimal("10"),
+            sequence_index=0,
+            close_ratio=None,
+            start_position=Decimal("0"),
+        ),
+        source_perp_equity=Decimal("1000"),
+        source_leverages={},
+        market_prices=ExecutionMarketPrices(prices={}, sources={}),
+        settings=Settings(
+            trading_copy_max_entry_age_seconds=15,
+            trading_copy_stale_entry_skip_activity_seconds=300,
+        ),
+        trading_client=object(),
+        hide_stale_entry_skips=True,
+    )
+
+    assert result.skipped_fills == 1
+    assert captured["reason"] == "live_source_fill_too_old"
+    assert captured["hidden_from_activity"] is True
+
+
 def test_live_copy_combine_batch_results_merges_skip_reasons() -> None:
     combined = combine_batch_results(
         live_skip("live_order_submit_error", 1),

@@ -103,6 +103,7 @@ async def process_live_copy_fills(
     client: HyperliquidClient | None = None,
     trading_client: HyperliquidLiveTradingClient | None = None,
     price_cache: MarketPriceCache | None = None,
+    hide_stale_entry_skips: bool = False,
 ) -> PaperCopyBatchResult:
     resolved_settings = settings or get_settings()
     if (
@@ -135,6 +136,7 @@ async def process_live_copy_fills(
                 client=hyperliquid_client,
                 trading_client=trading_client,
                 price_cache=price_cache,
+                hide_stale_entry_skips=hide_stale_entry_skips,
             )
 
     source_account_states_task = load_source_account_states(
@@ -217,6 +219,7 @@ async def process_live_copy_fills(
                     market_prices=market_prices,
                     settings=resolved_settings,
                     trading_client=live_client,
+                    hide_stale_entry_skips=hide_stale_entry_skips,
                 )
                 processed += fill_result.processed_fills
                 skipped += fill_result.skipped_fills
@@ -304,6 +307,7 @@ async def process_live_copy_recovery(
             settings=resolved_settings,
             client=client,
             price_cache=price_cache,
+            hide_stale_entry_skips=True,
         )
         total = combine_batch_results(total, result)
     return total
@@ -372,6 +376,7 @@ async def apply_live_copy_part(
     market_prices: ExecutionMarketPrices,
     settings: Settings,
     trading_client: HyperliquidLiveTradingClient,
+    hide_stale_entry_skips: bool = False,
 ) -> PaperCopyBatchResult:
     source_fill_id = str(fill.get("externalFillId") or "")
     if not source_fill_id:
@@ -397,6 +402,7 @@ async def apply_live_copy_part(
             market_prices=market_prices,
             settings=settings,
             trading_client=trading_client,
+            hide_stale_entry_skips=hide_stale_entry_skips,
         )
     return await apply_live_close_part(
         session,
@@ -425,6 +431,7 @@ async def apply_live_open_part(
     market_prices: ExecutionMarketPrices,
     settings: Settings,
     trading_client: HyperliquidLiveTradingClient,
+    hide_stale_entry_skips: bool = False,
 ) -> PaperCopyBatchResult:
     source_leverage = leverage_for_fill(fill=fill, source_leverages=source_leverages)
     if account.status != "enabled":
@@ -460,7 +467,8 @@ async def apply_live_open_part(
             hidden_from_activity=live_stale_entry_skip_hidden_from_activity(
                 fill,
                 settings=settings,
-            ),
+            )
+            or hide_stale_entry_skips,
             source_fill_age_seconds=fill_age_seconds,
         )
     coin = str(fill.get("coin") or "")

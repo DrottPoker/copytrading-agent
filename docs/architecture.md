@@ -699,7 +699,9 @@ entries, recovery obeys the same max entry age guard as realtime copy. For close
 and reduce fills, recovery can still catch up older source exits. For
 open-exposure sources, recovery scans fills from the oldest open paper position
 with overlap, then the copied-fill uniqueness constraint prevents duplicate
-simulation. Exit skip rows caused by unavailable source state or unavailable
+simulation. Live-copy recovery hides stale entry skip rows from recent execution
+activity because those rows only mark old replayed entries as handled. Exit skip
+rows caused by unavailable source state or unavailable
 execution price are retriable during recovery so copied positions can still
 close after transient data issues.
 Paper-copy mutations also take a Postgres advisory transaction lock per source

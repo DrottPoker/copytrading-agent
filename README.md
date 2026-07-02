@@ -441,7 +441,9 @@ Sizing policy:
   processing still runs for older fills so exits can catch up safely. Live copy
   keeps old stale-entry skips as idempotent processing markers, but hides them
   from Recent Execution Activity once they are older than
-  `trading_copy_stale_entry_skip_activity_seconds`.
+  `trading_copy_stale_entry_skip_activity_seconds`. Live copy recovery hides
+  stale-entry skips immediately because those rows are replay markers, not
+  current execution attempts.
 - Paper execution starts the configured simulated latency immediately while
   source account state is fetched in parallel.
   It then reads live mids and applies adverse slippage to the execution price.
