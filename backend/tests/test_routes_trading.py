@@ -1,6 +1,14 @@
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from uuid import uuid4
 
-from app.api.routes_trading import live_entry_delay_ms, matching_live_entry_delay
+from app.api.routes_trading import (
+    LIVE_EXCHANGE_SOURCE,
+    live_entry_delay_ms,
+    matching_live_entry_delay,
+    trading_position_read,
+)
+from app.db.models import TradingPosition
 
 
 def test_live_entry_delay_uses_source_timestamp_to_exchange_fill() -> None:
@@ -22,3 +30,47 @@ def test_matching_live_entry_delay_prefers_latest_entry_before_opened_at() -> No
     ]
 
     assert matching_live_entry_delay(entries, opened_at=opened_at) == 640
+
+
+def test_trading_position_read_exposes_position_pnl_and_fill_counts() -> None:
+    opened_at = datetime(2026, 1, 1, 12, tzinfo=UTC)
+    position = TradingPosition(
+        id=uuid4(),
+        account_key="live_test",
+        account_type="live",
+        source_wallet=LIVE_EXCHANGE_SOURCE,
+        coin="HYPE",
+        side="long",
+        size=Decimal("2"),
+        entry_price=Decimal("10"),
+        notional_usd=Decimal("20"),
+        leverage=Decimal("5"),
+        margin_usd=Decimal("4"),
+        realized_pnl_usd=Decimal("1.23"),
+        fee_usd=Decimal("0.02"),
+        raw_payload={
+            "position": {
+                "szi": "2",
+                "entryPx": "10",
+                "positionValue": "22",
+                "unrealizedPnl": "2.50",
+                "returnOnEquity": "0.625",
+            }
+        },
+        opened_at=opened_at,
+        last_reconciled_at=opened_at + timedelta(seconds=30),
+        created_at=opened_at,
+        updated_at=opened_at,
+    )
+
+    read = trading_position_read(
+        position,
+        entry_execution_delay_ms=640,
+        fill_counts=(3, 2),
+    )
+
+    assert read.realized_pnl_usd == Decimal("1.23")
+    assert read.unrealized_pnl_usd == Decimal("2.50")
+    assert read.add_fill_count == 3
+    assert read.close_fill_count == 2
+    assert read.entry_execution_delay_ms == 640

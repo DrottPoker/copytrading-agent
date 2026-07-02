@@ -59,6 +59,8 @@ export type PaperPosition = {
   unrealizedPnlPct: string | null;
   priceUpdatedAt: string | null;
   feeUsd: string;
+  addFillCount: number;
+  closeFillCount: number;
   openedAt: string;
   entryExecutionDelayMs: number;
   createdAt: string;

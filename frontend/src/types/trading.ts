@@ -50,6 +50,8 @@ export type TradingPosition = {
   priceUpdatedAt: string | null;
   realizedPnlUsd: string;
   feeUsd: string;
+  addFillCount: number;
+  closeFillCount: number;
   openedAt: string;
   entryExecutionDelayMs: number | null;
   lastReconciledAt: string | null;

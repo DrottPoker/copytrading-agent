@@ -774,12 +774,13 @@ What it does:
   shared source eligibility allows new entries. Live-only historical sources
   from recent fills or orders are excluded from Copy Sources and remain visible
   through Wallet PnL history and Recent Execution Activity.
-- Live open position rows include reconciled current notional, mark price,
-  unrealized PnL, and ROE when Hyperliquid supplies the fields. They also expose
-  an individual Close action that submits a reduce-only live close order for
-  that position. Successful manual closes immediately reconcile the live account
-  so the exchange fill and closed trade row can appear without waiting for the
-  next worker loop.
+- Open position rows include unrealized PnL, realized PnL, and add and close
+  fill counts for the current position window. Live open position rows also
+  include reconciled current notional, mark price, and ROE when Hyperliquid
+  supplies the fields. They expose an individual Close action that submits a
+  reduce-only live close order for that position. Successful manual closes
+  immediately reconcile the live account so the exchange fill and closed trade
+  row can appear without waiting for the next worker loop.
 - The Accounts page filters account data to one selected paper or live account.
   It keeps the last selected account in browser storage and falls back to the
   first synced account. For paper accounts it shows account KPIs, balance and

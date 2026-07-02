@@ -909,13 +909,15 @@ Hyperliquid realized PnL to estimate the entry price when no local open fill is
 available. Individual reduce and close fills remain in Recent Execution
 Activity. Live
 exchange position rows use reconciled Hyperliquid position payloads for mark
-price, current notional, unrealized PnL, and ROE. Source-attributed live
-position rows are refreshed from the matching exchange mark on reconciliation,
-so source performance and copy source rows show current unrealized PnL instead
-of stale fill-time values. If exchange reconciliation no longer has a matching
-market and side, the source-attributed row is removed, and if manual exchange
-activity partially reduced the market, source exposure is scaled down to match
-the reconciled exchange size. Live position rows can submit an individual
+price, current notional, unrealized PnL, and ROE. Trading open position rows
+also expose realized PnL plus add and close fill counts for the current position
+window. Source-attributed live position rows are refreshed from the matching
+exchange mark on reconciliation, so source performance and copy source rows show
+current unrealized PnL instead of stale fill-time values. If exchange
+reconciliation no longer has a matching market and side, the source-attributed
+row is removed, and if manual exchange activity partially reduced the market,
+source exposure is scaled down to match the reconciled exchange size. Live
+position rows can submit an individual
 reduce-only close order. If that manual close submit returns an uncertain
 post-submit error, the backend immediately reconciles the account and treats
 the request as successful when the target position is closed, reduced, or the

@@ -121,8 +121,11 @@ type DashboardPosition = {
   currentNotionalUsd: string | number | null;
   entryPrice: string | number | null;
   size: string | number | null;
+  realizedPnlUsd: string | number | null;
   unrealizedPnlUsd: string | number | null;
   unrealizedPnlPct: string | number | null;
+  addFillCount: number;
+  closeFillCount: number;
   markPrice: string | number | null;
   priceUpdatedAt: string | null;
   entryExecutionDelayMs: number | null;
@@ -1219,6 +1222,7 @@ function PositionRow({
   const canClose =
     livePosition !== null || (paperPosition !== null && position.markPrice !== null);
   const unrealizedPnl = numberValue(position.unrealizedPnlUsd ?? 0);
+  const realizedPnl = numberValue(position.realizedPnlUsd ?? 0);
   const sourceName = sourceDisplayName(position.sourceLabel, position.sourceWallet);
   const closeTitle =
     livePosition !== null
@@ -1228,7 +1232,7 @@ function PositionRow({
         : "Execution price unavailable";
   return (
     <ListRow>
-      <div className="grid gap-2 xl:grid-cols-[1.15fr_0.7fr_0.8fr_0.8fr_0.75fr_0.8fr_auto] xl:items-center">
+      <div className="grid gap-2 xl:grid-cols-[1.15fr_repeat(7,minmax(0,0.72fr))_auto] xl:items-center">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-1">
             <p className="font-semibold text-ink">{position.coin}</p>
@@ -1257,6 +1261,16 @@ function PositionRow({
           value={position.unrealizedPnlUsd === null ? "-" : formatCurrency(position.unrealizedPnlUsd)}
           detail={position.unrealizedPnlPct === null ? undefined : formatPercent(position.unrealizedPnlPct)}
           tone={unrealizedPnl >= 0 ? "positive" : "danger"}
+        />
+        <RowStat
+          label="Realized"
+          value={formatCurrency(position.realizedPnlUsd)}
+          tone={realizedPnl >= 0 ? "positive" : "danger"}
+        />
+        <RowStat
+          label="Fills"
+          value={`${formatInteger(position.addFillCount)} add`}
+          detail={`${formatInteger(position.closeFillCount)} close`}
         />
         <RowStat label="Margin" value={formatCurrency(position.marginUsd)} detail={`${formatCurrency(position.currentNotionalUsd ?? position.notionalUsd)} notional`} />
         <RowStat label="Entry" value={formatPrice(position.entryPrice)} detail={`size ${formatSize(position.size)}`} />
@@ -1592,10 +1606,13 @@ function buildPaperDashboardPositions(paperPositions: PaperPosition[]): Dashboar
     paperPosition: position,
     livePosition: null,
     priceUpdatedAt: position.priceUpdatedAt,
+    realizedPnlUsd: position.realizedPnlUsd,
     side: position.side,
     size: position.size,
     sourceLabel: position.sourceLabel,
     sourceWallet: position.sourceWallet,
+    addFillCount: position.addFillCount,
+    closeFillCount: position.closeFillCount,
     unrealizedPnlPct: position.unrealizedPnlPct,
     unrealizedPnlUsd: position.unrealizedPnlUsd,
     updatedAt: position.updatedAt,
@@ -1621,12 +1638,15 @@ function buildLiveDashboardPositions(
     paperPosition: null,
     livePosition: position,
     priceUpdatedAt: position.priceUpdatedAt ?? position.lastReconciledAt,
+    realizedPnlUsd: position.realizedPnlUsd,
     side: position.side,
     size: position.size,
     sourceLabel: isLiveExchangePosition(position)
       ? "Exchange position"
       : sourceLabels.get(position.sourceWallet.toLowerCase()) ?? null,
     sourceWallet: position.sourceWallet,
+    addFillCount: position.addFillCount,
+    closeFillCount: position.closeFillCount,
     unrealizedPnlPct: position.unrealizedPnlPct,
     unrealizedPnlUsd: position.unrealizedPnlUsd,
     updatedAt: position.updatedAt,

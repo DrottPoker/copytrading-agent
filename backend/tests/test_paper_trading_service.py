@@ -1,11 +1,12 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from uuid import uuid4
 
 import pytest
 from sqlalchemy.dialects import postgresql
 
 from app.core.config import Settings
-from app.db.models import WalletMonitoringStat
+from app.db.models import PaperPosition, WalletMonitoringStat
 from app.services.paper_trading_service import (
     ExecutionMarketPrices,
     SourceFillPart,
@@ -14,6 +15,7 @@ from app.services.paper_trading_service import (
     load_source_account_state,
     monitored_hours,
     open_copy_source_select,
+    paper_position_read,
     pnl_per_monitored_hour,
     source_fill_age_exceeds_entry_limit,
     wallet_monitoring_summary,
@@ -48,6 +50,42 @@ def test_adjust_open_sizing_to_min_order_when_enabled() -> None:
     assert adjustment.original_notional_usd == Decimal("5")
     assert adjustment.adjusted_notional_usd == Decimal("10")
     assert adjustment.min_order_notional_usd == Decimal("10")
+
+
+def test_paper_position_read_exposes_position_pnl_and_fill_counts() -> None:
+    opened_at = datetime(2026, 1, 1, 12, tzinfo=UTC)
+    created_at = opened_at + timedelta(milliseconds=150)
+    position = PaperPosition(
+        id=uuid4(),
+        account_key="paper_test",
+        source_wallet="0xsource",
+        coin="HYPE",
+        side="long",
+        size=Decimal("2"),
+        entry_price=Decimal("10"),
+        notional_usd=Decimal("20"),
+        leverage=Decimal("5"),
+        margin_usd=Decimal("4"),
+        realized_pnl_usd=Decimal("1.23"),
+        fee_usd=Decimal("0.02"),
+        opened_at=opened_at,
+        created_at=created_at,
+        updated_at=created_at,
+    )
+
+    read = paper_position_read(
+        position,
+        mark_price=Decimal("11.25"),
+        price_updated_at=created_at,
+        source_label="Test source",
+        fill_counts=(4, 1),
+    )
+
+    assert read["realized_pnl_usd"] == Decimal("1.23")
+    assert read["unrealized_pnl_usd"] == Decimal("2.50")
+    assert read["add_fill_count"] == 4
+    assert read["close_fill_count"] == 1
+    assert read["entry_execution_delay_ms"] == 150
 
 
 def test_adjust_open_sizing_to_min_order_when_disabled() -> None:

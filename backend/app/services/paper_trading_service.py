@@ -7,7 +7,7 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import delete, func, literal, or_, select, text, tuple_, update
+from sqlalchemy import and_, delete, func, literal, or_, select, text, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -62,6 +62,8 @@ BPS_DENOMINATOR = Decimal("10000")
 PAPER_COPY_RECOVERY_OVERLAP_MS = 5 * 60 * 1000
 PAPER_COPY_SOURCE_LOCK_NAMESPACE = "paper_copy_source"
 MONITORING_MIN_SNAPSHOT_GAP_SECONDS = 60
+POSITION_ADD_FILL_ACTIONS = frozenset({"open", "add", "flip_open"})
+POSITION_CLOSE_FILL_ACTIONS = frozenset({"reduce", "close", "flip_close"})
 SOURCE_EQUITY_ACTIONS = frozenset({"open", "add", "flip_open"})
 SOURCE_CLOSE_DIRECTIONS = frozenset(
     {"Close Long", "Close Short", "Long > Short", "Short > Long"}
@@ -349,12 +351,17 @@ async def get_paper_trading_summary(
         )
 
     updated_at = datetime.now(UTC)
+    position_fill_counts = await load_paper_position_fill_counts(
+        session,
+        positions=positions,
+    )
     position_rows = [
         paper_position_read(
             position,
             mark_price=resolve_coin_decimal(market_prices, position.coin),
             price_updated_at=updated_at if position.coin in market_prices else None,
             source_label=source_labels.get(position.source_wallet.lower()),
+            fill_counts=position_fill_counts.get(position.id, (0, 0)),
         )
         for position in positions
     ]
@@ -734,6 +741,7 @@ def paper_position_read(
     mark_price: Decimal | None,
     price_updated_at: datetime | None,
     source_label: str | None,
+    fill_counts: tuple[int, int] = (0, 0),
 ) -> dict[str, Any]:
     current_notional = (
         abs(position.size) * mark_price
@@ -764,10 +772,49 @@ def paper_position_read(
         ),
         "price_updated_at": price_updated_at,
         "fee_usd": position.fee_usd,
+        "add_fill_count": fill_counts[0],
+        "close_fill_count": fill_counts[1],
         "opened_at": position.opened_at,
         "entry_execution_delay_ms": duration_between_ms(position.opened_at, position.created_at),
         "created_at": position.created_at,
         "updated_at": position.updated_at,
+    }
+
+
+async def load_paper_position_fill_counts(
+    session: AsyncSession,
+    *,
+    positions: list[PaperPosition],
+) -> dict[UUID, tuple[int, int]]:
+    if not positions:
+        return {}
+    position_ids = [position.id for position in positions]
+    result = await session.execute(
+        select(
+            PaperPosition.id,
+            func.count(PaperCopyFill.id)
+            .filter(PaperCopyFill.action.in_(POSITION_ADD_FILL_ACTIONS))
+            .label("add_fill_count"),
+            func.count(PaperCopyFill.id)
+            .filter(PaperCopyFill.action.in_(POSITION_CLOSE_FILL_ACTIONS))
+            .label("close_fill_count"),
+        )
+        .outerjoin(
+            PaperCopyFill,
+            and_(
+                PaperCopyFill.account_key == PaperPosition.account_key,
+                PaperCopyFill.source_wallet == PaperPosition.source_wallet,
+                PaperCopyFill.coin == PaperPosition.coin,
+                PaperCopyFill.side == PaperPosition.side,
+                PaperCopyFill.filled_at >= PaperPosition.opened_at,
+            ),
+        )
+        .where(PaperPosition.id.in_(position_ids))
+        .group_by(PaperPosition.id)
+    )
+    return {
+        row.id: (int(row.add_fill_count or 0), int(row.close_fill_count or 0))
+        for row in result.all()
     }
 
 

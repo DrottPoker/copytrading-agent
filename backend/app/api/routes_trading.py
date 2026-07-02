@@ -4,7 +4,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, or_, select, true
+from sqlalchemy import and_, func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import db_session
@@ -73,6 +73,8 @@ router = APIRouter(prefix="/trading", tags=["trading"])
 TRADING_ACTIVITY_LIMIT = 100
 TRADING_CLOSED_TRADE_LIMIT = 100
 TRADING_CLOSED_TRADE_FILL_SCAN_LIMIT = 5000
+POSITION_ADD_FILL_ACTIONS = frozenset({"open", "add", "flip_open"})
+POSITION_CLOSE_FILL_ACTIONS = frozenset({"reduce", "close", "flip_close"})
 
 
 def source_allocation_pct_for_rank(
@@ -395,6 +397,47 @@ async def load_live_position_entry_execution_delays(
     return delays
 
 
+async def load_live_position_fill_counts(
+    session: AsyncSession,
+    positions: list[TradingPosition],
+) -> dict[UUID, tuple[int, int]]:
+    live_positions = [position for position in positions if position.account_type == "live"]
+    if not live_positions:
+        return {}
+    position_ids = [position.id for position in live_positions]
+    result = await session.execute(
+        select(
+            TradingPosition.id,
+            func.count(TradingFill.id)
+            .filter(TradingFill.action.in_(POSITION_ADD_FILL_ACTIONS))
+            .label("add_fill_count"),
+            func.count(TradingFill.id)
+            .filter(TradingFill.action.in_(POSITION_CLOSE_FILL_ACTIONS))
+            .label("close_fill_count"),
+        )
+        .outerjoin(
+            TradingFill,
+            and_(
+                TradingFill.account_key == TradingPosition.account_key,
+                TradingFill.account_type == "live",
+                TradingFill.coin == TradingPosition.coin,
+                TradingFill.side == TradingPosition.side,
+                TradingFill.filled_at >= TradingPosition.opened_at,
+                or_(
+                    TradingPosition.source_wallet == LIVE_EXCHANGE_SOURCE,
+                    TradingFill.source_wallet == TradingPosition.source_wallet,
+                ),
+            ),
+        )
+        .where(TradingPosition.id.in_(position_ids))
+        .group_by(TradingPosition.id)
+    )
+    return {
+        row.id: (int(row.add_fill_count or 0), int(row.close_fill_count or 0))
+        for row in result.all()
+    }
+
+
 def matching_live_entry_delay(
     entries: list[tuple[datetime, int]],
     *,
@@ -412,10 +455,16 @@ def trading_position_read(
     position: TradingPosition,
     *,
     entry_execution_delay_ms: int | None = None,
+    fill_counts: tuple[int, int] = (0, 0),
 ) -> TradingPositionRead:
     read = TradingPositionRead.model_validate(position)
     if position.account_type != "live":
-        return read
+        return read.model_copy(
+            update={
+                "add_fill_count": fill_counts[0],
+                "close_fill_count": fill_counts[1],
+            }
+        )
     return read.model_copy(
         update={
             "current_notional_usd": live_position_current_notional(position),
@@ -424,6 +473,8 @@ def trading_position_read(
             "unrealized_pnl_pct": live_position_unrealized_pnl_pct(position),
             "price_updated_at": position.last_reconciled_at,
             "entry_execution_delay_ms": entry_execution_delay_ms,
+            "add_fill_count": fill_counts[0],
+            "close_fill_count": fill_counts[1],
         }
     )
 
@@ -476,6 +527,10 @@ async def list_trading_accounts_route(
         session,
         positions,
     )
+    position_fill_counts = await load_live_position_fill_counts(
+        session,
+        positions,
+    )
     recent_fills = list(fill_result.all())
     recent_orders = list(order_result.all())
     source_metadata = await load_trading_source_metadata(
@@ -499,6 +554,7 @@ async def list_trading_accounts_route(
             trading_position_read(
                 position,
                 entry_execution_delay_ms=entry_execution_delays.get(position.id),
+                fill_counts=position_fill_counts.get(position.id, (0, 0)),
             )
             for position in positions
         ],

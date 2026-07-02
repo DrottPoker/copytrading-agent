@@ -74,6 +74,8 @@ class PaperPositionRead(CamelModel):
     unrealized_pnl_pct: Decimal | None = None
     price_updated_at: datetime | None = None
     fee_usd: Decimal
+    add_fill_count: int = 0
+    close_fill_count: int = 0
     opened_at: datetime
     entry_execution_delay_ms: int
     created_at: datetime
