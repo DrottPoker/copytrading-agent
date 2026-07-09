@@ -33,6 +33,7 @@ from app.services.live_trading_service import (
     resolve_live_account_wallet_address,
     sync_live_source_positions_from_exchange_positions,
     update_live_account_from_state,
+    validate_live_trading_configuration,
 )
 
 
@@ -55,6 +56,30 @@ def test_apply_order_status_response_maps_filled_order() -> None:
     assert order.status == "filled"
     assert order.exchange_order_id == "123"
     assert order.filled_at == datetime.fromtimestamp(1_725_000_000_000 / 1000, UTC)
+
+
+def test_mainnet_account_start_requires_entry_arming_and_allowlist() -> None:
+    settings = Settings()
+    settings.hyperliquid_network = "mainnet"
+    settings.hyperliquid_private_key = "0x" + "1" * 64
+    settings.hyperliquid_wallet_address = "0x" + "2" * 40
+    settings.live_trading_enabled = True
+    settings.live_trading_acknowledged = True
+    settings.live_trading_mainnet_acknowledged = True
+
+    with pytest.raises(
+        live_trading_service.LiveTradingServiceError,
+        match="LIVE_TRADING_MAINNET_ARMING_TOKEN",
+    ):
+        validate_live_trading_configuration(settings)
+
+    now = datetime.now(UTC)
+    settings.live_trading_mainnet_arming_token = "ARM_MAINNET_LIVE_TRADING"
+    settings.live_trading_mainnet_armed_at = now - timedelta(minutes=1)
+    settings.live_trading_mainnet_armed_until = now + timedelta(hours=1)
+    settings.live_trading_allowed_coins = ["BTC"]
+
+    validate_live_trading_configuration(settings)
 
 
 def test_apply_live_order_result_updates_submitted_wire_values() -> None:

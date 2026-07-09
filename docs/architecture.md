@@ -297,6 +297,7 @@ Secrets and connection strings live in `.env`:
 - `DATABASE_URL_DIRECT`
 - `REDIS_URL`
 - Hyperliquid private key and wallet address
+- mainnet live entry arming token and expiry
 - dashboard auth credentials
 - backup interval, retention, and status monitoring settings
 
@@ -306,6 +307,25 @@ URLs remain available for non-Compose runs and external Postgres migrations.
 Environment variables override JSON config. This is important in Docker Compose,
 where the backend container overrides `worker_run_in_api_process` without editing
 `backend/config/app.json`.
+
+Repository defaults use mainnet market data and keep live trading,
+acknowledgements, and automatic live copy disabled. Mainnet entry activation is
+separate from general live execution so reduce-only exits remain available after
+entry arming expires.
+New mainnet exposure requires an explicit coin allowlist and an environment-only
+arming token whose activation window spans no more than 24 hours.
+
+## Test Architecture
+
+Fast unit tests run without external services. Tests marked `integration` use
+the disposable Postgres and Redis services in `docker-compose.test.yml`. The
+integration path migrates an empty database to Alembic head, checks the database
+schema and revision, exercises real dependency health and wallet API requests,
+and runs failure-oriented live trading and cleanup characterization tests.
+Known defects assigned to later phases are strict expected failures. They must
+be converted to normal regression tests when the owning implementation phase is
+completed. Frontend tests use Vitest, jsdom, and Testing Library. GitHub Actions
+runs both suites plus lint, compile, typecheck, and production build checks.
 
 Docker Compose also runs `postgres-backup`, a lightweight Postgres container
 that executes `pg_dump` immediately at startup and then every 24 hours by

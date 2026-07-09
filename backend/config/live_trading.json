@@ -1,7 +1,7 @@
 {
-  "enabled": true,
-  "acknowledged": true,
-  "mainnet_acknowledged": true,
+  "enabled": false,
+  "acknowledged": false,
+  "mainnet_acknowledged": false,
   "account": {
     "capital_mode": "unified"
   },
@@ -16,15 +16,15 @@
     "lookback_minutes": 120
   },
   "copy_execution": {
-    "enabled": true
+    "enabled": false
   },
   "risk": {
     "min_order_notional_usd": 10,
     "min_order_notional_buffer_usd": 0.1,
-    "max_order_notional_usd": 1000,
-    "max_account_open_notional_usd": 5000,
-    "max_open_positions": 50,
-    "max_daily_loss_usd": 5000,
+    "max_order_notional_usd": 100,
+    "max_account_open_notional_usd": 500,
+    "max_open_positions": 5,
+    "max_daily_loss_usd": 50,
     "max_orders_per_minute": 10,
     "reduce_only_when_stopped": true
   },

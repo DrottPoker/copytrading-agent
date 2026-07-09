@@ -429,7 +429,7 @@ async def get_signal_stats(session: AsyncSession) -> DatabaseSignalStats:
     )
     return DatabaseSignalStats(
         total=int_value(row["total"]),
-        copy=int_value(row["copy"]),
+        copy_count=int_value(row["copy"]),
         skip=int_value(row["skip"]),
         exit=int_value(row["exit"]),
         observe=int_value(row["observe"]),

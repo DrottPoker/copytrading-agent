@@ -175,7 +175,13 @@ class LivePerpState:
 
 def validate_live_trading_configuration(settings: Settings) -> None:
     try:
-        HyperliquidLiveTradingClient(settings=settings).validate_live_configuration()
+        client = HyperliquidLiveTradingClient(settings=settings)
+        client.validate_live_configuration()
+        client.validate_entry_activation()
+        if settings.hyperliquid_network == "mainnet" and not settings.live_trading_allowed_coins:
+            raise ValueError(
+                "Mainnet live entries require a non-empty LIVE_TRADING_ALLOWED_COINS list."
+            )
     except Exception as exc:
         raise LiveTradingServiceError(str(exc) or exc.__class__.__name__) from exc
 

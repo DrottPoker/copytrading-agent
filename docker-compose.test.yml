@@ -1,0 +1,27 @@
+name: copyagent-test
+
+services:
+  postgres-test:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: copyagent_test
+      POSTGRES_USER: copyagent_test
+      POSTGRES_PASSWORD: copyagent-test-password
+    ports:
+      - "127.0.0.1:55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U copyagent_test -d copyagent_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+
+  redis-test:
+    image: redis:7-alpine
+    command: redis-server --appendonly no --save ""
+    ports:
+      - "127.0.0.1:56379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 20

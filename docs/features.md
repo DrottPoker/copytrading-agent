@@ -880,7 +880,11 @@ Current limitations:
 
 - Live trading can place Hyperliquid orders only when live trading is explicitly
   enabled, acknowledged, configured with credentials, and enabled per account.
-  Paper execution remains the default simulation layer.
+  Repository defaults use mainnet market data with live trading and copy execution disabled.
+  New mainnet exposure additionally requires a non-empty coin allowlist and a
+  runtime arming token with an expiry no more than 24 hours ahead. Reduce-only
+  exits do not require a current entry arming window. Paper execution remains
+  the default simulation layer.
 - The execution model is still deterministic: it uses live mids, configured
   latency, configured adverse slippage, and a max drift guard, but it does not
   simulate order book depth or partial fills yet.

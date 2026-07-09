@@ -1,4 +1,5 @@
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -126,6 +127,64 @@ def test_live_client_blocks_when_live_disabled() -> None:
 
     with pytest.raises(HyperliquidLiveTradingConfigurationError):
         client.validate_live_configuration()
+
+
+def test_mainnet_entry_requires_runtime_arming_and_allowlist() -> None:
+    settings = mainnet_live_test_settings()
+    client = HyperliquidLiveTradingClient(settings=settings)
+
+    with pytest.raises(
+        HyperliquidLiveTradingConfigurationError,
+        match="LIVE_TRADING_MAINNET_ARMING_TOKEN",
+    ):
+        client.validate_entry_guardrails(live_test_intent())
+
+    settings.live_trading_mainnet_arming_token = "ARM_MAINNET_LIVE_TRADING"
+    settings.live_trading_mainnet_armed_at = datetime.now(UTC) - timedelta(minutes=1)
+    settings.live_trading_mainnet_armed_until = datetime.now(UTC) + timedelta(hours=1)
+
+    with pytest.raises(
+        HyperliquidLiveTradingConfigurationError,
+        match="LIVE_TRADING_ALLOWED_COINS",
+    ):
+        client.validate_entry_guardrails(live_test_intent())
+
+    settings.live_trading_allowed_coins = ["BTC"]
+    client.validate_entry_guardrails(live_test_intent())
+
+
+def test_expired_mainnet_arming_blocks_entries_but_not_reduce_only_exits() -> None:
+    settings = mainnet_live_test_settings()
+    settings.live_trading_mainnet_arming_token = "ARM_MAINNET_LIVE_TRADING"
+    settings.live_trading_mainnet_armed_at = datetime.now(UTC) - timedelta(hours=1)
+    settings.live_trading_mainnet_armed_until = datetime.now(UTC) - timedelta(minutes=1)
+    settings.live_trading_allowed_coins = ["BTC"]
+    client = HyperliquidLiveTradingClient(settings=settings)
+    account = TradingAccount(
+        key="live_test",
+        account_type="live",
+        label="Live Test",
+        status="enabled",
+        network="mainnet",
+        wallet_address="0x" + "2" * 40,
+    )
+
+    with pytest.raises(
+        HyperliquidLiveTradingConfigurationError,
+        match="arming has expired",
+    ):
+        client.validate_account_order(account=account, intent=live_test_intent())
+
+    account.status = "exit_only"
+    client.validate_account_order(
+        account=account,
+        intent=replace(
+            live_test_intent(),
+            action="close",
+            is_buy=False,
+            reduce_only=True,
+        ),
+    )
 
 
 @pytest.mark.asyncio
@@ -578,6 +637,13 @@ def live_test_settings() -> Settings:
     settings.hyperliquid_wallet_address = "0x" + "2" * 40
     settings.live_trading_enabled = True
     settings.live_trading_acknowledged = True
+    return settings
+
+
+def mainnet_live_test_settings() -> Settings:
+    settings = live_test_settings()
+    settings.hyperliquid_network = "mainnet"
+    settings.live_trading_mainnet_acknowledged = True
     return settings
 
 

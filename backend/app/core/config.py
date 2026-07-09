@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
@@ -18,6 +19,8 @@ SCORING_CONFIG_PATH = CONFIG_DIR / "scoring.json"
 TRADING_CONFIG_PATH = CONFIG_DIR / "trading.json"
 PAPER_TRADING_CONFIG_PATH = CONFIG_DIR / "paper_trading.json"
 LIVE_TRADING_CONFIG_PATH = CONFIG_DIR / "live_trading.json"
+MAINNET_LIVE_TRADING_ARMING_TOKEN = "ARM_MAINNET_LIVE_TRADING"
+MAINNET_LIVE_TRADING_MAX_ARMING_DURATION = timedelta(hours=24)
 DISCOVERY_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("enabled",): "discovery_enabled",
     ("sources", "default"): "discovery_default_sources",
@@ -364,6 +367,9 @@ class Settings(BaseSettings):
     live_trading_enabled: bool = False
     live_trading_acknowledged: bool = False
     live_trading_mainnet_acknowledged: bool = False
+    live_trading_mainnet_arming_token: str | None = Field(default=None, repr=False)
+    live_trading_mainnet_armed_at: datetime | None = None
+    live_trading_mainnet_armed_until: datetime | None = None
     live_trading_capital_mode: Literal["unified", "standard_per_dex"] = "unified"
     live_trading_limit_slippage_bps: Decimal = Field(default=Decimal("20"), ge=0, le=10000)
     live_trading_max_slippage_bps: Decimal = Field(default=Decimal("50"), ge=0, le=10000)
@@ -809,6 +815,18 @@ class Settings(BaseSettings):
             return [coin.strip() for coin in value.split(",") if coin.strip()]
         return value
 
+    @field_validator(
+        "live_trading_mainnet_arming_token",
+        "live_trading_mainnet_armed_at",
+        "live_trading_mainnet_armed_until",
+        mode="before",
+    )
+    @classmethod
+    def normalize_optional_live_trading_arming_values(cls, value: Any) -> Any:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     @model_validator(mode="after")
     def guard_live_trading(self) -> "Settings":
         account_keys = [account.key for account in self.paper_copy_accounts]
@@ -1019,6 +1037,40 @@ class Settings(BaseSettings):
         if self.hyperliquid_network == "testnet":
             return "wss://api.hyperliquid-testnet.xyz/ws"
         return "wss://api.hyperliquid.xyz/ws"
+
+
+def mainnet_live_entry_arming_error(
+    settings: Settings,
+    *,
+    now: datetime | None = None,
+) -> str | None:
+    if settings.hyperliquid_network != "mainnet":
+        return None
+    if settings.live_trading_mainnet_arming_token != MAINNET_LIVE_TRADING_ARMING_TOKEN:
+        return (
+            "Mainnet live entries require "
+            "LIVE_TRADING_MAINNET_ARMING_TOKEN=ARM_MAINNET_LIVE_TRADING."
+        )
+
+    armed_at = settings.live_trading_mainnet_armed_at
+    armed_until = settings.live_trading_mainnet_armed_until
+    if armed_at is None or armed_at.tzinfo is None:
+        return "Mainnet live entries require a timezone-aware LIVE_TRADING_MAINNET_ARMED_AT."
+    if armed_until is None or armed_until.tzinfo is None:
+        return "Mainnet live entries require a timezone-aware LIVE_TRADING_MAINNET_ARMED_UNTIL."
+
+    resolved_now = now or datetime.now(UTC)
+    resolved_at = armed_at.astimezone(UTC)
+    resolved_until = armed_until.astimezone(UTC)
+    if resolved_until <= resolved_at:
+        return "Mainnet live entry arming expiry must be after its start time."
+    if resolved_until - resolved_at > MAINNET_LIVE_TRADING_MAX_ARMING_DURATION:
+        return "Mainnet live entry arming cannot last more than 24 hours."
+    if resolved_at > resolved_now:
+        return "Mainnet live entry arming window has not started."
+    if resolved_until <= resolved_now:
+        return "Mainnet live entry arming has expired."
+    return None
 
 
 @lru_cache

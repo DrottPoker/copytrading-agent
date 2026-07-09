@@ -710,6 +710,29 @@ Services:
 - Caddy dashboard proxy: http://localhost:8080
 - Caddy API proxy: http://localhost:8001
 
+## Test Suites
+
+Run the regular backend and frontend suites without external test services:
+
+```powershell
+.venv\Scripts\python.exe -m pytest backend\tests -q
+cd frontend
+npm run test:run
+```
+
+Run the real Postgres, Redis, Alembic, and FastAPI integration suite on Windows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File infra\run-integration-tests.ps1
+```
+
+The integration runner starts the disposable services from
+`docker-compose.test.yml`, migrates an empty Postgres database to Alembic head,
+runs tests marked `integration`, and removes the test volumes afterward. Use
+`-KeepServices` only when the disposable database and Redis instance are needed
+for debugging. The same unit, integration, frontend, lint, compile, and build
+checks run in `.github/workflows/ci.yml`.
+
 ## VPS Deployment
 
 Use `docker-compose.vps.yml` for a Linux VPS. It exposes only Caddy on ports 80
@@ -739,13 +762,13 @@ Full guide: [docs/deployment.md](docs/deployment.md)
 
 ## Safety Defaults
 
-Live trading is disabled in `backend/config/live_trading.json` unless the
-enablement and acknowledgement flags are explicitly set:
+The repository uses mainnet market data for monitoring and paper trading while
+live trading, acknowledgements, and automatic live copy remain disabled:
 
 ```json
 {
-  "enabled": true,
-  "acknowledged": true,
+  "enabled": false,
+  "acknowledged": false,
   "mainnet_acknowledged": false,
   "account": {
     "capital_mode": "unified"
@@ -756,11 +779,25 @@ enablement and acknowledgement flags are explicitly set:
 }
 ```
 
-Mainnet live trading also requires `mainnet_acknowledged=true`. Automatic live
-copy requires both `enabled=true` and `copy_execution.enabled=true`.
-When live trading is enabled, startup requires `HYPERLIQUID_PRIVATE_KEY` and
-`HYPERLIQUID_WALLET_ADDRESS`. The private key is read from environment/config
-only and is not stored in Postgres.
+When live trading is intentionally enabled, startup requires
+`HYPERLIQUID_PRIVATE_KEY` and `HYPERLIQUID_WALLET_ADDRESS`. Mainnet also requires
+`mainnet_acknowledged=true`. Starting a mainnet account or submitting a new
+mainnet entry additionally requires a non-empty `LIVE_TRADING_ALLOWED_COINS`
+list and a runtime arming window:
+
+```dotenv
+HYPERLIQUID_NETWORK=mainnet
+LIVE_TRADING_MAINNET_ARMING_TOKEN=ARM_MAINNET_LIVE_TRADING
+LIVE_TRADING_MAINNET_ARMED_AT=YYYY-MM-DDTHH:MM:SSZ
+LIVE_TRADING_MAINNET_ARMED_UNTIL=YYYY-MM-DDTHH:MM:SSZ
+```
+
+The arming timestamps must be timezone-aware, include the current time, and span
+no more than 24 hours. Expired or missing arming blocks new mainnet exposure. Reduce-only
+exits remain available so an expired entry window cannot trap an open position.
+Automatic live copy also requires both `enabled=true` and
+`copy_execution.enabled=true`. Environment variables override JSON defaults.
+The private key is not stored in Postgres.
 
 Do not enable live trading before paper trading proves edge after delay, fees,
 slippage, and exit behavior.

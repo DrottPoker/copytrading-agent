@@ -81,13 +81,21 @@ from `POSTGRES_*`. This is safe and simple:
 openssl rand -hex 24
 ```
 
-For paper trading, Hyperliquid private key settings can remain empty. Do not
+For paper trading, Hyperliquid private key settings can remain empty. The
+repository uses mainnet market data with live trading and live copy disabled. Do not
 enable live trading on the VPS until the paper trading system has been validated.
-Live trading is configured in `backend/config/live_trading.json` and requires
-`enabled=true`, `acknowledged=true`, a configured `HYPERLIQUID_PRIVATE_KEY`, and
+Live trading requires explicit environment or JSON overrides for `enabled=true`,
+`acknowledged=true`, a configured `HYPERLIQUID_PRIVATE_KEY`, and
 `HYPERLIQUID_WALLET_ADDRESS`. Mainnet also requires
-`mainnet_acknowledged=true`. The key is read from environment or config only and
-is not stored in Postgres. Live reconciliation settings live in the same file
+`mainnet_acknowledged=true`. Starting a mainnet account and submitting mainnet
+entries require a non-empty `LIVE_TRADING_ALLOWED_COINS` list plus
+`LIVE_TRADING_MAINNET_ARMING_TOKEN=ARM_MAINNET_LIVE_TRADING` and timezone-aware
+`LIVE_TRADING_MAINNET_ARMED_AT` and `LIVE_TRADING_MAINNET_ARMED_UNTIL` values
+whose window spans no more than 24 hours. Restart
+the backend and trading worker after changing the arming window. When the window
+expires, new mainnet exposure is blocked while reduce-only exits remain allowed.
+The key is read from environment or config only and is not stored in Postgres.
+Live reconciliation settings live in the same file
 under `reconciliation`; the worker reads Hyperliquid order status, fills, and
 clearinghouse state for enabled live accounts. `account.capital_mode` defaults
 to `unified`, which expects the Hyperliquid wallet to run Unified account mode

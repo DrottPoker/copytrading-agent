@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from decimal import ROUND_DOWN, ROUND_UP, Decimal
 from typing import Any
 
-from app.core.config import Settings, get_settings
+from app.core.config import Settings, get_settings, mainnet_live_entry_arming_error
 from app.db.models import TradingAccount
 from app.services.trading_core import TradeIntent
 
@@ -170,6 +170,7 @@ class HyperliquidLiveTradingClient:
             self.validate_entry_guardrails(intent)
 
     def validate_entry_guardrails(self, intent: TradeIntent) -> None:
+        self.validate_entry_activation()
         coin = normalize_live_coin(intent.coin)
         allowed_coins = {
             normalize_live_coin(value) for value in self.settings.live_trading_allowed_coins
@@ -179,6 +180,10 @@ class HyperliquidLiveTradingClient:
         }
         allowed_coins.discard("")
         blocked_coins.discard("")
+        if self.settings.hyperliquid_network == "mainnet" and not allowed_coins:
+            raise HyperliquidLiveTradingConfigurationError(
+                "Mainnet live entries require a non-empty LIVE_TRADING_ALLOWED_COINS list."
+            )
         if allowed_coins and coin not in allowed_coins:
             raise HyperliquidLiveTradingConfigurationError(
                 "Live order coin is not in the allowed coin list."
@@ -217,6 +222,11 @@ class HyperliquidLiveTradingClient:
             raise HyperliquidLiveTradingConfigurationError("Hyperliquid private key is missing.")
         if not self.settings.hyperliquid_wallet_address:
             raise HyperliquidLiveTradingConfigurationError("Hyperliquid wallet address is missing.")
+
+    def validate_entry_activation(self) -> None:
+        arming_error = mainnet_live_entry_arming_error(self.settings)
+        if arming_error is not None:
+            raise HyperliquidLiveTradingConfigurationError(arming_error)
 
     def _submit_order_sync(
         self,

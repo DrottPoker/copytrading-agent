@@ -2423,7 +2423,7 @@ function liveAccountEquity(account: TradingAccount) {
   );
 }
 
-function displayLivePositions(positions: TradingPosition[]) {
+export function displayLivePositions(positions: TradingPosition[]) {
   const accountKeysWithExchangePositions = new Set(
     positions
       .filter((position) => isLiveExchangePosition(position))

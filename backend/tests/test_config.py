@@ -1,38 +1,50 @@
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
 
-from app.core.config import Settings, load_app_config
+from app.core.config import Settings, load_app_config, mainnet_live_entry_arming_error
 
 
-def _set_required_live_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(
+def _clear_live_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in (
+        "HYPERLIQUID_NETWORK",
         "HYPERLIQUID_PRIVATE_KEY",
-        "0x1111111111111111111111111111111111111111111111111111111111111111",
-    )
-    monkeypatch.setenv("HYPERLIQUID_WALLET_ADDRESS", "0x2222222222222222222222222222222222222222")
+        "HYPERLIQUID_WALLET_ADDRESS",
+        "LIVE_TRADING_ENABLED",
+        "LIVE_TRADING_ACKNOWLEDGED",
+        "LIVE_TRADING_MAINNET_ACKNOWLEDGED",
+        "LIVE_TRADING_COPY_ENABLED",
+        "LIVE_TRADING_ALLOWED_COINS",
+        "LIVE_TRADING_BLOCKED_COINS",
+        "LIVE_TRADING_MAINNET_ARMING_TOKEN",
+        "LIVE_TRADING_MAINNET_ARMED_AT",
+        "LIVE_TRADING_MAINNET_ARMED_UNTIL",
+    ):
+        monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("DASHBOARD_AUTH_PASSWORD", "test-dashboard-password")
 
 
 def test_live_trading_config_is_loaded_from_dedicated_file(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _set_required_live_env(monkeypatch)
+    _clear_live_env_overrides(monkeypatch)
     config = load_app_config()
     settings = Settings(_env_file=None, **config)
 
-    assert settings.live_trading_enabled is True
-    assert settings.live_trading_acknowledged is True
-    assert settings.live_trading_mainnet_acknowledged is True
+    assert settings.hyperliquid_network == "mainnet"
+    assert settings.live_trading_enabled is False
+    assert settings.live_trading_acknowledged is False
+    assert settings.live_trading_mainnet_acknowledged is False
     assert settings.live_trading_capital_mode == "unified"
-    assert settings.live_trading_copy_enabled is True
+    assert settings.live_trading_copy_enabled is False
     assert settings.live_trading_limit_slippage_bps == Decimal("20")
     assert settings.live_trading_min_order_notional_usd == Decimal("10")
     assert settings.live_trading_min_order_notional_buffer_usd == Decimal("0.1")
-    assert settings.live_trading_max_order_notional_usd == Decimal("1000")
-    assert settings.live_trading_max_account_open_notional_usd == Decimal("5000")
-    assert settings.live_trading_max_open_positions == 50
-    assert settings.live_trading_max_daily_loss_usd == Decimal("5000")
+    assert settings.live_trading_max_order_notional_usd == Decimal("100")
+    assert settings.live_trading_max_account_open_notional_usd == Decimal("500")
+    assert settings.live_trading_max_open_positions == 5
+    assert settings.live_trading_max_daily_loss_usd == Decimal("50")
     assert settings.live_trading_max_orders_per_minute == 10
     assert settings.live_trading_reduce_only_when_stopped is True
     assert settings.live_trading_reconciliation_enabled is True
@@ -42,8 +54,37 @@ def test_live_trading_config_is_loaded_from_dedicated_file(
     assert settings.live_trading_blocked_coins == []
 
 
+def test_repository_defaults_start_without_live_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_live_env_overrides(monkeypatch)
+
+    settings = Settings(_env_file=None, **load_app_config())
+
+    assert settings.live_trading_enabled is False
+    assert settings.live_trading_copy_enabled is False
+    assert settings.hyperliquid_private_key is None
+    assert settings.hyperliquid_wallet_address is None
+
+
+def test_mainnet_entry_arming_window_is_limited_to_24_hours() -> None:
+    now = datetime(2026, 7, 9, 12, tzinfo=UTC)
+    settings = Settings()
+    settings.hyperliquid_network = "mainnet"
+    settings.live_trading_mainnet_arming_token = "ARM_MAINNET_LIVE_TRADING"
+    settings.live_trading_mainnet_armed_at = now
+    settings.live_trading_mainnet_armed_until = now + timedelta(hours=25)
+
+    assert mainnet_live_entry_arming_error(settings, now=now) == (
+        "Mainnet live entry arming cannot last more than 24 hours."
+    )
+
+    settings.live_trading_mainnet_armed_until = now + timedelta(hours=1)
+    assert mainnet_live_entry_arming_error(settings, now=now) is None
+
+
 def test_app_config_loads_wallet_pool_page_limit(monkeypatch: pytest.MonkeyPatch) -> None:
-    _set_required_live_env(monkeypatch)
+    _clear_live_env_overrides(monkeypatch)
     config = load_app_config()
     settings = Settings(_env_file=None, **config)
 
@@ -53,7 +94,7 @@ def test_app_config_loads_wallet_pool_page_limit(monkeypatch: pytest.MonkeyPatch
 def test_shared_trading_config_is_loaded_from_dedicated_file(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _set_required_live_env(monkeypatch)
+    _clear_live_env_overrides(monkeypatch)
     config = load_app_config()
 
     assert config["trading_copy_top_wallet_count"] == 10
@@ -78,7 +119,7 @@ def test_shared_trading_config_is_loaded_from_dedicated_file(
 
 
 def test_prune_config_loads_low_score_rule(monkeypatch: pytest.MonkeyPatch) -> None:
-    _set_required_live_env(monkeypatch)
+    _clear_live_env_overrides(monkeypatch)
     config = load_app_config()
     settings = Settings(_env_file=None, **config)
 
@@ -88,7 +129,7 @@ def test_prune_config_loads_low_score_rule(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_paper_config_does_not_seed_accounts(monkeypatch: pytest.MonkeyPatch) -> None:
-    _set_required_live_env(monkeypatch)
+    _clear_live_env_overrides(monkeypatch)
     config = load_app_config()
     settings = Settings(_env_file=None, **config)
 

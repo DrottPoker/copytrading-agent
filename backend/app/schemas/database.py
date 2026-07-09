@@ -1,6 +1,8 @@
 from datetime import datetime
 from decimal import Decimal
 
+from pydantic import Field
+
 from app.schemas.base import CamelModel
 
 
@@ -91,7 +93,7 @@ class DatabaseCopyTradeStats(CamelModel):
 
 class DatabaseSignalStats(CamelModel):
     total: int
-    copy: int
+    copy_count: int = Field(alias="copy")
     skip: int
     exit: int
     observe: int
