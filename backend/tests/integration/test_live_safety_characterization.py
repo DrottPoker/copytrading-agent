@@ -1,5 +1,5 @@
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -13,15 +13,20 @@ from app.db.models import (
     TradingOrder,
     TradingOrderDispatch,
     TradingPosition,
+    TradingReconciliationRun,
 )
 from app.services.live_trading_service import (
     LIVE_EXCHANGE_SOURCE,
     LiveOrderSubmitError,
+    LivePerpState,
     build_testnet_live_trade_intent,
     fetch_live_perp_states,
     live_account_open_notional,
+    prune_live_reconciliation_runs,
+    recompute_live_account_fill_totals,
     reconcile_live_fills,
     reconcile_live_positions,
+    reconcile_live_trading_account,
     recover_live_order_dispatches,
     submit_live_trade_intent,
     update_live_orders_from_reconciled_fills,
@@ -386,6 +391,45 @@ async def test_duplicate_and_partial_exchange_fills_are_idempotent(
     assert stored_order.filled_size == Decimal("1")
 
 
+@pytest.mark.asyncio
+async def test_reconciliation_repairs_account_totals_from_fill_ledger(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    account = live_account()
+    account.realized_pnl_usd = Decimal("999")
+    account.fee_usd = Decimal("999")
+    fill = TradingFill(
+        account_key=account.key,
+        account_type="live",
+        source_wallet=LIVE_EXCHANGE_SOURCE,
+        source_fill_id="fill-ledger-1",
+        exchange_fill_id="exchange-fill-ledger-1",
+        coin="BTC",
+        action="close",
+        side="long",
+        price=Decimal("100"),
+        size=Decimal("1"),
+        notional_usd=Decimal("100"),
+        fee_usd=Decimal("0.25"),
+        realized_pnl_usd=Decimal("5"),
+        raw_payload={},
+        filled_at=datetime.now(UTC),
+    )
+
+    async with integration_sessionmaker() as session:
+        session.add_all([account, fill])
+        await session.commit()
+        await recompute_live_account_fill_totals(session, account=account)
+        await session.commit()
+
+    async with integration_sessionmaker() as session:
+        stored_account = await session.get(TradingAccount, account.key)
+
+    assert stored_account is not None
+    assert stored_account.realized_pnl_usd == Decimal("5")
+    assert stored_account.fee_usd == Decimal("0.25")
+
+
 class PartialPerpStateClient:
     async def perp_dexs(self) -> list[dict[str, str]]:
         return [{"name": "xyz"}]
@@ -402,10 +446,6 @@ class PartialPerpStateClient:
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    reason="Phase 3 must not delete positions when a HIP-3 snapshot is incomplete.",
-)
 async def test_partial_hip3_snapshot_preserves_existing_position(
     integration_sessionmaker: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -425,16 +465,31 @@ async def test_partial_hip3_snapshot_preserves_existing_position(
         fee_usd=Decimal("0"),
         opened_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
+    source_position = TradingPosition(
+        account_key=account.key,
+        account_type="live",
+        source_wallet="0xsource",
+        coin="xyz:SNDK",
+        side="long",
+        size=Decimal("1"),
+        entry_price=Decimal("1"),
+        notional_usd=Decimal("1"),
+        leverage=Decimal("1"),
+        margin_usd=Decimal("1"),
+        realized_pnl_usd=Decimal("0"),
+        fee_usd=Decimal("0"),
+        opened_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
     client = PartialPerpStateClient()
 
     async with integration_sessionmaker() as session:
-        session.add_all([account, existing_position])
+        session.add_all([account, existing_position, source_position])
         await session.commit()
         perp_states = await fetch_live_perp_states(  # type: ignore[arg-type]
             client,
             user_address=account.wallet_address or "",
         )
-        await reconcile_live_positions(
+        result = await reconcile_live_positions(
             session,
             account=account,
             perp_states=perp_states,
@@ -443,8 +498,165 @@ async def test_partial_hip3_snapshot_preserves_existing_position(
         await session.commit()
 
     async with integration_sessionmaker() as session:
-        preserved = await session.scalar(
+        preserved = list(
+            (
+                await session.scalars(
+                    select(TradingPosition).where(TradingPosition.coin == "xyz:SNDK")
+                )
+            ).all()
+        )
+
+    assert result.complete is False
+    assert result.removed_positions == 0
+    assert len(preserved) == 2
+
+
+@pytest.mark.asyncio
+async def test_complete_empty_dex_snapshot_removes_stale_exchange_and_source_positions(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    account = live_account()
+    positions = [
+        TradingPosition(
+            account_key=account.key,
+            account_type="live",
+            source_wallet=source_wallet,
+            coin="BTC",
+            side="long",
+            size=Decimal("1"),
+            entry_price=Decimal("100"),
+            notional_usd=Decimal("100"),
+            leverage=Decimal("1"),
+            margin_usd=Decimal("100"),
+            realized_pnl_usd=Decimal("0"),
+            fee_usd=Decimal("0"),
+            opened_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+        for source_wallet in (LIVE_EXCHANGE_SOURCE, "0xsource")
+    ]
+
+    async with integration_sessionmaker() as session:
+        session.add_all([account, *positions])
+        await session.commit()
+        result = await reconcile_live_positions(
+            session,
+            account=account,
+            perp_states=[
+                LivePerpState(
+                    dex="",
+                    payload={"assetPositions": [], "marginSummary": {"accountValue": "0"}},
+                )
+            ],
+            reconciled_at=datetime.now(UTC),
+        )
+        await session.commit()
+
+    async with integration_sessionmaker() as session:
+        position_count = await session.scalar(select(func.count(TradingPosition.id)))
+
+    assert result.complete is True
+    assert result.removed_positions == 2
+    assert position_count == 0
+
+
+@pytest.mark.asyncio
+async def test_partial_reconciliation_is_audited_and_does_not_advance_complete_timestamp(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    account = live_account()
+    existing_position = TradingPosition(
+        account_key=account.key,
+        account_type="live",
+        source_wallet=LIVE_EXCHANGE_SOURCE,
+        coin="xyz:SNDK",
+        side="long",
+        size=Decimal("1"),
+        entry_price=Decimal("1"),
+        notional_usd=Decimal("1"),
+        leverage=Decimal("1"),
+        margin_usd=Decimal("1"),
+        realized_pnl_usd=Decimal("0"),
+        fee_usd=Decimal("0"),
+        opened_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+    class PartialReconciliationClient(PartialPerpStateClient):
+        async def user_fills_by_time(self, **_kwargs: object) -> list[dict[str, object]]:
+            return []
+
+        async def spot_clearinghouse_state(self, *, user: str) -> dict[str, object]:
+            assert user == account.wallet_address
+            return {
+                "balances": [{"coin": "USDC", "total": "100", "hold": "0"}],
+                "tokenToAvailableAfterMaintenance": [[0, "100"]],
+            }
+
+        async def user_abstraction(self, *, user: str) -> str:
+            assert user == account.wallet_address
+            return "unifiedAccount"
+
+    settings = live_settings()
+    settings.live_trading_capital_mode = "unified"
+    async with integration_sessionmaker() as session:
+        session.add_all([account, existing_position])
+        await session.commit()
+        result = await reconcile_live_trading_account(
+            session,
+            account=account,
+            settings=settings,
+            info_client=PartialReconciliationClient(),  # type: ignore[arg-type]
+        )
+
+    async with integration_sessionmaker() as session:
+        stored_account = await session.get(TradingAccount, account.key)
+        run = await session.scalar(select(TradingReconciliationRun))
+        preserved_position = await session.scalar(
             select(TradingPosition).where(TradingPosition.coin == "xyz:SNDK")
         )
 
-    assert preserved is not None
+    assert result.status == "partial"
+    assert "perp:xyz" in result.incomplete_components
+    assert stored_account is not None
+    assert stored_account.last_reconciled_at is None
+    assert stored_account.config_payload["lastReconciliationAttempt"]["status"] == "partial"
+    assert run is not None
+    assert run.status == "partial"
+    assert run.components["perpStates"]["xyz"]["status"] == "partial"
+    assert preserved_position is not None
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_run_history_prunes_rows_older_than_thirty_days(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    account = live_account()
+    now = datetime(2026, 7, 9, tzinfo=UTC)
+    old_run = TradingReconciliationRun(
+        account_key=account.key,
+        status="complete",
+        started_at=now - timedelta(days=31),
+        completed_at=now - timedelta(days=31),
+        components={},
+    )
+    current_run = TradingReconciliationRun(
+        account_key=account.key,
+        status="complete",
+        started_at=now,
+        completed_at=now,
+        components={},
+    )
+
+    async with integration_sessionmaker() as session:
+        session.add_all([account, old_run, current_run])
+        await session.commit()
+        await prune_live_reconciliation_runs(
+            session,
+            account_key=account.key,
+            now=now,
+        )
+        await session.commit()
+
+    async with integration_sessionmaker() as session:
+        runs = list((await session.scalars(select(TradingReconciliationRun))).all())
+
+    assert [run.id for run in runs] == [current_run.id]

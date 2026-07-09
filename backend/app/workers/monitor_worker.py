@@ -1091,9 +1091,14 @@ async def run_live_trading_reconciliation_once(
         return results
 
     if results or failed_accounts:
+        partial_accounts = [
+            result.account_key for result in results if result.status == "partial"
+        ]
         logger.info(
-            "live trading reconciliation completed accounts=%s failed=%s fills=%s positions=%s",
+            "live trading reconciliation completed accounts=%s partial=%s failed=%s "
+            "fills=%s positions=%s",
             len(results),
+            len(partial_accounts),
             len(failed_accounts),
             sum(result.inserted_fills for result in results),
             sum(result.open_positions for result in results),
@@ -1110,6 +1115,12 @@ async def run_live_trading_reconciliation_once(
             payload={
                 "accounts": len(results),
                 "failedAccounts": failed_accounts,
+                "partialAccounts": partial_accounts,
+                "incompleteComponents": {
+                    result.account_key: list(result.incomplete_components)
+                    for result in results
+                    if result.incomplete_components
+                },
                 "fetchedFills": sum(result.fetched_fills for result in results),
                 "insertedFills": sum(result.inserted_fills for result in results),
                 "updatedOrders": sum(result.updated_orders for result in results),

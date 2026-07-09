@@ -100,7 +100,10 @@ under `reconciliation`; the worker reads Hyperliquid order status, fills, and
 clearinghouse state for enabled live accounts. It also recovers durable live
 order outbox rows and unfinished close-all operations. Run Alembic migrations
 before restarting the backend and workers so the dispatch and operation tables
-exist. `account.capital_mode` defaults
+and reconciliation run history exist. Partial reconciliation preserves the
+last known value for failed exchange components and blocks new live entries
+until a complete worker or manual reconciliation succeeds. Reduce-only exits
+remain available. `account.capital_mode` defaults
 to `unified`, which expects the Hyperliquid wallet to run Unified account mode
 and reads trading capital from `spotClearinghouseState`. Set it to
 `standard_per_dex` only when the wallet intentionally keeps separate default and

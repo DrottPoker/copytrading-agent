@@ -822,6 +822,8 @@ Generic live-ready tables sit beside the legacy paper tables:
 - `trading_close_all_operations`: resumable account-level close-all state.
 - `trading_close_all_items`: per-position close progress linked to the latest
   durable live order.
+- `trading_reconciliation_runs`: one auditable row per live reconciliation
+  attempt with component statuses, counts, errors, and final completeness.
 - `trading_fills`: reconciled exchange fill records.
 
 Existing paper accounts are mirrored into `trading_accounts`. A stopped paper
@@ -893,6 +895,10 @@ imports `userFillsByTime` rows into `trading_fills` and syncs aggregate account
 positions from `clearinghouseState` into `trading_positions` with source wallet
 `__exchange__`.
 
+Account reconciliation acquires the same per-account execution lock as order
+dispatch. A snapshot therefore cannot interleave with an in-flight submission,
+even when API and worker processes target the same account concurrently.
+
 Live close-all is a resumable operation, not one long API transaction. The
 account is committed as `exit_only` first. `trading_close_all_operations` stores
 the account-level workflow and `trading_close_all_items` stores the result for
@@ -901,6 +907,34 @@ dispatcher. The trading worker resumes unfinished operations after restart, and
 the account changes to `disabled` only after reconciliation confirms that no
 exchange positions remain. `POST /trading/accounts/{account_key}/close-all-and-stop`
 returns the operation id and operation status with submitted and failed counts.
+
+Live reconciliation uses component-level completeness instead of treating one
+partially returned response as a complete account snapshot. The default perp
+account and each discovered HIP-3 dex are independent authoritative scopes.
+Only a successfully fetched scope may upsert or remove positions in that scope.
+If a dex request fails, its exchange position rows and source-attributed rows
+remain unchanged. If the perp dex catalog itself fails, scopes that were not
+discovered during that attempt are also preserved.
+
+Fill history pagination is complete only when Hyperliquid returns a short or
+empty page. Reaching the configured page safety limit or receiving a request
+error records a partial attempt. Pagination overlaps the last returned
+timestamp and deduplicates fills so multiple fills in the same millisecond are
+not skipped. Reaching Hyperliquid's 10000-fill history availability boundary is
+also reported as partial. Stored live fill totals are recomputed after
+each import, so account realized PnL and fees self-heal from the idempotent fill
+ledger. Order status lookups that remain unresolved also make the attempt
+partial.
+
+Spot capital and per-dex capital are merged independently. A failed component
+keeps its last known value and is marked stale instead of being replaced with
+zero. `trading_accounts.last_reconciled_at` represents the last fully complete
+account snapshot. The latest attempt, including partial or failed status, is
+stored in account reconciliation metadata and in
+`trading_reconciliation_runs`. New live entries require a complete snapshot,
+while reduce-only exits remain allowed. Reconciliation run history older than
+30 days is removed during later reconciliation attempts so periodic audit rows
+do not grow without bound.
 
 Live fill reconciliation also updates source-attributed live positions for
 matched copied orders. Those source positions let exit-only accounts continue

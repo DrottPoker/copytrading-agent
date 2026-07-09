@@ -905,7 +905,8 @@ What it does:
 - Adds generic trading tables for paper and live account state:
   `trading_accounts`, `trading_positions`, `trading_orders`,
   `trading_order_dispatches`, `trading_close_all_operations`,
-  `trading_close_all_items`, and `trading_fills`.
+  `trading_close_all_items`, `trading_reconciliation_runs`, and
+  `trading_fills`.
 - Mirrors existing paper accounts into `trading_accounts` and lists live
   accounts from the same endpoint so the Accounts page can select mixed
   paper/live account data.
@@ -938,6 +939,21 @@ What it does:
   account remains `exit_only` until reconciliation confirms it is flat, then it
   becomes `disabled`. The worker resumes unfinished close-all operations after
   restart.
+- Reconciles default perps and each HIP-3 dex as separate authoritative scopes.
+  Missing positions are deleted only when the matching scope returned a
+  complete snapshot. Failed dex or catalog requests preserve the previous
+  exchange and source-position state.
+- Tracks independent completeness for order statuses, fill pagination, the perp
+  catalog, every perp dex, spot balances, account abstraction, and positions.
+  Every attempt is stored in `trading_reconciliation_runs`, with automatic
+  retention cleanup after 30 days.
+- Preserves last known capital for failed components and marks it stale instead
+  of replacing it with zero. The account's last complete timestamp advances
+  only after every required component succeeds.
+- Recomputes account realized PnL and fees from the idempotent live fill ledger
+  after reconciliation. This repairs drift in derived account totals.
+- Blocks new live entries after a partial or failed reconciliation until a
+  complete attempt succeeds. Reduce-only exits continue to work.
 - Reconciles live account equity and available cash from perp state plus
   Hyperliquid spot/core USDC balances, so wallets that hold deposited USDC
   outside perp margin still show their account value.
@@ -1052,6 +1068,8 @@ Live trading API:
 - `POST /trading/accounts/{account_key}/close-all-and-stop`
 - `POST /trading/accounts/{account_key}/reconcile`
   Optional query parameter: `lookback_minutes`.
+  The response includes `runId`, `status`, `incompleteComponents`, and
+  `componentErrors`.
 - `POST /trading/positions/{position_id}/close`
 - `POST /trading/testnet/orders`
 

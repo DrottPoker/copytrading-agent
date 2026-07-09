@@ -1187,12 +1187,17 @@ function CapitalBalanceRows({ balances }: { balances: TradingCapitalBalance[] })
           <div className="min-w-0">
             <p className="break-words text-sm font-semibold text-ink">{balance.label}</p>
             <p className="break-words font-mono text-xs text-[#5b6770]">{balance.key}</p>
+            {balance.stale ? (
+              <p className="mt-1 text-xs font-medium text-[#9a6700]">
+                Stale snapshot{balance.error ? `: ${balance.error}` : ""}
+              </p>
+            ) : null}
           </div>
           <SmallMetric label="Equity" value={formatCurrency(balance.equityUsd)} />
           <SmallMetric label="Available" value={formatCurrency(balance.availableUsd)} />
           <StatusPill
-            label={balance.tradable ? "tradable" : "not tradable"}
-            tone={balance.tradable ? "positive" : "neutral"}
+            label={balance.stale ? "stale" : balance.tradable ? "tradable" : "not tradable"}
+            tone={balance.stale ? "warning" : balance.tradable ? "positive" : "neutral"}
           />
         </div>
       ))}
@@ -1983,6 +1988,22 @@ function buildLiveAccountView(
   const realizedPnl = decimal(account.realizedPnlUsd);
   const feeUsd = decimal(account.feeUsd);
   const capitalMode = formatCapitalMode(account.capitalMode);
+  const reconciliationLabel =
+    account.reconciliationStatus === "complete"
+      ? "synced"
+      : account.reconciliationStatus === "never"
+        ? "pending"
+        : account.reconciliationStatus;
+  const reconciliationDetail =
+    account.incompleteReconciliationComponents.length > 0
+      ? `${account.incompleteReconciliationComponents.join(", ")} incomplete`
+      : formatDate(account.reconciliationAttemptedAt ?? account.lastReconciledAt);
+  const reconciliationTone: Tone =
+    account.reconciliationStatus === "complete"
+      ? "positive"
+      : account.reconciliationStatus === "failed"
+        ? "danger"
+        : "warning";
 
   return {
     accountType: "live",
@@ -2041,7 +2062,16 @@ function buildLiveAccountView(
           { label: "Wallet address", value: account.walletAddress ?? "config wallet" },
           { label: "Vault address", value: account.vaultAddress ?? "none" },
           { label: "Internal key", value: account.key },
-          { label: "Last reconcile", value: formatDate(account.lastReconciledAt) },
+          { label: "Reconciliation", value: account.reconciliationStatus },
+          { label: "Last complete", value: formatDate(account.lastReconciledAt) },
+          { label: "Last attempt", value: formatDate(account.reconciliationAttemptedAt) },
+          {
+            label: "Incomplete",
+            value:
+              account.incompleteReconciliationComponents.length > 0
+                ? account.incompleteReconciliationComponents.join(", ")
+                : "none",
+          },
         ],
       },
     ],
@@ -2081,10 +2111,11 @@ function buildLiveAccountView(
         value: formatCurrency(feeUsd),
       },
       {
-        detail: formatDate(account.lastReconciledAt),
+        detail: reconciliationDetail,
         icon: Clock,
         label: "Reconciled",
-        value: account.lastReconciledAt ? "synced" : "pending",
+        tone: reconciliationTone,
+        value: reconciliationLabel,
       },
     ],
     positions: displayPositions.map((position) => livePositionRow(position, sourceLabels)),

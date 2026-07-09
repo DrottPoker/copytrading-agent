@@ -19,6 +19,7 @@ from app.db.models import (
     TradingOrder,
     TradingOrderDispatch,
     TradingPosition,
+    TradingReconciliationRun,
 )
 from app.integrations.hyperliquid_client import HyperliquidClient
 from app.integrations.hyperliquid_live_client import (
@@ -52,6 +53,8 @@ LIVE_EXCHANGE_SOURCE = "__exchange__"
 LIVE_MANUAL_TEST_SOURCE = "__manual_testnet__"
 ACTIVE_ORDER_STATUSES = RECONCILABLE_ORDER_STATUSES
 MAX_LIVE_FILL_RECONCILIATION_PAGES = 10
+MAX_LIVE_FILL_HISTORY = 10_000
+LIVE_RECONCILIATION_RUN_RETENTION_DAYS = 30
 LIVE_ACCOUNT_KEY_MAX_LENGTH = 64
 LIVE_CAPITAL_MODE_UNIFIED = "unified"
 LIVE_CAPITAL_MODE_STANDARD_PER_DEX = "standard_per_dex"
@@ -109,11 +112,15 @@ class LiveReconciliationError(LiveTradingServiceError):
 class LiveReconciliationResult:
     account_key: str
     user_address: str
+    run_id: UUID | None = None
     fetched_fills: int = 0
     inserted_fills: int = 0
     updated_orders: int = 0
     open_positions: int = 0
     removed_positions: int = 0
+    status: str = "complete"
+    incomplete_components: tuple[str, ...] = ()
+    component_errors: dict[str, str] = field(default_factory=dict)
     reconciled_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -203,6 +210,51 @@ class LivePositionSnapshot:
 class LivePerpState:
     dex: str
     payload: dict[str, Any]
+    complete: bool = True
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class LivePerpSnapshot:
+    states: tuple[LivePerpState, ...]
+    requested_dexes: tuple[str, ...]
+    catalog_complete: bool = True
+    catalog_error: str | None = None
+
+    @property
+    def complete(self) -> bool:
+        return self.catalog_complete and all(state.complete for state in self.states)
+
+    @property
+    def incomplete_dexes(self) -> tuple[str, ...]:
+        return tuple(state.dex for state in self.states if not state.complete)
+
+    @property
+    def component_errors(self) -> dict[str, str]:
+        errors = {
+            f"perp:{state.dex or 'default'}": state.error
+            for state in self.states
+            if state.error
+        }
+        if self.catalog_error:
+            errors["perp_catalog"] = self.catalog_error
+        return errors
+
+
+@dataclass(frozen=True)
+class LiveFillFetchResult:
+    fills: tuple[dict[str, Any], ...]
+    complete: bool
+    pages: int
+    next_start_time_ms: int | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class LiveOrderReconciliationResult:
+    updated_orders: int = 0
+    unresolved_order_ids: tuple[UUID, ...] = ()
+    errors: dict[str, str] = field(default_factory=dict)
 
 
 def validate_live_trading_configuration(settings: Settings) -> None:
@@ -229,6 +281,22 @@ def account_last_reconciliation(account: TradingAccount) -> dict[str, Any]:
     payload = account.config_payload if isinstance(account.config_payload, dict) else {}
     last_reconciliation = payload.get("lastReconciliation")
     return last_reconciliation if isinstance(last_reconciliation, dict) else {}
+
+
+def account_last_reconciliation_attempt(account: TradingAccount) -> dict[str, Any]:
+    payload = account.config_payload if isinstance(account.config_payload, dict) else {}
+    attempt = payload.get("lastReconciliationAttempt")
+    if isinstance(attempt, dict):
+        return attempt
+    return account_last_reconciliation(account)
+
+
+def live_reconciliation_status(account: TradingAccount) -> str:
+    attempt = account_last_reconciliation_attempt(account)
+    status = str(attempt.get("status") or "").strip()
+    if status in {"complete", "partial", "failed"}:
+        return status
+    return "complete" if account.last_reconciled_at is not None else "never"
 
 
 def normalize_user_abstraction(value: Any) -> str | None:
@@ -321,6 +389,12 @@ def live_tradable_equity_usd(
 
 
 def validate_live_account_can_start(account: TradingAccount, *, settings: Settings) -> None:
+    reconciliation_status = live_reconciliation_status(account)
+    if reconciliation_status != "complete":
+        raise LiveTradingServiceError(
+            "Live account requires a complete exchange reconciliation before it can start.",
+            status_code=409,
+        )
     last_reconciliation = account_last_reconciliation(account)
     if (
         live_capital_mode(settings) == LIVE_CAPITAL_MODE_UNIFIED
@@ -1361,6 +1435,10 @@ async def validate_live_entry_state_guardrails(
     settings: Settings,
 ) -> None:
     now = datetime.now(UTC)
+    if live_reconciliation_status(account) != "complete":
+        raise LiveOrderSubmitError(
+            "Live entries require a complete exchange reconciliation snapshot."
+        )
     if settings.live_trading_max_account_open_notional_usd > ZERO:
         open_notional = await live_account_open_notional(session, account_key=account.key)
         if (
@@ -1598,17 +1676,55 @@ async def reconcile_live_trading_account(
     info_client: HyperliquidClient | None = None,
     lookback_minutes: int | None = None,
 ) -> LiveReconciliationResult:
+    try:
+        async with job_lock(
+            session,
+            key=f"live_execution:{account.key}",
+            ttl_seconds=300,
+        ):
+            return await run_live_trading_account_reconciliation(
+                session,
+                account=account,
+                settings=settings,
+                info_client=info_client,
+                lookback_minutes=lookback_minutes,
+            )
+    except JobLockAlreadyHeldError as exc:
+        raise LiveReconciliationError(
+            "Live execution or reconciliation is already running for this account.",
+            status_code=409,
+        ) from exc
+
+
+async def run_live_trading_account_reconciliation(
+    session: AsyncSession,
+    *,
+    account: TradingAccount,
+    settings: Settings,
+    info_client: HyperliquidClient | None = None,
+    lookback_minutes: int | None = None,
+) -> LiveReconciliationResult:
     if account.account_type != "live":
         raise LiveReconciliationError("Only live accounts can be reconciled.")
     user_address = live_account_user_address(account, settings=settings)
     reconciled_at = datetime.now(UTC)
+    run = TradingReconciliationRun(
+        account_key=account.key,
+        status="running",
+        started_at=reconciled_at,
+        components={},
+    )
+    session.add(run)
+    await session.commit()
 
     client_created = info_client is None
     client = info_client or HyperliquidClient(settings)
-    if client_created:
-        await client.__aenter__()
+    client_entered = False
     try:
-        updated_orders_from_status = await reconcile_live_order_statuses(
+        if client_created:
+            await client.__aenter__()
+            client_entered = True
+        order_result = await reconcile_live_order_statuses(
             session,
             account=account,
             user_address=user_address,
@@ -1621,7 +1737,7 @@ async def reconcile_live_trading_account(
             now=reconciled_at,
             lookback_minutes=lookback_minutes,
         )
-        fills = await fetch_live_fills_by_time(
+        fill_result = await fetch_live_fills_by_time(
             client,
             user=user_address,
             start_time_ms=start_time_ms,
@@ -1629,13 +1745,14 @@ async def reconcile_live_trading_account(
         inserted_fills = await reconcile_live_fills(
             session,
             account=account,
-            fills=fills,
+            fills=list(fill_result.fills),
         )
         updated_orders_from_fills = await update_live_orders_from_reconciled_fills(
             session,
             account_key=account.key,
         )
-        perp_states = await fetch_live_perp_states(client, user_address=user_address)
+        await recompute_live_account_fill_totals(session, account=account)
+        perp_snapshot = await fetch_live_perp_states(client, user_address=user_address)
         spot_state = await fetch_live_spot_state(client, user_address=user_address)
         user_abstraction = await fetch_live_user_abstraction(
             client,
@@ -1644,38 +1761,271 @@ async def reconcile_live_trading_account(
         position_result = await reconcile_live_positions(
             session,
             account=account,
-            perp_states=perp_states,
+            perp_states=perp_snapshot,
             reconciled_at=reconciled_at,
         )
-    except LiveTradingServiceError:
+        unresolved_order_ids = await still_unresolved_live_order_ids(
+            session,
+            order_ids=order_result.unresolved_order_ids,
+        )
+
+        component_errors = reconciliation_component_errors(
+            order_result=order_result,
+            unresolved_order_ids=unresolved_order_ids,
+            fill_result=fill_result,
+            perp_snapshot=perp_snapshot,
+            spot_state=spot_state,
+            user_abstraction=user_abstraction,
+        )
+        incomplete_components = tuple(sorted(component_errors))
+        reconciliation_status = "partial" if incomplete_components else "complete"
+        updated_orders = order_result.updated_orders + updated_orders_from_fills
+        components = reconciliation_components_payload(
+            order_result=order_result,
+            unresolved_order_ids=unresolved_order_ids,
+            fill_result=fill_result,
+            perp_snapshot=perp_snapshot,
+            spot_state=spot_state,
+            user_abstraction=user_abstraction,
+            position_result=position_result,
+        )
+        update_live_account_from_state(
+            account,
+            perp_states=perp_snapshot,
+            spot_state=spot_state,
+            user_abstraction=user_abstraction,
+            reconciled_at=reconciled_at,
+            settings=settings,
+            reconciliation_status=reconciliation_status,
+            incomplete_components=incomplete_components,
+            component_errors=component_errors,
+        )
+        run.status = reconciliation_status
+        run.completed_at = datetime.now(UTC)
+        run.components = components
+        run.fetched_fills = len(fill_result.fills)
+        run.inserted_fills = inserted_fills
+        run.updated_orders = updated_orders
+        run.open_positions = position_result.open_positions
+        run.removed_positions = position_result.removed_positions
+        run.error = None
+        await prune_live_reconciliation_runs(session, account_key=account.key)
+        await session.commit()
+    except LiveTradingServiceError as exc:
+        await mark_live_reconciliation_run_failed(
+            session,
+            run_id=run.id,
+            account_key=account.key,
+            attempted_at=reconciled_at,
+            error=str(exc) or exc.__class__.__name__,
+        )
         raise
     except Exception as exc:
+        await mark_live_reconciliation_run_failed(
+            session,
+            run_id=run.id,
+            account_key=account.key,
+            attempted_at=reconciled_at,
+            error=str(exc) or exc.__class__.__name__,
+        )
         raise LiveReconciliationError(
             f"Live reconciliation failed: {exc.__class__.__name__}.",
             status_code=502,
         ) from exc
     finally:
-        if client_created:
+        if client_entered:
             await client.__aexit__(None, None, None)
-
-    update_live_account_from_state(
-        account,
-        perp_states=perp_states,
-        spot_state=spot_state,
-        user_abstraction=user_abstraction,
-        reconciled_at=reconciled_at,
-        settings=settings,
-    )
-    await session.flush()
     return LiveReconciliationResult(
         account_key=account.key,
         user_address=user_address,
-        fetched_fills=len(fills),
+        run_id=run.id,
+        fetched_fills=len(fill_result.fills),
         inserted_fills=inserted_fills,
-        updated_orders=updated_orders_from_status + updated_orders_from_fills,
+        updated_orders=updated_orders,
         open_positions=position_result.open_positions,
         removed_positions=position_result.removed_positions,
+        status=reconciliation_status,
+        incomplete_components=incomplete_components,
+        component_errors=component_errors,
         reconciled_at=reconciled_at,
+    )
+
+
+async def recompute_live_account_fill_totals(
+    session: AsyncSession,
+    *,
+    account: TradingAccount,
+) -> None:
+    totals = await session.execute(
+        select(
+            func.coalesce(func.sum(TradingFill.realized_pnl_usd), ZERO),
+            func.coalesce(func.sum(TradingFill.fee_usd), ZERO),
+        ).where(
+            TradingFill.account_key == account.key,
+            TradingFill.account_type == "live",
+        )
+    )
+    realized_pnl_usd, fee_usd = totals.one()
+    account.realized_pnl_usd = decimal_or_none(realized_pnl_usd) or ZERO
+    account.fee_usd = decimal_or_none(fee_usd) or ZERO
+    await session.flush()
+
+
+async def still_unresolved_live_order_ids(
+    session: AsyncSession,
+    *,
+    order_ids: tuple[UUID, ...],
+) -> tuple[UUID, ...]:
+    if not order_ids:
+        return ()
+    result = await session.scalars(
+        select(TradingOrder.id).where(
+            TradingOrder.id.in_(order_ids),
+            TradingOrder.status.in_(ACTIVE_ORDER_STATUSES),
+        )
+    )
+    return tuple(result.all())
+
+
+def reconciliation_component_errors(
+    *,
+    order_result: LiveOrderReconciliationResult,
+    unresolved_order_ids: tuple[UUID, ...],
+    fill_result: LiveFillFetchResult,
+    perp_snapshot: LivePerpSnapshot,
+    spot_state: dict[str, Any],
+    user_abstraction: Any,
+) -> dict[str, str]:
+    errors: dict[str, str] = {}
+    if unresolved_order_ids:
+        errors["orders"] = f"{len(unresolved_order_ids)} live order statuses remain unresolved."
+    if not fill_result.complete:
+        errors["fills"] = fill_result.error or "Live fill history is incomplete."
+    errors.update(perp_snapshot.component_errors)
+    if not perp_snapshot.complete and not any(key.startswith("perp") for key in errors):
+        errors["positions"] = "One or more perp position scopes are incomplete."
+    spot_error = remote_state_error(spot_state)
+    if spot_error:
+        errors["spot"] = spot_error
+    user_abstraction_error = remote_state_error(user_abstraction)
+    if user_abstraction_error:
+        errors["user_abstraction"] = user_abstraction_error
+    return errors
+
+
+def reconciliation_components_payload(
+    *,
+    order_result: LiveOrderReconciliationResult,
+    unresolved_order_ids: tuple[UUID, ...],
+    fill_result: LiveFillFetchResult,
+    perp_snapshot: LivePerpSnapshot,
+    spot_state: dict[str, Any],
+    user_abstraction: Any,
+    position_result: "LivePositionReconciliationResult",
+) -> dict[str, Any]:
+    return {
+        "orders": {
+            "status": "partial" if unresolved_order_ids else "complete",
+            "updated": order_result.updated_orders,
+            "unresolved": len(unresolved_order_ids),
+            "errors": order_result.errors,
+        },
+        "fills": {
+            "status": "complete" if fill_result.complete else "partial",
+            "fetched": len(fill_result.fills),
+            "pages": fill_result.pages,
+            "nextStartTimeMs": fill_result.next_start_time_ms,
+            "error": fill_result.error,
+        },
+        "perpCatalog": {
+            "status": "complete" if perp_snapshot.catalog_complete else "partial",
+            "requestedDexes": [dex or "default" for dex in perp_snapshot.requested_dexes],
+            "error": perp_snapshot.catalog_error,
+        },
+        "perpStates": {
+            state.dex or "default": {
+                "status": "complete" if state.complete else "partial",
+                "error": state.error,
+            }
+            for state in perp_snapshot.states
+        },
+        "positions": {
+            "status": "complete" if position_result.complete else "partial",
+            "authoritativeDexes": [dex or "default" for dex in position_result.authoritative_dexes],
+            "open": position_result.open_positions,
+            "removed": position_result.removed_positions,
+        },
+        "spot": {
+            "status": "partial" if remote_state_error(spot_state) else "complete",
+            "error": remote_state_error(spot_state),
+        },
+        "userAbstraction": {
+            "status": "partial" if remote_state_error(user_abstraction) else "complete",
+            "error": remote_state_error(user_abstraction),
+        },
+    }
+
+
+def remote_state_error(payload: Any) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        return None
+    return str(error.get("message") or error.get("type") or "Remote state request failed.")
+
+
+async def mark_live_reconciliation_run_failed(
+    session: AsyncSession,
+    *,
+    run_id: UUID,
+    account_key: str,
+    attempted_at: datetime,
+    error: str,
+) -> None:
+    await session.rollback()
+    run = await session.get(TradingReconciliationRun, run_id)
+    account = await session.get(TradingAccount, account_key)
+    if run is not None:
+        run.status = "failed"
+        run.completed_at = datetime.now(UTC)
+        run.error = error
+        run.components = {
+            "reconciliation": {
+                "status": "failed",
+                "error": error,
+            }
+        }
+    if account is not None:
+        account.config_payload = merge_raw_payload(
+            account.config_payload,
+            {
+                "lastReconciliationAttempt": {
+                    "attemptedAt": attempted_at.isoformat(),
+                    "componentErrors": {"reconciliation": error},
+                    "incompleteComponents": ["reconciliation"],
+                    "status": "failed",
+                }
+            },
+        )
+    await prune_live_reconciliation_runs(session, account_key=account_key)
+    await session.commit()
+
+
+async def prune_live_reconciliation_runs(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    now: datetime | None = None,
+) -> None:
+    cutoff = (now or datetime.now(UTC)) - timedelta(
+        days=LIVE_RECONCILIATION_RUN_RETENTION_DAYS
+    )
+    await session.execute(
+        delete(TradingReconciliationRun).where(
+            TradingReconciliationRun.account_key == account_key,
+            TradingReconciliationRun.started_at < cutoff,
+        )
     )
 
 
@@ -1685,7 +2035,7 @@ async def reconcile_live_order_statuses(
     account: TradingAccount,
     user_address: str,
     client: HyperliquidClient,
-) -> int:
+) -> LiveOrderReconciliationResult:
     result = await session.scalars(
         select(TradingOrder)
         .where(
@@ -1697,6 +2047,8 @@ async def reconcile_live_order_statuses(
     )
     orders = list(result.all())
     updated = 0
+    unresolved_order_ids: list[UUID] = []
+    errors: dict[str, str] = {}
     for order in orders:
         lookup_id: int | str | None = parse_exchange_order_id(order.exchange_order_id)
         if lookup_id is None:
@@ -1704,10 +2056,13 @@ async def reconcile_live_order_statuses(
         try:
             status_response = await client.order_status(user=user_address, oid=lookup_id)
         except Exception as exc:
+            message = str(exc) or exc.__class__.__name__
             order.raw_payload = merge_raw_payload(
                 order.raw_payload,
-                {"orderStatusError": {"message": str(exc), "type": exc.__class__.__name__}},
+                {"orderStatusError": {"message": message, "type": exc.__class__.__name__}},
             )
+            unresolved_order_ids.append(order.id)
+            errors[order.client_order_id] = message
             updated += 1
             continue
         changed = apply_order_status_response(order, status_response)
@@ -1718,10 +2073,17 @@ async def reconcile_live_order_statuses(
                 dispatch.completed_at = datetime.now(UTC)
                 dispatch.last_error = None
                 changed = True
+        else:
+            unresolved_order_ids.append(order.id)
+            errors[order.client_order_id] = "Exchange order status is unknown."
         if changed:
             updated += 1
     await session.flush()
-    return updated
+    return LiveOrderReconciliationResult(
+        updated_orders=updated,
+        unresolved_order_ids=tuple(unresolved_order_ids),
+        errors=errors,
+    )
 
 
 async def fetch_live_fills_by_time(
@@ -1730,55 +2092,143 @@ async def fetch_live_fills_by_time(
     user: str,
     start_time_ms: int,
     max_pages: int = MAX_LIVE_FILL_RECONCILIATION_PAGES,
-) -> list[dict[str, Any]]:
+) -> LiveFillFetchResult:
     fills: list[dict[str, Any]] = []
+    seen_fill_keys: set[tuple[str, ...]] = set()
     next_start_time_ms = start_time_ms
+    pages = 0
     for _ in range(max_pages):
-        batch = await client.user_fills_by_time(
-            user=user,
-            start_time_ms=next_start_time_ms,
-            aggregate_by_time=False,
-        )
+        try:
+            batch = await client.user_fills_by_time(
+                user=user,
+                start_time_ms=next_start_time_ms,
+                aggregate_by_time=False,
+            )
+        except Exception as exc:
+            return LiveFillFetchResult(
+                fills=tuple(fills),
+                complete=False,
+                pages=pages,
+                next_start_time_ms=next_start_time_ms,
+                error=str(exc) or exc.__class__.__name__,
+            )
+        pages += 1
         if not batch:
-            break
-        fills.extend(batch)
+            return LiveFillFetchResult(fills=tuple(fills), complete=True, pages=pages)
+        new_fills = []
+        for fill in batch:
+            fill_key = live_fill_pagination_key(fill)
+            if fill_key in seen_fill_keys:
+                continue
+            seen_fill_keys.add(fill_key)
+            new_fills.append(fill)
+        fills.extend(new_fills)
         timestamps = [
             int(timestamp)
             for fill in batch
             for timestamp in [decimal_or_none(fill.get("time") or fill.get("timestamp"))]
             if timestamp is not None
         ]
+        if len(fills) >= MAX_LIVE_FILL_HISTORY:
+            return LiveFillFetchResult(
+                fills=tuple(fills),
+                complete=False,
+                pages=pages,
+                next_start_time_ms=max(timestamps) if timestamps else next_start_time_ms,
+                error="Hyperliquid live fill history reached the 10000-fill availability limit.",
+            )
         if len(batch) < 500 or not timestamps:
-            break
-        next_start_time_ms = max(timestamps) + 1
-    return fills
+            return LiveFillFetchResult(fills=tuple(fills), complete=True, pages=pages)
+        next_page_start_time_ms = max(timestamps)
+        if next_page_start_time_ms < next_start_time_ms or not new_fills:
+            return LiveFillFetchResult(
+                fills=tuple(fills),
+                complete=False,
+                pages=pages,
+                next_start_time_ms=next_start_time_ms,
+                error="Fill reconciliation pagination did not advance.",
+            )
+        next_start_time_ms = next_page_start_time_ms
+    return LiveFillFetchResult(
+        fills=tuple(fills),
+        complete=False,
+        pages=pages,
+        next_start_time_ms=next_start_time_ms,
+        error=f"Fill reconciliation reached the {max_pages}-page safety limit.",
+    )
+
+
+def live_fill_pagination_key(fill: dict[str, Any]) -> tuple[str, ...]:
+    return tuple(
+        str(fill.get(key) or "")
+        for key in (
+            "tid",
+            "hash",
+            "oid",
+            "cloid",
+            "time",
+            "timestamp",
+            "coin",
+            "px",
+            "price",
+            "sz",
+            "size",
+            "side",
+            "dir",
+        )
+    )
 
 
 async def fetch_live_perp_states(
     client: HyperliquidClient,
     *,
     user_address: str,
-) -> list[LivePerpState]:
-    states = [
-        LivePerpState(
-            dex="",
-            payload=await client.clearinghouse_state(user=user_address),
+) -> LivePerpSnapshot:
+    states: list[LivePerpState] = []
+    try:
+        default_payload = await client.clearinghouse_state(user=user_address)
+    except Exception as exc:
+        states.append(
+            LivePerpState(
+                dex="",
+                payload={},
+                complete=False,
+                error=str(exc) or exc.__class__.__name__,
+            )
         )
-    ]
-    for dex in await fetch_live_perp_dex_names(client):
+    else:
+        states.append(LivePerpState(dex="", payload=default_payload))
+
+    dex_names, catalog_complete, catalog_error = await fetch_live_perp_dex_catalog(client)
+    for dex in dex_names:
         try:
             payload = await client.clearinghouse_state(user=user_address, dex=dex)
-        except Exception:
-            continue
-        states.append(LivePerpState(dex=dex, payload=payload))
-    return states
+        except Exception as exc:
+            states.append(
+                LivePerpState(
+                    dex=dex,
+                    payload={},
+                    complete=False,
+                    error=str(exc) or exc.__class__.__name__,
+                )
+            )
+        else:
+            states.append(LivePerpState(dex=dex, payload=payload))
+    return LivePerpSnapshot(
+        states=tuple(states),
+        requested_dexes=("", *dex_names),
+        catalog_complete=catalog_complete,
+        catalog_error=catalog_error,
+    )
 
 
-async def fetch_live_perp_dex_names(client: HyperliquidClient) -> list[str]:
+async def fetch_live_perp_dex_catalog(
+    client: HyperliquidClient,
+) -> tuple[list[str], bool, str | None]:
     try:
         payload = await client.perp_dexs()
-    except Exception:
-        return []
+    except Exception as exc:
+        return [], False, str(exc) or exc.__class__.__name__
     names: list[str] = []
     for item in payload:
         if not isinstance(item, dict):
@@ -1786,7 +2236,12 @@ async def fetch_live_perp_dex_names(client: HyperliquidClient) -> list[str]:
         name = str(item.get("name") or "").strip()
         if name:
             names.append(name)
-    return sorted(set(names))
+    return sorted(set(names)), True, None
+
+
+async def fetch_live_perp_dex_names(client: HyperliquidClient) -> list[str]:
+    names, _, _ = await fetch_live_perp_dex_catalog(client)
+    return names
 
 
 async def fetch_live_spot_state(
@@ -1856,6 +2311,10 @@ async def reconcile_live_fills(
             orders_by_oid=orders_by_oid,
             orders_by_cloid=orders_by_cloid,
         )
+        if matched_order is not None and parsed.get("exchange_order_id"):
+            matched_order.exchange_order_id = (
+                matched_order.exchange_order_id or parsed["exchange_order_id"]
+            )
         row = live_fill_row(
             parsed,
             account=account,
@@ -2297,6 +2756,8 @@ async def update_live_orders_from_reconciled_fills(
 class LivePositionReconciliationResult:
     open_positions: int
     removed_positions: int
+    complete: bool = True
+    authoritative_dexes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -2316,6 +2777,7 @@ def sync_live_source_positions_from_exchange_positions(
     source_positions: list[TradingPosition],
     exchange_positions: list[TradingPosition],
     reconciled_at: datetime,
+    authoritative_dexes: set[str] | None = None,
 ) -> LiveSourcePositionSyncResult:
     exchange_by_market = {
         (position.account_key, position.coin, position.side): position
@@ -2330,6 +2792,9 @@ def sync_live_source_positions_from_exchange_positions(
     updated = 0
     stale_positions: list[TradingPosition] = []
     for key, positions in source_positions_by_market.items():
+        dex = live_dex_from_coin(key[1])
+        if authoritative_dexes is not None and dex not in authoritative_dexes:
+            continue
         exchange_position = exchange_by_market.get(key)
         if exchange_position is None:
             stale_positions.extend(positions)
@@ -2401,12 +2866,14 @@ async def reconcile_live_positions(
     session: AsyncSession,
     *,
     account: TradingAccount,
-    perp_states: list[LivePerpState],
+    perp_states: LivePerpSnapshot | list[LivePerpState],
     reconciled_at: datetime,
 ) -> LivePositionReconciliationResult:
+    perp_snapshot = normalize_live_perp_snapshot(perp_states)
     snapshots = [
         snapshot
-        for perp_state in perp_states
+        for perp_state in perp_snapshot.states
+        if perp_state.complete
         for payload in normalized_live_asset_positions(
             perp_state.payload.get("assetPositions"),
             dex=perp_state.dex,
@@ -2422,7 +2889,14 @@ async def reconcile_live_positions(
             TradingPosition.source_wallet == LIVE_EXCHANGE_SOURCE,
         )
     )
-    existing = {position.coin: position for position in existing_result.all()}
+    existing_positions = list(existing_result.all())
+    existing = {position.coin: position for position in existing_positions}
+    authoritative_dexes = {
+        state.dex
+        for state in perp_snapshot.states
+        if state.complete
+    }
+    requested_dexes = set(perp_snapshot.requested_dexes)
     exchange_positions: list[TradingPosition] = []
     for snapshot in snapshots:
         position = existing.get(snapshot.coin)
@@ -2457,16 +2931,6 @@ async def reconcile_live_positions(
         position.last_reconciled_at = reconciled_at
         exchange_positions.append(position)
 
-    active_coins = {snapshot.coin for snapshot in snapshots}
-    delete_stmt = delete(TradingPosition).where(
-        TradingPosition.account_key == account.key,
-        TradingPosition.account_type == "live",
-        TradingPosition.source_wallet == LIVE_EXCHANGE_SOURCE,
-    )
-    if active_coins:
-        delete_stmt = delete_stmt.where(~TradingPosition.coin.in_(active_coins))
-    delete_result = await session.execute(delete_stmt)
-
     source_result = await session.scalars(
         select(TradingPosition).where(
             TradingPosition.account_key == account.key,
@@ -2474,18 +2938,59 @@ async def reconcile_live_positions(
             TradingPosition.source_wallet != LIVE_EXCHANGE_SOURCE,
         )
     )
+    source_positions = list(source_result.all())
+    if perp_snapshot.catalog_complete:
+        stored_dexes = {
+            live_dex_from_coin(position.coin)
+            for position in [*existing_positions, *source_positions]
+        }
+        authoritative_dexes.update(stored_dexes - requested_dexes)
+
+    active_coins = {snapshot.coin for snapshot in snapshots}
+    removed_exchange_positions = 0
+    for position in existing_positions:
+        if position.coin in active_coins:
+            continue
+        if live_dex_from_coin(position.coin) not in authoritative_dexes:
+            continue
+        await session.delete(position)
+        removed_exchange_positions += 1
+
+    await session.flush()
     source_sync_result = sync_live_source_positions_from_exchange_positions(
-        source_positions=list(source_result.all()),
+        source_positions=source_positions,
         exchange_positions=exchange_positions,
         reconciled_at=reconciled_at,
+        authoritative_dexes=authoritative_dexes,
     )
     for stale_position in source_sync_result.stale_positions:
         await session.delete(stale_position)
     await session.flush()
+    open_positions = await session.scalar(
+        select(func.count(TradingPosition.id)).where(
+            TradingPosition.account_key == account.key,
+            TradingPosition.account_type == "live",
+            TradingPosition.source_wallet == LIVE_EXCHANGE_SOURCE,
+        )
+    )
     return LivePositionReconciliationResult(
-        open_positions=len(active_coins),
-        removed_positions=int(delete_result.rowcount or 0)
-        + len(source_sync_result.stale_positions),
+        open_positions=int(open_positions or 0),
+        removed_positions=removed_exchange_positions + len(source_sync_result.stale_positions),
+        complete=perp_snapshot.complete,
+        authoritative_dexes=tuple(sorted(authoritative_dexes)),
+    )
+
+
+def normalize_live_perp_snapshot(
+    perp_states: LivePerpSnapshot | list[LivePerpState],
+) -> LivePerpSnapshot:
+    if isinstance(perp_states, LivePerpSnapshot):
+        return perp_states
+    states = tuple(perp_states)
+    return LivePerpSnapshot(
+        states=states,
+        requested_dexes=tuple(state.dex for state in states),
+        catalog_complete=True,
     )
 
 
@@ -2731,42 +3236,110 @@ def effective_leverage(
 def update_live_account_from_state(
     account: TradingAccount,
     *,
-    perp_states: list[LivePerpState],
+    perp_states: LivePerpSnapshot | list[LivePerpState],
     spot_state: dict[str, Any] | None = None,
     user_abstraction: Any = None,
     reconciled_at: datetime,
     settings: Settings,
+    reconciliation_status: str = "complete",
+    incomplete_components: tuple[str, ...] = (),
+    component_errors: dict[str, str] | None = None,
 ) -> None:
-    perp_equity = ZERO
-    perp_withdrawable = ZERO
-    state_time: Any = None
+    perp_snapshot = normalize_live_perp_snapshot(perp_states)
+    previous = account_last_reconciliation(account)
+    previous_states = {
+        str(state.get("dex") or "default"): dict(state)
+        for state in previous.get("perpStates", [])
+        if isinstance(state, dict)
+    }
+    state_by_dex = {state.dex: state for state in perp_snapshot.states}
+    requested_dexes = set(perp_snapshot.requested_dexes)
+    state_keys = {dex or "default" for dex in requested_dexes}
+    if not perp_snapshot.catalog_complete:
+        state_keys.update(previous_states)
+
     state_summaries: list[dict[str, Any]] = []
-    for perp_state in perp_states:
-        payload = perp_state.payload
-        margin_summary = payload.get("marginSummary")
-        if not isinstance(margin_summary, dict):
-            margin_summary = payload.get("crossMarginSummary")
-        state_equity = (
-            decimal_or_none(margin_summary.get("accountValue"))
-            if isinstance(margin_summary, dict)
-            else ZERO
+    for key in sorted(state_keys, key=lambda value: (value != "default", value)):
+        dex = "" if key == "default" else key
+        state = state_by_dex.get(dex)
+        if state is not None and state.complete:
+            state_summaries.append(
+                live_perp_state_summary(
+                    state,
+                    reconciled_at=reconciled_at,
+                )
+            )
+            continue
+        previous_summary = previous_states.get(key, {})
+        error = (
+            state.error
+            if state is not None
+            else perp_snapshot.catalog_error or "Perp dex was not refreshed."
         )
-        state_withdrawable = decimal_or_none(payload.get("withdrawable")) or ZERO
-        perp_equity += state_equity or ZERO
-        perp_withdrawable += state_withdrawable
-        state_time = max_optional_numeric(state_time, payload.get("time"))
         state_summaries.append(
             {
-                "accountValue": str(state_equity or ZERO),
-                "dex": perp_state.dex or "default",
-                "marginSummary": margin_summary if isinstance(margin_summary, dict) else None,
-                "withdrawable": str(state_withdrawable),
+                **previous_summary,
+                "accountValue": str(previous_summary.get("accountValue") or ZERO),
+                "dex": key,
+                "error": error,
+                "stale": True,
+                "status": "partial",
+                "withdrawable": str(previous_summary.get("withdrawable") or ZERO),
             }
         )
 
-    spot_usdc_total = live_spot_usdc_total(spot_state or {})
-    spot_usdc_available = live_spot_usdc_available(spot_state or {})
+    perp_equity = sum(
+        (decimal_or_none(state.get("accountValue")) or ZERO for state in state_summaries),
+        ZERO,
+    )
+    perp_withdrawable = sum(
+        (decimal_or_none(state.get("withdrawable")) or ZERO for state in state_summaries),
+        ZERO,
+    )
+    state_time: Any = None
+    for state in state_summaries:
+        state_time = max_optional_numeric(state_time, state.get("time"))
+
     capital_mode = live_capital_mode(settings)
+    resolved_spot_state = spot_state or {}
+    spot_error = remote_state_error(resolved_spot_state)
+    if spot_error:
+        previous_spot_total = decimal_or_none(previous.get("spotUsdcTotalUsd"))
+        previous_spot_available = decimal_or_none(previous.get("spotUsdcAvailableUsd"))
+        spot_usdc_total = (
+            previous_spot_total
+            if previous_spot_total is not None
+            else (
+                decimal_or_none(account.equity_usd)
+                if capital_mode == LIVE_CAPITAL_MODE_UNIFIED
+                else ZERO
+            )
+        )
+        spot_usdc_available = (
+            previous_spot_available
+            if previous_spot_available is not None
+            else (
+                decimal_or_none(account.cash_balance_usd)
+                if capital_mode == LIVE_CAPITAL_MODE_UNIFIED
+                else ZERO
+            )
+        )
+        spot_usdc_total = spot_usdc_total or ZERO
+        spot_usdc_available = spot_usdc_available or ZERO
+        stored_spot_state = previous.get("spotState")
+    else:
+        spot_usdc_total = live_spot_usdc_total(resolved_spot_state)
+        spot_usdc_available = live_spot_usdc_available(resolved_spot_state)
+        stored_spot_state = resolved_spot_state
+
+    user_abstraction_error = remote_state_error(user_abstraction)
+    if user_abstraction_error:
+        stored_user_abstraction = previous.get("userAbstraction")
+        stored_user_abstraction_raw = previous.get("userAbstractionRaw")
+    else:
+        stored_user_abstraction = normalize_user_abstraction(user_abstraction)
+        stored_user_abstraction_raw = user_abstraction
+
     if capital_mode == LIVE_CAPITAL_MODE_UNIFIED:
         account.equity_usd = spot_usdc_total
         account.cash_balance_usd = spot_usdc_available
@@ -2775,27 +3348,70 @@ def update_live_account_from_state(
         account.equity_usd = perp_equity + spot_usdc_total
         account.cash_balance_usd = perp_withdrawable + spot_usdc_available
         tradable_equity = perp_equity
-    account.last_reconciled_at = reconciled_at
+    if reconciliation_status == "complete":
+        account.last_reconciled_at = reconciled_at
+    errors = component_errors or {}
+    attempt_payload = {
+        "attemptedAt": reconciled_at.isoformat(),
+        "componentErrors": errors,
+        "incompleteComponents": list(incomplete_components),
+        "status": reconciliation_status,
+    }
     account.config_payload = merge_raw_payload(
         account.config_payload,
         {
             "lastReconciliation": {
+                "attemptedAt": reconciled_at.isoformat(),
                 "capitalMode": capital_mode,
+                "componentErrors": errors,
+                "incompleteComponents": list(incomplete_components),
                 "perpEquityUsd": str(perp_equity),
                 "perpStates": state_summaries,
                 "perpWithdrawableUsd": str(perp_withdrawable),
-                "spotState": spot_state,
+                "spotState": stored_spot_state,
+                "spotStateError": spot_error,
                 "spotUsdcAvailableUsd": str(spot_usdc_available),
                 "spotUsdcTotalUsd": str(spot_usdc_total),
+                "status": reconciliation_status,
                 "tradableEquityUsd": str(tradable_equity),
                 "time": state_time,
                 "unifiedAvailableUsd": str(spot_usdc_available),
                 "unifiedEquityUsd": str(spot_usdc_total),
-                "userAbstraction": normalize_user_abstraction(user_abstraction),
-                "userAbstractionRaw": user_abstraction,
-            }
+                "userAbstraction": stored_user_abstraction,
+                "userAbstractionError": user_abstraction_error,
+                "userAbstractionRaw": stored_user_abstraction_raw,
+            },
+            "lastReconciliationAttempt": attempt_payload,
         },
     )
+
+
+def live_perp_state_summary(
+    state: LivePerpState,
+    *,
+    reconciled_at: datetime,
+) -> dict[str, Any]:
+    payload = state.payload
+    margin_summary = payload.get("marginSummary")
+    if not isinstance(margin_summary, dict):
+        margin_summary = payload.get("crossMarginSummary")
+    state_equity = (
+        decimal_or_none(margin_summary.get("accountValue"))
+        if isinstance(margin_summary, dict)
+        else ZERO
+    )
+    state_withdrawable = decimal_or_none(payload.get("withdrawable")) or ZERO
+    return {
+        "accountValue": str(state_equity or ZERO),
+        "dex": state.dex or "default",
+        "error": None,
+        "marginSummary": margin_summary if isinstance(margin_summary, dict) else None,
+        "reconciledAt": reconciled_at.isoformat(),
+        "stale": False,
+        "status": "complete",
+        "time": payload.get("time"),
+        "withdrawable": str(state_withdrawable),
+    }
 
 
 def live_spot_usdc_total(spot_state: dict[str, Any]) -> Decimal:
@@ -2886,7 +3502,7 @@ def live_fill_row(
         else parsed_fill["exchange_fill_id"],
         "sequence_index": order.sequence_index if order is not None else None,
         "exchange_fill_id": parsed_fill["exchange_fill_id"],
-        "coin": parsed_fill["coin"],
+        "coin": order.coin if order is not None else parsed_fill["coin"],
         "action": order.action if order is not None else parsed_fill["action"],
         "side": order.side if order is not None else parsed_fill["side"],
         "price": parsed_fill["price"],
@@ -2976,13 +3592,13 @@ def map_exchange_order_status(status: str | None) -> str | None:
     if status is None:
         return None
     normalized = status.strip().casefold()
-    if normalized == "open":
+    if normalized in {"open", "triggered"}:
         return "accepted"
     if normalized == "filled":
         return "filled"
     if normalized.endswith("rejected") or normalized == "rejected":
         return "rejected"
-    if normalized.endswith("canceled") or normalized == "canceled":
+    if normalized.endswith("canceled") or normalized in {"canceled", "scheduledcancel"}:
         return "canceled"
     return None
 

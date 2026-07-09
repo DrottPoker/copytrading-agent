@@ -35,12 +35,14 @@ from app.services.live_trading_service import (
     live_position_unrealized_pnl_pct,
     live_tradable_equity_usd,
     manual_live_close_recovery_status,
+    map_exchange_order_status,
     parse_live_fill,
     parse_live_position,
     reset_live_order_for_retry,
     resolve_live_account_wallet_address,
     sync_live_source_positions_from_exchange_positions,
     update_live_account_from_state,
+    validate_live_account_can_start,
     validate_live_trading_configuration,
 )
 
@@ -64,6 +66,22 @@ def test_apply_order_status_response_maps_filled_order() -> None:
     assert order.status == "filled"
     assert order.exchange_order_id == "123"
     assert order.filled_at == datetime.fromtimestamp(1_725_000_000_000 / 1000, UTC)
+
+
+@pytest.mark.parametrize(
+    ("exchange_status", "local_status"),
+    [
+        ("triggered", "accepted"),
+        ("marginCanceled", "canceled"),
+        ("scheduledCancel", "canceled"),
+        ("minTradeNtlRejected", "rejected"),
+    ],
+)
+def test_map_exchange_order_status_covers_documented_terminal_variants(
+    exchange_status: str,
+    local_status: str,
+) -> None:
+    assert map_exchange_order_status(exchange_status) == local_status
 
 
 def test_mainnet_account_start_requires_entry_arming_and_allowlist() -> None:
@@ -1012,10 +1030,121 @@ async def test_create_live_trading_account_returns_existing_wallet_route(monkeyp
 async def test_fetch_live_fills_by_time_paginates_full_pages() -> None:
     client = FakeFillClient()
 
-    fills = await fetch_live_fills_by_time(client, user="0xuser", start_time_ms=1000)
+    result = await fetch_live_fills_by_time(client, user="0xuser", start_time_ms=1000)
 
-    assert len(fills) == 501
-    assert client.start_times == [1000, 1500]
+    assert len(result.fills) == 501
+    assert result.complete is True
+    assert result.pages == 2
+    assert client.start_times == [1000, 1499]
+
+
+@pytest.mark.asyncio
+async def test_fetch_live_fills_marks_safety_limit_as_partial() -> None:
+    class FullPageClient:
+        async def user_fills_by_time(
+            self,
+            *,
+            user: str,
+            start_time_ms: int,
+            aggregate_by_time: bool = False,
+        ) -> list[dict[str, object]]:
+            return [
+                {
+                    "aggregateByTime": aggregate_by_time,
+                    "time": start_time_ms + index,
+                    "user": user,
+                }
+                for index in range(500)
+            ]
+
+    result = await fetch_live_fills_by_time(
+        FullPageClient(),  # type: ignore[arg-type]
+        user="0xuser",
+        start_time_ms=1000,
+        max_pages=2,
+    )
+
+    assert len(result.fills) == 999
+    assert result.complete is False
+    assert result.pages == 2
+    assert result.next_start_time_ms == 1998
+    assert result.error == "Fill reconciliation reached the 2-page safety limit."
+
+
+def test_partial_spot_reconciliation_preserves_last_authoritative_capital() -> None:
+    settings = Settings()
+    settings.live_trading_capital_mode = "unified"
+    previous_reconciled_at = datetime(2026, 1, 1, tzinfo=UTC)
+    account = TradingAccount(
+        key="live_test",
+        account_type="live",
+        label="Live Test",
+        status="disabled",
+        network="mainnet",
+        equity_usd=Decimal("200"),
+        cash_balance_usd=Decimal("190"),
+        realized_pnl_usd=Decimal("0"),
+        fee_usd=Decimal("0"),
+        last_reconciled_at=previous_reconciled_at,
+        config_payload={
+            "lastReconciliation": {
+                "spotState": {"balances": [{"coin": "USDC", "total": "200"}]},
+                "spotUsdcAvailableUsd": "190",
+                "spotUsdcTotalUsd": "200",
+                "unifiedAvailableUsd": "190",
+                "unifiedEquityUsd": "200",
+            }
+        },
+    )
+
+    update_live_account_from_state(
+        account,
+        perp_states=[LivePerpState(dex="", payload={"marginSummary": {"accountValue": "0"}})],
+        spot_state={"error": {"message": "spot timed out", "type": "TimeoutError"}},
+        reconciled_at=datetime(2026, 1, 2, tzinfo=UTC),
+        settings=settings,
+        reconciliation_status="partial",
+        incomplete_components=("spot",),
+        component_errors={"spot": "spot timed out"},
+    )
+
+    assert account.equity_usd == Decimal("200")
+    assert account.cash_balance_usd == Decimal("190")
+    assert account.last_reconciled_at == previous_reconciled_at
+    assert account.config_payload["lastReconciliation"]["status"] == "partial"
+    assert account.config_payload["lastReconciliationAttempt"]["status"] == "partial"
+
+
+def test_partial_reconciliation_blocks_starting_live_account() -> None:
+    settings = Settings()
+    settings.live_trading_capital_mode = "unified"
+    account = TradingAccount(
+        key="live_test",
+        account_type="live",
+        label="Live Test",
+        status="disabled",
+        network="mainnet",
+        equity_usd=Decimal("200"),
+        cash_balance_usd=Decimal("190"),
+        realized_pnl_usd=Decimal("0"),
+        fee_usd=Decimal("0"),
+        config_payload={
+            "lastReconciliation": {
+                "unifiedAvailableUsd": "190",
+                "userAbstraction": "unifiedAccount",
+            },
+            "lastReconciliationAttempt": {
+                "incompleteComponents": ["perp:xyz"],
+                "status": "partial",
+            },
+        },
+    )
+
+    with pytest.raises(
+        live_trading_service.LiveTradingServiceError,
+        match="complete exchange reconciliation",
+    ):
+        validate_live_account_can_start(account, settings=settings)
 
 
 def live_order(*, status: str) -> TradingOrder:

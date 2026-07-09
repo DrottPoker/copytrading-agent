@@ -38,6 +38,8 @@ class TradingCapitalBalanceRead(CamelModel):
     equity_usd: Decimal
     available_usd: Decimal | None = None
     tradable: bool = False
+    stale: bool = False
+    error: str | None = None
 
 
 class TradingAccountRead(CamelModel):
@@ -61,6 +63,10 @@ class TradingAccountRead(CamelModel):
     spot_usdc_balance_usd: Decimal | None = None
     spot_usdc_available_usd: Decimal | None = None
     capital_balances: list[TradingCapitalBalanceRead] = Field(default_factory=list)
+    reconciliation_status: Literal["never", "complete", "partial", "failed"] = "never"
+    reconciliation_attempted_at: datetime | None = None
+    incomplete_reconciliation_components: list[str] = Field(default_factory=list)
+    reconciliation_errors: dict[str, str] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
 
@@ -209,11 +215,15 @@ class LiveOrderSubmitResponse(CamelModel):
 class LiveReconciliationResponse(CamelModel):
     account_key: str
     user_address: str
+    run_id: UUID | None = None
     fetched_fills: int
     inserted_fills: int
     updated_orders: int
     open_positions: int
     removed_positions: int
+    status: Literal["complete", "partial"]
+    incomplete_components: list[str] = Field(default_factory=list)
+    component_errors: dict[str, str] = Field(default_factory=dict)
     reconciled_at: datetime
 
 

@@ -4,6 +4,8 @@ export type TradingCapitalBalance = {
   equityUsd: string;
   availableUsd: string | null;
   tradable: boolean;
+  stale: boolean;
+  error: string | null;
 };
 
 export type TradingAccount = {
@@ -27,6 +29,10 @@ export type TradingAccount = {
   spotUsdcBalanceUsd: string | null;
   spotUsdcAvailableUsd: string | null;
   capitalBalances: TradingCapitalBalance[];
+  reconciliationStatus: "never" | "complete" | "partial" | "failed";
+  reconciliationAttemptedAt: string | null;
+  incompleteReconciliationComponents: string[];
+  reconciliationErrors: Record<string, string>;
   createdAt: string;
   updatedAt: string;
 };

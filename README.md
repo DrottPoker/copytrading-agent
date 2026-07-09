@@ -44,6 +44,8 @@ Current schema includes:
 - `trading_order_dispatches`, durable live order outbox and delivery state
 - `trading_close_all_operations`, resumable live close-all workflows
 - `trading_close_all_items`, per-position close-all progress and latest order
+- `trading_reconciliation_runs`, auditable live reconciliation results and
+  component completeness
 - `trading_fills`, reconciled paper or live execution fills
 - `paper_trading_accounts`
 - `paper_copy_allocations`
@@ -576,8 +578,9 @@ Sizing policy:
 - Realtime fills, recovery reconciliation, and manual closes are serialized per
   source wallet with a Postgres advisory transaction lock.
 - Live order dispatch is serialized per live account with a renewable Postgres
-  job lock. The order and outbox row are committed before an exchange request,
-  and no account or order row lock is held while Hyperliquid is called.
+  job lock. Reconciliation uses the same account lock so it cannot race an
+  in-flight dispatch. The order and outbox row are committed before an exchange
+  request, and no account or order row lock is held while Hyperliquid is called.
 - A lost exchange response is stored as `uncertain`, not `failed`. The trading
   worker queries Hyperliquid by deterministic client order id before any retry
   decision, so a possibly accepted order is not submitted blindly a second time.
@@ -586,6 +589,18 @@ Sizing policy:
   the same durable dispatcher. Worker reconciliation resumes unfinished
   operations after restart and disables the account only after the exchange is
   confirmed flat.
+- Live reconciliation treats Hyperliquid as authoritative only for components
+  that returned a complete snapshot. Default perps and every HIP-3 dex are
+  separate scopes. A failed scope preserves its exchange and source positions,
+  while complete empty scopes remove stale local positions.
+- Fill pagination, order status, perp catalog, each perp dex, spot state, and
+  account abstraction report independent completeness. Partial attempts retain
+  the last known capital for failed components, do not advance the last complete
+  reconciliation timestamp, and block new live entries until a complete attempt
+  succeeds. Reduce-only exits remain available.
+- Every live reconciliation attempt is stored in
+  `trading_reconciliation_runs`. The Accounts dashboard distinguishes complete,
+  partial, failed, and never-reconciled accounts and marks stale capital scopes.
 - Paper account rows are locked before copied fills are written, so different
   source wallets cannot concurrently update the same paper account balance.
 - Recovery can retry exit skip rows caused by unavailable source state or

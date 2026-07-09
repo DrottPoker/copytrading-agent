@@ -39,6 +39,7 @@ from app.services.live_trading_service import (
     LIVE_EXCHANGE_SOURCE,
     LiveTradingServiceError,
     account_last_reconciliation,
+    account_last_reconciliation_attempt,
     build_testnet_live_trade_intent,
     close_all_live_account_positions,
     close_live_account_position,
@@ -51,6 +52,7 @@ from app.services.live_trading_service import (
     live_position_mark_price,
     live_position_unrealized_pnl,
     live_position_unrealized_pnl_pct,
+    live_reconciliation_status,
     live_spot_available_usd,
     live_spot_balance_usd,
     live_tradable_equity_usd,
@@ -209,7 +211,15 @@ def enriched_trading_account_read(
         return read
 
     last_reconciliation = account_last_reconciliation(account)
+    last_attempt = account_last_reconciliation_attempt(account)
     mode = live_capital_mode(settings)
+    component_errors = last_attempt.get("componentErrors")
+    reconciliation_errors = (
+        {str(key): str(value) for key, value in component_errors.items()}
+        if isinstance(component_errors, dict)
+        else {}
+    )
+    incomplete_components = last_attempt.get("incompleteComponents")
     return read.model_copy(
         update={
             "capital_mode": mode,
@@ -222,8 +232,30 @@ def enriched_trading_account_read(
             "spot_usdc_balance_usd": live_spot_balance_usd(account),
             "spot_usdc_available_usd": live_spot_available_usd(account),
             "capital_balances": live_capital_balance_rows(account, settings=settings),
+            "reconciliation_status": live_reconciliation_status(account),
+            "reconciliation_attempted_at": parse_reconciliation_datetime(
+                last_attempt.get("attemptedAt")
+            ),
+            "incomplete_reconciliation_components": (
+                [str(value) for value in incomplete_components]
+                if isinstance(incomplete_components, list)
+                else []
+            ),
+            "reconciliation_errors": reconciliation_errors,
         }
     )
+
+
+def parse_reconciliation_datetime(value: object) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed
 
 
 def live_capital_balance_rows(
@@ -232,6 +264,14 @@ def live_capital_balance_rows(
     settings: Settings,
 ) -> list[TradingCapitalBalanceRead]:
     last_reconciliation = account_last_reconciliation(account)
+    last_attempt = account_last_reconciliation_attempt(account)
+    incomplete_components = {
+        str(value)
+        for value in last_attempt.get("incompleteComponents", [])
+        if value is not None
+    }
+    component_errors = last_attempt.get("componentErrors")
+    errors = component_errors if isinstance(component_errors, dict) else {}
     mode = live_capital_mode(settings)
     if mode == "unified":
         return [
@@ -241,6 +281,8 @@ def live_capital_balance_rows(
                 equity_usd=live_unified_equity_usd(account),
                 available_usd=live_unified_available_usd(account),
                 tradable=True,
+                stale="spot" in incomplete_components,
+                error=str(errors.get("spot")) if errors.get("spot") else None,
             )
         ]
 
@@ -260,6 +302,8 @@ def live_capital_balance_rows(
                     equity_usd=equity,
                     available_usd=available,
                     tradable=True,
+                    stale=bool(state.get("stale")),
+                    error=str(state.get("error")) if state.get("error") else None,
                 )
             )
     spot_balance = live_spot_balance_usd(account)
@@ -272,6 +316,8 @@ def live_capital_balance_rows(
                 equity_usd=spot_balance,
                 available_usd=spot_available,
                 tradable=False,
+                stale="spot" in incomplete_components,
+                error=str(errors.get("spot")) if errors.get("spot") else None,
             )
         )
     return rows
