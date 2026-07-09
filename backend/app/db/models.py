@@ -8,6 +8,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    ForeignKey,
     Index,
     Integer,
     Numeric,
@@ -704,8 +705,8 @@ class TradingOrder(Base, TimestampMixin, UpdatedAtMixin):
         CheckConstraint("side in ('long', 'short')", name="ck_trading_orders_side"),
         CheckConstraint(
             "status in ("
-            "'planned', 'submitted', 'accepted', 'rejected', 'partially_filled', "
-            "'filled', 'canceled', 'failed'"
+            "'planned', 'ready', 'submitting', 'uncertain', 'submitted', 'accepted', "
+            "'rejected', 'partially_filled', 'filled', 'canceled', 'failed'"
             ")",
             name="ck_trading_orders_status",
         ),
@@ -755,6 +756,116 @@ class TradingOrder(Base, TimestampMixin, UpdatedAtMixin):
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     filled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class TradingOrderDispatch(Base, TimestampMixin, UpdatedAtMixin):
+    __tablename__ = "trading_order_dispatches"
+    __table_args__ = (
+        CheckConstraint(
+            "status in ('pending', 'dispatching', 'uncertain', 'completed', 'canceled')",
+            name="ck_trading_order_dispatches_status",
+        ),
+        UniqueConstraint("order_id", name="ux_trading_order_dispatches_order"),
+        UniqueConstraint(
+            "client_order_id",
+            name="ux_trading_order_dispatches_client_order_id",
+        ),
+        Index(
+            "ix_trading_order_dispatches_status_available",
+            "status",
+            "available_at",
+        ),
+        Index(
+            "ix_trading_order_dispatches_account_created",
+            "account_key",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    order_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("trading_orders.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    account_key: Mapped[str] = mapped_column(Text, nullable=False)
+    client_order_id: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    dispatch_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
+
+
+class TradingCloseAllOperation(Base, TimestampMixin, UpdatedAtMixin):
+    __tablename__ = "trading_close_all_operations"
+    __table_args__ = (
+        CheckConstraint(
+            "status in ('pending', 'running', 'partially_completed', 'completed', 'failed')",
+            name="ck_trading_close_all_operations_status",
+        ),
+        Index(
+            "ix_trading_close_all_operations_account_created",
+            "account_key",
+            "created_at",
+        ),
+        Index("ix_trading_close_all_operations_status", "status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    account_key: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("trading_accounts.key", ondelete="CASCADE"),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
+
+
+class TradingCloseAllItem(Base, TimestampMixin, UpdatedAtMixin):
+    __tablename__ = "trading_close_all_items"
+    __table_args__ = (
+        CheckConstraint(
+            "status in ('pending', 'submitting', 'uncertain', 'completed', 'failed', 'skipped')",
+            name="ck_trading_close_all_items_status",
+        ),
+        UniqueConstraint(
+            "operation_id",
+            "position_id",
+            name="ux_trading_close_all_items_operation_position",
+        ),
+        Index("ix_trading_close_all_items_operation", "operation_id"),
+        Index("ix_trading_close_all_items_status", "status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    operation_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("trading_close_all_operations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    position_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    order_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("trading_orders.id", ondelete="SET NULL"),
+    )
+    coin: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    error: Mapped[str | None] = mapped_column(Text)
 
 
 class TradingFill(Base, TimestampMixin):

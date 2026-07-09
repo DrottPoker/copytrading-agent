@@ -2867,10 +2867,17 @@ function formatCloseType(value: string) {
 }
 
 function liveOrderStatusTone(status: string): Tone {
-  if (status === "filled" || status === "accepted" || status === "submitted") {
+  if (status === "filled" || status === "accepted") {
     return "positive";
   }
-  if (status === "planned" || status === "partially_filled") {
+  if (
+    status === "planned" ||
+    status === "ready" ||
+    status === "submitting" ||
+    status === "uncertain" ||
+    status === "submitted" ||
+    status === "partially_filled"
+  ) {
     return "warning";
   }
   if (status === "rejected" || status === "failed" || status === "canceled") {

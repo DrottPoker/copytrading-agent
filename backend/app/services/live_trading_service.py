@@ -11,25 +11,46 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
-from app.db.models import TradingAccount, TradingFill, TradingOrder, TradingPosition
+from app.db.models import (
+    TradingAccount,
+    TradingCloseAllItem,
+    TradingCloseAllOperation,
+    TradingFill,
+    TradingOrder,
+    TradingOrderDispatch,
+    TradingPosition,
+)
 from app.integrations.hyperliquid_client import HyperliquidClient
 from app.integrations.hyperliquid_live_client import (
+    HyperliquidLiveOrderRejectedError,
     HyperliquidLiveTradingClient,
+    HyperliquidLiveTradingConfigurationError,
     LiveOrderResult,
+)
+from app.services.job_lock_service import JobLockAlreadyHeldError, job_lock
+from app.services.live_execution_state import (
+    RECONCILABLE_ORDER_STATUSES,
+    RECOVERABLE_ORDER_STATUSES,
+    TERMINAL_ORDER_STATUSES,
+    load_live_order_dispatch,
+    mark_live_order_dispatch_completed,
+    mark_live_order_dispatching,
+    mark_live_order_failed,
+    mark_live_order_uncertain,
+    prepare_live_order_dispatch,
+    trade_intent_from_order,
 )
 from app.services.trading_core import (
     TradeIntent,
     build_copy_trade_intent,
     margin_from_notional,
-    trade_intent_payload,
 )
 
 ZERO = Decimal("0")
 POSITION_EPSILON = Decimal("0.000000000001")
 LIVE_EXCHANGE_SOURCE = "__exchange__"
 LIVE_MANUAL_TEST_SOURCE = "__manual_testnet__"
-TERMINAL_ORDER_STATUSES = {"filled", "rejected", "canceled", "failed"}
-ACTIVE_ORDER_STATUSES = {"planned", "submitted", "accepted", "partially_filled"}
+ACTIVE_ORDER_STATUSES = RECONCILABLE_ORDER_STATUSES
 MAX_LIVE_FILL_RECONCILIATION_PAGES = 10
 LIVE_ACCOUNT_KEY_MAX_LENGTH = 64
 LIVE_CAPITAL_MODE_UNIFIED = "unified"
@@ -104,6 +125,15 @@ class LiveOrderLifecycleResult:
 
 
 @dataclass(frozen=True)
+class LiveDispatchRecoveryResult:
+    inspected: int = 0
+    recovered: int = 0
+    dispatched: int = 0
+    uncertain: int = 0
+    failed: int = 0
+
+
+@dataclass(frozen=True)
 class LiveClosedTrade:
     id: str
     account_key: str
@@ -150,6 +180,8 @@ class LiveTradeAccumulator:
 @dataclass(frozen=True)
 class LiveCloseAllResult:
     account_key: str
+    operation_id: UUID
+    operation_status: str
     submitted_orders: int
     failed_orders: int
     status: str
@@ -490,9 +522,42 @@ async def close_all_live_account_positions(
 ) -> LiveCloseAllResult:
     if account.account_type != "live":
         raise LiveTradingServiceError("Only live accounts can close live positions.")
+    try:
+        async with job_lock(
+            session,
+            key=f"live_close_all:{account.key}",
+            ttl_seconds=300,
+        ):
+            return await run_live_close_all_operation(
+                session,
+                account=account,
+                settings=settings,
+                info_client=info_client,
+                trading_client=trading_client,
+            )
+    except JobLockAlreadyHeldError as exc:
+        raise LiveTradingServiceError(
+            "A close-all operation is already running for this account.",
+            status_code=409,
+        ) from exc
 
+
+async def run_live_close_all_operation(
+    session: AsyncSession,
+    *,
+    account: TradingAccount,
+    settings: Settings,
+    info_client: HyperliquidClient | None,
+    trading_client: HyperliquidLiveTradingClient | None,
+) -> LiveCloseAllResult:
+    operation = await get_or_create_live_close_all_operation(
+        session,
+        account_key=account.key,
+    )
     account.status = "exit_only"
-    await session.flush()
+    operation.status = "running"
+    operation.last_error = None
+    await session.commit()
 
     client_created = info_client is None
     client = info_client or HyperliquidClient(settings)
@@ -505,31 +570,50 @@ async def close_all_live_account_positions(
             settings=settings,
             info_client=client,
         )
+        await session.commit()
+        await refresh_live_close_all_items(session, operation_id=operation.id)
+        await session.commit()
         positions = await load_live_exchange_positions(session, account_key=account.key)
+        await session.commit()
         if not positions:
-            account.status = "disabled"
-            await session.flush()
-            return LiveCloseAllResult(
-                account_key=account.key,
+            return await complete_live_close_all_operation(
+                session,
+                account=account,
+                operation=operation,
                 submitted_orders=0,
-                failed_orders=0,
-                status=account.status,
             )
 
         mids = await load_live_close_mids(client, positions=positions)
-        submitted = 0
-        failed = 0
         live_client = trading_client or HyperliquidLiveTradingClient(settings=settings)
+        submitted = 0
         for position in positions:
+            item = await get_or_create_live_close_all_item(
+                session,
+                operation=operation,
+                position=position,
+            )
+            if item.status == "uncertain":
+                continue
+
             mid_price = decimal_or_none(mids.get(position.coin))
             if mid_price is None or mid_price <= ZERO:
-                failed += 1
+                item.status = "failed"
+                item.error = "Live close price is unavailable."
+                await session.commit()
                 continue
+
+            item.attempt_count += 1
+            item.status = "submitting"
+            item.error = None
+            await session.commit()
             intent = build_live_close_position_intent(
                 account=account,
                 position=position,
                 mid_price=mid_price,
                 settings=settings,
+                source_fill_id=(
+                    f"close-all-{operation.id}-{item.id}-{item.attempt_count}"
+                ),
             )
             try:
                 result = await submit_live_trade_intent(
@@ -539,20 +623,30 @@ async def close_all_live_account_positions(
                     settings=settings,
                     client=live_client,
                 )
-                if result.order.status in {"rejected", "failed", "canceled"}:
-                    failed += 1
-                else:
-                    submitted += 1
-            except LiveTradingServiceError:
-                failed += 1
-        if failed > 0:
-            await session.flush()
-            return LiveCloseAllResult(
-                account_key=account.key,
-                submitted_orders=submitted,
-                failed_orders=failed,
-                status=account.status,
-            )
+            except LiveTradingServiceError as exc:
+                order = await load_live_order_by_client_order_id(
+                    session,
+                    client_order_id=intent.client_order_id,
+                )
+                item = await session.get(TradingCloseAllItem, item.id)
+                if item is not None:
+                    item.order_id = order.id if order is not None else None
+                    item.status = (
+                        "uncertain"
+                        if order is not None and order.status in {"submitting", "uncertain"}
+                        else "failed"
+                    )
+                    item.error = str(exc) or exc.__class__.__name__
+                    await session.commit()
+                continue
+
+            item = await session.get(TradingCloseAllItem, item.id)
+            if item is not None:
+                item.order_id = result.order.id
+                item.status = close_all_item_status_for_order(result.order.status)
+                item.error = result.order.error
+                await session.commit()
+            submitted += int(result.submitted)
 
         await reconcile_live_trading_account(
             session,
@@ -560,26 +654,214 @@ async def close_all_live_account_positions(
             settings=settings,
             info_client=client,
         )
+        await session.commit()
         remaining_positions = await load_live_exchange_positions(session, account_key=account.key)
-        if remaining_positions:
-            await session.flush()
-            return LiveCloseAllResult(
-                account_key=account.key,
+        await refresh_live_close_all_items(session, operation_id=operation.id)
+        if not remaining_positions:
+            return await complete_live_close_all_operation(
+                session,
+                account=account,
+                operation=operation,
                 submitted_orders=submitted,
-                failed_orders=len(remaining_positions),
-                status=account.status,
             )
-        account.status = "disabled"
-        await session.flush()
+
+        failed = await live_close_all_incomplete_item_count(
+            session,
+            operation_id=operation.id,
+        )
+        operation.status = "partially_completed"
+        operation.last_error = f"{len(remaining_positions)} live positions remain open."
+        account.status = "exit_only"
+        await session.commit()
         return LiveCloseAllResult(
             account_key=account.key,
+            operation_id=operation.id,
+            operation_status=operation.status,
             submitted_orders=submitted,
-            failed_orders=0,
+            failed_orders=max(failed, len(remaining_positions)),
             status=account.status,
         )
+    except BaseException as exc:
+        await session.rollback()
+        persisted_operation = await session.get(TradingCloseAllOperation, operation.id)
+        if persisted_operation is not None:
+            persisted_operation.status = "failed"
+            persisted_operation.last_error = str(exc) or exc.__class__.__name__
+            await session.commit()
+        raise
     finally:
         if client_created:
             await client.__aexit__(None, None, None)
+
+
+async def get_or_create_live_close_all_operation(
+    session: AsyncSession,
+    *,
+    account_key: str,
+) -> TradingCloseAllOperation:
+    operation = await session.scalar(
+        select(TradingCloseAllOperation)
+        .where(
+            TradingCloseAllOperation.account_key == account_key,
+            TradingCloseAllOperation.status.in_(
+                ["pending", "running", "partially_completed", "failed"]
+            ),
+        )
+        .order_by(TradingCloseAllOperation.created_at.desc())
+        .limit(1)
+        .with_for_update()
+    )
+    if operation is not None:
+        return operation
+    operation = TradingCloseAllOperation(
+        account_key=account_key,
+        status="pending",
+        requested_at=datetime.now(UTC),
+    )
+    session.add(operation)
+    await session.flush()
+    return operation
+
+
+async def get_or_create_live_close_all_item(
+    session: AsyncSession,
+    *,
+    operation: TradingCloseAllOperation,
+    position: TradingPosition,
+) -> TradingCloseAllItem:
+    item = await session.scalar(
+        select(TradingCloseAllItem)
+        .where(
+            TradingCloseAllItem.operation_id == operation.id,
+            TradingCloseAllItem.position_id == position.id,
+        )
+        .with_for_update()
+    )
+    if item is not None:
+        return item
+    item = TradingCloseAllItem(
+        operation_id=operation.id,
+        position_id=position.id,
+        coin=position.coin,
+        status="pending",
+        attempt_count=0,
+    )
+    session.add(item)
+    await session.flush()
+    await session.commit()
+    return item
+
+
+def close_all_item_status_for_order(order_status: str) -> str:
+    if order_status == "filled":
+        return "completed"
+    if order_status in {"submitting", "uncertain", "submitted", "accepted", "partially_filled"}:
+        return "uncertain"
+    if order_status in {"rejected", "canceled", "failed"}:
+        return "failed"
+    return "submitting"
+
+
+async def refresh_live_close_all_items(
+    session: AsyncSession,
+    *,
+    operation_id: UUID,
+) -> None:
+    items_result = await session.scalars(
+        select(TradingCloseAllItem).where(
+            TradingCloseAllItem.operation_id == operation_id,
+        )
+    )
+    items = list(items_result.all())
+    order_ids = [item.order_id for item in items if item.order_id is not None]
+    orders: dict[UUID, TradingOrder] = {}
+    if order_ids:
+        orders_result = await session.scalars(
+            select(TradingOrder).where(TradingOrder.id.in_(order_ids))
+        )
+        orders = {order.id: order for order in orders_result.all()}
+    for item in items:
+        if item.order_id is None:
+            continue
+        order = orders.get(item.order_id)
+        if order is None:
+            item.status = "failed"
+            item.error = "Live order is missing."
+            continue
+        item.status = close_all_item_status_for_order(order.status)
+        item.error = order.error
+    await session.flush()
+
+
+async def live_close_all_incomplete_item_count(
+    session: AsyncSession,
+    *,
+    operation_id: UUID,
+) -> int:
+    value = await session.scalar(
+        select(func.count(TradingCloseAllItem.id)).where(
+            TradingCloseAllItem.operation_id == operation_id,
+            TradingCloseAllItem.status.not_in(["completed", "skipped"]),
+        )
+    )
+    return int(value or 0)
+
+
+async def complete_live_close_all_operation(
+    session: AsyncSession,
+    *,
+    account: TradingAccount,
+    operation: TradingCloseAllOperation,
+    submitted_orders: int,
+) -> LiveCloseAllResult:
+    account.status = "disabled"
+    operation.status = "completed"
+    operation.completed_at = datetime.now(UTC)
+    operation.last_error = None
+    await session.commit()
+    return LiveCloseAllResult(
+        account_key=account.key,
+        operation_id=operation.id,
+        operation_status=operation.status,
+        submitted_orders=submitted_orders,
+        failed_orders=0,
+        status=account.status,
+    )
+
+
+async def resume_live_close_all_operations(
+    session: AsyncSession,
+    *,
+    settings: Settings,
+    limit: int = 10,
+) -> list[LiveCloseAllResult]:
+    account_keys_result = await session.scalars(
+        select(TradingCloseAllOperation.account_key)
+        .where(
+            TradingCloseAllOperation.status.in_(
+                ["pending", "running", "partially_completed"]
+            )
+        )
+        .distinct()
+        .limit(limit)
+    )
+    account_keys = list(account_keys_result.all())
+    await session.commit()
+    results: list[LiveCloseAllResult] = []
+    for account_key in account_keys:
+        try:
+            account = await load_live_account(session, account_key=account_key)
+            await session.commit()
+            result = await close_all_live_account_positions(
+                session,
+                account=account,
+                settings=settings,
+            )
+        except LiveTradingServiceError:
+            await session.rollback()
+            continue
+        results.append(result)
+    return results
 
 
 async def close_live_account_position(
@@ -590,8 +872,12 @@ async def close_live_account_position(
     info_client: HyperliquidClient | None = None,
     trading_client: HyperliquidLiveTradingClient | None = None,
 ) -> LiveOrderLifecycleResult:
-    position = await load_live_position_for_update(session, position_id=position_id)
-    account = await load_live_account_for_update(session, account_key=position.account_key)
+    position = await load_live_position(session, position_id=position_id)
+    account = await load_live_account(session, account_key=position.account_key)
+    previous_status = account.status
+    if account.status == "disabled":
+        account.status = "exit_only"
+    await session.commit()
 
     client_created = info_client is None
     client = info_client or HyperliquidClient(settings)
@@ -604,10 +890,12 @@ async def close_live_account_position(
             settings=settings,
             info_client=client,
         )
-        position = await load_live_position_for_update(session, position_id=position_id)
+        await session.commit()
+        position = await load_live_position(session, position_id=position_id)
         if position.account_key != account.key:
             raise LiveTradingServiceError("Live position account changed during reconcile.")
         close_size_before_submit = position.size
+        await session.commit()
 
         mids = await load_live_close_mids(client, positions=[position])
         mid_price = decimal_or_none(mids.get(position.coin)) or live_position_mark_price(
@@ -615,11 +903,6 @@ async def close_live_account_position(
         )
         if mid_price is None or mid_price <= ZERO:
             raise LiveTradingServiceError("Live close price is unavailable.", status_code=409)
-
-        previous_status = account.status
-        if account.status == "disabled":
-            account.status = "exit_only"
-            await session.flush()
 
         intent = build_live_close_position_intent(
             account=account,
@@ -645,6 +928,7 @@ async def close_live_account_position(
                     settings=settings,
                     info_client=client,
                 )
+                await session.commit()
             return result
         except LiveOrderSubmitError as exc:
             recovered = await recover_manual_live_close_after_submit_error(
@@ -662,8 +946,12 @@ async def close_live_account_position(
             raise
         finally:
             if previous_status == "disabled":
-                account.status = "disabled"
-                await session.flush()
+                remaining_position = await get_live_position(
+                    session,
+                    position_id=position_id,
+                )
+                account.status = "disabled" if remaining_position is None else "exit_only"
+                await session.commit()
     finally:
         if client_created:
             await client.__aexit__(None, None, None)
@@ -699,7 +987,7 @@ async def recover_manual_live_close_after_submit_error(
     if order is None or recovery_status is None:
         return None
 
-    if order.status in {"failed", "planned", "submitted"}:
+    if order.status in {"failed", "planned", "ready", "submitting", "uncertain", "submitted"}:
         order.status = recovery_status
         order.error = None
         if recovery_status == "filled":
@@ -779,19 +1067,12 @@ async def load_live_close_mids(
     return mids_by_coin
 
 
-async def load_live_position_for_update(
+async def load_live_position(
     session: AsyncSession,
     *,
     position_id: UUID,
 ) -> TradingPosition:
-    position = await session.scalar(
-        select(TradingPosition)
-        .where(
-            TradingPosition.id == position_id,
-            TradingPosition.account_type == "live",
-        )
-        .with_for_update()
-    )
+    position = await get_live_position(session, position_id=position_id)
     if position is None:
         raise LiveTradingServiceError("Live position was not found.", status_code=404)
     return position
@@ -815,6 +1096,22 @@ async def load_live_account_for_update(
     return account
 
 
+async def load_live_account(
+    session: AsyncSession,
+    *,
+    account_key: str,
+) -> TradingAccount:
+    account = await session.scalar(
+        select(TradingAccount).where(
+            TradingAccount.key == account_key,
+            TradingAccount.account_type == "live",
+        )
+    )
+    if account is None:
+        raise LiveAccountNotFoundError()
+    return account
+
+
 async def submit_live_trade_intent(
     session: AsyncSession,
     *,
@@ -831,47 +1128,229 @@ async def submit_live_trade_intent(
     live_client = client or HyperliquidLiveTradingClient(settings=settings)
     try:
         live_client.validate_account_order(account=account, intent=intent)
-        if not intent.reduce_only:
-            await validate_live_entry_state_guardrails(
-                session,
-                account=account,
-                intent=intent,
-                settings=settings,
-            )
     except Exception as exc:
         raise LiveOrderSubmitError(str(exc) or exc.__class__.__name__) from exc
 
-    order = await get_or_create_live_order(session, intent=intent)
-    if order.status in TERMINAL_ORDER_STATUSES:
-        if is_retryable_live_order_submit_failure(order):
-            reset_live_order_for_retry(order, intent=intent)
-        else:
-            return LiveOrderLifecycleResult(order=order, exchange_result=None, submitted=False)
-
-    order.status = "submitted"
-    order.submitted_at = datetime.now(UTC)
-    order.error = None
-    order.raw_payload = merge_raw_payload(
-        order.raw_payload,
-        {"tradeIntent": trade_intent_payload(intent)},
-    )
-    await session.flush()
-
     try:
-        result = await live_client.submit_order(account=account, intent=intent)
-    except Exception as exc:
-        order.status = "failed"
-        order.error = str(exc) or exc.__class__.__name__
-        order.raw_payload = merge_raw_payload(
-            order.raw_payload,
-            {"submitError": {"message": order.error, "type": exc.__class__.__name__}},
-        )
-        await session.flush()
-        raise LiveOrderSubmitError(order.error) from exc
+        async with job_lock(
+            session,
+            key=f"live_execution:{account.key}",
+            ttl_seconds=120,
+        ):
+            existing_order = await load_live_order_by_client_order_id(
+                session,
+                client_order_id=intent.client_order_id,
+            )
+            if existing_order is None and not intent.reduce_only:
+                await validate_live_entry_state_guardrails(
+                    session,
+                    account=account,
+                    intent=intent,
+                    settings=settings,
+                )
+            order, dispatch, _ = await prepare_live_order_dispatch(
+                session,
+                intent=intent,
+            )
+            if order.status in TERMINAL_ORDER_STATUSES:
+                if is_retryable_live_order_submit_failure(order):
+                    reset_live_order_for_retry(order, intent=intent)
+                    order.status = "ready"
+                    dispatch.status = "pending"
+                    dispatch.completed_at = None
+                    dispatch.last_error = None
+                    await session.commit()
+                else:
+                    dispatch.status = "completed"
+                    dispatch.completed_at = dispatch.completed_at or datetime.now(UTC)
+                    await session.commit()
+                    return LiveOrderLifecycleResult(
+                        order=order,
+                        exchange_result=None,
+                        submitted=False,
+                    )
 
-    apply_live_order_result(order, result, updated_at=datetime.now(UTC))
-    await session.flush()
-    return LiveOrderLifecycleResult(order=order, exchange_result=result, submitted=True)
+            if order.status in {"submitting", "uncertain", "submitted"}:
+                return LiveOrderLifecycleResult(
+                    order=order,
+                    exchange_result=None,
+                    submitted=False,
+                )
+            if order.status not in RECOVERABLE_ORDER_STATUSES:
+                return LiveOrderLifecycleResult(
+                    order=order,
+                    exchange_result=None,
+                    submitted=False,
+                )
+
+            await mark_live_order_dispatching(
+                session,
+                order=order,
+                dispatch=dispatch,
+            )
+            try:
+                result = await live_client.submit_order(account=account, intent=intent)
+            except (
+                HyperliquidLiveOrderRejectedError,
+                HyperliquidLiveTradingConfigurationError,
+            ) as exc:
+                await mark_live_order_failed(
+                    session,
+                    order=order,
+                    dispatch=dispatch,
+                    error=exc,
+                )
+                raise LiveOrderSubmitError(str(exc) or exc.__class__.__name__) from exc
+            except Exception as exc:
+                await mark_live_order_uncertain(
+                    session,
+                    order=order,
+                    dispatch=dispatch,
+                    error=exc,
+                )
+                raise LiveOrderSubmitError(str(exc) or exc.__class__.__name__) from exc
+
+            apply_live_order_result(order, result, updated_at=datetime.now(UTC))
+            await mark_live_order_dispatch_completed(session, dispatch=dispatch)
+            return LiveOrderLifecycleResult(
+                order=order,
+                exchange_result=result,
+                submitted=True,
+            )
+    except JobLockAlreadyHeldError as exc:
+        raise LiveOrderSubmitError(
+            "Another live order is already being dispatched for this account.",
+            status_code=409,
+        ) from exc
+
+
+async def recover_live_order_dispatches(
+    session: AsyncSession,
+    *,
+    settings: Settings,
+    info_client: HyperliquidClient | None = None,
+    trading_client: HyperliquidLiveTradingClient | None = None,
+    limit: int = 100,
+) -> LiveDispatchRecoveryResult:
+    dispatch_ids_result = await session.scalars(
+        select(TradingOrderDispatch.id)
+        .where(
+            TradingOrderDispatch.status.in_(["pending", "dispatching", "uncertain"]),
+            TradingOrderDispatch.available_at <= datetime.now(UTC),
+        )
+        .order_by(TradingOrderDispatch.created_at.asc())
+        .limit(limit)
+    )
+    dispatch_ids = list(dispatch_ids_result.all())
+    await session.commit()
+    if not dispatch_ids:
+        return LiveDispatchRecoveryResult()
+
+    client_created = info_client is None
+    client = info_client or HyperliquidClient(settings)
+    if client_created:
+        await client.__aenter__()
+    live_client = trading_client or HyperliquidLiveTradingClient(settings=settings)
+    inspected = recovered = dispatched_count = uncertain = failed = 0
+    try:
+        for dispatch_id in dispatch_ids:
+            dispatch = await session.get(TradingOrderDispatch, dispatch_id)
+            if dispatch is None or dispatch.status not in {
+                "pending",
+                "dispatching",
+                "uncertain",
+            }:
+                await session.rollback()
+                continue
+            order = await session.get(TradingOrder, dispatch.order_id)
+            account = (
+                await session.get(TradingAccount, dispatch.account_key)
+                if order is not None
+                else None
+            )
+            await session.commit()
+            if order is None or account is None or account.account_type != "live":
+                dispatch = await session.get(TradingOrderDispatch, dispatch_id)
+                if dispatch is not None:
+                    dispatch.status = "canceled"
+                    dispatch.last_error = "Live order or account is missing."
+                    dispatch.completed_at = datetime.now(UTC)
+                    await session.commit()
+                failed += 1
+                inspected += 1
+                continue
+
+            inspected += 1
+            if dispatch.status == "pending" and order.status == "ready":
+                try:
+                    result = await submit_live_trade_intent(
+                        session,
+                        account=account,
+                        intent=trade_intent_from_order(order),
+                        settings=settings,
+                        client=live_client,
+                    )
+                except LiveOrderSubmitError:
+                    refreshed_order = await session.get(TradingOrder, order.id)
+                    if refreshed_order is not None and refreshed_order.status == "uncertain":
+                        uncertain += 1
+                    else:
+                        failed += 1
+                else:
+                    dispatched_count += int(result.submitted)
+                continue
+
+            try:
+                status_response = await client.order_status(
+                    user=live_account_user_address(account, settings=settings),
+                    oid=order.client_order_id,
+                )
+            except Exception as exc:
+                refreshed_order = await session.get(TradingOrder, order.id)
+                refreshed_dispatch = await session.get(TradingOrderDispatch, dispatch.id)
+                if refreshed_order is not None and refreshed_dispatch is not None:
+                    await mark_live_order_uncertain(
+                        session,
+                        order=refreshed_order,
+                        dispatch=refreshed_dispatch,
+                        error=exc,
+                    )
+                uncertain += 1
+                continue
+
+            refreshed_order = await session.get(TradingOrder, order.id)
+            refreshed_dispatch = await session.get(TradingOrderDispatch, dispatch.id)
+            if refreshed_order is None or refreshed_dispatch is None:
+                await session.rollback()
+                failed += 1
+                continue
+            if status_response.get("status") == "order":
+                apply_order_status_response(refreshed_order, status_response)
+                refreshed_dispatch.status = "completed"
+                refreshed_dispatch.completed_at = datetime.now(UTC)
+                refreshed_dispatch.last_error = None
+                await session.commit()
+                recovered += 1
+                continue
+
+            await mark_live_order_uncertain(
+                session,
+                order=refreshed_order,
+                dispatch=refreshed_dispatch,
+                error=RuntimeError("Exchange order status is still unknown for this cloid."),
+            )
+            uncertain += 1
+    finally:
+        if client_created:
+            await client.__aexit__(None, None, None)
+
+    return LiveDispatchRecoveryResult(
+        inspected=inspected,
+        recovered=recovered,
+        dispatched=dispatched_count,
+        uncertain=uncertain,
+        failed=failed,
+    )
 
 
 async def validate_live_entry_state_guardrails(
@@ -930,16 +1409,27 @@ async def live_account_open_notional(
         )
     )
     aggregate_notional = decimal_or_none(aggregate_value) or ZERO
-    if aggregate_notional > ZERO:
-        return aggregate_notional
-    source_value = await session.scalar(
-        select(func.coalesce(func.sum(TradingPosition.notional_usd), ZERO)).where(
-            TradingPosition.account_key == account_key,
-            TradingPosition.account_type == "live",
-            TradingPosition.source_wallet != LIVE_EXCHANGE_SOURCE,
+    position_notional = aggregate_notional
+    if position_notional <= ZERO:
+        source_value = await session.scalar(
+            select(func.coalesce(func.sum(TradingPosition.notional_usd), ZERO)).where(
+                TradingPosition.account_key == account_key,
+                TradingPosition.account_type == "live",
+                TradingPosition.source_wallet != LIVE_EXCHANGE_SOURCE,
+            )
+        )
+        position_notional = decimal_or_none(source_value) or ZERO
+    pending_value = await session.scalar(
+        select(func.coalesce(func.sum(TradingOrder.requested_notional_usd), ZERO)).where(
+            TradingOrder.account_key == account_key,
+            TradingOrder.account_type == "live",
+            TradingOrder.reduce_only.is_(False),
+            TradingOrder.status.in_(
+                ["ready", "submitting", "uncertain", "submitted", "accepted", "partially_filled"]
+            ),
         )
     )
-    return decimal_or_none(source_value) or ZERO
+    return position_notional + (decimal_or_none(pending_value) or ZERO)
 
 
 async def live_account_open_coins(
@@ -955,16 +1445,27 @@ async def live_account_open_coins(
         )
     )
     aggregate_coins = {coin for coin in aggregate_result.all() if coin}
-    if aggregate_coins:
-        return aggregate_coins
-    source_result = await session.scalars(
-        select(TradingPosition.coin).where(
-            TradingPosition.account_key == account_key,
-            TradingPosition.account_type == "live",
-            TradingPosition.source_wallet != LIVE_EXCHANGE_SOURCE,
+    position_coins = aggregate_coins
+    if not position_coins:
+        source_result = await session.scalars(
+            select(TradingPosition.coin).where(
+                TradingPosition.account_key == account_key,
+                TradingPosition.account_type == "live",
+                TradingPosition.source_wallet != LIVE_EXCHANGE_SOURCE,
+            )
+        )
+        position_coins = {coin for coin in source_result.all() if coin}
+    pending_result = await session.scalars(
+        select(TradingOrder.coin).where(
+            TradingOrder.account_key == account_key,
+            TradingOrder.account_type == "live",
+            TradingOrder.reduce_only.is_(False),
+            TradingOrder.status.in_(
+                ["ready", "submitting", "uncertain", "submitted", "accepted", "partially_filled"]
+            ),
         )
     )
-    return {coin for coin in source_result.all() if coin}
+    return position_coins | {coin for coin in pending_result.all() if coin}
 
 
 async def live_account_daily_net_pnl(
@@ -1004,48 +1505,6 @@ async def live_account_recent_order_count(
         )
     )
     return int(value or 0)
-
-
-async def get_or_create_live_order(
-    session: AsyncSession,
-    *,
-    intent: TradeIntent,
-) -> TradingOrder:
-    existing = await session.scalar(
-        select(TradingOrder)
-        .where(TradingOrder.client_order_id == intent.client_order_id)
-        .with_for_update()
-    )
-    if existing is not None:
-        return existing
-
-    order = TradingOrder(
-        account_key=intent.account_key,
-        account_type="live",
-        source_wallet=intent.source_wallet,
-        source_fill_id=intent.source_fill_id,
-        sequence_index=intent.sequence_index,
-        client_order_id=intent.client_order_id,
-        coin=intent.coin,
-        action=intent.action,
-        side=intent.side,
-        is_buy=intent.is_buy,
-        reduce_only=intent.reduce_only,
-        order_type="ioc",
-        status="planned",
-        requested_size=intent.size,
-        requested_notional_usd=intent.notional_usd,
-        margin_usd=intent.margin_usd,
-        leverage=intent.leverage,
-        limit_price=intent.limit_price,
-        filled_size=ZERO,
-        filled_notional_usd=ZERO,
-        fee_usd=ZERO,
-        raw_payload={"tradeIntent": trade_intent_payload(intent)},
-    )
-    session.add(order)
-    await session.flush()
-    return order
 
 
 def is_retryable_live_order_submit_failure(order: TradingOrder) -> bool:
@@ -1251,7 +1710,15 @@ async def reconcile_live_order_statuses(
             )
             updated += 1
             continue
-        if apply_order_status_response(order, status_response):
+        changed = apply_order_status_response(order, status_response)
+        if status_response.get("status") == "order":
+            dispatch = await load_live_order_dispatch(session, order_id=order.id)
+            if dispatch is not None and dispatch.status != "completed":
+                dispatch.status = "completed"
+                dispatch.completed_at = datetime.now(UTC)
+                dispatch.last_error = None
+                changed = True
+        if changed:
             updated += 1
     await session.flush()
     return updated
@@ -2143,6 +2610,7 @@ def build_live_close_position_intent(
     mid_price: Decimal,
     settings: Settings,
     source_fill_prefix: str = "close-all",
+    source_fill_id: str | None = None,
     price_source: str = "live_close_all",
 ) -> TradeIntent:
     now = datetime.now(UTC)
@@ -2157,7 +2625,11 @@ def build_live_close_position_intent(
         account_key=account.key,
         account_type="live",
         source_wallet=position.source_wallet,
-        source_fill_id=f"{source_fill_prefix}-{position.coin}-{uuid4().hex}",
+        source_fill_id=(
+            source_fill_id
+            if source_fill_id is not None
+            else f"{source_fill_prefix}-{position.coin}-{uuid4().hex}"
+        ),
         sequence_index=0,
         coin=position.coin,
         action="close",

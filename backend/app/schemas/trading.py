@@ -219,6 +219,14 @@ class LiveReconciliationResponse(CamelModel):
 
 class LiveCloseAllResponse(CamelModel):
     account_key: str
+    operation_id: UUID
+    operation_status: Literal[
+        "pending",
+        "running",
+        "partially_completed",
+        "completed",
+        "failed",
+    ]
     submitted_orders: int
     failed_orders: int
     status: Literal["disabled", "enabled", "exit_only"]

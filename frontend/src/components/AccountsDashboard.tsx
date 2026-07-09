@@ -2729,10 +2729,16 @@ function liveOrderStatusTone(status: string): Tone {
   if (status === "filled" || status === "accepted") {
     return "positive";
   }
-  if (status === "rejected" || status === "failed") {
+  if (status === "rejected" || status === "failed" || status === "canceled") {
     return "danger";
   }
-  if (status === "submitted") {
+  if (
+    status === "ready" ||
+    status === "submitting" ||
+    status === "uncertain" ||
+    status === "submitted" ||
+    status === "partially_filled"
+  ) {
     return "warning";
   }
   return "neutral";

@@ -56,7 +56,7 @@ from app.services.live_trading_service import (
     live_tradable_equity_usd,
     live_unified_available_usd,
     live_unified_equity_usd,
-    load_live_account_for_update,
+    load_live_account,
     load_live_closed_trades,
     normalize_user_abstraction,
     reconcile_live_trading_account,
@@ -724,7 +724,7 @@ async def close_all_and_stop_live_account_route(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> LiveCloseAllResponse:
     try:
-        account = await load_live_account_for_update(session, account_key=account_key)
+        account = await load_live_account(session, account_key=account_key)
         result = await close_all_live_account_positions(
             session,
             account=account,
@@ -733,6 +733,8 @@ async def close_all_and_stop_live_account_route(
         await session.commit()
         return LiveCloseAllResponse(
             account_key=result.account_key,
+            operation_id=result.operation_id,
+            operation_status=result.operation_status,
             submitted_orders=result.submitted_orders,
             failed_orders=result.failed_orders,
             status=result.status,
@@ -751,7 +753,8 @@ async def reconcile_live_account_route(
     lookback_minutes: Annotated[int | None, Query(ge=1, le=10080)] = None,
 ) -> LiveReconciliationResponse:
     try:
-        account = await load_live_account_for_update(session, account_key=account_key)
+        account = await load_live_account(session, account_key=account_key)
+        await session.commit()
         result = await reconcile_live_trading_account(
             session,
             account=account,
@@ -802,7 +805,8 @@ async def submit_testnet_live_order_route(
         )
 
     try:
-        account = await load_live_account_for_update(session, account_key=payload.account_key)
+        account = await load_live_account(session, account_key=payload.account_key)
+        await session.commit()
         if account.network != "testnet":
             raise LiveTradingServiceError("Live account is not a testnet account.")
         intent = build_testnet_live_trade_intent(

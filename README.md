@@ -41,6 +41,9 @@ Current schema includes:
 - `trading_accounts`, generic paper and live account registry
 - `trading_positions`, live-ready account/source/coin position state
 - `trading_orders`, idempotent order intent and exchange status records
+- `trading_order_dispatches`, durable live order outbox and delivery state
+- `trading_close_all_operations`, resumable live close-all workflows
+- `trading_close_all_items`, per-position close-all progress and latest order
 - `trading_fills`, reconciled paper or live execution fills
 - `paper_trading_accounts`
 - `paper_copy_allocations`
@@ -572,6 +575,17 @@ Sizing policy:
   avoid duplicate simulation.
 - Realtime fills, recovery reconciliation, and manual closes are serialized per
   source wallet with a Postgres advisory transaction lock.
+- Live order dispatch is serialized per live account with a renewable Postgres
+  job lock. The order and outbox row are committed before an exchange request,
+  and no account or order row lock is held while Hyperliquid is called.
+- A lost exchange response is stored as `uncertain`, not `failed`. The trading
+  worker queries Hyperliquid by deterministic client order id before any retry
+  decision, so a possibly accepted order is not submitted blindly a second time.
+- Live close-all first moves the account to `exit_only`, persists an operation
+  and one item per exchange position, then submits each reduce-only close through
+  the same durable dispatcher. Worker reconciliation resumes unfinished
+  operations after restart and disables the account only after the exchange is
+  confirmed flat.
 - Paper account rows are locked before copied fills are written, so different
   source wallets cannot concurrently update the same paper account balance.
 - Recovery can retry exit skip rows caused by unavailable source state or

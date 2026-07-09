@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
@@ -6,7 +7,14 @@ import pytest
 from sqlalchemy.dialects import postgresql
 
 from app.core.config import Settings
-from app.db.models import TradingAccount, TradingFill, TradingOrder, TradingPosition
+from app.db.models import (
+    TradingAccount,
+    TradingCloseAllItem,
+    TradingCloseAllOperation,
+    TradingFill,
+    TradingOrder,
+    TradingPosition,
+)
 from app.integrations.hyperliquid_live_client import LiveOrderResult
 from app.services import live_trading_service
 from app.services.live_trading_service import (
@@ -657,6 +665,36 @@ async def test_close_all_keeps_account_exit_only_when_positions_remain(monkeypat
     )
     position = live_position(raw_payload={"position": {"positionValue": "100"}})
     order = live_order(status="submitted")
+    operation = TradingCloseAllOperation(
+        id=uuid4(),
+        account_key=account.key,
+        status="pending",
+        requested_at=datetime.now(UTC),
+    )
+    item = TradingCloseAllItem(
+        id=uuid4(),
+        operation_id=operation.id,
+        position_id=position.id,
+        coin=position.coin,
+        status="pending",
+        attempt_count=0,
+    )
+
+    @asynccontextmanager
+    async def fake_job_lock(*_args: object, **_kwargs: object):
+        yield
+
+    async def fake_get_operation(*_args: object, **_kwargs: object) -> object:
+        return operation
+
+    async def fake_get_item(*_args: object, **_kwargs: object) -> object:
+        return item
+
+    async def fake_refresh_items(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    async def fake_incomplete_count(*_args: object, **_kwargs: object) -> int:
+        return 1
 
     async def fake_reconcile_live_trading_account(*_args: object, **_kwargs: object) -> object:
         return object()
@@ -690,9 +728,43 @@ async def test_close_all_keeps_account_exit_only_when_positions_remain(monkeypat
         "submit_live_trade_intent",
         fake_submit_live_trade_intent,
     )
+    monkeypatch.setattr(live_trading_service, "job_lock", fake_job_lock)
+    monkeypatch.setattr(
+        live_trading_service,
+        "get_or_create_live_close_all_operation",
+        fake_get_operation,
+    )
+    monkeypatch.setattr(
+        live_trading_service,
+        "get_or_create_live_close_all_item",
+        fake_get_item,
+    )
+    monkeypatch.setattr(
+        live_trading_service,
+        "refresh_live_close_all_items",
+        fake_refresh_items,
+    )
+    monkeypatch.setattr(
+        live_trading_service,
+        "live_close_all_incomplete_item_count",
+        fake_incomplete_count,
+    )
 
     class FlushSession:
+        async def commit(self) -> None:
+            return None
+
         async def flush(self) -> None:
+            return None
+
+        async def rollback(self) -> None:
+            return None
+
+        async def get(self, model: object, row_id: object) -> object | None:
+            if model is TradingCloseAllItem and row_id == item.id:
+                return item
+            if model is TradingCloseAllOperation and row_id == operation.id:
+                return operation
             return None
 
     result = await close_all_live_account_positions(

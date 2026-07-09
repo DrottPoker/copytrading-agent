@@ -494,6 +494,18 @@ def test_live_pending_close_size_counts_active_requested_size() -> None:
     assert live_pending_close_size_from_orders(orders) == Decimal("0.21")
 
 
+def test_live_pending_close_size_counts_uncertain_requested_size() -> None:
+    orders = [
+        live_order(
+            status="uncertain",
+            requested_size=Decimal("0.21"),
+            filled_size=Decimal("0"),
+        )
+    ]
+
+    assert live_pending_close_size_from_orders(orders) == Decimal("0.21")
+
+
 def test_live_source_position_is_final_close_when_source_flipped_side() -> None:
     source_state = live_source_state(position_side="short")
 

@@ -49,7 +49,6 @@ from app.services.paper_trading_service import (
     leverage_for_fill,
     load_execution_market_prices,
     load_source_account_states,
-    lock_paper_source_mutation,
     paper_source_fill_from_wallet_fill,
     part_requires_source_equity,
     plan_source_fill,
@@ -72,7 +71,15 @@ from app.services.trading_core import (
 logger = logging.getLogger(__name__)
 ZERO = Decimal("0")
 LIVE_COPY_RECOVERY_OVERLAP_MS = 5 * 60 * 1000
-PENDING_CLOSE_ORDER_STATUSES = {"submitted", "accepted", "partially_filled", "filled"}
+PENDING_CLOSE_ORDER_STATUSES = {
+    "ready",
+    "submitting",
+    "uncertain",
+    "submitted",
+    "accepted",
+    "partially_filled",
+    "filled",
+}
 LIVE_CLOSE_AGGREGATED_SKIP_REASON = "live_close_aggregated_into_later_order"
 
 
@@ -157,11 +164,9 @@ async def process_live_copy_fills(
         market_prices_task,
     )
 
-    await lock_paper_source_mutation(session, source_wallet=normalized_source_wallet)
     accounts = await load_live_accounts_for_source_copy(
         session,
         source_wallet=normalized_source_wallet,
-        for_update=True,
     )
     if not accounts:
         return live_skip("live_no_enabled_accounts", len(fills))
@@ -228,10 +233,6 @@ async def process_live_copy_fills(
                 if fill_result.processed_fills > 0:
                     touched_accounts[account.key] = account
                     await session.commit()
-                    await lock_paper_source_mutation(
-                        session,
-                        source_wallet=normalized_source_wallet,
-                    )
 
     for account in touched_accounts.values():
         await reconcile_live_trading_account(
@@ -1280,7 +1281,6 @@ async def load_live_accounts_for_source_copy(
     session: AsyncSession,
     *,
     source_wallet: str,
-    for_update: bool = False,
 ) -> list[TradingAccount]:
     normalized_source = source_wallet.lower()
     open_exposure_exists = (
@@ -1301,8 +1301,6 @@ async def load_live_accounts_for_source_copy(
         )
         .order_by(TradingAccount.key.asc())
     )
-    if for_update:
-        query = query.with_for_update()
     result = await session.scalars(query)
     return list(result.all())
 

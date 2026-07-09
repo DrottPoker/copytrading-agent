@@ -139,6 +139,8 @@ Trading worker responsibilities:
 - Run copy recovery on startup, snapshots, and the configured periodic recovery
   interval.
 - Reconcile enabled live accounts when live trading reconciliation is enabled.
+- Recover pending or uncertain live order outbox rows and resume unfinished
+  live close-all operations before normal account reconciliation.
 - Publish system and fill events to Redis.
 
 Maintenance worker responsibilities:
@@ -815,6 +817,11 @@ Generic live-ready tables sit beside the legacy paper tables:
   reconciliation.
 - `trading_orders`: idempotent order records keyed by deterministic client order
   id and source fill sequence.
+- `trading_order_dispatches`: one durable outbox row per live order, including
+  dispatch attempt and uncertain-delivery state.
+- `trading_close_all_operations`: resumable account-level close-all state.
+- `trading_close_all_items`: per-position close progress linked to the latest
+  durable live order.
 - `trading_fills`: reconciled exchange fill records.
 
 Existing paper accounts are mirrored into `trading_accounts`. A stopped paper
@@ -868,14 +875,32 @@ trading validation, and live copy sizing. `standard_per_dex` keeps separate
 default and HIP-3 perp capital, and copied entries size from the same perp dex
 as the copied market.
 
-Live order lifecycle is persisted in `trading_orders`. Orders move from
-`planned` to `submitted`, then to `accepted`, `rejected`, `filled`,
-`partially_filled`, `canceled`, or `failed` based on Hyperliquid responses and
-reconciliation. Reconciliation resumes after restart by querying `orderStatus`
-with the stored oid or deterministic cloid, importing `userFillsByTime` rows
-into `trading_fills`, and syncing aggregate account positions from
-`clearinghouseState` into `trading_positions` with source wallet
+Live order lifecycle is persisted in `trading_orders` and its delivery state is
+persisted in `trading_order_dispatches`. New orders are committed as `ready`
+with a `pending` outbox row. The dispatcher then commits `submitting` before it
+calls Hyperliquid. An exchange response moves the order to `accepted`,
+`rejected`, `filled`, `partially_filled`, or `canceled`. A known pre-submit
+configuration or market rejection can become `failed`. A timeout or other lost
+response becomes `uncertain` because the exchange may have accepted it.
+
+Live dispatch is serialized per account by a renewable Postgres job lock. The
+lock survives multiple short database transactions, so no business row lock or
+open write transaction spans the network request. After restart, the trading
+worker processes durable outbox rows before normal reconciliation. A
+`submitting` or `uncertain` order is queried through `orderStatus` with its
+deterministic cloid before any retry decision. Normal reconciliation also
+imports `userFillsByTime` rows into `trading_fills` and syncs aggregate account
+positions from `clearinghouseState` into `trading_positions` with source wallet
 `__exchange__`.
+
+Live close-all is a resumable operation, not one long API transaction. The
+account is committed as `exit_only` first. `trading_close_all_operations` stores
+the account-level workflow and `trading_close_all_items` stores the result for
+each exchange position. Each reduce-only close uses the durable order
+dispatcher. The trading worker resumes unfinished operations after restart, and
+the account changes to `disabled` only after reconciliation confirms that no
+exchange positions remain. `POST /trading/accounts/{account_key}/close-all-and-stop`
+returns the operation id and operation status with submitted and failed counts.
 
 Live fill reconciliation also updates source-attributed live positions for
 matched copied orders. Those source positions let exit-only accounts continue

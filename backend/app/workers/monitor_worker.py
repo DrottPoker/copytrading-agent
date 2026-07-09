@@ -23,6 +23,8 @@ from app.services.live_trading_service import (
     LIVE_EXCHANGE_SOURCE,
     LiveReconciliationResult,
     reconcile_live_trading_account,
+    recover_live_order_dispatches,
+    resume_live_close_all_operations,
 )
 from app.services.market_price_cache import MarketPriceCache, dex_from_coin
 from app.services.operation_status_service import (
@@ -1012,6 +1014,33 @@ async def run_live_trading_reconciliation_once(
                 key="live_trading_reconciliation",
                 ttl_seconds=max(settings.live_trading_reconciliation_interval_seconds * 3, 300),
             ):
+                dispatch_recovery = await recover_live_order_dispatches(
+                    session,
+                    settings=settings,
+                )
+                if dispatch_recovery.inspected > 0:
+                    logger.info(
+                        "live order dispatch recovery inspected=%s recovered=%s "
+                        "dispatched=%s uncertain=%s failed=%s",
+                        dispatch_recovery.inspected,
+                        dispatch_recovery.recovered,
+                        dispatch_recovery.dispatched,
+                        dispatch_recovery.uncertain,
+                        dispatch_recovery.failed,
+                    )
+                resumed_close_operations = await resume_live_close_all_operations(
+                    session,
+                    settings=settings,
+                )
+                if resumed_close_operations:
+                    logger.info(
+                        "live close-all recovery resumed=%s completed=%s",
+                        len(resumed_close_operations),
+                        sum(
+                            result.operation_status == "completed"
+                            for result in resumed_close_operations
+                        ),
+                    )
                 account_keys_result = await session.scalars(
                     select(TradingAccount.key)
                     .where(
@@ -1028,10 +1057,10 @@ async def run_live_trading_reconciliation_once(
                             TradingAccount.key == account_key,
                             TradingAccount.account_type == "live",
                         )
-                        .with_for_update()
                     )
                     if account is None:
                         continue
+                    await session.commit()
                     try:
                         result = await reconcile_live_trading_account(
                             session,

@@ -903,8 +903,9 @@ API:
 What it does:
 
 - Adds generic trading tables for paper and live account state:
-  `trading_accounts`, `trading_positions`, `trading_orders`, and
-  `trading_fills`.
+  `trading_accounts`, `trading_positions`, `trading_orders`,
+  `trading_order_dispatches`, `trading_close_all_operations`,
+  `trading_close_all_items`, and `trading_fills`.
 - Mirrors existing paper accounts into `trading_accounts` and lists live
   accounts from the same endpoint so the Accounts page can select mixed
   paper/live account data.
@@ -926,9 +927,17 @@ What it does:
   configured minimum-notional buffer before wire rounding so orders near the
   exchange minimum do not fall back under the limit after tick and lot
   normalization.
-- Persists live order intents before submission and reconciles active live
-  orders from Hyperliquid `orderStatus`, `userFillsByTime`, and
-  `clearinghouseState`.
+- Commits each live order intent and its transactional outbox row before
+  submission. It commits `submitting` before the network request, classifies a
+  lost response as `uncertain`, and checks Hyperliquid `orderStatus` by
+  deterministic cloid before any retry decision.
+- Serializes live execution per account without holding account or order row
+  locks over Hyperliquid network calls. The trading worker recovers durable
+  outbox rows after restart.
+- Persists close-all as a resumable operation with per-position progress. The
+  account remains `exit_only` until reconciliation confirms it is flat, then it
+  becomes `disabled`. The worker resumes unfinished close-all operations after
+  restart.
 - Reconciles live account equity and available cash from perp state plus
   Hyperliquid spot/core USDC balances, so wallets that hold deposited USDC
   outside perp margin still show their account value.

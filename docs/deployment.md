@@ -97,7 +97,10 @@ expires, new mainnet exposure is blocked while reduce-only exits remain allowed.
 The key is read from environment or config only and is not stored in Postgres.
 Live reconciliation settings live in the same file
 under `reconciliation`; the worker reads Hyperliquid order status, fills, and
-clearinghouse state for enabled live accounts. `account.capital_mode` defaults
+clearinghouse state for enabled live accounts. It also recovers durable live
+order outbox rows and unfinished close-all operations. Run Alembic migrations
+before restarting the backend and workers so the dispatch and operation tables
+exist. `account.capital_mode` defaults
 to `unified`, which expects the Hyperliquid wallet to run Unified account mode
 and reads trading capital from `spotClearinghouseState`. Set it to
 `standard_per_dex` only when the wallet intentionally keeps separate default and

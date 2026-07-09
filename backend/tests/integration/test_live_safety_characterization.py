@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -6,14 +7,22 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
-from app.db.models import TradingAccount, TradingFill, TradingOrder, TradingPosition
+from app.db.models import (
+    TradingAccount,
+    TradingFill,
+    TradingOrder,
+    TradingOrderDispatch,
+    TradingPosition,
+)
 from app.services.live_trading_service import (
     LIVE_EXCHANGE_SOURCE,
     LiveOrderSubmitError,
     build_testnet_live_trade_intent,
     fetch_live_perp_states,
+    live_account_open_notional,
     reconcile_live_fills,
     reconcile_live_positions,
+    recover_live_order_dispatches,
     submit_live_trade_intent,
     update_live_orders_from_reconciled_fills,
 )
@@ -61,10 +70,6 @@ def reduce_only_intent(account: TradingAccount):
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    reason="Phase 2 must persist an uncertain order when exchange acceptance loses its response.",
-)
 async def test_accepted_order_timeout_is_persisted_as_uncertain(
     integration_sessionmaker: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -86,16 +91,15 @@ async def test_accepted_order_timeout_is_persisted_as_uncertain(
 
     async with integration_sessionmaker() as session:
         order = await session.scalar(select(TradingOrder))
+        dispatch = await session.scalar(select(TradingOrderDispatch))
 
     assert order is not None
     assert order.status == "uncertain"
+    assert dispatch is not None
+    assert dispatch.status == "uncertain"
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    reason="Phase 2 must commit the durable order intent before exchange submission.",
-)
 async def test_process_restart_recovers_durable_intent_after_exchange_acceptance(
     integration_sessionmaker: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -120,9 +124,198 @@ async def test_process_restart_recovers_durable_intent_after_exchange_acceptance
 
     async with integration_sessionmaker() as session:
         recovered_order = await session.scalar(select(TradingOrder))
+        dispatch = await session.scalar(select(TradingOrderDispatch))
 
     assert recovered_order is not None
     assert recovered_order.status in {"submitting", "uncertain"}
+    assert dispatch is not None
+    assert dispatch.status == "dispatching"
+
+
+@pytest.mark.asyncio
+async def test_live_dispatch_is_serialized_per_account(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    account = live_account()
+    async with integration_sessionmaker() as session:
+        session.add(account)
+        await session.commit()
+
+    class BlockingTradingClient(FaultInjectingTradingClient):
+        def __init__(self) -> None:
+            super().__init__("filled")
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def submit_order(self, *, account, intent):  # type: ignore[no-untyped-def]
+            self.started.set()
+            await self.release.wait()
+            return await super().submit_order(account=account, intent=intent)
+
+    client = BlockingTradingClient()
+    async with (
+        integration_sessionmaker() as first_session,
+        integration_sessionmaker() as second_session,
+    ):
+        first_account = await first_session.get(TradingAccount, account.key)
+        second_account = await second_session.get(TradingAccount, account.key)
+        assert first_account is not None
+        assert second_account is not None
+        first_task = asyncio.create_task(
+            submit_live_trade_intent(
+                first_session,
+                account=first_account,
+                intent=reduce_only_intent(first_account),
+                settings=live_settings(),
+                client=client,  # type: ignore[arg-type]
+            )
+        )
+        await client.started.wait()
+        second_intent = build_testnet_live_trade_intent(
+            account=second_account,
+            coin="ETH",
+            side="long",
+            notional_usd=Decimal("100"),
+            limit_price=Decimal("100"),
+            leverage=Decimal("1"),
+            reduce_only=True,
+            source_fill_id="source-fill-2",
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+        with pytest.raises(
+            LiveOrderSubmitError,
+            match="already being dispatched",
+        ):
+            await submit_live_trade_intent(
+                second_session,
+                account=second_account,
+                intent=second_intent,
+                settings=live_settings(),
+                client=FaultInjectingTradingClient("filled"),  # type: ignore[arg-type]
+            )
+        client.release.set()
+        first_result = await first_task
+
+    assert first_result.order.status == "filled"
+    async with integration_sessionmaker() as session:
+        order_count = await session.scalar(select(func.count(TradingOrder.id)))
+    assert order_count == 1
+
+
+@pytest.mark.asyncio
+async def test_uncertain_dispatch_is_recovered_by_cloid_before_any_retry(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    account = live_account()
+    intent = reduce_only_intent(account)
+
+    async with integration_sessionmaker() as session:
+        session.add(account)
+        await session.commit()
+        with pytest.raises(LiveOrderSubmitError):
+            await submit_live_trade_intent(
+                session,
+                account=account,
+                intent=intent,
+                settings=live_settings(),
+                client=FaultInjectingTradingClient(  # type: ignore[arg-type]
+                    "accepted_then_timeout"
+                ),
+            )
+
+    class OrderStatusClient:
+        requested_oids: list[int | str]
+
+        def __init__(self) -> None:
+            self.requested_oids = []
+
+        async def order_status(self, *, user: str, oid: int | str) -> dict[str, object]:
+            assert user == account.wallet_address
+            self.requested_oids.append(oid)
+            return {
+                "status": "order",
+                "order": {
+                    "order": {"oid": 123},
+                    "status": "filled",
+                    "statusTimestamp": 1_725_000_000_000,
+                },
+            }
+
+    info_client = OrderStatusClient()
+    async with integration_sessionmaker() as session:
+        result = await recover_live_order_dispatches(
+            session,
+            settings=live_settings(),
+            info_client=info_client,  # type: ignore[arg-type]
+        )
+
+    async with integration_sessionmaker() as session:
+        order = await session.scalar(select(TradingOrder))
+        dispatch = await session.scalar(select(TradingOrderDispatch))
+
+    assert info_client.requested_oids == [intent.client_order_id]
+    assert result.recovered == 1
+    assert result.dispatched == 0
+    assert order is not None
+    assert order.status == "filled"
+    assert dispatch is not None
+    assert dispatch.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_uncertain_entry_reserves_account_guardrail_notional(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    account = live_account()
+    intent = reduce_only_intent(account)
+    order = TradingOrder(
+        account_key=account.key,
+        account_type="live",
+        source_wallet=intent.source_wallet,
+        source_fill_id="entry-fill",
+        sequence_index=0,
+        client_order_id="0x" + "4" * 32,
+        coin="ETH",
+        action="open",
+        side="long",
+        is_buy=True,
+        reduce_only=False,
+        order_type="ioc",
+        status="uncertain",
+        requested_size=Decimal("1"),
+        requested_notional_usd=Decimal("100"),
+        margin_usd=Decimal("100"),
+        leverage=Decimal("1"),
+        limit_price=Decimal("100"),
+        filled_size=Decimal("0"),
+        filled_notional_usd=Decimal("0"),
+        fee_usd=Decimal("0"),
+    )
+    position = TradingPosition(
+        account_key=account.key,
+        account_type="live",
+        source_wallet="__exchange__",
+        coin="BTC",
+        side="long",
+        size=Decimal("0.5"),
+        entry_price=Decimal("100"),
+        notional_usd=Decimal("50"),
+        leverage=Decimal("1"),
+        margin_usd=Decimal("50"),
+        realized_pnl_usd=Decimal("0"),
+        fee_usd=Decimal("0"),
+        opened_at=datetime.now(UTC),
+    )
+
+    async with integration_sessionmaker() as session:
+        session.add_all([account, order, position])
+        await session.commit()
+        reserved_notional = await live_account_open_notional(
+            session,
+            account_key=account.key,
+        )
+
+    assert reserved_notional == Decimal("150")
 
 
 @pytest.mark.asyncio
