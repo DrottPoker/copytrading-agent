@@ -46,6 +46,7 @@ services:
     build:
       context: ./backend
     command: python -m app.workers.monitor_worker
+    stop_grace_period: 40s
     env_file:
       - path: .env
         required: false
@@ -69,6 +70,7 @@ services:
     build:
       context: ./backend
     command: python -m app.workers.monitor_worker
+    stop_grace_period: 40s
     env_file:
       - path: .env
         required: false

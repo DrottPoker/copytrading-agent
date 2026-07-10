@@ -1258,6 +1258,9 @@ What it does:
   stop on ambiguous legacy account conflicts.
 - Requires an operator to restart backend and workers after changing
   `LIVE_TRADING_ENABLED`.
+- Worker container handover waits for an unexpired capability lease instead of
+  crashing and restarting. Normal copy-recovery and per-account reconciliation
+  lock contention is deferred without error stacktraces.
 
 ### Backend Dependency Constraints
 

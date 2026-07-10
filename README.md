@@ -261,8 +261,10 @@ Docker Compose runs two dedicated worker services and overrides
 
 Each runtime acquires renewable Postgres capability leases named
 `worker_runtime:trading` and `worker_runtime:maintenance`. An `all` worker owns
-both capabilities. A duplicate worker fails before starting its loops instead
-of opening a second realtime subscription or maintenance scheduler. Every
+both capabilities. A duplicate worker waits and retries before starting its
+loops instead of opening a second realtime subscription or maintenance
+scheduler. Worker containers receive a 40 second stop grace period so the normal
+30 second shutdown drain can release leases and durable claims. Every
 renewal has a deadline shorter than the lease TTL. Renewal timeout or ownership
 loss sets the runtime stop signal before the owner task is canceled, so intake,
 heartbeat, and supervised loops stop together.

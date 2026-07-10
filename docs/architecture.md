@@ -110,6 +110,11 @@ Before starting loops, each runtime acquires renewable capability leases in
 fail-closed. Renewal calls have a deadline shorter than the TTL. A renewal
 timeout or lost owner sets the shared stop signal before canceling the runtime,
 so intake, heartbeat, and all supervised loops stop before lease release.
+After a container replacement, the new process waits and retries in-process when
+the previous lease has not expired yet. This avoids restart loops and stacktraces
+during normal handover. Compose gives worker containers a 40 second stop grace
+period so the configured 30 second drain can release leases and durable claims
+before forced termination.
 
 Every long-running loop is registered with a named supervisor. Unexpected loop
 exit updates runtime state, records the error, waits for the configured restart
@@ -152,8 +157,11 @@ Trading worker responsibilities:
 - Submit live copy orders for non-snapshot fills when live trading and live copy
   execution are enabled.
 - Run copy recovery on startup, snapshots, and the configured periodic recovery
-  interval.
+  interval. Overlapping snapshot recovery attempts defer quietly while the
+  account or global recovery lock is already owned.
 - Reconcile enabled live accounts when live trading reconciliation is enabled.
+  Accounts already executing or reconciling are reported as deferred, not
+  failed, and are retried by the next interval.
 - Recover pending or uncertain live order outbox rows and resume unfinished
   live close-all operations before normal account reconciliation.
 - Publish presentation events to Redis Streams through a best-effort boundary.

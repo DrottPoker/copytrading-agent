@@ -1,10 +1,12 @@
 import asyncio
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
 import pytest
 
+from app.services.live_trading_service import LiveReconciliationError
 from app.services.paper_trading_service import PaperCopyBatchResult
 from app.services.realtime_execution_inbox_service import ClaimedRealtimeExecution
 from app.services.realtime_fill_service import StoredRealtimeFills
@@ -196,7 +198,7 @@ async def test_presentation_event_batch_has_bounded_overall_timeout(monkeypatch)
 
 @pytest.mark.asyncio
 async def test_handle_websocket_snapshot_prioritizes_live_recovery(monkeypatch) -> None:
-    calls: list[str] = []
+    calls: list[tuple[str, bool | None]] = []
 
     async def fake_store_realtime_fills(*_args: object, **_kwargs: object) -> StoredRealtimeFills:
         return StoredRealtimeFills(
@@ -209,12 +211,12 @@ async def test_handle_websocket_snapshot_prioritizes_live_recovery(monkeypatch) 
             inserted_rows=[],
         )
 
-    async def fake_live_recovery_once(*_args: object, **_kwargs: object) -> PaperCopyBatchResult:
-        calls.append("live")
+    async def fake_live_recovery_once(*_args: object, **kwargs: object) -> PaperCopyBatchResult:
+        calls.append(("live", kwargs.get("log_lock_contention")))
         return PaperCopyBatchResult()
 
-    async def fake_paper_recovery_once(*_args: object, **_kwargs: object) -> PaperCopyBatchResult:
-        calls.append("paper")
+    async def fake_paper_recovery_once(*_args: object, **kwargs: object) -> PaperCopyBatchResult:
+        calls.append(("paper", kwargs.get("log_lock_contention")))
         return PaperCopyBatchResult()
 
     async def fake_publish_event(*_args: object, **_kwargs: object) -> None:
@@ -247,7 +249,100 @@ async def test_handle_websocket_snapshot_prioritizes_live_recovery(monkeypatch) 
         settings=settings,
     )
 
-    assert calls == ["live", "paper"]
+    assert calls == [("live", False), ("paper", False)]
+
+
+@pytest.mark.asyncio
+async def test_monitor_services_waits_for_existing_capability_lease(monkeypatch, caplog) -> None:
+    attempts = 0
+    sleeps: list[int] = []
+
+    async def fake_run_monitor_services(**_kwargs: object) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise monitor_worker.WorkerCapabilityLeaseUnavailableError(
+                "Worker capability is already owned: worker_runtime:trading."
+            )
+
+    async def fake_sleep(_stop_event: asyncio.Event, seconds: int) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(monitor_worker, "run_monitor_services", fake_run_monitor_services)
+    monkeypatch.setattr(monitor_worker, "sleep_until_stop", fake_sleep)
+    caplog.set_level("INFO")
+
+    await monitor_worker.run_monitor_services_with_lease_retry(
+        sessionmaker=object(),
+        redis=object(),
+        stop_event=asyncio.Event(),
+        settings=SimpleNamespace(worker_loop_restart_delay_seconds=5),
+    )
+
+    assert attempts == 2
+    assert sleeps == [5]
+    assert "worker capability lease is still owned" in caplog.text
+    assert "Traceback" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_busy_scheduled_live_reconciliation_is_deferred(monkeypatch, caplog) -> None:
+    published_payloads: list[dict[str, object]] = []
+
+    class ScalarResult:
+        def all(self) -> list[str]:
+            return ["live-account"]
+
+    class ReconciliationSession(DummySession):
+        async def scalars(self, _statement: object) -> ScalarResult:
+            return ScalarResult()
+
+        async def scalar(self, _statement: object) -> SimpleNamespace:
+            return SimpleNamespace(key="live-account", account_type="live")
+
+        async def commit(self) -> None:
+            pass
+
+        async def rollback(self) -> None:
+            pass
+
+    @asynccontextmanager
+    async def fake_job_lock(*_args: object, **_kwargs: object):
+        yield
+
+    async def fake_dispatch_recovery(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(inspected=0)
+
+    async def fake_resume_close_all(*_args: object, **_kwargs: object) -> list[object]:
+        return []
+
+    async def busy_reconciliation(*_args: object, **_kwargs: object) -> None:
+        raise LiveReconciliationError(
+            "Live execution or reconciliation is already running for this account.",
+            status_code=409,
+        )
+
+    async def capture_event(*_args: object, payload: dict[str, object], **_kwargs: object) -> None:
+        published_payloads.append(payload)
+
+    monkeypatch.setattr(monitor_worker, "job_lock", fake_job_lock)
+    monkeypatch.setattr(monitor_worker, "recover_live_order_dispatches", fake_dispatch_recovery)
+    monkeypatch.setattr(monitor_worker, "resume_live_close_all_operations", fake_resume_close_all)
+    monkeypatch.setattr(monitor_worker, "reconcile_live_trading_account", busy_reconciliation)
+    monkeypatch.setattr(monitor_worker, "publish_event", capture_event)
+    caplog.set_level("INFO")
+
+    results = await monitor_worker.run_live_trading_reconciliation_once(
+        sessionmaker=ReconciliationSession,
+        redis=object(),
+        settings=SimpleNamespace(live_trading_reconciliation_interval_seconds=30),
+    )
+
+    assert results == []
+    assert published_payloads[-1]["deferredAccounts"] == ["live-account"]
+    assert published_payloads[-1]["failedAccounts"] == []
+    assert "reconciliation deferred because account execution is busy" in caplog.text
+    assert "Traceback" not in caplog.text
 
 
 @pytest.mark.asyncio

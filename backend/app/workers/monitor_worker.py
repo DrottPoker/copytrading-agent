@@ -26,6 +26,7 @@ from app.services.live_copy_service import (
 )
 from app.services.live_trading_service import (
     LIVE_EXCHANGE_SOURCE,
+    LiveReconciliationError,
     LiveReconciliationResult,
     reconcile_live_trading_account,
     recover_live_order_dispatches,
@@ -54,7 +55,10 @@ from app.services.realtime_fill_service import StoredRealtimeFills, store_realti
 from app.services.wallet_cleanup_service import prune_all_wallets
 from app.services.wallet_score_service import recalculate_wallet_scores
 from app.services.worker_heartbeat_service import delete_worker_heartbeat, mark_worker_heartbeat
-from app.services.worker_lease_service import worker_capability_leases
+from app.services.worker_lease_service import (
+    WorkerCapabilityLeaseUnavailableError,
+    worker_capability_leases,
+)
 from app.services.worker_runtime import WorkerRuntimeState, run_supervised_worker_loop
 
 logger = logging.getLogger(__name__)
@@ -173,13 +177,39 @@ async def run_worker() -> None:
         )
         return
 
-    await run_monitor_services(
+    await run_monitor_services_with_lease_retry(
         sessionmaker=sessionmaker,
         redis=redis,
         stop_event=stop_event,
         settings=settings,
     )
     logger.info("monitor worker stopped")
+
+
+async def run_monitor_services_with_lease_retry(
+    *,
+    sessionmaker: Any,
+    redis: Any,
+    stop_event: asyncio.Event,
+    settings: Any,
+) -> None:
+    while not stop_event.is_set():
+        try:
+            await run_monitor_services(
+                sessionmaker=sessionmaker,
+                redis=redis,
+                stop_event=stop_event,
+                settings=settings,
+            )
+            return
+        except WorkerCapabilityLeaseUnavailableError as exc:
+            retry_seconds = getattr(settings, "worker_loop_restart_delay_seconds", 5)
+            logger.info(
+                "worker capability lease is still owned; retrying in %s seconds: %s",
+                retry_seconds,
+                exc,
+            )
+            await sleep_until_stop(stop_event, retry_seconds)
 
 
 async def run_monitor_services(
@@ -1031,6 +1061,7 @@ async def run_paper_copy_recovery_once(
     settings: Any,
     source_wallet: str | None,
     price_cache: MarketPriceCache | None = None,
+    log_lock_contention: bool = True,
 ) -> PaperCopyBatchResult:
     try:
         async with sessionmaker() as session:
@@ -1073,7 +1104,8 @@ async def run_paper_copy_recovery_once(
             )
         return result
     except JobLockAlreadyHeldError as exc:
-        logger.info("paper copy recovery skipped: %s", exc)
+        log = logger.info if log_lock_contention else logger.debug
+        log("paper copy recovery skipped: %s", exc)
         return PaperCopyBatchResult()
     except Exception as exc:
         logger.exception("paper copy recovery failed source_wallet=%s", source_wallet or "all")
@@ -1140,6 +1172,7 @@ async def run_live_copy_recovery_once(
     settings: Any,
     source_wallet: str | None,
     price_cache: MarketPriceCache | None = None,
+    log_lock_contention: bool = True,
 ) -> PaperCopyBatchResult:
     try:
         async with sessionmaker() as session:
@@ -1180,7 +1213,8 @@ async def run_live_copy_recovery_once(
             )
         return result
     except JobLockAlreadyHeldError as exc:
-        logger.info("live copy recovery skipped: %s", exc)
+        log = logger.info if log_lock_contention else logger.debug
+        log("live copy recovery skipped: %s", exc)
         return PaperCopyBatchResult()
     except Exception as exc:
         logger.exception("live copy recovery failed source_wallet=%s", source_wallet or "all")
@@ -1218,6 +1252,7 @@ async def run_live_trading_reconciliation_once(
 ) -> list[LiveReconciliationResult]:
     results: list[LiveReconciliationResult] = []
     failed_accounts: list[str] = []
+    deferred_accounts: list[str] = []
     try:
         async with sessionmaker() as session:
             async with job_lock(
@@ -1279,6 +1314,21 @@ async def run_live_trading_reconciliation_once(
                         )
                         await session.commit()
                         results.append(result)
+                    except LiveReconciliationError as exc:
+                        await session.rollback()
+                        if exc.status_code == 409:
+                            deferred_accounts.append(account_key)
+                            logger.info(
+                                "live trading reconciliation deferred because account execution "
+                                "is busy account=%s",
+                                account_key,
+                            )
+                        else:
+                            failed_accounts.append(account_key)
+                            logger.exception(
+                                "live trading reconciliation failed account=%s",
+                                account_key,
+                            )
                     except Exception:
                         failed_accounts.append(account_key)
                         await session.rollback()
@@ -1300,14 +1350,15 @@ async def run_live_trading_reconciliation_once(
         )
         return results
 
-    if results or failed_accounts:
+    if results or failed_accounts or deferred_accounts:
         partial_accounts = [result.account_key for result in results if result.status == "partial"]
         logger.info(
             "live trading reconciliation completed accounts=%s partial=%s failed=%s "
-            "fills=%s positions=%s",
+            "deferred=%s fills=%s positions=%s",
             len(results),
             len(partial_accounts),
             len(failed_accounts),
+            len(deferred_accounts),
             sum(result.inserted_fills for result in results),
             sum(result.open_positions for result in results),
         )
@@ -1323,6 +1374,7 @@ async def run_live_trading_reconciliation_once(
             payload={
                 "accounts": len(results),
                 "failedAccounts": failed_accounts,
+                "deferredAccounts": deferred_accounts,
                 "partialAccounts": partial_accounts,
                 "incompleteComponents": {
                     result.account_key: list(result.incomplete_components)
@@ -1657,6 +1709,7 @@ async def process_stored_realtime_fills(
                 settings=settings,
                 source_wallet=stored.wallet_address,
                 price_cache=price_cache,
+                log_lock_contention=False,
             )
         if settings.paper_trading_enabled and settings.paper_copy_enabled:
             await run_paper_copy_recovery_once(
@@ -1665,6 +1718,7 @@ async def process_stored_realtime_fills(
                 settings=settings,
                 source_wallet=stored.wallet_address,
                 price_cache=price_cache,
+                log_lock_contention=False,
             )
         presentation_events.append(
             {
