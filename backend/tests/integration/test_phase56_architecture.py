@@ -58,6 +58,47 @@ async def test_phase_6_database_constraints_are_installed(
 
 
 @pytest.mark.asyncio
+async def test_wallet_fill_ingest_latency_supports_historical_snapshots(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    latency_ms = 3_029_584_669
+    async with integration_sessionmaker() as session:
+        stored_latency = await session.scalar(
+            text(
+                """
+                insert into wallet_fills (
+                  wallet_address,
+                  external_fill_id,
+                  coin,
+                  side,
+                  price,
+                  size,
+                  timestamp_ms,
+                  ingest_latency_ms,
+                  raw_json
+                )
+                values (
+                  '0xintegration-latency',
+                  'integration-latency-fill',
+                  'BTC',
+                  'buy',
+                  1,
+                  1,
+                  1,
+                  :latency_ms,
+                  '{}'::jsonb
+                )
+                returning ingest_latency_ms
+                """
+            ),
+            {"latency_ms": latency_ms},
+        )
+        await session.rollback()
+
+    assert stored_latency == latency_ms
+
+
+@pytest.mark.asyncio
 async def test_worker_capability_lease_rejects_duplicate_owner_and_releases(
     integration_sessionmaker: async_sessionmaker[AsyncSession],
 ) -> None:

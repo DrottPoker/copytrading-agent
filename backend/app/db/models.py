@@ -93,7 +93,7 @@ class WalletFill(Base, TimestampMixin):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    ingest_latency_ms: Mapped[int | None] = mapped_column(Integer)
+    ingest_latency_ms: Mapped[int | None] = mapped_column(BigInteger)
     is_snapshot: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
     raw_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
 

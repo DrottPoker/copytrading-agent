@@ -85,6 +85,8 @@ Phase 6 migration `e5a1c7d9b3f2` adds account lifecycle and integrity controls:
 Migration `a7d3e9f1c5b2` removes the former global live-entry gate and restores
 accounts that were automatically moved to `exit_only` by its migration default.
 `LIVE_TRADING_ENABLED` in `.env` is the only global live execution switch.
+Migration `b8e4f0a2d6c1` expands wallet fill ingest latency to `BIGINT` so old
+snapshot fills cannot overflow during realtime ingestion.
 
 After upgrade, restart the backend and both workers. Starting an individual live
 account still requires complete fresh reconciliation and the normal account

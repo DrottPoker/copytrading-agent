@@ -373,6 +373,10 @@ review on account-type conflicts or unsafe duplicate live routes. After upgrade,
 restart both worker roles and the backend. Migration `a7d3e9f1c5b2` removes the
 obsolete global entry-control table.
 
+Wallet fill timestamps and ingest latency use `BIGINT`. This allows historical
+snapshot fills to retain their full source-to-ingest age without overflowing a
+32-bit millisecond counter.
+
 ## Deployment Security Boundary
 
 The browser reaches the backend through the same-origin Next.js proxy. The proxy

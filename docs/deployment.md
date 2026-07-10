@@ -368,10 +368,12 @@ docker compose -f docker-compose.vps.yml exec backend \
 docker compose -f docker-compose.vps.yml logs --tail=100 backend trading-worker maintenance-worker postgres-backup caddy
 ```
 
-The Alembic head for this update is `a7d3e9f1c5b2`. It removes the obsolete
-durable live-entry control and restores accounts that the earlier Phase 6
-migration automatically moved to `exit_only`. Accounts changed for any other
-reason retain their current lifecycle state.
+The Alembic head for this update is `b8e4f0a2d6c1`. Migration `a7d3e9f1c5b2`
+removes the obsolete durable live-entry control and restores accounts that the
+earlier Phase 6 migration automatically moved to `exit_only`. Accounts changed
+for any other reason retain their current lifecycle state. The current head also
+expands wallet fill ingest latency to `BIGINT` so historical snapshots cannot
+overflow realtime ingestion.
 
 Paper trading state is stored in local Postgres, not in the worker containers.
 After the trading worker restarts it reloads open paper positions, replays

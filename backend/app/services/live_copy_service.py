@@ -25,6 +25,7 @@ from app.services.live_trading_service import (
     LIVE_EXCHANGE_SOURCE,
     POSITION_EPSILON,
     LiveOrderSubmitError,
+    LiveReconciliationError,
     is_retryable_live_order_submit_failure,
     live_capital_mode,
     live_perp_equity_usd,
@@ -334,6 +335,20 @@ async def refresh_stale_live_copy_accounts(
                 settings=settings,
                 info_client=client,
             )
+        except LiveReconciliationError as exc:
+            failed_accounts.add(account.key)
+            if exc.status_code == 409:
+                logger.info(
+                    "live copy reconciliation deferred because account execution is busy "
+                    "account=%s",
+                    account.key,
+                )
+            else:
+                logger.exception(
+                    "live copy reconciliation failed; entries blocked and exits continue "
+                    "account=%s",
+                    account.key,
+                )
         except Exception:
             failed_accounts.add(account.key)
             logger.exception(

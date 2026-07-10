@@ -24,7 +24,7 @@ from app.services.live_copy_service import (
     record_live_skip,
     submit_live_copy_intent,
 )
-from app.services.live_trading_service import LiveOrderSubmitError
+from app.services.live_trading_service import LiveOrderSubmitError, LiveReconciliationError
 from app.services.paper_trading_service import (
     ExecutionMarketPrices,
     PaperCopyBatchResult,
@@ -71,6 +71,41 @@ def test_live_copy_account_snapshot_inside_interval_is_fresh() -> None:
         settings=settings,
         now=datetime(2026, 1, 1, tzinfo=UTC),
     )
+
+
+@pytest.mark.asyncio
+async def test_busy_account_reconciliation_is_deferred_without_error_log(
+    monkeypatch,
+    caplog,
+) -> None:
+    class FlushOnlySession:
+        async def flush(self) -> None:
+            pass
+
+    async def busy_reconciliation(*_args, **_kwargs):
+        raise LiveReconciliationError(
+            "Live execution or reconciliation is already running for this account.",
+            status_code=409,
+        )
+
+    monkeypatch.setattr(
+        live_copy_service,
+        "reconcile_live_trading_account",
+        busy_reconciliation,
+    )
+    caplog.set_level("INFO")
+    account = live_account(last_reconciled_at=None)
+
+    failed_accounts = await live_copy_service.refresh_stale_live_copy_accounts(
+        FlushOnlySession(),
+        accounts=[account],
+        settings=Settings(live_trading_reconciliation_enabled=True),
+        client=object(),
+    )
+
+    assert failed_accounts == {account.key}
+    assert "reconciliation deferred because account execution is busy" in caplog.text
+    assert "Traceback" not in caplog.text
 
 
 def test_live_skip_records_reason_count() -> None:

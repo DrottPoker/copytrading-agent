@@ -1252,9 +1252,10 @@ What it does:
   middleware while preserving authenticated non-browser API access.
 - Adds HSTS on the VPS plus content-type, frame, referrer, and permissions
   headers through Caddy.
-- Requires Alembic upgrade `a7d3e9f1c5b2`. The Phase 6 migrations preserve
+- Requires Alembic upgrade `b8e4f0a2d6c1`. The Phase 6 migrations preserve
   financial history, enforce account lifecycle integrity, remove the obsolete
-  global entry-control table, and stop on ambiguous legacy account conflicts.
+  global entry-control table, expand wallet fill ingest latency to `BIGINT`, and
+  stop on ambiguous legacy account conflicts.
 - Requires an operator to restart backend and workers after changing
   `LIVE_TRADING_ENABLED`.
 
