@@ -61,7 +61,7 @@ type MonitoredSource = {
   rank: number | null;
   poolRank: number | null;
   score: string | null;
-  monitorStatus: "monitored" | "waiting";
+  monitorStatus: "monitored" | "connecting" | "offline" | "waiting";
   sourceStatus: "trading" | "retained" | "waiting_for_trades" | "waiting_for_slot";
   sourceStatusReason: string | null;
   hasRealtimeSlot: boolean;
@@ -466,10 +466,12 @@ export function TradingDashboard({
             tradingAccounts.recentOrders,
             liveSourcePositions,
             sourceMetadata,
+            summary.realtimeMonitoring,
           ),
     [
       liveSourcePositions,
       sourceMetadata,
+      summary.realtimeMonitoring,
       summary.walletPerformance,
       tradingAccounts.recentFills,
       tradingAccounts.recentOrders,
@@ -485,8 +487,7 @@ export function TradingDashboard({
   );
   const sourceStatusCounts = summarizeCopySourceStatuses(monitoredSources);
   const tradingSourceCount = sourceStatusCounts.trading;
-  const monitoredSlotCount = sourceStatusCounts.monitored;
-  const waitingSlotCount = sourceStatusCounts.waiting;
+  const sourceMonitorMeta = formatSourceMonitorMeta(sourceStatusCounts);
   const updatedAt = latestDateString(summary.updatedAt, tradingAccounts.updatedAt);
   const modeLabel = tradingMode === "paper" ? "Paper trading" : "Live trading";
   const executionStatus: { label: string; tone: Tone } =
@@ -575,11 +576,7 @@ export function TradingDashboard({
           icon={RadioTower}
           label="Sources"
           value={`${formatInteger(tradingSourceCount)} trading`}
-          detail={
-            tradingMode === "paper"
-              ? `${formatInteger(monitoredSlotCount)} monitored, ${formatInteger(waitingSlotCount)} waiting`
-              : `${formatInteger(monitoredSlotCount)} live sources, ${formatInteger(waitingSlotCount)} waiting`
-          }
+          detail={sourceMonitorMeta}
         />
       </section>
 
@@ -616,10 +613,10 @@ export function TradingDashboard({
       <section className="grid gap-3 2xl:grid-cols-[0.95fr_1.05fr]">
         <ListPanel
           title="Copy Sources"
-          meta={`${formatInteger(monitoredSlotCount)} monitored, ${formatInteger(waitingSlotCount)} waiting for slot`}
+          meta={sourceMonitorMeta}
         >
           {monitoredSources.length === 0 ? (
-            <EmptyState text="No monitored sources." />
+            <EmptyState text="No copy sources." />
           ) : (
             monitoredSources.map((source) => (
               <SourceRow
@@ -999,7 +996,13 @@ function SourceRow({
   source: MonitoredSource;
 }) {
   const usedPct = clampPercent(numberValue(source.pocketUsedPct ?? 0));
-  const monitorTone = source.monitorStatus === "monitored" ? "positive" : "neutral";
+  const monitorTone = source.monitorStatus === "monitored"
+    ? "positive"
+    : source.monitorStatus === "connecting"
+      ? "warning"
+      : source.monitorStatus === "offline"
+        ? "danger"
+        : "neutral";
   const sourceTone =
     source.sourceStatus === "trading"
       ? "positive"
@@ -1968,11 +1971,17 @@ function buildPaperMonitoredSources(summary: PaperTradingSummaryResponse): Monit
       const remainingAllocationUsd = sumNumbers(allocations.map((allocation) => allocation.remainingAllocationUsd));
       const hasRealtimeSlot = allocations.some((allocation) => allocation.hasRealtimeSlot);
       const canOpenNewPositions = allocations.some((allocation) => allocation.canOpenNewPositions);
-      const monitorStatus: MonitoredSource["monitorStatus"] = hasRealtimeSlot
-        ? "monitored"
-        : "waiting";
+      const monitorStatus = resolveCurrentMonitorStatus({
+        hasRealtimeSlot,
+        realtimeMonitoring: summary.realtimeMonitoring,
+        sourceWallet: source,
+      });
       const openPositionCount = openPositions.length;
-      const sourceStatus = resolveSourceStatus(allocations, openPositionCount);
+      const sourceStatus = resolveSourceStatus(
+        allocations,
+        openPositionCount,
+        monitorStatus === "monitored",
+      );
       return {
         sourceWallet: source,
         sourceLabel:
@@ -2066,14 +2075,16 @@ function buildLiveMonitoredSources(
       const hasRealtimeSlot =
         allocations.some((allocation) => allocation.hasRealtimeSlot) ||
         (allocations.length === 0 && openPositionCount > 0);
+      const monitorStatus = resolveCurrentMonitorStatus({
+        hasRealtimeSlot,
+        realtimeMonitoring: summary.realtimeMonitoring,
+        sourceWallet: source,
+      });
       const sourceStatus = resolveCurrentSourceStatus({
         canOpenNewPositions,
-        hasRealtimeSlot,
+        hasRealtimeSlot: hasRealtimeSlot || monitorStatus === "monitored",
         openPositionCount,
       });
-      const monitorStatus: MonitoredSource["monitorStatus"] = hasRealtimeSlot
-        ? "monitored"
-        : "waiting";
       const realizedPnl = sumNumbers(liveFills.map((fill) => fill.realizedPnlUsd));
       const unrealizedPnl = sumNumbers(liveOpenPositions.map((position) => position.unrealizedPnlUsd));
       const allocationPct =
@@ -2181,6 +2192,7 @@ function buildLiveWalletHistory(
   liveOrders: TradingOrder[],
   livePositions: TradingPosition[],
   sourceMetadata: Map<string, SourceMetadata>,
+  realtimeMonitoring: PaperTradingSummaryResponse["realtimeMonitoring"],
 ): WalletPerformanceRow[] {
   const positionsBySource = groupLivePositionsBySource(livePositions);
   const fillsBySource = groupLiveFillsBySource(liveFills);
@@ -2203,6 +2215,9 @@ function buildLiveWalletHistory(
         ...orders.map((order) => order.accountKey),
       ]);
       const metadata = sourceMetadata.get(source);
+      const isRealtimeMonitored = realtimeMonitoring.monitoredWallets.some(
+        (wallet) => wallet.toLowerCase() === source,
+      );
       return {
         sourceWallet: source,
         sourceLabel: metadata?.label ?? null,
@@ -2213,7 +2228,7 @@ function buildLiveWalletHistory(
           ? null
           : String(metadata.allocationPct),
         active: positions.length > 0,
-        monitorStatus: positions.length > 0 ? "monitored" : "history",
+        monitorStatus: isRealtimeMonitored ? "monitored" : "history",
         accountCount: accountKeys.size,
         openPositionCount: positions.length,
         copiedFillCount: fills.length,
@@ -2477,19 +2492,65 @@ export function summarizeCopySourceStatuses(
   return {
     trading: sources.filter((source) => source.sourceStatus === "trading").length,
     monitored: sources.filter((source) => source.monitorStatus === "monitored").length,
-    waiting: sources.filter((source) => source.monitorStatus === "waiting").length,
+    connecting: sources.filter((source) => source.monitorStatus === "connecting").length,
+    offline: sources.filter((source) => source.monitorStatus === "offline").length,
+    waiting: sources.filter((source) => source.sourceStatus === "waiting_for_slot").length,
   };
+}
+
+export function resolveCurrentMonitorStatus({
+  hasRealtimeSlot,
+  realtimeMonitoring,
+  sourceWallet,
+}: {
+  hasRealtimeSlot: boolean;
+  realtimeMonitoring: PaperTradingSummaryResponse["realtimeMonitoring"];
+  sourceWallet: string;
+}): MonitoredSource["monitorStatus"] {
+  const normalizedSource = sourceWallet.toLowerCase();
+  if (
+    realtimeMonitoring.monitoredWallets.some(
+      (wallet) => wallet.toLowerCase() === normalizedSource,
+    )
+  ) {
+    return "monitored";
+  }
+  if (!hasRealtimeSlot) {
+    return "waiting";
+  }
+  if (
+    realtimeMonitoring.desiredWallets.some(
+      (wallet) => wallet.toLowerCase() === normalizedSource,
+    )
+  ) {
+    return "connecting";
+  }
+  return "offline";
+}
+
+function formatSourceMonitorMeta(
+  counts: ReturnType<typeof summarizeCopySourceStatuses>,
+) {
+  return [
+    `${formatInteger(counts.monitored)} monitored`,
+    counts.connecting > 0 ? `${formatInteger(counts.connecting)} connecting` : null,
+    counts.offline > 0 ? `${formatInteger(counts.offline)} offline` : null,
+    `${formatInteger(counts.waiting)} waiting for slot`,
+  ]
+    .filter(Boolean)
+    .join(", ");
 }
 
 function resolveSourceStatus(
   allocations: PaperCopyAllocation[],
   openPositionCount: number,
+  isRealtimeMonitored: boolean,
 ): MonitoredSource["sourceStatus"] {
   const hasRealtimeSlot = allocations.some((allocation) => allocation.hasRealtimeSlot);
   const canOpenNewPositions = allocations.some((allocation) => allocation.canOpenNewPositions);
   return resolveCurrentSourceStatus({
     canOpenNewPositions,
-    hasRealtimeSlot,
+    hasRealtimeSlot: hasRealtimeSlot || isRealtimeMonitored,
     openPositionCount,
   });
 }
@@ -2511,7 +2572,7 @@ function liveSourceCanOpenNewPositions(
   );
 }
 
-function liveAllocationSourceVisible(
+export function liveAllocationSourceVisible(
   allocations: PaperCopyAllocation[],
   liveCopyReady: boolean,
 ) {

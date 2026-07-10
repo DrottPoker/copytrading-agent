@@ -134,21 +134,29 @@ updates do not overwrite each other when API and worker activity overlap.
 Trading worker responsibilities:
 
 - Refresh paper allocations and select up to `max_realtime_wallets` wallets from
-  that same allocation result. Source wallets with open paper positions or live
-  source-attributed positions are retained first, then remaining slots are
-  filled by the highest scored eligible copy candidates.
+  that same allocation result. When live trading is enabled, source wallets with
+  open live source-attributed positions are retained first, then remaining slots
+  are filled by the highest scored eligible copy candidates. Paper-only open
+  exposure stays in allocation recovery but does not consume a live realtime
+  slot. Paper-only mode retains open paper-position sources first.
 - Check the desired realtime subscription list every
   `realtime_subscription_refresh_seconds`; keep the current WebSocket open when
   the list is unchanged and reconnect only when selected wallets change.
-- A source with a realtime slot is exposed as `monitorStatus = "monitored"`. A
-  top candidate without a free slot is exposed as `monitorStatus = "waiting"`
-  and `sourceStatus = "waiting_for_slot"`. `waiting_for_slot` is never emitted
-  for a source that currently owns a slot. An outside-top-10 source with open
-  paper or live exposure can retain its slot for exit management and is exposed
-  as `sourceStatus = "retained"` until that exposure is flat.
-- Allocation refresh writes `wallet_monitoring_stats` snapshots for wallets
-  with realtime slots. Snapshot deltas are capped from the subscription refresh
-  interval so downtime or a stuck worker does not overcount monitored time.
+- A desired slot and actual monitoring are separate states. `hasRealtimeSlot`
+  means the allocator selected the source. `isRealtimeMonitored` and
+  `monitorStatus = "monitored"` are emitted only after Hyperliquid acknowledges
+  that wallet's `userFills` subscription. Assigned sources are `connecting`
+  until acknowledged and `offline` when the realtime loop has no current
+  connection. A top candidate without a free slot is `waiting` with
+  `sourceStatus = "waiting_for_slot"`. With live trading enabled, an
+  outside-top-10 source retains slot intent only for open live exposure.
+- The realtime loop persists connection state on transitions and every
+  subscription refresh. State older than three refresh intervals is treated as
+  disconnected. If every requested wallet is not acknowledged within one
+  refresh interval, the worker reconnects instead of leaving the set in an
+  indefinite connecting state. Allocation refresh writes
+  `wallet_monitoring_stats` snapshots only for acknowledged wallets, so downtime
+  does not count as monitored time.
 - Subscribe to Hyperliquid `userFills` over WebSocket.
 - Subscribe to Hyperliquid `allMids` over WebSocket and maintain a short-lived
   price cache for copy execution.
@@ -186,13 +194,14 @@ Maintenance worker responsibilities:
 - Backfill or incrementally refresh all enabled pool wallets in batches.
 - Recalculate scores and run configured prune rules.
 
-The trading worker does not maintain a separate realtime wallet ranking for
-paper copy. The paper allocation refresh is the source of truth for monitored
-wallets, dashboard allocation state, and realtime subscription slots. If a
-monitored wallet falls out of the top 10 while paper positions are still open,
-or while live source-attributed positions are still open, it keeps management
-priority until those positions are closed. New top 10 wallets wait until a slot
-is available.
+The paper allocation refresh is the source of truth for monitored wallets,
+dashboard allocation state, and realtime subscription slots. Live-enabled
+deployments use a live-first priority: open live source exposure first, then the
+current highest scored eligible copy candidates. Paper-only open exposure stays
+eligible for historical fill import and periodic paper recovery, but it does not
+displace a live candidate or appear in Live Copy Sources. Paper-only deployments
+retain open paper-position sources first. A new top candidate waits only when
+open live exposure or higher-ranked candidates occupy every slot.
 
 ## Frontend
 
@@ -845,14 +854,15 @@ for managing existing exposure. They can add to matching open paper positions
 and can reduce or close them, but new entries are skipped with
 `retained_source_new_position_blocked`.
 The paper summary reports slot state separately from trade state. Allocation rows
-use `monitorStatus` as `monitored` or `waiting`. Wallet PnL history rows use
-`monitorStatus` as `monitored` or `history`. `sourceStatus` is `trading`,
-`retained`, `waiting_for_trades`, or `waiting_for_slot`. Current slot ownership
-is authoritative for `monitorStatus`; accumulated monitoring duration is
-historical performance data only. Dashboard source counters are reduced from the
-same current source rows as the badges, so source-attributed open positions drive
-the trading count even when exchange aggregate positions are preferred in the
-separate open-position display.
+use `monitorStatus` as `monitored`, `connecting`, `offline`, or `waiting`.
+Wallet PnL history rows use `monitorStatus` as `monitored` or `history`.
+`sourceStatus` is `trading`, `retained`, `waiting_for_trades`, or
+`waiting_for_slot`. Confirmed WebSocket subscription state is authoritative for
+the `monitored` label; accumulated monitoring duration is historical performance
+data only. Dashboard source counters are reduced from the same current source
+rows as the badges, so source-attributed open positions drive the trading count
+even when exchange aggregate positions are preferred in the separate
+open-position display.
 The dashboard aggregates allocation status across paper accounts when rendering
 source rows, so a source is shown as `trading` when at least one account can
 open or manage that source and the source has open paper exposure.

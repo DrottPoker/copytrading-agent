@@ -44,6 +44,24 @@ def test_worker_runtime_payload_tracks_loop_and_queue_state() -> None:
     }
 
 
+def test_worker_runtime_tracks_acknowledged_realtime_wallets() -> None:
+    runtime = WorkerRuntimeState(role="trading", capabilities=("trading",))
+
+    runtime.mark_realtime_subscription_connecting(["0xAAA", "0xBBB"])
+    assert runtime.realtime_subscription_status == "connecting"
+    assert runtime.mark_realtime_subscription_acknowledged("0xaaa") is True
+    assert runtime.realtime_subscription_status == "connecting"
+    assert runtime.realtime_subscription_monitored_wallets == ("0xaaa",)
+    assert runtime.mark_realtime_subscription_acknowledged("0xbbb") is True
+    assert runtime.realtime_subscription_status == "connected"
+    assert runtime.mark_realtime_subscription_acknowledged("0xbbb") is False
+
+    runtime.mark_realtime_subscription_disconnected()
+    assert runtime.realtime_subscription_status == "disconnected"
+    assert runtime.realtime_subscription_desired_wallets == ()
+    assert runtime.realtime_subscription_monitored_wallets == ()
+
+
 @pytest.mark.asyncio
 async def test_supervised_loop_restarts_after_failure_and_reports_error() -> None:
     stop_event = asyncio.Event()

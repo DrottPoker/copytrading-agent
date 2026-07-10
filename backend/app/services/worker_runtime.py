@@ -37,6 +37,9 @@ class WorkerRuntimeState:
     realtime_queue_depth: int = 0
     realtime_queue_capacity: int = 0
     realtime_queue_dropped: int = 0
+    realtime_subscription_status: str = "idle"
+    realtime_subscription_desired_wallets: tuple[str, ...] = ()
+    realtime_subscription_monitored_wallets: tuple[str, ...] = ()
 
     def loop(self, name: str) -> WorkerLoopState:
         return self.loops.setdefault(name, WorkerLoopState())
@@ -79,6 +82,41 @@ class WorkerRuntimeState:
         self.realtime_queue_capacity = max(capacity, 0)
         if dropped:
             self.realtime_queue_dropped += 1
+
+    def mark_realtime_subscription_connecting(self, wallet_addresses: list[str]) -> None:
+        self.realtime_subscription_status = "connecting"
+        self.realtime_subscription_desired_wallets = normalize_wallets(wallet_addresses)
+        self.realtime_subscription_monitored_wallets = ()
+
+    def mark_realtime_subscription_acknowledged(self, wallet_address: str) -> bool:
+        normalized_wallet = wallet_address.strip().lower()
+        if (
+            not normalized_wallet
+            or normalized_wallet not in self.realtime_subscription_desired_wallets
+        ):
+            return False
+        monitored = list(self.realtime_subscription_monitored_wallets)
+        if normalized_wallet in monitored:
+            return False
+        monitored.append(normalized_wallet)
+        self.realtime_subscription_monitored_wallets = tuple(monitored)
+        self.realtime_subscription_status = (
+            "connected"
+            if set(monitored) == set(self.realtime_subscription_desired_wallets)
+            else "connecting"
+        )
+        return True
+
+    def mark_realtime_subscription_idle(self) -> None:
+        self._clear_realtime_subscription("idle")
+
+    def mark_realtime_subscription_disconnected(self) -> None:
+        self._clear_realtime_subscription("disconnected")
+
+    def _clear_realtime_subscription(self, status: str) -> None:
+        self.realtime_subscription_status = status
+        self.realtime_subscription_desired_wallets = ()
+        self.realtime_subscription_monitored_wallets = ()
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -133,3 +171,12 @@ async def sleep_until_stop(stop_event: asyncio.Event, seconds: int) -> None:
 
 def isoformat(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
+
+
+def normalize_wallets(wallet_addresses: list[str]) -> tuple[str, ...]:
+    normalized: list[str] = []
+    for wallet_address in wallet_addresses:
+        wallet = wallet_address.strip().lower()
+        if wallet and wallet not in normalized:
+            normalized.append(wallet)
+    return tuple(normalized)

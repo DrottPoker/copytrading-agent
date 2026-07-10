@@ -40,6 +40,11 @@ from app.services.live_trading_service import (
     user_abstraction_is_unified,
 )
 from app.services.market_price_cache import MarketPriceCache
+from app.services.realtime_subscription_state_service import (
+    RealtimeSubscriptionSnapshot,
+    load_realtime_subscription_state,
+    realtime_subscription_stale_after_seconds,
+)
 from app.services.trading_account_service import sync_paper_trading_account_mirrors
 from app.services.trading_core import (
     MinOrderAdjustment as PaperMinOrderAdjustment,
@@ -249,6 +254,12 @@ async def get_paper_trading_summary(
                 settings=resolved_settings,
             )
         }
+    realtime_monitoring = await load_realtime_subscription_state(
+        session,
+        stale_after_seconds=realtime_subscription_stale_after_seconds(
+            resolved_settings.realtime_subscription_refresh_seconds
+        ),
+    )
 
     accounts_result = await session.execute(
         select(PaperTradingAccount).order_by(PaperTradingAccount.key.asc())
@@ -374,6 +385,7 @@ async def get_paper_trading_summary(
             positions=position_rows,
             source_allocations=source_allocations,
             source_labels=source_labels,
+            realtime_monitoring=realtime_monitoring,
         ),
         positions=position_rows,
         wallet_performance=paper_wallet_performance_reads(
@@ -383,6 +395,7 @@ async def get_paper_trading_summary(
             source_allocations=source_allocations,
             source_labels=source_labels,
             monitoring_stats=monitoring_stats,
+            realtime_monitoring=realtime_monitoring,
         ),
         closed_trades=paper_closed_trade_reads(
             closed_trades,
@@ -391,6 +404,7 @@ async def get_paper_trading_summary(
             opened_at_by_closed_fill_id=opened_at_by_closed_fill_id,
         ),
         recent_fills=paper_copy_fill_reads(recent_fills, source_labels=source_labels),
+        realtime_monitoring=realtime_monitoring_read(realtime_monitoring),
         updated_at=updated_at,
         market_data_status=market_data_status(
             open_position_count=len(positions),
@@ -881,6 +895,7 @@ def paper_allocation_reads(
     positions: list[dict[str, Any]],
     source_allocations: dict[str, PaperSourceAllocation],
     source_labels: dict[str, str],
+    realtime_monitoring: RealtimeSubscriptionSnapshot,
 ) -> list[dict[str, Any]]:
     account_enabled_by_key = {account.key: account.enabled for account in accounts}
     open_margin_by_allocation: dict[tuple[str, str], Decimal] = {}
@@ -919,11 +934,17 @@ def paper_allocation_reads(
             source_allocation.active if source_allocation is not None else allocation.active
         )
         can_open_new_positions = account_enabled is not False and source_can_open_new_positions
-        source_status = paper_source_status(
+        monitor_status = paper_monitor_status(
+            source_wallet=source_wallet,
             has_realtime_slot=has_realtime_slot,
+            realtime_monitoring=realtime_monitoring,
+        )
+        source_status = paper_source_status(
+            has_realtime_slot=has_realtime_slot or monitor_status == "monitored",
             can_open_new_positions=can_open_new_positions,
             open_position_count=open_position_count,
         )
+        is_realtime_monitored = source_wallet in realtime_monitoring.monitored_wallets
         remaining = max(allocation.allocation_usd - open_margin, ZERO)
         rows.append(
             {
@@ -946,8 +967,9 @@ def paper_allocation_reads(
                 "max_total_allocation_pct": allocation.max_total_allocation_pct,
                 "active": allocation.active,
                 "has_realtime_slot": has_realtime_slot,
+                "is_realtime_monitored": is_realtime_monitored,
                 "can_open_new_positions": can_open_new_positions,
-                "monitor_status": "monitored" if has_realtime_slot else "waiting",
+                "monitor_status": monitor_status,
                 "source_status": source_status,
                 "source_status_reason": paper_allocation_status_reason(
                     source_status=source_status,
@@ -1002,6 +1024,35 @@ def paper_source_status(
     return "waiting_for_trades" if can_open_new_positions else "retained"
 
 
+def paper_monitor_status(
+    *,
+    source_wallet: str,
+    has_realtime_slot: bool,
+    realtime_monitoring: RealtimeSubscriptionSnapshot,
+) -> str:
+    normalized_source = source_wallet.lower()
+    if normalized_source in realtime_monitoring.monitored_wallets:
+        return "monitored"
+    if not has_realtime_slot:
+        return "waiting"
+    if normalized_source in realtime_monitoring.desired_wallets:
+        return "connecting"
+    return "offline"
+
+
+def realtime_monitoring_read(
+    realtime_monitoring: RealtimeSubscriptionSnapshot,
+) -> dict[str, Any]:
+    return {
+        "status": realtime_monitoring.status,
+        "desired_wallets": list(realtime_monitoring.desired_wallets),
+        "monitored_wallets": sorted(realtime_monitoring.monitored_wallets),
+        "worker_role": realtime_monitoring.worker_role,
+        "worker_instance_id": realtime_monitoring.worker_instance_id,
+        "updated_at": realtime_monitoring.updated_at,
+    }
+
+
 def paper_allocation_status_reason(
     *,
     source_status: str,
@@ -1032,6 +1083,7 @@ def paper_wallet_performance_reads(
     source_allocations: dict[str, PaperSourceAllocation],
     source_labels: dict[str, str],
     monitoring_stats: dict[str, WalletMonitoringSummary],
+    realtime_monitoring: RealtimeSubscriptionSnapshot,
 ) -> list[dict[str, Any]]:
     sources = {
         allocation.source_wallet.lower() for allocation in allocations if allocation.source_wallet
@@ -1064,11 +1116,6 @@ def paper_wallet_performance_reads(
         source_positions = positions_by_source.get(source, [])
         fill_row = fills_by_source.get(source, {})
         source_allocation = source_allocations.get(source)
-        has_realtime_slot = (
-            source_allocation.has_realtime_slot
-            if source_allocation is not None
-            else any(allocation.active for allocation in allocation_rows)
-        )
         unrealized_pnl = sum_decimal(
             position["unrealized_pnl_usd"] for position in source_positions
         )
@@ -1090,7 +1137,9 @@ def paper_wallet_performance_reads(
                 "score": first_decimal(allocation.score for allocation in allocation_rows),
                 "allocation_pct": allocation_pct,
                 "active": any(allocation.active for allocation in allocation_rows),
-                "monitor_status": "monitored" if has_realtime_slot else "history",
+                "monitor_status": (
+                    "monitored" if source in realtime_monitoring.monitored_wallets else "history"
+                ),
                 "account_count": len({allocation.account_key for allocation in allocation_rows}),
                 "open_position_count": len(source_positions),
                 "copied_fill_count": int(fill_row.get("copied_fill_count") or 0),
@@ -2311,13 +2360,15 @@ async def refresh_paper_copy_allocations(
         )
 
     source_allocations = await load_paper_source_allocations(session, settings=settings)
+    realtime_monitoring = await load_realtime_subscription_state(
+        session,
+        stale_after_seconds=realtime_subscription_stale_after_seconds(
+            settings.realtime_subscription_refresh_seconds
+        ),
+    )
     await record_wallet_monitoring_snapshot(
         session,
-        monitored_wallets=(
-            allocation.source_wallet
-            for allocation in source_allocations
-            if allocation.has_realtime_slot
-        ),
+        monitored_wallets=realtime_monitoring.monitored_wallets,
         settings=settings,
     )
     for account in accounts:
@@ -2393,12 +2444,46 @@ def open_copy_source_select() -> Any:
     paper_sources = select(func.lower(PaperPosition.source_wallet).label("source_wallet")).where(
         PaperPosition.source_wallet != ""
     )
-    live_sources = select(func.lower(TradingPosition.source_wallet).label("source_wallet")).where(
+    return paper_sources.union_all(live_open_copy_source_select())
+
+
+def live_open_copy_source_select() -> Any:
+    return select(func.lower(TradingPosition.source_wallet).label("source_wallet")).where(
         TradingPosition.account_type == "live",
         TradingPosition.source_wallet != "",
         TradingPosition.source_wallet != LIVE_EXCHANGE_SOURCE,
     )
-    return paper_sources.union_all(live_sources)
+
+
+def select_realtime_slot_sources(
+    *,
+    open_source_wallets: Iterable[str],
+    live_open_source_wallets: set[str],
+    candidate_source_wallets: Iterable[str],
+    live_trading_enabled: bool,
+    max_realtime_slots: int,
+) -> list[str]:
+    if max_realtime_slots <= 0:
+        return []
+
+    normalized_live_sources = {source.lower() for source in live_open_source_wallets if source}
+    priority_open_sources = (
+        (
+            source
+            for source in open_source_wallets
+            if source and source.lower() in normalized_live_sources
+        )
+        if live_trading_enabled
+        else open_source_wallets
+    )
+    selected: list[str] = []
+    for source in (*priority_open_sources, *candidate_source_wallets):
+        normalized_source = source.lower()
+        if normalized_source and normalized_source not in selected:
+            selected.append(normalized_source)
+        if len(selected) >= max_realtime_slots:
+            break
+    return selected
 
 
 async def sync_paper_trading_accounts(
@@ -2772,21 +2857,19 @@ async def load_paper_source_allocations(
         )
     )
     open_source_rows = list(open_source_result.mappings().all())
-    max_realtime_slots = max(settings.max_realtime_wallets, 0)
-    slot_sources: list[str] = []
-    for row in open_source_rows:
-        if len(slot_sources) >= max_realtime_slots:
-            break
-        source_wallet = str(row["source_wallet"]).lower()
-        if source_wallet and source_wallet not in slot_sources:
-            slot_sources.append(source_wallet)
-
-    for row in candidate_rows:
-        if len(slot_sources) >= max_realtime_slots:
-            break
-        source_wallet = str(row["address"]).lower()
-        if source_wallet and source_wallet not in slot_sources:
-            slot_sources.append(source_wallet)
+    live_open_source_result = await session.execute(live_open_copy_source_select())
+    live_open_source_wallets = {
+        str(source_wallet).lower()
+        for source_wallet in live_open_source_result.scalars().all()
+        if source_wallet
+    }
+    slot_sources = select_realtime_slot_sources(
+        open_source_wallets=(str(row["source_wallet"]) for row in open_source_rows),
+        live_open_source_wallets=live_open_source_wallets,
+        candidate_source_wallets=(str(row["address"]) for row in candidate_rows),
+        live_trading_enabled=settings.live_trading_enabled,
+        max_realtime_slots=settings.max_realtime_wallets,
+    )
 
     slot_source_set = set(slot_sources)
     allocations: list[PaperSourceAllocation] = []

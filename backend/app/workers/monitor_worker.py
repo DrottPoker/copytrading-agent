@@ -52,6 +52,7 @@ from app.services.realtime_execution_inbox_service import (
     retry_realtime_execution,
 )
 from app.services.realtime_fill_service import StoredRealtimeFills, store_realtime_fills
+from app.services.realtime_subscription_state_service import mark_realtime_subscription_state
 from app.services.wallet_cleanup_service import prune_all_wallets
 from app.services.wallet_score_service import recalculate_wallet_scores
 from app.services.worker_heartbeat_service import delete_worker_heartbeat, mark_worker_heartbeat
@@ -505,6 +506,12 @@ async def run_realtime_monitor_loop(
             settings=settings,
         )
         if not wallet_addresses:
+            if runtime is not None:
+                runtime.mark_realtime_subscription_idle()
+                await persist_realtime_subscription_runtime(
+                    sessionmaker=sessionmaker,
+                    runtime=runtime,
+                )
             logger.info("no enabled wallets available for realtime monitoring")
             await publish_event(
                 redis,
@@ -516,6 +523,12 @@ async def run_realtime_monitor_loop(
             await sleep_until_stop(stop_event, settings.realtime_subscription_refresh_seconds)
             continue
 
+        if runtime is not None:
+            runtime.mark_realtime_subscription_connecting(wallet_addresses)
+            await persist_realtime_subscription_runtime(
+                sessionmaker=sessionmaker,
+                runtime=runtime,
+            )
         logger.info("subscribing to realtime fills wallets=%s", ",".join(wallet_addresses))
         await publish_event(
             redis,
@@ -542,11 +555,27 @@ async def run_realtime_monitor_loop(
                 runtime=runtime,
             )
 
+        async def handle_subscribed(wallet_address: str) -> None:
+            if runtime is None:
+                return
+            if runtime.mark_realtime_subscription_acknowledged(wallet_address):
+                logger.info(
+                    "realtime wallet subscription acknowledged wallet=%s monitored=%s desired=%s",
+                    wallet_address,
+                    len(runtime.realtime_subscription_monitored_wallets),
+                    len(runtime.realtime_subscription_desired_wallets),
+                )
+                await persist_realtime_subscription_runtime(
+                    sessionmaker=sessionmaker,
+                    runtime=runtime,
+                )
+
         stream_task = asyncio.create_task(
             stream_user_fills(
                 settings=settings,
                 wallet_addresses=wallet_addresses,
                 on_message=handle_message,
+                on_subscribed=handle_subscribed,
                 stop_event=stop_event,
             )
         )
@@ -565,7 +594,21 @@ async def run_realtime_monitor_loop(
                     max_wallets=settings.max_realtime_wallets,
                     settings=settings,
                 )
+                if runtime is not None and runtime.realtime_subscription_status == "connecting":
+                    logger.warning(
+                        "realtime subscription acknowledgement incomplete desired=%s monitored=%s",
+                        ",".join(runtime.realtime_subscription_desired_wallets),
+                        ",".join(runtime.realtime_subscription_monitored_wallets),
+                    )
+                    stream_task.cancel()
+                    await asyncio.gather(stream_task, return_exceptions=True)
+                    break
                 if refreshed_wallet_addresses == subscribed_wallet_addresses:
+                    if runtime is not None:
+                        await persist_realtime_subscription_runtime(
+                            sessionmaker=sessionmaker,
+                            runtime=runtime,
+                        )
                     continue
 
                 logger.info(
@@ -592,6 +635,12 @@ async def run_realtime_monitor_loop(
             if not stream_task.done():
                 stream_task.cancel()
                 await asyncio.gather(stream_task, return_exceptions=True)
+            if runtime is not None:
+                runtime.mark_realtime_subscription_disconnected()
+                await persist_realtime_subscription_runtime(
+                    sessionmaker=sessionmaker,
+                    runtime=runtime,
+                )
 
 
 async def run_worker_heartbeat_loop(
@@ -620,6 +669,26 @@ async def run_worker_heartbeat_loop(
             logger.exception("worker heartbeat update failed role=%s", settings.worker_role)
 
         await sleep_until_stop(stop_event, settings.worker_heartbeat_interval_seconds)
+
+
+async def persist_realtime_subscription_runtime(
+    *,
+    sessionmaker: Any,
+    runtime: WorkerRuntimeState,
+) -> None:
+    try:
+        async with sessionmaker() as session:
+            await mark_realtime_subscription_state(
+                session,
+                status=runtime.realtime_subscription_status,
+                desired_wallets=runtime.realtime_subscription_desired_wallets,
+                monitored_wallets=runtime.realtime_subscription_monitored_wallets,
+                worker_role=runtime.role,
+                worker_instance_id=runtime.instance_id,
+            )
+            await session.commit()
+    except Exception:
+        logger.exception("realtime subscription state update failed role=%s", runtime.role)
 
 
 async def run_market_price_cache_loop(

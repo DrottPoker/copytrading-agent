@@ -12,15 +12,19 @@ from app.services.paper_trading_service import (
     SourceFillPart,
     apply_wallet_monitoring_snapshot,
     build_execution_context,
+    live_open_copy_source_select,
     load_source_account_state,
     monitored_hours,
     open_copy_source_select,
+    paper_monitor_status,
     paper_position_read,
     paper_source_status,
     pnl_per_monitored_hour,
+    select_realtime_slot_sources,
     source_fill_age_exceeds_entry_limit,
     wallet_monitoring_summary,
 )
+from app.services.realtime_subscription_state_service import RealtimeSubscriptionSnapshot
 from app.services.trading_core import (
     adjust_open_sizing_to_min_order,
     build_client_order_id,
@@ -77,6 +81,50 @@ def test_paper_source_status_matches_current_slot_state(
             open_position_count=open_position_count,
         )
         == expected
+    )
+
+
+def test_paper_monitor_status_uses_acknowledged_subscription_truth() -> None:
+    snapshot = RealtimeSubscriptionSnapshot(
+        status="connecting",
+        desired_wallets=("0xconnected", "0xpending"),
+        monitored_wallets=frozenset({"0xconnected"}),
+        worker_role="trading",
+        worker_instance_id="worker-1",
+        updated_at=datetime(2026, 7, 10, tzinfo=UTC),
+    )
+
+    assert (
+        paper_monitor_status(
+            source_wallet="0xconnected",
+            has_realtime_slot=True,
+            realtime_monitoring=snapshot,
+        )
+        == "monitored"
+    )
+    assert (
+        paper_monitor_status(
+            source_wallet="0xpending",
+            has_realtime_slot=True,
+            realtime_monitoring=snapshot,
+        )
+        == "connecting"
+    )
+    assert (
+        paper_monitor_status(
+            source_wallet="0xoffline",
+            has_realtime_slot=True,
+            realtime_monitoring=snapshot,
+        )
+        == "offline"
+    )
+    assert (
+        paper_monitor_status(
+            source_wallet="0xwaiting",
+            has_realtime_slot=False,
+            realtime_monitoring=snapshot,
+        )
+        == "waiting"
     )
 
 
@@ -240,6 +288,43 @@ def test_open_copy_source_select_includes_live_source_positions() -> None:
     assert "trading_positions" in compiled
     assert "trading_positions.account_type = 'live'" in compiled
     assert "trading_positions.source_wallet != '__exchange__'" in compiled
+
+
+def test_live_open_copy_source_select_excludes_paper_and_exchange_positions() -> None:
+    compiled = str(
+        live_open_copy_source_select().compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+
+    assert "paper_positions" not in compiled
+    assert "trading_positions.account_type = 'live'" in compiled
+    assert "trading_positions.source_wallet != '__exchange__'" in compiled
+
+
+def test_live_realtime_slots_do_not_reserve_paper_only_sources() -> None:
+    selected = select_realtime_slot_sources(
+        open_source_wallets=["0xpaper", "0xlive"],
+        live_open_source_wallets={"0xlive"},
+        candidate_source_wallets=["0xcandidate1", "0xcandidate2"],
+        live_trading_enabled=True,
+        max_realtime_slots=3,
+    )
+
+    assert selected == ["0xlive", "0xcandidate1", "0xcandidate2"]
+
+
+def test_paper_only_realtime_slots_still_prioritize_open_paper_sources() -> None:
+    selected = select_realtime_slot_sources(
+        open_source_wallets=["0xpaper", "0xlive"],
+        live_open_source_wallets={"0xlive"},
+        candidate_source_wallets=["0xcandidate1"],
+        live_trading_enabled=False,
+        max_realtime_slots=2,
+    )
+
+    assert selected == ["0xpaper", "0xlive"]
 
 
 def test_wallet_monitoring_snapshot_accumulates_closes_and_restarts() -> None:

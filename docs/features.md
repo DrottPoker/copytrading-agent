@@ -576,14 +576,19 @@ What it does:
 - Opens a Hyperliquid WebSocket connection.
 - Subscribes to `userFills` for up to `max_realtime_wallets`.
 - Uses paper allocation refresh as the source of truth for realtime
-  subscriptions. Sources with open paper positions reserve slots first, then
-  remaining slots go to the highest scored eligible copy candidates.
-- Records accumulated monitored time for each realtime-slot wallet in
-  `wallet_monitoring_stats`, with capped snapshot gaps to avoid overcounting
-  worker downtime.
+  subscriptions. With live trading enabled, sources with open live exposure
+  reserve slots first and remaining slots go to the highest scored eligible copy
+  candidates. Paper-only exposure is handled by historical fill import and
+  paper-copy recovery without displacing live candidates. Paper-only mode keeps
+  the previous open-paper-exposure priority.
+- Persists the desired wallets and the subset confirmed by Hyperliquid
+  `subscriptionResponse` messages. Records accumulated monitored time in
+  `wallet_monitoring_stats` only for the confirmed subset, with capped snapshot
+  gaps to avoid overcounting worker downtime.
 - Checks the desired realtime subscription list every
   `realtime_subscription_refresh_seconds` and reconnects only when the selected
-  wallet list changes.
+  wallet list changes or a requested wallet was not acknowledged within one
+  refresh interval.
 - Processes initial snapshot messages safely.
 - Stores realtime fills in Postgres with the same dedupe logic as historical import.
 - Commits each realtime fill batch and a matching execution payload to
@@ -646,17 +651,20 @@ What it does:
 - Builds allocations from the top 10 positive wallet scores in the enabled wallet pool.
 - When current drawdown scoring is enabled, allocation only uses wallets whose
   latest score has `current_drawdown_status = "ok"`.
-- Keeps source wallets with open paper or live source-attributed positions
-  subscribed until all copied positions from that source are closed, even if the
+- Keeps source wallets with open live source-attributed positions subscribed
+  until all live copied positions from that source are closed, even if the
   source falls out of the top 10. These sources are shown as `monitored` and
-  `retained`, with the open paper or live exposure stated in the row detail.
+  `retained` with the open live exposure stated in the row detail.
+- Keeps paper-only retained sources in the allocation and recovery domain, but
+  does not let them consume realtime slots or appear in Live Copy Sources while
+  live trading is enabled.
 - Makes newly promoted top 10 wallets wait when all realtime slots are occupied
-  by retained open-position sources.
-- Allocation refresh follows the realtime slot model: open paper-position and
-  live source-attributed position sources reserve slots first, then remaining
-  slots go to highest scored candidates. Top candidates without a slot are
-  marked as waiting and cannot open new copy positions until a realtime slot is
-  available.
+  by retained live open-position sources.
+- Allocation refresh follows a live-first realtime slot model when live trading
+  is enabled: live source-attributed position sources reserve slots first, then
+  remaining slots go to highest scored candidates. Top candidates without a
+  slot are marked as waiting and cannot open new copy positions until a realtime
+  slot is available. Paper-only mode retains open paper-position sources first.
 - Gives all top 10 ranks a 20% account pocket each.
 - Caps total open copied margin at 80% of each paper account equity.
 - Converts new non-snapshot realtime source fills into simulated paper fills.
@@ -809,12 +817,13 @@ What it does:
   position closes. If only an exchange close fill is available locally, the
   backend shows a close-only row and estimates the entry price from Hyperliquid
   realized PnL.
-- Copy source monitor slots and source eligibility are shared across paper and
-  live execution, but each mode renders its own exposure, PnL, activity, and
-  execution status. A retained source remains retained in live mode unless the
-  shared source eligibility allows new entries. Live-only historical sources
-  from recent fills or orders are excluded from Copy Sources and remain visible
-  through Wallet PnL history and Recent Execution Activity.
+- Copy source selection is shared across paper and live execution, but live mode
+  reserves realtime capacity only for open live exposure and current eligible
+  candidates. Paper-only retained sources are excluded from Live Copy Sources
+  and continue through historical fill import and paper recovery. Each mode
+  renders its own exposure, PnL, activity, and execution status. Live-only
+  historical sources remain visible through Wallet PnL history and Recent
+  Execution Activity.
 - Open position rows include unrealized PnL, realized PnL, and add and close
   fill counts for the current position window. Live open position realized PnL
   is summed from the same close, reduce, and flip-close fills used by the
@@ -869,11 +878,12 @@ What it does:
   starting balance and clears account-level realized PnL and fees without
   deleting open paper positions, copied fills, or closed trade history.
 - Source rows show a primary monitor status and a source substatus. Primary
-  status is `monitored` when the source has a realtime slot and `waiting` when
-  it does not. Substatus is `trading`, `retained`, `waiting for trades`, or
-  `waiting for slot`. The current realtime slot is the only source for the
-  primary monitor status, and `waiting for slot` is never paired with
-  `monitored`.
+  status is `monitored` only when Hyperliquid has acknowledged that wallet's
+  active `userFills` subscription. Assigned sources are `connecting` before
+  confirmation and `offline` when no current worker connection exists. Sources
+  without an assigned slot are `waiting`. `hasRealtimeSlot` remains allocation
+  intent and `isRealtimeMonitored` is confirmed runtime truth. Substatus is
+  `trading`, `retained`, `waiting for trades`, or `waiting for slot`.
 - Source row substatus is aggregated across all paper accounts. A source is
   `trading` if any enabled paper account can still open or manage that source
   and the source has open paper exposure.
@@ -884,17 +894,17 @@ What it does:
 - Source rows split source PnL into realized and unrealized values, with total
   PnL shown as supporting context.
 - The Sources summary and Copy Sources header derive their trading, monitored,
-  and waiting counts from the same current source-state rows used by the source
-  badges. Historical monitoring duration and exchange-only display positions do
-  not affect these counts.
+  connecting, offline, and waiting-for-slot counts from the same current
+  source-state rows used by the source badges. Historical monitoring duration
+  and exchange-only display positions do not affect these counts.
 - The dashboard separates total, realized, and unrealized PnL and uses compact
   responsive list rows instead of wide tables or large cards.
 - Dashboard pages use a shared top panel with page context first, followed by a
   left-aligned action row for updated state, controls, filters, and status
   pills. The refresh button is anchored to the right, and auto-refresh uses icon
   motion instead of visible refreshing text.
-- Wallet PnL history rows show `monitored` when the source has a realtime slot
-  and `history` otherwise.
+- Wallet PnL history rows show `monitored` only while the source has a confirmed
+  realtime subscription and `history` otherwise.
 - Wallet PnL history, closed trade history, and recent execution activity are
   paginated at 10 rows per page.
 

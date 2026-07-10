@@ -33,8 +33,9 @@ export type PaperCopyAllocation = {
   maxTotalAllocationPct: string;
   active: boolean;
   hasRealtimeSlot: boolean;
+  isRealtimeMonitored: boolean;
   canOpenNewPositions: boolean;
-  monitorStatus: "monitored" | "waiting";
+  monitorStatus: "monitored" | "connecting" | "offline" | "waiting";
   sourceStatus: "trading" | "retained" | "waiting_for_trades" | "waiting_for_slot";
   sourceStatusReason: string;
   updatedAt: string;
@@ -185,6 +186,14 @@ export type PaperTradingSummaryResponse = {
   walletPerformance: PaperWalletPerformance[];
   closedTrades: PaperClosedTrade[];
   recentFills: PaperCopyFill[];
+  realtimeMonitoring: {
+    status: "idle" | "connecting" | "connected" | "disconnected";
+    desiredWallets: string[];
+    monitoredWallets: string[];
+    workerRole: string | null;
+    workerInstanceId: string | null;
+    updatedAt: string | null;
+  };
   updatedAt: string;
   marketDataStatus: "live" | "partial" | "unavailable" | "no_open_positions";
 };

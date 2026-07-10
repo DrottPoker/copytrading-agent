@@ -440,6 +440,14 @@ function emptyPaperTradingSummary(): PaperTradingSummaryResponse {
     walletPerformance: [],
     closedTrades: [],
     recentFills: [],
+    realtimeMonitoring: {
+      status: "disconnected",
+      desiredWallets: [],
+      monitoredWallets: [],
+      workerRole: null,
+      workerInstanceId: null,
+      updatedAt: null,
+    },
     updatedAt: new Date(0).toISOString(),
     marketDataStatus: "unavailable",
   };

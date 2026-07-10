@@ -48,6 +48,7 @@ class PaperCopyAllocationRead(CamelModel):
     max_total_allocation_pct: Decimal
     active: bool
     has_realtime_slot: bool = False
+    is_realtime_monitored: bool = False
     can_open_new_positions: bool = False
     monitor_status: str = "waiting"
     source_status: str = "waiting_for_slot"
@@ -139,6 +140,15 @@ class PaperTradingPolicyRead(CamelModel):
     market_price_cache_stale_seconds: float
 
 
+class RealtimeMonitoringRead(CamelModel):
+    status: str = "disconnected"
+    desired_wallets: list[str] = Field(default_factory=list)
+    monitored_wallets: list[str] = Field(default_factory=list)
+    worker_role: str | None = None
+    worker_instance_id: str | None = None
+    updated_at: datetime | None = None
+
+
 class PaperWalletPerformanceRead(CamelModel):
     source_wallet: str
     source_label: str | None = None
@@ -200,5 +210,6 @@ class PaperTradingSummaryResponse(CamelModel):
     wallet_performance: list[PaperWalletPerformanceRead]
     closed_trades: list[PaperClosedTradeRead]
     recent_fills: list[PaperCopyFillRead]
+    realtime_monitoring: RealtimeMonitoringRead
     updated_at: datetime
     market_data_status: str

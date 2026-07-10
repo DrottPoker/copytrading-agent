@@ -8,6 +8,7 @@ import websockets
 from app.core.config import Settings
 
 WebSocketMessageHandler = Callable[[dict[str, Any]], Awaitable[None]]
+WebSocketSubscriptionHandler = Callable[[str], Awaitable[None]]
 
 
 class HyperliquidWebSocketError(RuntimeError):
@@ -19,6 +20,7 @@ async def stream_user_fills(
     settings: Settings,
     wallet_addresses: list[str],
     on_message: WebSocketMessageHandler,
+    on_subscribed: WebSocketSubscriptionHandler | None = None,
     stop_event: asyncio.Event,
 ) -> None:
     if not wallet_addresses:
@@ -40,6 +42,8 @@ async def stream_user_fills(
                     )
                 )
 
+            requested_wallets = {address.lower() for address in wallet_addresses}
+            acknowledged_wallets: set[str] = set()
             while not stop_event.is_set():
                 try:
                     raw_message = await receive_until_stop(
@@ -59,6 +63,14 @@ async def stream_user_fills(
                     raise HyperliquidWebSocketError("Received invalid WebSocket JSON.") from exc
 
                 if isinstance(message, dict):
+                    acknowledged_wallet = user_fills_subscription_wallet(message)
+                    if (
+                        on_subscribed is not None
+                        and acknowledged_wallet in requested_wallets
+                        and acknowledged_wallet not in acknowledged_wallets
+                    ):
+                        acknowledged_wallets.add(acknowledged_wallet)
+                        await on_subscribed(acknowledged_wallet)
                     await on_message(message)
     except HyperliquidWebSocketError:
         raise
@@ -139,3 +151,27 @@ async def receive_until_stop(
             if not task.done():
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def user_fills_subscription_wallet(message: dict[str, Any]) -> str | None:
+    channel = message.get("channel")
+    data = message.get("data")
+    if not isinstance(data, dict):
+        return None
+    if channel == "subscriptionResponse":
+        if data.get("method") != "subscribe":
+            return None
+        subscription = data.get("subscription")
+        if not isinstance(subscription, dict) or subscription.get("type") != "userFills":
+            return None
+        return normalized_wallet(subscription.get("user"))
+    if channel == "userFills":
+        return normalized_wallet(data.get("user"))
+    return None
+
+
+def normalized_wallet(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    wallet = value.strip().lower()
+    return wallet or None
