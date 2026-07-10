@@ -207,6 +207,21 @@ open live exposure or higher-ranked candidates occupy every slot.
 
 The dashboard is a Next.js app.
 
+The application shell groups navigation into Execution, Intelligence, and
+System areas. Desktop uses a persistent compact sidebar, while narrow screens
+use the same routes in a horizontally scrollable navigation row. Page headers
+contain only page identity, global freshness, and high-level state. Workflow
+controls stay inside the relevant page surface. The Accounts page, for example,
+keeps account selection and lifecycle actions in a dedicated control bar.
+
+The UI foundation is defined by semantic Tailwind tokens and shared component
+classes in `frontend/tailwind.config.ts` and `frontend/src/app/globals.css`.
+`DashboardSurface.tsx` owns the common dashboard metric and panel primitives.
+Color is not used as the only state signal: status pills include text and a
+state dot, numeric tables use tabular figures, and all data tables have scoped
+column headers and horizontal overflow containers. Shared loading, not-found,
+and recoverable route error states cover navigation and API failures.
+
 Current pages:
 
 - `/`: overview and system status.

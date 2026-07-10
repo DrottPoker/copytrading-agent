@@ -11,6 +11,7 @@ import {
 import Link from "next/link";
 
 import { AddWalletForm } from "@/components/AddWalletForm";
+import { DashboardMetric } from "@/components/DashboardSurface";
 import { HeaderRefreshButton, HeaderUpdatedLabel } from "@/components/HeaderRefresh";
 import { PageTopPanel } from "@/components/PageTopPanel";
 import { ScoreWalletsButton } from "@/components/ScoreWalletsButton";
@@ -50,6 +51,7 @@ export default async function WalletsPage({ searchParams }: WalletsPageProps) {
     <>
       <PageTopPanel
         eyebrow="Research pool"
+        icon={WalletCards}
         title="Wallet Pool"
         actions={
           <>
@@ -108,11 +110,11 @@ export default async function WalletsPage({ searchParams }: WalletsPageProps) {
 
       <AddWalletForm />
 
-      <section className="overflow-hidden rounded-lg border border-line bg-panel shadow-sm">
+      <section className="ui-panel overflow-hidden">
         <div className="flex flex-col gap-3 border-b border-line px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <h2 className="text-base font-semibold">Wallet Rankings</h2>
-            <p className="mt-1 text-sm text-[#5b6770]">
+            <p className="mt-1 text-sm text-muted">
               Sorted by final score; unscored wallets stay at the bottom.
             </p>
           </div>
@@ -126,7 +128,7 @@ export default async function WalletsPage({ searchParams }: WalletsPageProps) {
             <label className="relative block min-w-0 flex-1">
               <span className="sr-only">Search wallet address or label</span>
               <Search
-                className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#5b6770]"
+                className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted"
                 aria-hidden="true"
               />
               <input
@@ -134,13 +136,13 @@ export default async function WalletsPage({ searchParams }: WalletsPageProps) {
                 name="q"
                 defaultValue={query}
                 placeholder="Search address or label"
-                className="h-10 w-full rounded-md border border-line bg-white pl-9 pr-3 text-sm font-medium text-ink outline-none transition focus:border-[#297c73] focus:ring-2 focus:ring-[#d9ece8]"
+                className="ui-control w-full pl-9 pr-3"
               />
             </label>
             <div className="flex shrink-0 gap-2">
               <button
                 type="submit"
-                className="inline-flex h-10 items-center gap-2 rounded-md border border-line bg-ink px-3 text-sm font-medium text-white"
+                className="ui-button-primary"
               >
                 <Search className="h-4 w-4" aria-hidden="true" />
                 Search
@@ -148,7 +150,7 @@ export default async function WalletsPage({ searchParams }: WalletsPageProps) {
               {isSearching ? (
                 <Link
                   href="/wallets"
-                  className="inline-flex h-10 items-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink"
+                  className="ui-button-secondary"
                 >
                   <X className="h-4 w-4" aria-hidden="true" />
                   Clear
@@ -157,30 +159,30 @@ export default async function WalletsPage({ searchParams }: WalletsPageProps) {
             </div>
           </form>
           {isSearching ? (
-            <p className="mt-2 text-sm text-[#5b6770]">
+            <p className="mt-2 text-sm text-muted">
               Showing {formatInteger(wallets.items.length)} of {formatInteger(wallets.total)} matches for
               <span className="font-mono"> {query}</span>.
             </p>
           ) : null}
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1220px] border-collapse text-left text-sm">
-            <thead className="border-b border-line bg-[#f8fafb] text-xs uppercase text-[#5b6770]">
+          <table className="ui-table min-w-[1220px] text-sm">
+            <thead className="ui-table-head">
               <tr>
-                <th className="px-4 py-3 font-semibold">Wallet</th>
-                <th className="px-4 py-3 font-semibold">Pool rank</th>
-                <th className="px-4 py-3 font-semibold">Final score</th>
-                <th className="px-4 py-3 font-semibold">PnL / risk</th>
-                <th className="px-4 py-3 font-semibold">Copyability</th>
-                <th className="px-4 py-3 font-semibold">State</th>
-                <th className="px-4 py-3 font-semibold">Activity</th>
-                <th className="px-4 py-3 font-semibold">Actions</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Wallet</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Pool rank</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Final score</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">PnL / risk</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Copyability</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">State</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Activity</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Actions</th>
               </tr>
             </thead>
             <tbody>
               {sortedWallets.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-4 py-10 text-center text-[#5b6770]">
+                  <td colSpan={8} className="px-4 py-10 text-center text-muted">
                     {isSearching ? "No wallets match this search." : "No wallets added yet."}
                   </td>
                 </tr>
@@ -208,52 +210,40 @@ function PoolMetric({
   tone?: "warning" | "neutral";
   value: string;
 }) {
-  const toneClass = tone === "warning" ? "border-[#e7c174] bg-[#fff9e8]" : "border-line bg-panel";
-  return (
-    <article className={`rounded-lg border p-4 shadow-sm ${toneClass}`}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-xs font-medium uppercase text-[#5b6770]">{label}</p>
-          <p className="mt-2 truncate text-2xl font-semibold">{value}</p>
-        </div>
-        <Icon className="h-5 w-5 shrink-0 text-[#5b6770]" aria-hidden="true" />
-      </div>
-      <p className="mt-3 truncate text-sm text-[#5b6770]">{detail}</p>
-    </article>
-  );
+  return <DashboardMetric detail={detail} icon={Icon} label={label} tone={tone} value={value} />;
 }
 
 function WalletRow({ wallet }: { wallet: Wallet }) {
   return (
-    <tr className="border-b border-line last:border-b-0 hover:bg-[#fbfcfd]">
-      <td className="px-4 py-3 align-top">
+    <tr className="ui-table-row">
+      <td className="px-3 py-2.5 align-top">
         <div className="flex min-w-0 flex-col gap-1">
           <Link
             href={`/wallets/${wallet.address}`}
-            className="min-w-0 max-w-full whitespace-normal break-words font-semibold hover:text-[#297c73]"
+            className="min-w-0 max-w-full whitespace-normal break-words font-semibold hover:text-brand"
           >
             {wallet.label || "Unlabeled"}
           </Link>
           <Link
             href={`/wallets/${wallet.address}`}
-            className="font-mono text-xs text-[#5b6770] hover:text-ink"
+            className="font-mono text-xs text-muted hover:text-ink"
           >
             {shortAddress(wallet.address)}
           </Link>
           {wallet.notes ? (
-            <p className="mt-1 min-w-0 max-w-full whitespace-normal break-words text-xs text-[#5b6770]">{wallet.notes}</p>
+            <p className="mt-1 min-w-0 max-w-full whitespace-normal break-words text-xs text-muted">{wallet.notes}</p>
           ) : null}
         </div>
       </td>
-      <td className="px-4 py-3 align-top">
+      <td className="px-3 py-2.5 align-top">
         <span className="font-mono text-sm font-semibold">
           {wallet.poolRank ? `#${formatInteger(wallet.poolRank)}` : "Unranked"}
         </span>
       </td>
-      <td className="px-4 py-3 align-top">
+      <td className="px-3 py-2.5 align-top">
         <ScoreCell wallet={wallet} />
       </td>
-      <td className="px-4 py-3 align-top">
+      <td className="px-3 py-2.5 align-top">
         <ScorePair
           primaryLabel="PnL"
           primaryValue={wallet.score?.pnlScore}
@@ -261,17 +251,17 @@ function WalletRow({ wallet }: { wallet: Wallet }) {
           secondaryValue={wallet.score?.riskScore}
         />
       </td>
-      <td className="px-4 py-3 align-top">
+      <td className="px-3 py-2.5 align-top">
         <div className="grid gap-1">
           <span className="font-semibold">
             {wallet.score ? formatScore(wallet.score.copyabilityScore) : "-"}
           </span>
-          <span className="text-xs text-[#5b6770]">
+          <span className="text-xs text-muted">
             {wallet.score ? `${formatInteger(wallet.score.tradeCount)} trades` : "No score"}
           </span>
         </div>
       </td>
-      <td className="px-4 py-3 align-top">
+      <td className="px-3 py-2.5 align-top">
         <div className="flex max-w-[220px] flex-wrap gap-1">
           <StatusPill
             label={wallet.enabled ? "enabled" : "disabled"}
@@ -282,13 +272,13 @@ function WalletRow({ wallet }: { wallet: Wallet }) {
           {wallet.cooldownUntil ? <StatusPill label="cooldown" tone="warning" /> : null}
         </div>
       </td>
-      <td className="px-4 py-3 align-top text-[#5b6770]">
+      <td className="px-3 py-2.5 align-top text-muted">
         <div className="grid gap-1">
           <span>Last fill {wallet.lastSeenFillAt ? formatDate(wallet.lastSeenFillAt) : "-"}</span>
           <span>Poll {wallet.lastPolledAt ? formatDate(wallet.lastPolledAt) : "Never"}</span>
         </div>
       </td>
-      <td className="px-4 py-3 align-top">
+      <td className="px-3 py-2.5 align-top">
         <WalletActions wallet={wallet} />
       </td>
     </tr>
@@ -297,7 +287,7 @@ function WalletRow({ wallet }: { wallet: Wallet }) {
 
 function ScoreCell({ wallet }: { wallet: Wallet }) {
   if (!wallet.score) {
-    return <span className="text-[#5b6770]">Unscored</span>;
+    return <span className="text-muted">Unscored</span>;
   }
 
   const score = numberValue(wallet.score.score);
@@ -306,9 +296,9 @@ function ScoreCell({ wallet }: { wallet: Wallet }) {
     <div className="min-w-[130px]">
       <div className="flex items-center justify-between gap-3">
         <span className={`text-xl font-semibold ${scoreClass(score)}`}>{formatScore(score)}</span>
-        <span className="text-xs text-[#5b6770]">{formatCurrency(wallet.score.copyablePnlUsd)}</span>
+        <span className="text-xs text-muted">{formatCurrency(wallet.score.copyablePnlUsd)}</span>
       </div>
-      <div className="mt-2 h-2 overflow-hidden rounded-full bg-[#e3e9ee]">
+      <div className="mt-2 h-2 overflow-hidden rounded-full bg-line">
         <div
           className={score >= 70 ? "h-full bg-positive" : score >= 45 ? "h-full bg-warning" : "h-full bg-danger"}
           style={{ width: `${Math.max(0, Math.min(100, score))}%` }}
@@ -334,7 +324,7 @@ function ScorePair({
       <span className="font-semibold">
         {primaryLabel} {primaryValue ? formatScore(primaryValue) : "-"}
       </span>
-      <span className="text-xs text-[#5b6770]">
+      <span className="text-xs text-muted">
         {secondaryLabel} {secondaryValue ? formatScore(secondaryValue) : "-"}
       </span>
     </div>

@@ -17,6 +17,15 @@ This repository currently contains the foundation:
 - Docker Compose for backend, trading worker, maintenance worker, frontend, local Postgres, Redis, and Caddy
 - Paper-first config defaults with one explicit `LIVE_TRADING_ENABLED` switch
 
+The dashboard uses a compact operations interface with grouped navigation for
+execution, intelligence, and system views. Shared semantic UI tokens and
+reusable panel, metric, control, button, status, and table primitives keep every
+page visually consistent. Status colors are reserved for actual state, risk,
+and outcome information. Account selection and account lifecycle actions are
+kept in a dedicated control bar instead of being mixed into global page status.
+All large data tables remain horizontally scrollable on narrow screens, and the
+application includes loading, not-found, and recoverable error states.
+
 ## Phase 2
 
 The database layer uses Alembic migrations and SQLAlchemy models.

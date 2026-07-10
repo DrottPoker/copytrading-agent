@@ -17,6 +17,7 @@ import Link from "next/link";
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 
+import { DashboardMetric } from "@/components/DashboardSurface";
 import { getPublicApiBaseUrl } from "@/lib/config";
 import {
   formatCurrency,
@@ -528,7 +529,7 @@ export function TradingDashboard({
       />
 
       {actionError ? (
-        <div className="rounded-md border border-[#f2aaa5] bg-[#fff2f0] px-3 py-2 text-sm font-medium text-danger">
+        <div className="rounded-md border border-danger/25 bg-danger-soft px-3 py-2 text-sm font-medium text-danger">
           {actionError}
         </div>
       ) : null}
@@ -694,7 +695,7 @@ function TradingModeToggle({
   value: TradingMode;
 }) {
   return (
-    <div className="inline-flex h-9 overflow-hidden rounded-md border border-line bg-[#f7f9fb] p-0.5">
+    <div className="inline-flex h-9 overflow-hidden rounded-md border border-line bg-subtle p-0.5">
       {(["paper", "live"] as TradingMode[]).map((mode) => {
         const isActive = value === mode;
         return (
@@ -706,7 +707,7 @@ function TradingModeToggle({
             className={`inline-flex min-w-24 items-center justify-center rounded-[5px] px-3 text-xs font-semibold transition ${
               isActive
                 ? "bg-white text-ink shadow-sm"
-                : "text-[#5b6770] hover:bg-white/70 hover:text-ink"
+                : "text-muted hover:bg-white/70 hover:text-ink"
             }`}
           >
             {mode === "paper" ? "Paper" : "Live"}
@@ -730,22 +731,8 @@ function HeroMetric({
   tone?: Tone;
   value: string;
 }) {
-  const toneClass =
-    tone === "positive"
-      ? "border-[#9ccfc0] bg-[#f2fbf7]"
-      : tone === "danger"
-        ? "border-[#efb1aa] bg-[#fff5f3]"
-        : "border-line bg-panel";
-
   return (
-    <article className={`rounded-md border px-3 py-2 shadow-sm ${toneClass}`}>
-      <div className="flex items-center justify-between gap-2">
-        <p className="truncate text-[11px] font-medium uppercase text-[#5b6770]">{label}</p>
-        <Icon className="h-4 w-4 shrink-0 text-[#5b6770]" aria-hidden="true" />
-      </div>
-      <p className="mt-1 truncate text-lg font-semibold text-ink">{value}</p>
-      <p className="mt-1 truncate text-xs text-[#5b6770]">{detail}</p>
-    </article>
+    <DashboardMetric detail={detail} icon={Icon} label={label} tone={tone} value={value} />
   );
 }
 
@@ -759,10 +746,10 @@ function ListPanel({
   title: string;
 }) {
   return (
-    <section className="overflow-hidden rounded-lg border border-line bg-panel shadow-sm">
+    <section className="ui-panel overflow-hidden">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-3 py-2">
         <h2 className="text-sm font-semibold text-ink">{title}</h2>
-        {meta ? <p className="text-xs text-[#5b6770]">{meta}</p> : null}
+        {meta ? <p className="text-xs text-muted">{meta}</p> : null}
       </div>
       <div>{children}</div>
     </section>
@@ -841,18 +828,18 @@ function PaginationControls({
         type="button"
         onClick={onPrevious}
         disabled={page === 0}
-        className="inline-flex h-8 items-center rounded-md border border-line bg-white px-3 text-xs font-semibold text-ink hover:bg-[#f7f9fb] disabled:cursor-not-allowed disabled:opacity-50"
+        className="ui-button-secondary h-8 px-3 text-xs disabled:cursor-not-allowed disabled:opacity-50"
       >
         Previous
       </button>
-      <p className="text-xs text-[#5b6770]">
+      <p className="text-xs text-muted">
         Page {formatInteger(page + 1)} of {formatInteger(pageCount)}
       </p>
       <button
         type="button"
         onClick={onNext}
         disabled={page >= pageCount - 1}
-        className="inline-flex h-8 items-center rounded-md border border-line bg-white px-3 text-xs font-semibold text-ink hover:bg-[#f7f9fb] disabled:cursor-not-allowed disabled:opacity-50"
+        className="ui-button-secondary h-8 px-3 text-xs disabled:cursor-not-allowed disabled:opacity-50"
       >
         Next
       </button>
@@ -879,7 +866,7 @@ function AccountRow({
             <StatusPill label={account.accountType} tone={account.accountType === "live" ? "positive" : "neutral"} />
             <StatusPill label={account.statusLabel} tone={account.statusTone} />
           </div>
-          <p className="mt-1 truncate font-mono text-xs text-[#5b6770]">{account.key}</p>
+          <p className="mt-1 truncate font-mono text-xs text-muted">{account.key}</p>
         </div>
         <RowStat label="Equity" value={formatCurrency(account.equityUsd)} />
         <RowStat label="Total" value={formatCurrency(account.totalPnlUsd)} tone={account.totalPnlUsd >= 0 ? "positive" : "danger"} />
@@ -896,7 +883,7 @@ function AccountRow({
             onClick={() => onReset(paperAccount)}
             disabled={isResetting}
             title={`Reset ${account.label} balance`}
-            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-line bg-white text-[#344054] hover:bg-[#f7f9fb] disabled:cursor-not-allowed disabled:opacity-60"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-line bg-white text-secondary hover:bg-subtle disabled:cursor-not-allowed disabled:opacity-60"
           >
             {isResetting ? (
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
@@ -945,7 +932,7 @@ function PolicyRow({
           <RowStat label="Capital mode" value={formatCapitalMode(capitalMode)} />
           <RowStat label="Network" value={network} />
         </div>
-        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[#5b6770]">
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted">
           <Clock className="h-3.5 w-3.5" aria-hidden="true" />
           <span>Last refresh {lastRefreshAt ? formatDate(lastRefreshAt.toISOString()) : "-"}</span>
           <span className="font-mono">{formatInteger(TRADING_REFRESH_MS)} ms polling</span>
@@ -975,7 +962,7 @@ function PolicyRow({
           detail={`${formatInteger(summary.policy.marketPriceCacheStaleSeconds)}s stale`}
         />
       </div>
-      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[#5b6770]">
+      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted">
         <Clock className="h-3.5 w-3.5" aria-hidden="true" />
         <span>Last refresh {lastRefreshAt ? formatDate(lastRefreshAt.toISOString()) : "-"}</span>
         <span className="font-mono">{formatInteger(TRADING_REFRESH_MS)} ms polling</span>
@@ -1032,18 +1019,18 @@ function SourceRow({
             <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5">
               <Link
                 href={`/wallets/${source.sourceWallet}`}
-                className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold leading-5 text-ink hover:text-[#297c73]"
+                className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold leading-5 text-ink hover:text-brand"
               >
                 {sourceDisplayName(source.sourceLabel, source.sourceWallet)}
               </Link>
               <CompactSourcePill label={source.monitorStatus} tone={monitorTone} />
               <CompactSourcePill label={formatSourceStatus(source.sourceStatus)} tone={sourceTone} />
             </div>
-            <p className="mt-0.5 whitespace-normal break-words font-mono text-[11px] leading-4 text-[#5b6770]">
+            <p className="mt-0.5 whitespace-normal break-words font-mono text-[11px] leading-4 text-muted">
               {shortAddress(source.sourceWallet)} | {sourceMeta}
             </p>
             {sourceDetail !== "active slot" && sourceDetail !== "active live source" ? (
-              <p className="mt-0.5 whitespace-normal break-words text-[11px] leading-4 text-[#5b6770]">
+              <p className="mt-0.5 whitespace-normal break-words text-[11px] leading-4 text-muted">
                 {sourceDetail}
               </p>
             ) : null}
@@ -1054,7 +1041,7 @@ function SourceRow({
               onClick={() => onCloseSource(source)}
               disabled={isClosing}
               title="Close open paper positions for this source"
-              className="inline-flex min-h-7 shrink-0 items-center justify-center gap-1.5 rounded-md border border-[#f2aaa5] bg-[#fff2f0] px-2 py-1 text-xs font-semibold text-danger shadow-sm hover:bg-[#ffe6e2] disabled:cursor-not-allowed disabled:border-line disabled:bg-[#f7f9fb] disabled:text-[#98a2b3]"
+              className="ui-button-danger h-auto min-h-7 shrink-0 gap-1.5 px-2 py-1 text-xs disabled:cursor-not-allowed disabled:border-line disabled:bg-subtle disabled:text-faint"
             >
               {isClosing ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
@@ -1122,10 +1109,10 @@ function SourceRow({
 }
 
 const compactSourcePillClasses: Record<Tone, string> = {
-  positive: "border-[#a7d8c4] bg-[#eefaf5] text-positive",
-  warning: "border-[#f0c36d] bg-[#fff8e8] text-warning",
-  danger: "border-[#f2aaa5] bg-[#fff2f0] text-danger",
-  neutral: "border-line bg-[#f7f9fb] text-[#344054]",
+  positive: "border-positive/25 bg-positive-soft text-positive",
+  warning: "border-warning/25 bg-warning-soft text-warning",
+  danger: "border-danger/25 bg-danger-soft text-danger",
+  neutral: "border-line bg-subtle text-secondary",
 };
 
 function CompactSourcePill({ label, tone = "neutral" }: { label: string; tone?: Tone }) {
@@ -1156,7 +1143,7 @@ function CompactSourceStat({
   return (
     <div className="min-w-0">
       <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5">
-        <p className="text-[10px] font-medium uppercase leading-4 text-[#5b6770]">
+        <p className="text-[10px] font-medium uppercase leading-4 text-muted">
           {label}
         </p>
         <p className={`whitespace-normal break-words font-mono text-xs font-semibold leading-4 ${valueClass}`}>
@@ -1164,7 +1151,7 @@ function CompactSourceStat({
         </p>
       </div>
       {detail ? (
-        <p className="whitespace-normal break-words text-[11px] leading-4 text-[#5b6770]">
+        <p className="whitespace-normal break-words text-[11px] leading-4 text-muted">
           {detail}
         </p>
       ) : null}
@@ -1192,20 +1179,20 @@ function SourcePocketStat({
   return (
     <div className="min-w-0">
       <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5">
-        <p className="text-[10px] font-medium uppercase leading-4 text-[#5b6770]">
+        <p className="text-[10px] font-medium uppercase leading-4 text-muted">
           {label}
         </p>
         <p className="whitespace-normal break-words font-mono text-xs font-semibold leading-4 text-ink">
           {value}
         </p>
       </div>
-      <div className="h-1.5 overflow-hidden rounded-full bg-[#e8edf2]">
+      <div className="h-1.5 overflow-hidden rounded-full bg-line">
         <div
           className={`h-full ${barClass}`}
           style={{ width: `${Math.min(usedPct * 100, 100)}%` }}
         />
       </div>
-      <p className="whitespace-normal break-words text-[11px] leading-4 text-[#5b6770]">
+      <p className="whitespace-normal break-words text-[11px] leading-4 text-muted">
         {used} used, {remaining} free
       </p>
     </div>
@@ -1242,7 +1229,7 @@ function PositionRow({
             <p className="font-semibold text-ink">{position.coin}</p>
             <StatusPill label={position.accountType} tone={position.accountType === "live" ? "positive" : "neutral"} />
             <StatusPill label={position.side} tone={position.side === "long" ? "positive" : "warning"} />
-            <span className="font-mono text-xs text-[#5b6770]">{formatLeverage(position.leverage)}</span>
+            <span className="font-mono text-xs text-muted">{formatLeverage(position.leverage)}</span>
           </div>
           {isLiveExchangeSource(position.sourceWallet) ? (
             <p className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink">
@@ -1251,12 +1238,12 @@ function PositionRow({
           ) : (
             <Link
               href={`/wallets/${position.sourceWallet}`}
-              className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink hover:text-[#297c73]"
+              className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink hover:text-brand"
             >
               {sourceName}
             </Link>
           )}
-          <p className="mt-1 truncate font-mono text-xs text-[#5b6770]">
+          <p className="mt-1 truncate font-mono text-xs text-muted">
             {isLiveExchangeSource(position.sourceWallet) ? "exchange" : shortAddress(position.sourceWallet)} | {position.accountKey}
           </p>
         </div>
@@ -1298,13 +1285,13 @@ function PositionRow({
             onClick={() => onClose(position)}
             disabled={!canClose || isClosing}
             title={closeTitle}
-            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-[#f2aaa5] bg-[#fff2f0] px-2.5 text-xs font-semibold text-danger shadow-sm hover:bg-[#ffe6e2] disabled:cursor-not-allowed disabled:border-line disabled:bg-[#f7f9fb] disabled:text-[#98a2b3]"
+            className="ui-button-danger h-8 gap-1.5 px-2.5 text-xs disabled:cursor-not-allowed disabled:border-line disabled:bg-subtle disabled:text-faint"
           >
             {isClosing ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <XCircle className="h-3.5 w-3.5" aria-hidden="true" />}
             Close
           </button>
         ) : (
-          <span className="text-xs text-[#5b6770]">Live</span>
+          <span className="text-xs text-muted">Live</span>
         )}
       </div>
     </ListRow>
@@ -1321,7 +1308,7 @@ function WalletHistoryRow({ wallet }: { wallet: WalletPerformanceRow }) {
           <div className="flex flex-wrap items-center gap-1">
             <Link
               href={`/wallets/${wallet.sourceWallet}`}
-              className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold text-ink hover:text-[#297c73]"
+              className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold text-ink hover:text-brand"
             >
               {sourceDisplayName(wallet.sourceLabel, wallet.sourceWallet)}
             </Link>
@@ -1330,10 +1317,10 @@ function WalletHistoryRow({ wallet }: { wallet: WalletPerformanceRow }) {
               tone={isMonitored ? "positive" : "neutral"}
             />
           </div>
-          <p className="mt-1 truncate font-mono text-xs text-[#5b6770]">
+          <p className="mt-1 truncate font-mono text-xs text-muted">
             {shortAddress(wallet.sourceWallet)}
           </p>
-          <p className="mt-1 text-xs text-[#5b6770]">
+          <p className="mt-1 text-xs text-muted">
             {formatPoolRank(wallet.poolRank)}, {formatScore(wallet.score)} score
           </p>
         </div>
@@ -1363,15 +1350,15 @@ function ClosedTradeRow({ trade }: { trade: PaperClosedTrade }) {
             <p className="font-semibold text-ink">{trade.coin}</p>
             {trade.side ? <StatusPill label={trade.side} tone={trade.side === "long" ? "positive" : "warning"} /> : null}
             {trade.isSourceLiquidation ? <StatusPill label="liquidation" tone="danger" /> : null}
-            <span className="text-xs text-[#5b6770]">{formatCloseType(trade.closeType)}</span>
+            <span className="text-xs text-muted">{formatCloseType(trade.closeType)}</span>
           </div>
           <Link
             href={`/wallets/${trade.sourceWallet}`}
-            className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink hover:text-[#297c73]"
+            className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink hover:text-brand"
           >
             {sourceDisplayName(trade.sourceLabel, trade.sourceWallet)}
           </Link>
-          <p className="mt-1 truncate font-mono text-xs text-[#5b6770]">
+          <p className="mt-1 truncate font-mono text-xs text-muted">
             {shortAddress(trade.sourceWallet)} | {trade.accountKey}
           </p>
         </div>
@@ -1405,12 +1392,12 @@ function LiveClosedTradeRow({ trade }: { trade: TradingClosedTrade }) {
           ) : (
             <Link
               href={`/wallets/${trade.sourceWallet}`}
-              className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink hover:text-[#297c73]"
+              className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink hover:text-brand"
             >
               {sourceName}
             </Link>
           )}
-          <p className="mt-1 truncate font-mono text-xs text-[#5b6770]">
+          <p className="mt-1 truncate font-mono text-xs text-muted">
             {isLiveExchangeSource(trade.sourceWallet) ? "exchange" : shortAddress(trade.sourceWallet)} | {trade.accountKey}
           </p>
         </div>
@@ -1457,7 +1444,7 @@ function RowIdentityBlock({
         {identity.href ? (
           <Link
             href={identity.href}
-            className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold text-ink hover:text-[#297c73]"
+            className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold text-ink hover:text-brand"
           >
             {identity.label}
           </Link>
@@ -1470,7 +1457,7 @@ function RowIdentityBlock({
           <StatusPill key={`${pill.label}:${pill.tone}`} label={pill.label} tone={pill.tone} />
         ))}
       </div>
-      <p className="mt-1 truncate font-mono text-xs text-[#5b6770]">{identity.meta}</p>
+      <p className="mt-1 truncate font-mono text-xs text-muted">{identity.meta}</p>
     </div>
   );
 }
@@ -1522,16 +1509,16 @@ function RowStat({
     tone === "positive" ? "text-positive" : tone === "danger" ? "text-danger" : "text-ink";
   return (
     <div className="min-w-0">
-      <p className="truncate text-[11px] font-medium uppercase text-[#5b6770]">{label}</p>
+      <p className="truncate text-[11px] font-medium uppercase text-muted">{label}</p>
       <p className={`mt-0.5 whitespace-normal break-words font-mono text-xs font-semibold ${valueClass}`}>{value}</p>
-      {detail ? <p className="mt-0.5 whitespace-normal break-words text-[11px] text-[#5b6770]">{detail}</p> : null}
+      {detail ? <p className="mt-0.5 whitespace-normal break-words text-[11px] text-muted">{detail}</p> : null}
     </div>
   );
 }
 
 function EmptyState({ text }: { text: string }) {
   return (
-    <div className="px-3 py-6 text-center text-sm text-[#5b6770]">
+    <div className="px-3 py-6 text-center text-sm text-muted">
       {text}
     </div>
   );

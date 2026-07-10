@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 
+import { DashboardMetric, DashboardPanel } from "@/components/DashboardSurface";
 import { DatabaseFillCompactPanel } from "@/components/DatabaseFillCompactPanel";
 import { DatabaseIgnoredFillCleanupPanel } from "@/components/DatabaseIgnoredFillCleanupPanel";
 import { DatabaseFillRetentionPanel } from "@/components/DatabaseFillRetentionPanel";
@@ -40,7 +41,7 @@ export default async function DatabasePage() {
     return (
       <>
         <PageTitle />
-        <section className="rounded-lg border border-[#efb1aa] bg-[#fff5f3] p-6 text-danger">
+        <section className="rounded-lg border border-danger/25 bg-danger-soft p-6 text-danger">
           Could not reach database stats API.
         </section>
       </>
@@ -126,7 +127,7 @@ export default async function DatabasePage() {
             <HealthRow label="Redis" value={health?.dependencies.redis.status ?? "unknown"} />
             <HealthRow label="Network" value={health?.hyperliquidNetwork ?? "unknown"} />
           </div>
-          <div className="mt-4 grid gap-2 text-sm text-[#5b6770]">
+          <div className="mt-4 grid gap-2 text-sm text-muted">
             <p>Measured {formatDate(stats.measuredAt)}</p>
             <p>Database {stats.databaseName}</p>
           </div>
@@ -186,18 +187,18 @@ export default async function DatabasePage() {
 
       <Panel icon={Database} title="Table Storage">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1040px] border-collapse text-left text-sm">
-            <thead className="border-b border-line bg-[#f8fafb] text-xs uppercase text-[#5b6770]">
+          <table className="ui-table min-w-[1040px] text-sm">
+            <thead className="ui-table-head">
               <tr>
-                <th className="px-4 py-3 font-semibold">Table</th>
-                <th className="px-4 py-3 font-semibold">Rows est.</th>
-                <th className="px-4 py-3 font-semibold">Dead rows</th>
-                <th className="px-4 py-3 font-semibold">Total size</th>
-                <th className="px-4 py-3 font-semibold">Table</th>
-                <th className="px-4 py-3 font-semibold">Indexes</th>
-                <th className="px-4 py-3 font-semibold">Scans</th>
-                <th className="px-4 py-3 font-semibold">Analyze</th>
-                <th className="px-4 py-3 font-semibold">Vacuum</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Table</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Rows est.</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Dead rows</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Total size</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Table</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Indexes</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Scans</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Analyze</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Vacuum</th>
               </tr>
             </thead>
             <tbody>
@@ -211,16 +212,16 @@ export default async function DatabasePage() {
 
       <Panel icon={HardDrive} title="Index Storage">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[980px] border-collapse text-left text-sm">
-            <thead className="border-b border-line bg-[#f8fafb] text-xs uppercase text-[#5b6770]">
+          <table className="ui-table min-w-[980px] text-sm">
+            <thead className="ui-table-head">
               <tr>
-                <th className="px-4 py-3 font-semibold">Index</th>
-                <th className="px-4 py-3 font-semibold">Table</th>
-                <th className="px-4 py-3 font-semibold">Size</th>
-                <th className="px-4 py-3 font-semibold">Scans</th>
-                <th className="px-4 py-3 font-semibold">Tuples read</th>
-                <th className="px-4 py-3 font-semibold">Tuples fetched</th>
-                <th className="px-4 py-3 font-semibold">Flags</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Index</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Table</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Size</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Scans</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Tuples read</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Tuples fetched</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Flags</th>
               </tr>
             </thead>
             <tbody>
@@ -271,6 +272,7 @@ function PageTitle({ updatedAt }: { updatedAt?: string }) {
   return (
     <PageTopPanel
       eyebrow="Database monitor"
+      icon={Database}
       title="Database"
       actions={
         updatedAt ? (
@@ -295,24 +297,8 @@ function MetricTile({
   tone?: "positive" | "warning" | "neutral";
   value: string;
 }) {
-  const toneClass =
-    tone === "positive"
-      ? "border-[#9ccfc0] bg-[#f2fbf7]"
-      : tone === "warning"
-        ? "border-[#e7c174] bg-[#fff9e8]"
-        : "border-line bg-panel";
-
   return (
-    <article className={`rounded-lg border p-4 shadow-sm ${toneClass}`}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-xs font-medium uppercase text-[#5b6770]">{label}</p>
-          <p className="mt-2 truncate text-2xl font-semibold">{value}</p>
-        </div>
-        <Icon className="h-5 w-5 shrink-0 text-[#5b6770]" aria-hidden="true" />
-      </div>
-      <p className="mt-3 truncate text-sm text-[#5b6770]">{detail}</p>
-    </article>
+    <DashboardMetric detail={detail} icon={Icon} label={label} tone={tone} value={value} />
   );
 }
 
@@ -325,21 +311,13 @@ function Panel({
   icon: LucideIcon;
   title: string;
 }) {
-  return (
-    <section className="overflow-hidden rounded-lg border border-line bg-panel shadow-sm">
-      <div className="flex items-center gap-2 border-b border-line px-4 py-3">
-        <Icon className="h-4 w-4 text-[#5b6770]" aria-hidden="true" />
-        <h2 className="text-base font-semibold">{title}</h2>
-      </div>
-      <div className="p-4">{children}</div>
-    </section>
-  );
+  return <DashboardPanel icon={Icon} title={title}>{children}</DashboardPanel>;
 }
 
 function DataPoint({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-line bg-[#f8fafb] p-3">
-      <p className="text-xs font-medium uppercase text-[#5b6770]">{label}</p>
+    <div className="rounded-md border border-line bg-subtle p-3">
+      <p className="text-xs font-medium uppercase text-muted">{label}</p>
       <p className="mt-2 break-words text-lg font-semibold leading-snug">{value}</p>
     </div>
   );
@@ -348,7 +326,7 @@ function DataPoint({ label, value }: { label: string; value: string }) {
 function HealthRow({ label, value }: { label: string; value: string }) {
   const tone = value === "ok" || value === "mainnet" ? "positive" : "warning";
   return (
-    <div className="flex items-center justify-between gap-3 rounded-md border border-line bg-[#f8fafb] px-3 py-2">
+    <div className="flex items-center justify-between gap-3 rounded-md border border-line bg-subtle px-3 py-2">
       <span className="text-sm font-medium">{label}</span>
       <StatusPill label={value} tone={tone} />
     </div>
@@ -360,7 +338,7 @@ function KeyValueGrid({ items }: { items: [string, string][] }) {
     <div className="grid gap-3 sm:grid-cols-2">
       {items.map(([label, value]) => (
         <div key={label}>
-          <p className="text-xs font-medium uppercase text-[#5b6770]">{label}</p>
+          <p className="text-xs font-medium uppercase text-muted">{label}</p>
           <p className="mt-1 truncate text-sm font-semibold">{value}</p>
         </div>
       ))}
@@ -374,10 +352,10 @@ function DictionaryBars({ title, values }: { title: string; values: Record<strin
 
   return (
     <div className="mt-4 border-t border-line pt-4">
-      <p className="text-xs font-medium uppercase text-[#5b6770]">{title}</p>
+      <p className="text-xs font-medium uppercase text-muted">{title}</p>
       <div className="mt-3 grid gap-3">
         {entries.length === 0 ? (
-          <p className="text-sm text-[#5b6770]">No rows.</p>
+          <p className="text-sm text-muted">No rows.</p>
         ) : (
           entries.map(([key, value]) => (
             <ProgressLine
@@ -407,10 +385,10 @@ function ProgressLine({
     <div>
       <div className="flex items-center justify-between gap-3 text-sm">
         <span className="truncate font-medium">{label}</span>
-        <span className="shrink-0 font-mono text-[#5b6770]">{rightLabel}</span>
+        <span className="shrink-0 font-mono text-muted">{rightLabel}</span>
       </div>
-      <div className="mt-2 h-2 overflow-hidden rounded-full bg-[#e3e9ee]">
-        <div className="h-full rounded-full bg-[#297c73]" style={{ width: `${width}%` }} />
+      <div className="mt-2 h-2 overflow-hidden rounded-full bg-line">
+        <div className="h-full rounded-full bg-brand" style={{ width: `${width}%` }} />
       </div>
     </div>
   );
@@ -419,19 +397,19 @@ function ProgressLine({
 function TableRow({ table }: { table: DatabaseTableStats }) {
   return (
     <tr className="border-b border-line last:border-b-0">
-      <td className="px-4 py-3 font-semibold">{table.name}</td>
-      <td className="px-4 py-3 font-mono">{formatInteger(table.estimatedRows)}</td>
-      <td className="px-4 py-3 font-mono">{formatInteger(table.deadRows)}</td>
-      <td className="px-4 py-3 font-mono">{formatBytes(table.totalSizeBytes)}</td>
-      <td className="px-4 py-3 font-mono">{formatBytes(table.tableSizeBytes)}</td>
-      <td className="px-4 py-3 font-mono">{formatBytes(table.indexSizeBytes)}</td>
-      <td className="px-4 py-3 text-[#5b6770]">
+      <td className="px-3 py-2.5 font-semibold">{table.name}</td>
+      <td className="px-3 py-2.5 font-mono">{formatInteger(table.estimatedRows)}</td>
+      <td className="px-3 py-2.5 font-mono">{formatInteger(table.deadRows)}</td>
+      <td className="px-3 py-2.5 font-mono">{formatBytes(table.totalSizeBytes)}</td>
+      <td className="px-3 py-2.5 font-mono">{formatBytes(table.tableSizeBytes)}</td>
+      <td className="px-3 py-2.5 font-mono">{formatBytes(table.indexSizeBytes)}</td>
+      <td className="px-3 py-2.5 text-muted">
         {formatInteger(table.seqScanCount)} seq / {formatInteger(table.indexScanCount)} idx
       </td>
-      <td className="px-4 py-3 text-[#5b6770]">
+      <td className="px-3 py-2.5 text-muted">
         {formatDate(table.lastAutoanalyzeAt ?? table.lastAnalyzeAt)}
       </td>
-      <td className="px-4 py-3 text-[#5b6770]">
+      <td className="px-3 py-2.5 text-muted">
         {formatDate(table.lastAutovacuumAt ?? table.lastVacuumAt)}
       </td>
     </tr>
@@ -447,13 +425,13 @@ function IndexRow({ index }: { index: DatabaseIndexStats }) {
 
   return (
     <tr className="border-b border-line last:border-b-0">
-      <td className="px-4 py-3 font-semibold">{index.indexName}</td>
-      <td className="px-4 py-3 font-mono">{index.tableName}</td>
-      <td className="px-4 py-3 font-mono">{formatBytes(index.indexSizeBytes)}</td>
-      <td className="px-4 py-3 font-mono">{formatInteger(index.indexScanCount)}</td>
-      <td className="px-4 py-3 font-mono">{formatInteger(index.tuplesRead)}</td>
-      <td className="px-4 py-3 font-mono">{formatInteger(index.tuplesFetched)}</td>
-      <td className="px-4 py-3 text-[#5b6770]">{flags.join(", ") || "-"}</td>
+      <td className="px-3 py-2.5 font-semibold">{index.indexName}</td>
+      <td className="px-3 py-2.5 font-mono">{index.tableName}</td>
+      <td className="px-3 py-2.5 font-mono">{formatBytes(index.indexSizeBytes)}</td>
+      <td className="px-3 py-2.5 font-mono">{formatInteger(index.indexScanCount)}</td>
+      <td className="px-3 py-2.5 font-mono">{formatInteger(index.tuplesRead)}</td>
+      <td className="px-3 py-2.5 font-mono">{formatInteger(index.tuplesFetched)}</td>
+      <td className="px-3 py-2.5 text-muted">{flags.join(", ") || "-"}</td>
     </tr>
   );
 }

@@ -59,13 +59,13 @@ export function DatabaseIgnoredFillCleanupPanel() {
   }
 
   return (
-    <section className="overflow-hidden rounded-lg border border-line bg-panel shadow-sm">
+    <section className="ui-panel overflow-hidden">
       <div className="flex flex-col gap-3 border-b border-line px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex min-w-0 items-start gap-2">
-          <ScanSearch className="mt-0.5 h-4 w-4 shrink-0 text-[#5b6770]" aria-hidden="true" />
+          <ScanSearch className="mt-0.5 h-4 w-4 shrink-0 text-muted" aria-hidden="true" />
           <div>
             <h2 className="text-base font-semibold">Ignored Fill Cleanup</h2>
-            <p className="mt-1 text-sm leading-6 text-[#5b6770]">
+            <p className="mt-1 text-sm leading-6 text-muted">
               Deletes raw close-only and pre-existing-position fills that are not needed for
               reconstructed source trades.
             </p>
@@ -76,7 +76,7 @@ export function DatabaseIgnoredFillCleanupPanel() {
             type="button"
             disabled={busyMode !== null}
             onClick={() => void runCleanup(true)}
-            className="inline-flex h-9 items-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink disabled:cursor-not-allowed disabled:opacity-50"
+            className="ui-button-secondary disabled:cursor-not-allowed disabled:opacity-50"
           >
             <ScanSearch className="h-4 w-4" aria-hidden="true" />
             {busyMode === "dry-run" ? "Checking" : "Dry run"}
@@ -85,7 +85,7 @@ export function DatabaseIgnoredFillCleanupPanel() {
             type="button"
             disabled={busyMode !== null}
             onClick={() => void runCleanup(false)}
-            className="inline-flex h-9 items-center gap-2 rounded-md border border-[#efb1aa] bg-[#fff5f3] px-3 text-sm font-medium text-danger disabled:cursor-not-allowed disabled:opacity-50"
+            className="ui-button-danger disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Trash2 className="h-4 w-4" aria-hidden="true" />
             {busyMode === "run" ? "Cleaning" : "Run cleanup"}
@@ -95,7 +95,7 @@ export function DatabaseIgnoredFillCleanupPanel() {
 
       <div className="p-4">
         {error ? (
-          <div className="mb-4 rounded-md border border-[#efb1aa] bg-[#fff5f3] px-3 py-2 text-sm font-medium text-danger">
+          <div className="mb-4 rounded-md border border-danger/25 bg-danger-soft px-3 py-2 text-sm font-medium text-danger">
             {error}
           </div>
         ) : null}
@@ -133,10 +133,10 @@ export function DatabaseIgnoredFillCleanupPanel() {
               <CleanupMetric label="Affected wallets" value={formatInteger(result.affectedWallets)} />
               <CleanupMetric label="Max rows" value={formatInteger(result.maxRows)} />
             </div>
-            <p className="text-sm leading-6 text-[#5b6770]">{result.note}</p>
+            <p className="text-sm leading-6 text-muted">{result.note}</p>
           </div>
         ) : (
-          <p className="text-sm leading-6 text-[#5b6770]">
+          <p className="text-sm leading-6 text-muted">
             Ignored fills are diagnostic only. This cleanup keeps fills that may have closed a
             reconstructed source trade and removes only raw ignored fills that are not needed for
             trade rebuilds.
@@ -149,8 +149,8 @@ export function DatabaseIgnoredFillCleanupPanel() {
 
 function CleanupMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-line bg-[#f8fafb] p-3">
-      <p className="text-xs font-medium uppercase text-[#5b6770]">{label}</p>
+    <div className="rounded-md border border-line bg-subtle p-3">
+      <p className="text-xs font-medium uppercase text-muted">{label}</p>
       <p className="mt-2 break-words text-lg font-semibold leading-snug">{value}</p>
     </div>
   );

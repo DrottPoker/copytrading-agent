@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 
+import { DashboardMetric, DashboardPanel, type DashboardTone } from "@/components/DashboardSurface";
 import { HeaderRefreshButton, HeaderUpdatedLabel } from "@/components/HeaderRefresh";
 import { PageTopPanel } from "@/components/PageTopPanel";
 import { StatusPill } from "@/components/StatusPill";
@@ -46,7 +47,7 @@ export default async function OpsPage() {
     return (
       <>
         <PageTitle />
-        <section className="rounded-lg border border-[#efb1aa] bg-[#fff5f3] p-6 text-danger">
+        <section className="rounded-lg border border-danger/25 bg-danger-soft p-6 text-danger">
           Could not reach ops health API.
         </section>
       </>
@@ -141,7 +142,7 @@ export default async function OpsPage() {
         <Panel icon={AlertTriangle} title="Notes">
           <div className="grid gap-2">
             {ops.notes.map((note) => (
-              <p key={note} className="rounded-md border border-[#f0c36d] bg-[#fff8e8] p-3 text-sm">
+              <p key={note} className="rounded-md border border-warning/25 bg-warning-soft p-3 text-sm">
                 {note}
               </p>
             ))}
@@ -156,6 +157,7 @@ function PageTitle({ ops }: { ops?: OpsHealthResponse }) {
   return (
     <PageTopPanel
       eyebrow="VPS health and monitoring"
+      icon={ServerCog}
       title="Ops Health"
       actions={
         ops ? (
@@ -188,26 +190,17 @@ function SummaryTile({
   status: OpsCheckStatus | "ok" | "warning" | "degraded";
   value: string;
 }) {
-  const toneClass =
+  const tone: DashboardTone =
     status === "ok"
-      ? "border-[#9ccfc0] bg-[#f2fbf7]"
+      ? "positive"
       : status === "disabled"
-        ? "border-line bg-panel"
+        ? "neutral"
       : status === "degraded" || status === "error"
-        ? "border-[#efb1aa] bg-[#fff5f3]"
-        : "border-[#e7c174] bg-[#fff9e8]";
+        ? "danger"
+        : "warning";
 
   return (
-    <article className={`rounded-lg border p-4 shadow-sm ${toneClass}`}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-xs font-medium uppercase text-[#5b6770]">{label}</p>
-          <p className="mt-2 truncate text-2xl font-semibold">{value}</p>
-        </div>
-        <Icon className="h-5 w-5 shrink-0 text-[#5b6770]" aria-hidden="true" />
-      </div>
-      <p className="mt-3 truncate text-sm text-[#5b6770]">{detail}</p>
-    </article>
+    <DashboardMetric detail={detail} icon={Icon} label={label} tone={tone} value={value} />
   );
 }
 
@@ -220,15 +213,7 @@ function Panel({
   icon: LucideIcon;
   title: string;
 }) {
-  return (
-    <section className="overflow-hidden rounded-lg border border-line bg-panel shadow-sm">
-      <div className="flex items-center gap-2 border-b border-line px-4 py-3">
-        <Icon className="h-4 w-4 text-[#5b6770]" aria-hidden="true" />
-        <h2 className="text-base font-semibold">{title}</h2>
-      </div>
-      <div className="p-4">{children}</div>
-    </section>
-  );
+  return <DashboardPanel icon={Icon} title={title}>{children}</DashboardPanel>;
 }
 
 function RuntimeList({
@@ -281,11 +266,11 @@ function ResourceRow({
   value: string;
 }) {
   return (
-    <div className="grid gap-3 rounded-md border border-line bg-[#f8fafb] p-3 sm:grid-cols-[24px_1fr_90px] sm:items-center">
-      <Icon className="h-4 w-4 text-[#5b6770]" aria-hidden="true" />
+    <div className="grid gap-3 rounded-md border border-line bg-subtle p-3 sm:grid-cols-[24px_1fr_90px] sm:items-center">
+      <Icon className="h-4 w-4 text-muted" aria-hidden="true" />
       <div className="min-w-0">
         <p className="truncate text-sm font-semibold">{label}</p>
-        <p className="mt-1 truncate text-xs text-[#5b6770]">{detail}</p>
+        <p className="mt-1 truncate text-xs text-muted">{detail}</p>
       </div>
       <div className="flex items-center justify-between gap-2 sm:justify-end">
         <span className="font-mono text-sm font-semibold">{value}</span>
@@ -305,11 +290,11 @@ function DependencyList({
       {Object.entries(dependencies).map(([name, dependency]) => (
         <div
           key={name}
-          className="flex items-center justify-between gap-3 rounded-md border border-line bg-[#f8fafb] px-3 py-2"
+          className="flex items-center justify-between gap-3 rounded-md border border-line bg-subtle px-3 py-2"
         >
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold capitalize">{name}</p>
-            <p className="mt-1 truncate text-xs text-[#5b6770]">{dependency.detail ?? "Ready"}</p>
+            <p className="mt-1 truncate text-xs text-muted">{dependency.detail ?? "Ready"}</p>
           </div>
           <StatusPill label={dependency.status} tone={toneForStatus(dependency.status)} />
         </div>
@@ -331,7 +316,7 @@ function WorkerRow({ worker }: { worker: OpsWorkerHeartbeat }) {
       <div className="grid gap-3 sm:grid-cols-[130px_1fr_120px] sm:items-center">
         <div>
           <p className="text-sm font-semibold">{worker.role}</p>
-          <p className="mt-1 text-xs text-[#5b6770]">
+          <p className="mt-1 text-xs text-muted">
             {capabilities.join(", ") || "no capabilities"}
           </p>
         </div>
@@ -341,7 +326,7 @@ function WorkerRow({ worker }: { worker: OpsWorkerHeartbeat }) {
             {worker.pid ? `, pid ${worker.pid}` : ""}
             {worker.instanceId ? `, instance ${shortInstanceId(worker.instanceId)}` : ""}
           </p>
-          <p className="mt-1 text-xs text-[#5b6770]">
+          <p className="mt-1 text-xs text-muted">
             Last heartbeat {formatAge(worker.ageSeconds)}, started {formatDate(worker.startedAt)}
           </p>
         </div>
@@ -351,12 +336,12 @@ function WorkerRow({ worker }: { worker: OpsWorkerHeartbeat }) {
       {worker.loops.length > 0 ? (
         <div className="grid gap-2 sm:grid-cols-2">
           {worker.loops.map((loop) => (
-            <div key={loop.name} className="rounded-md border border-line bg-[#f8fafb] p-3">
+            <div key={loop.name} className="rounded-md border border-line bg-subtle p-3">
               <div className="flex items-center justify-between gap-3">
                 <p className="truncate text-sm font-semibold">{loop.name}</p>
                 <StatusPill label={loop.status} tone={toneForStatus(loop.health)} />
               </div>
-              <p className="mt-2 text-xs text-[#5b6770]">
+              <p className="mt-2 text-xs text-muted">
                 Progress {formatDate(loop.lastProgressAt)}, restarts {formatInteger(loop.restartCount)}
               </p>
               {loop.lastError ? <p className="mt-1 truncate text-xs text-danger">{loop.lastError}</p> : null}
@@ -366,16 +351,16 @@ function WorkerRow({ worker }: { worker: OpsWorkerHeartbeat }) {
       ) : null}
 
       {worker.realtimeQueue ? (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-line bg-[#f8fafb] px-3 py-2">
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-line bg-subtle px-3 py-2">
           <div>
-            <p className="text-xs font-medium uppercase text-[#5b6770]">Realtime queue</p>
+            <p className="text-xs font-medium uppercase text-muted">Realtime queue</p>
             <p className="mt-1 text-sm">
               {formatInteger(worker.realtimeQueue.depth)}/{formatInteger(worker.realtimeQueue.capacity)} queued,
               {` ${formatInteger(worker.realtimeQueue.dropped)} dropped`}
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-xs text-[#5b6770]">
+            <span className="text-xs text-muted">
               {formatPercent(worker.realtimeQueue.utilizationPct)}
             </span>
             <StatusPill
@@ -399,7 +384,7 @@ function BackupDetails({ backup }: { backup: OpsBackupStatus }) {
       <KeyValue label="Backup files" value={formatInteger(backup.backupCount)} />
       <KeyValue label="Backup folder size" value={formatBytes(backup.totalSizeBytes)} />
       <KeyValue label="Directory" value={backup.directory} />
-      <p className="rounded-md border border-line bg-[#f8fafb] p-3 text-sm text-[#5b6770]">
+      <p className="rounded-md border border-line bg-subtle p-3 text-sm text-muted">
         {backup.note}
       </p>
     </div>
@@ -432,10 +417,10 @@ function OperationRow({ operation }: { operation: OperationStatus }) {
     <div className="grid gap-3 py-3 sm:grid-cols-[160px_120px_1fr] sm:items-center">
       <div>
         <p className="text-sm font-semibold">{operation.label}</p>
-        <p className="mt-1 text-xs text-[#5b6770]">Updated {formatDate(operation.updatedAt)}</p>
+        <p className="mt-1 text-xs text-muted">Updated {formatDate(operation.updatedAt)}</p>
       </div>
       <StatusPill label={operation.status} tone={toneForStatus(operation.status)} />
-      <div className="min-w-0 text-sm text-[#5b6770]">
+      <div className="min-w-0 text-sm text-muted">
         <p className="truncate">Last success {formatDate(operation.lastSuccessAt)}</p>
         {operation.lastError ? <p className="mt-1 truncate text-danger">{operation.lastError}</p> : null}
       </div>
@@ -445,8 +430,8 @@ function OperationRow({ operation }: { operation: OperationStatus }) {
 
 function SmallMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-line bg-[#f8fafb] p-3">
-      <p className="text-xs font-medium uppercase text-[#5b6770]">{label}</p>
+    <div className="rounded-md border border-line bg-subtle p-3">
+      <p className="text-xs font-medium uppercase text-muted">{label}</p>
       <p className="mt-2 truncate text-sm font-semibold">{value}</p>
     </div>
   );
@@ -454,8 +439,8 @@ function SmallMetric({ label, value }: { label: string; value: string }) {
 
 function KeyValue({ label, value }: { label: string; value: ReactNode }) {
   return (
-    <div className="grid gap-2 rounded-md border border-line bg-[#f8fafb] p-3 sm:grid-cols-[150px_1fr]">
-      <p className="text-xs font-medium uppercase text-[#5b6770]">{label}</p>
+    <div className="grid gap-2 rounded-md border border-line bg-subtle p-3 sm:grid-cols-[150px_1fr]">
+      <p className="text-xs font-medium uppercase text-muted">{label}</p>
       <div className="min-w-0 truncate text-sm font-semibold">{value}</div>
     </div>
   );

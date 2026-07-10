@@ -20,61 +20,30 @@ import type { ReactNode } from "react";
 import { getPublicApiBaseUrl } from "@/lib/config";
 import type { HealthResponse } from "@/types/health";
 
-const navItems = [
+const navGroups = [
   {
-    href: "/",
-    icon: LayoutDashboard,
-    label: "Dashboard",
-    match: (pathname: string) => pathname === "/",
+    label: "Execution",
+    items: [
+      { href: "/", icon: LayoutDashboard, label: "Overview", match: (path: string) => path === "/" },
+      { href: "/accounts", icon: SquareStack, label: "Accounts", match: (path: string) => path.startsWith("/accounts") },
+      { href: "/trading", icon: BarChart3, label: "Trading", match: (path: string) => path.startsWith("/trading") || path.startsWith("/paper-trading") },
+    ],
   },
   {
-    href: "/accounts",
-    icon: SquareStack,
-    label: "Accounts",
-    match: (pathname: string) => pathname.startsWith("/accounts"),
+    label: "Intelligence",
+    items: [
+      { href: "/wallets", icon: WalletCards, label: "Wallets", match: (path: string) => path.startsWith("/wallets") },
+      { href: "/discovery", icon: Compass, label: "Discovery", match: (path: string) => path.startsWith("/discovery") },
+      { href: "/analytics", icon: LineChart, label: "Analytics", match: (path: string) => path.startsWith("/analytics") },
+      { href: "/live-feed", icon: RadioTower, label: "Live feed", match: (path: string) => path.startsWith("/live-feed") },
+    ],
   },
   {
-    href: "/trading",
-    icon: BarChart3,
-    label: "Trading",
-    match: (pathname: string) =>
-      pathname.startsWith("/trading") || pathname.startsWith("/paper-trading"),
-  },
-  {
-    href: "/discovery",
-    icon: Compass,
-    label: "Discovery",
-    match: (pathname: string) => pathname.startsWith("/discovery"),
-  },
-  {
-    href: "/analytics",
-    icon: LineChart,
-    label: "Analytics",
-    match: (pathname: string) => pathname.startsWith("/analytics"),
-  },
-  {
-    href: "/live-feed",
-    icon: RadioTower,
-    label: "Live Feed",
-    match: (pathname: string) => pathname.startsWith("/live-feed"),
-  },
-  {
-    href: "/database",
-    icon: Database,
-    label: "Database",
-    match: (pathname: string) => pathname.startsWith("/database"),
-  },
-  {
-    href: "/ops",
-    icon: ServerCog,
-    label: "Ops Health",
-    match: (pathname: string) => pathname.startsWith("/ops"),
-  },
-  {
-    href: "/wallets",
-    icon: WalletCards,
-    label: "Wallet Pool",
-    match: (pathname: string) => pathname.startsWith("/wallets"),
+    label: "System",
+    items: [
+      { href: "/database", icon: Database, label: "Database", match: (path: string) => path.startsWith("/database") },
+      { href: "/ops", icon: ServerCog, label: "Operations", match: (path: string) => path.startsWith("/ops") },
+    ],
   },
 ];
 
@@ -82,46 +51,65 @@ export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
 
   return (
-    <div className="min-h-screen bg-[#eef2f5] text-ink lg:grid lg:grid-cols-[264px_1fr]">
-      <aside className="border-b border-[#d7dde5] bg-[#121619] text-white lg:min-h-screen lg:border-b-0 lg:border-r lg:border-[#252b2f]">
+    <div className="min-h-screen bg-canvas text-ink lg:grid lg:grid-cols-[232px_minmax(0,1fr)]">
+      <a
+        href="#main-content"
+        className="sr-only fixed left-4 top-4 z-[100] rounded-lg bg-white px-3 py-2 text-sm font-semibold text-ink shadow-raised focus:not-sr-only"
+      >
+        Skip to content
+      </a>
+      <aside className="border-b border-white/10 bg-sidebar text-white lg:sticky lg:top-0 lg:h-screen lg:border-b-0 lg:border-r lg:border-white/10">
         <div className="flex h-full flex-col">
-          <div className="border-b border-[#252b2f] px-4 py-4">
+          <div className="border-b border-white/10 px-4 py-3.5 lg:py-4">
             <Link href="/" className="flex items-center gap-3">
-              <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-[#f4f7f5] text-[#121619]">
-                <Activity className="h-5 w-5" aria-hidden="true" />
+              <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand text-white shadow-[0_8px_20px_rgba(37,99,235,0.28)]">
+                <Activity className="h-[18px] w-[18px]" aria-hidden="true" />
               </span>
               <span className="min-w-0">
-                <span className="block truncate text-sm font-semibold">Hyperliquid</span>
-                <span className="block truncate text-xs text-[#aeb7bd]">Copy Agent</span>
+                <span className="block truncate text-sm font-semibold tracking-tight">Copy Agent</span>
+                <span className="block truncate text-[11px] text-sidebar-muted">Hyperliquid execution</span>
               </span>
             </Link>
           </div>
 
-          <nav className="flex gap-2 overflow-x-auto px-3 py-3 lg:flex-col lg:overflow-visible">
-            {navItems.map((item) => {
-              const Icon = item.icon;
-              const active = item.match(pathname);
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  className={[
-                    "inline-flex h-10 shrink-0 items-center gap-3 rounded-md px-3 text-sm font-medium transition-colors",
-                    active
-                      ? "bg-white text-[#121619]"
-                      : "text-[#c7d0d6] hover:bg-[#1f262a] hover:text-white",
-                  ].join(" ")}
-                >
-                  <Icon className="h-4 w-4" aria-hidden="true" />
-                  {item.label}
-                </Link>
-              );
-            })}
+          <nav
+            aria-label="Primary navigation"
+            className="flex gap-1.5 overflow-x-auto px-3 py-2.5 lg:block lg:overflow-y-auto lg:py-4"
+          >
+            {navGroups.map((group) => (
+              <div key={group.label} className="contents lg:mb-5 lg:block">
+                <p className="mb-1.5 hidden px-3 text-[10px] font-semibold uppercase tracking-[0.14em] text-sidebar-muted/70 lg:block">
+                  {group.label}
+                </p>
+                <div className="contents lg:grid lg:gap-1">
+                  {group.items.map((item) => {
+                    const Icon = item.icon;
+                    const active = item.match(pathname);
+                    return (
+                      <Link
+                        key={item.href}
+                        href={item.href}
+                        aria-current={active ? "page" : undefined}
+                        className={[
+                          "inline-flex h-9 shrink-0 items-center gap-2.5 rounded-lg border-l-2 px-3 text-[13px] font-medium transition-colors",
+                          active
+                            ? "border-blue-400 bg-white/10 text-white"
+                            : "border-transparent text-sidebar-muted hover:bg-white/[0.06] hover:text-white",
+                        ].join(" ")}
+                      >
+                        <Icon className="h-4 w-4 shrink-0" strokeWidth={1.8} aria-hidden="true" />
+                        {item.label}
+                      </Link>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
           </nav>
 
-          <div className="mt-auto hidden border-t border-[#252b2f] p-4 text-xs text-[#aeb7bd] lg:block">
+          <div className="mt-auto hidden border-t border-white/10 p-4 text-xs text-sidebar-muted lg:block">
             <div className="flex items-center justify-between gap-3">
-              <span>Mode</span>
+              <span className="font-medium">Execution mode</span>
               <SystemModeBadge />
             </div>
           </div>
@@ -129,7 +117,10 @@ export function AppShell({ children }: { children: ReactNode }) {
       </aside>
 
       <div className="min-w-0">
-        <main className="mx-auto flex w-full max-w-[1560px] flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
+        <main
+          id="main-content"
+          className="mx-auto flex w-full max-w-[1720px] flex-col gap-4 px-4 py-4 sm:px-5 lg:px-6 lg:py-5 2xl:px-8"
+        >
           {children}
         </main>
       </div>
@@ -175,10 +166,24 @@ function SystemModeBadge() {
   }, []);
 
   return (
-    <span className="rounded-md border border-[#3c454a] px-1.5 py-0.5 text-xs text-white">
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-white/[0.06] px-2 py-1 text-[11px] font-medium text-white">
+      <span className={`h-1.5 w-1.5 rounded-full ${systemModeDotClass(mode)}`} aria-hidden="true" />
       {formatSystemMode(mode)}
     </span>
   );
+}
+
+function systemModeDotClass(mode: HealthResponse["mode"] | "checking" | "unknown") {
+  if (mode === "live_small") {
+    return "bg-emerald-400";
+  }
+  if (mode === "paper") {
+    return "bg-blue-400";
+  }
+  if (mode === "monitor" || mode === "checking") {
+    return mode === "checking" ? "animate-pulse bg-amber-300" : "bg-amber-300";
+  }
+  return "bg-red-400";
 }
 
 function formatSystemMode(mode: HealthResponse["mode"] | "checking" | "unknown") {

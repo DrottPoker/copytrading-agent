@@ -15,6 +15,7 @@ import {
 import Link from "next/link";
 import type { ReactNode } from "react";
 
+import { DashboardMetric, DashboardPanel } from "@/components/DashboardSurface";
 import { HeaderRefreshButton, HeaderUpdatedLabel } from "@/components/HeaderRefresh";
 import { PageTopPanel } from "@/components/PageTopPanel";
 import { StatusPill } from "@/components/StatusPill";
@@ -45,7 +46,7 @@ export default async function AnalyticsPage() {
     return (
       <>
         <PageHeader />
-        <section className="rounded-lg border border-[#efb1aa] bg-[#fff5f3] p-6 text-danger">
+        <section className="rounded-lg border border-danger/25 bg-danger-soft p-6 text-danger">
           Could not reach analytics API.
         </section>
       </>
@@ -174,24 +175,8 @@ function MetricTile({
   tone?: "positive" | "danger" | "neutral";
   value: string;
 }) {
-  const toneClass =
-    tone === "positive"
-      ? "border-[#9ccfc0] bg-[#f2fbf7]"
-      : tone === "danger"
-        ? "border-[#efb1aa] bg-[#fff5f3]"
-        : "border-line bg-panel";
-
   return (
-    <article className={`rounded-lg border p-4 shadow-sm ${toneClass}`}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="truncate text-xs font-medium uppercase text-[#5b6770]">{label}</p>
-          <p className="mt-2 truncate text-2xl font-semibold text-ink">{value}</p>
-        </div>
-        <Icon className="h-5 w-5 shrink-0 text-[#5b6770]" aria-hidden="true" />
-      </div>
-      <p className="mt-3 truncate text-sm text-[#5b6770]">{detail}</p>
-    </article>
+    <DashboardMetric detail={detail} icon={Icon} label={label} tone={tone} value={value} />
   );
 }
 
@@ -204,15 +189,7 @@ function Panel({
   icon: LucideIcon;
   title: string;
 }) {
-  return (
-    <section className="overflow-hidden rounded-lg border border-line bg-panel shadow-sm">
-      <div className="flex items-center gap-2 border-b border-line px-4 py-3">
-        <Icon className="h-4 w-4 text-[#5b6770]" aria-hidden="true" />
-        <h2 className="text-base font-semibold text-ink">{title}</h2>
-      </div>
-      <div className="p-4">{children}</div>
-    </section>
-  );
+  return <DashboardPanel icon={Icon} title={title}>{children}</DashboardPanel>;
 }
 
 function BucketList({ buckets }: { buckets: AnalyticsBucket[] }) {
@@ -220,9 +197,9 @@ function BucketList({ buckets }: { buckets: AnalyticsBucket[] }) {
     <div className="grid gap-2">
       {buckets.map((bucket) => (
         <div key={bucket.label} className="grid grid-cols-[92px_1fr_72px] items-center gap-3">
-          <p className="truncate text-xs font-medium text-[#344054]">{bucket.label}</p>
+          <p className="truncate text-xs font-medium text-secondary">{bucket.label}</p>
           <Bar value={numberValue(bucket.pct ?? 0)} />
-          <p className="text-right font-mono text-xs text-[#344054]">
+          <p className="text-right font-mono text-xs text-secondary">
             {formatInteger(bucket.count)}
           </p>
         </div>
@@ -244,9 +221,9 @@ function ScoreAverageGrid({ analytics }: { analytics: AnalyticsResponse }) {
   return (
     <div className="grid gap-2 sm:grid-cols-2">
       {rows.map(([label, value]) => (
-        <div key={label} className="rounded-md border border-line bg-[#f8fafb] px-3 py-2">
+        <div key={label} className="rounded-md border border-line bg-subtle px-3 py-2">
           <div className="flex items-center justify-between gap-3">
-            <p className="text-xs font-medium text-[#5b6770]">{label}</p>
+            <p className="text-xs font-medium text-muted">{label}</p>
             <p className="font-mono text-sm font-semibold text-ink">{formatScore(value)}</p>
           </div>
           <Bar value={clamp(numberValue(value ?? 0) / 100, 0, 1)} />
@@ -280,8 +257,8 @@ function FreshnessGrid({ analytics }: { analytics: AnalyticsResponse }) {
 
 function SmallMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-line bg-[#f8fafb] px-3 py-2">
-      <p className="truncate text-[11px] font-medium uppercase text-[#5b6770]">{label}</p>
+    <div className="rounded-md border border-line bg-subtle px-3 py-2">
+      <p className="truncate text-[11px] font-medium uppercase text-muted">{label}</p>
       <p className="mt-1 truncate font-mono text-sm font-semibold text-ink">{value}</p>
     </div>
   );
@@ -336,7 +313,7 @@ function WalletIdentity({ wallet }: { wallet: AnalyticsWalletRow }) {
       >
         {wallet.label ?? shortAddress(wallet.walletAddress)}
       </Link>
-      <p className="mt-1 truncate text-xs text-[#5b6770]">
+      <p className="mt-1 truncate text-xs text-muted">
         pool {wallet.poolRank ? `#${formatInteger(wallet.poolRank)}` : "-"},{" "}
         {wallet.currentDrawdownStatus}, last fill {formatDate(wallet.lastSeenFillAt)}
       </p>
@@ -385,12 +362,12 @@ function CoinPerformanceTable({ rows }: { rows: AnalyticsCoinPerformanceRow[] })
         <div key={row.coin} className="grid grid-cols-[110px_1fr_96px] items-center gap-3">
           <div className="min-w-0">
             <p className="truncate font-mono text-sm font-semibold text-ink">{row.coin}</p>
-            <p className="truncate text-xs text-[#5b6770]">{formatInteger(row.closedTradeCount)} trades</p>
+            <p className="truncate text-xs text-muted">{formatInteger(row.closedTradeCount)} trades</p>
           </div>
           <Bar value={clamp(Math.abs(numberValue(row.roiPct ?? 0)), 0, 1)} />
           <div className="text-right">
             <p className={pnlClass(row.netPnlUsd)}>{formatCurrency(row.netPnlUsd)}</p>
-            <p className="font-mono text-[11px] text-[#5b6770]">{formatPercent(row.winRate)}</p>
+            <p className="font-mono text-[11px] text-muted">{formatPercent(row.winRate)}</p>
           </div>
         </div>
       ))}
@@ -439,12 +416,12 @@ function SkipReasonTable({ rows }: { rows: AnalyticsSkipReasonRow[] }) {
         <div key={row.reason} className="grid grid-cols-[1fr_120px] items-center gap-3">
           <div className="min-w-0">
             <p className="truncate text-sm font-medium text-ink">{humanReason(row.reason)}</p>
-            <p className="truncate text-xs text-[#5b6770]">last {formatDate(row.lastSeenAt)}</p>
+            <p className="truncate text-xs text-muted">last {formatDate(row.lastSeenAt)}</p>
           </div>
           <div>
             <div className="flex items-center justify-between gap-2">
               <p className="font-mono text-xs font-semibold text-ink">{formatInteger(row.count)}</p>
-              <p className="font-mono text-xs text-[#5b6770]">{formatPercent(row.pct)}</p>
+              <p className="font-mono text-xs text-muted">{formatPercent(row.pct)}</p>
             </div>
             <Bar value={numberValue(row.pct ?? 0)} />
           </div>
@@ -461,11 +438,11 @@ function DiscoveryTable({ rows }: { rows: AnalyticsDiscoverySourceRow[] }) {
   return (
     <div className="grid gap-2 xl:grid-cols-2">
       {rows.map((row) => (
-        <div key={row.source} className="rounded-md border border-line bg-[#f8fafb] p-3">
+        <div key={row.source} className="rounded-md border border-line bg-subtle p-3">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold text-ink">{sourceLabel(row.source)}</p>
-              <p className="truncate text-xs text-[#5b6770]">last seen {formatDate(row.lastSeenAt)}</p>
+              <p className="truncate text-xs text-muted">last seen {formatDate(row.lastSeenAt)}</p>
             </div>
             <p className="font-mono text-sm font-semibold text-ink">{formatInteger(row.total)}</p>
           </div>
@@ -502,7 +479,7 @@ function SourceIdentity({
       >
         {label ?? shortAddress(address)}
       </Link>
-      <p className="mt-1 truncate text-xs text-[#5b6770]">{meta}</p>
+      <p className="mt-1 truncate text-xs text-muted">{meta}</p>
     </div>
   );
 }
@@ -512,7 +489,7 @@ function MetricStack({ items }: { items: [string, string][] }) {
     <div className="grid grid-cols-2 gap-2 lg:grid-cols-1">
       {items.map(([label, value]) => (
         <div key={label} className="min-w-0">
-          <p className="truncate text-[11px] font-medium uppercase text-[#5b6770]">{label}</p>
+          <p className="truncate text-[11px] font-medium uppercase text-muted">{label}</p>
           <p className="mt-0.5 truncate font-mono text-xs font-semibold text-ink">{value}</p>
         </div>
       ))}
@@ -523,7 +500,7 @@ function MetricStack({ items }: { items: [string, string][] }) {
 function MiniStat({ label, value }: { label: string; value: string }) {
   return (
     <div className="min-w-0 rounded-md border border-line bg-white px-2 py-1.5">
-      <p className="truncate text-[10px] font-medium uppercase text-[#5b6770]">{label}</p>
+      <p className="truncate text-[10px] font-medium uppercase text-muted">{label}</p>
       <p className="mt-0.5 truncate font-mono text-xs font-semibold text-ink">{value}</p>
     </div>
   );
@@ -532,14 +509,14 @@ function MiniStat({ label, value }: { label: string; value: string }) {
 function Bar({ value }: { value: number }) {
   const width = `${clamp(value, 0, 1) * 100}%`;
   return (
-    <div className="h-2 overflow-hidden rounded-full bg-[#e5ebf0]">
-      <div className="h-full rounded-full bg-[#097a5f]" style={{ width }} />
+    <div className="h-2 overflow-hidden rounded-full bg-line">
+      <div className="h-full rounded-full bg-positive" style={{ width }} />
     </div>
   );
 }
 
 function EmptyState({ text }: { text: string }) {
-  return <div className="py-6 text-center text-sm text-[#5b6770]">{text}</div>;
+  return <div className="py-6 text-center text-sm text-muted">{text}</div>;
 }
 
 function pnlClass(value: string | null) {

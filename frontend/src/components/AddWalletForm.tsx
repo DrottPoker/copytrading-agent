@@ -57,39 +57,39 @@ export function AddWalletForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="rounded-lg border border-line bg-panel p-4 shadow-sm">
+    <form onSubmit={handleSubmit} className="ui-panel p-4">
       <div className="grid gap-3 lg:grid-cols-[1.6fr_0.8fr_1fr_auto] lg:items-end">
         <label className="block">
-          <span className="text-xs font-medium uppercase text-[#526070]">Wallet address</span>
+          <span className="text-xs font-medium uppercase text-muted">Wallet address</span>
           <input
             value={address}
             onChange={(event) => setAddress(event.target.value)}
             placeholder="0x..."
-            className="mt-1 h-10 w-full rounded-md border border-line bg-white px-3 text-sm outline-none focus:border-[#667085]"
+            className="ui-control mt-1 w-full"
           />
         </label>
         <label className="block">
-          <span className="text-xs font-medium uppercase text-[#526070]">Label</span>
+          <span className="text-xs font-medium uppercase text-muted">Label</span>
           <input
             value={label}
             onChange={(event) => setLabel(event.target.value)}
             placeholder="Optional"
-            className="mt-1 h-10 w-full rounded-md border border-line bg-white px-3 text-sm outline-none focus:border-[#667085]"
+            className="ui-control mt-1 w-full"
           />
         </label>
         <label className="block">
-          <span className="text-xs font-medium uppercase text-[#526070]">Notes</span>
+          <span className="text-xs font-medium uppercase text-muted">Notes</span>
           <input
             value={notes}
             onChange={(event) => setNotes(event.target.value)}
             placeholder="Optional"
-            className="mt-1 h-10 w-full rounded-md border border-line bg-white px-3 text-sm outline-none focus:border-[#667085]"
+            className="ui-control mt-1 w-full"
           />
         </label>
         <button
           type="submit"
           disabled={isSaving}
-          className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-medium text-white disabled:cursor-not-allowed disabled:bg-[#98a2b3]"
+          className="ui-button-primary disabled:cursor-not-allowed disabled:border-faint disabled:bg-faint"
         >
           <Plus className="h-4 w-4" aria-hidden="true" />
           {isSaving ? "Adding" : "Add"}

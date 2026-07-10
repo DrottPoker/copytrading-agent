@@ -13,6 +13,7 @@ import {
 import Link from "next/link";
 import type { ReactNode } from "react";
 
+import { DashboardMetric, DashboardPanel } from "@/components/DashboardSurface";
 import { DiscoveryPipelineActions } from "@/components/DiscoveryPipelineActions";
 import { HeaderRefreshButton, HeaderUpdatedLabel } from "@/components/HeaderRefresh";
 import { PageTopPanel } from "@/components/PageTopPanel";
@@ -80,6 +81,7 @@ export default async function DiscoveryPage({ searchParams }: DiscoveryPageProps
     <>
       <PageTopPanel
         eyebrow="Trader sourcing"
+        icon={Compass}
         title="Discovery"
         actions={
           <>
@@ -160,21 +162,21 @@ export default async function DiscoveryPage({ searchParams }: DiscoveryPageProps
 
       <Panel icon={Clock3} title="Recent Import Runs">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[900px] border-collapse text-left text-sm">
-            <thead className="border-b border-line bg-[#f8fafb] text-xs uppercase text-[#5b6770]">
+          <table className="ui-table min-w-[900px] text-sm">
+            <thead className="ui-table-head">
               <tr>
-                <th className="px-4 py-3 font-semibold">Source</th>
-                <th className="px-4 py-3 font-semibold">Status</th>
-                <th className="px-4 py-3 font-semibold">Fetched</th>
-                <th className="px-4 py-3 font-semibold">Inserted / updated</th>
-                <th className="px-4 py-3 font-semibold">Started</th>
-                <th className="px-4 py-3 font-semibold">Finished</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Source</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Status</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Fetched</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Inserted / updated</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Started</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Finished</th>
               </tr>
             </thead>
             <tbody>
               {runs.items.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-4 py-10 text-center text-[#5b6770]">
+                  <td colSpan={6} className="px-4 py-10 text-center text-muted">
                     No import runs yet.
                   </td>
                 </tr>
@@ -186,11 +188,11 @@ export default async function DiscoveryPage({ searchParams }: DiscoveryPageProps
         </div>
       </Panel>
 
-      <section className="overflow-hidden rounded-lg border border-line bg-panel shadow-sm">
+      <section className="ui-panel overflow-hidden">
         <div className="flex flex-col gap-3 border-b border-line px-4 py-3 xl:flex-row xl:items-center xl:justify-between">
           <div>
             <h2 className="text-base font-semibold">Candidate Pipeline</h2>
-            <p className="mt-1 text-sm text-[#5b6770]">
+            <p className="mt-1 text-sm text-muted">
               Showing {formatInteger(displayed.length)} of {formatInteger(filteredCandidates.total)}
               {hasFilters ? " matching" : ""} candidates.
             </p>
@@ -203,22 +205,22 @@ export default async function DiscoveryPage({ searchParams }: DiscoveryPageProps
           />
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1440px] border-collapse text-left text-sm">
-            <thead className="border-b border-line bg-[#f8fafb] text-xs uppercase text-[#5b6770]">
+          <table className="ui-table min-w-[1440px] text-sm">
+            <thead className="ui-table-head">
               <tr>
-                <th className="px-4 py-3 font-semibold">Wallet</th>
-                <th className="px-4 py-3 font-semibold">Source</th>
-                <th className="px-4 py-3 font-semibold">Source metrics</th>
-                <th className="px-4 py-3 font-semibold">Pipeline</th>
-                <th className="px-4 py-3 font-semibold">Backfill</th>
-                <th className="px-4 py-3 font-semibold">Quality</th>
-                <th className="px-4 py-3 font-semibold">Last seen</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Wallet</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Source</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Source metrics</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Pipeline</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Backfill</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Quality</th>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Last seen</th>
               </tr>
             </thead>
             <tbody>
               {displayed.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-10 text-center text-[#5b6770]">
+                  <td colSpan={7} className="px-4 py-10 text-center text-muted">
                     {hasFilters ? "No discovery candidates match this filter." : "No candidates yet."}
                   </td>
                 </tr>
@@ -253,7 +255,7 @@ function CandidateFilters({
       <label className="relative block min-w-[260px]">
         <span className="sr-only">Search wallet or label</span>
         <Search
-          className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#5b6770]"
+          className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted"
           aria-hidden="true"
         />
         <input
@@ -261,13 +263,13 @@ function CandidateFilters({
           name="q"
           defaultValue={query}
           placeholder="Search wallet or label"
-          className="h-10 w-full rounded-md border border-line bg-white pl-9 pr-3 text-sm font-medium text-ink outline-none transition focus:border-[#297c73] focus:ring-2 focus:ring-[#d9ece8]"
+          className="ui-control w-full pl-9 pr-3"
         />
       </label>
       <select
         name="source"
         defaultValue={selectedSource}
-        className="h-10 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink outline-none transition focus:border-[#297c73] focus:ring-2 focus:ring-[#d9ece8]"
+        className="ui-control"
       >
         <option value="">All sources</option>
         {sources.map((source) => (
@@ -279,7 +281,7 @@ function CandidateFilters({
       <select
         name="status"
         defaultValue={selectedStatus}
-        className="h-10 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink outline-none transition focus:border-[#297c73] focus:ring-2 focus:ring-[#d9ece8]"
+        className="ui-control"
       >
         <option value="">All statuses</option>
         <option value="discovered">Discovered</option>
@@ -291,7 +293,7 @@ function CandidateFilters({
       <div className="flex shrink-0 gap-2">
         <button
           type="submit"
-          className="inline-flex h-10 items-center gap-2 rounded-md border border-line bg-ink px-3 text-sm font-medium text-white"
+          className="ui-button-primary"
         >
           <Search className="h-4 w-4" aria-hidden="true" />
           Filter
@@ -299,7 +301,7 @@ function CandidateFilters({
         {hasFilters ? (
           <Link
             href="/discovery"
-            className="inline-flex h-10 items-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink"
+            className="ui-button-secondary"
           >
             <X className="h-4 w-4" aria-hidden="true" />
             Clear
@@ -323,24 +325,8 @@ function MetricTile({
   tone?: "positive" | "warning" | "neutral";
   value: string;
 }) {
-  const toneClass =
-    tone === "positive"
-      ? "border-[#9ccfc0] bg-[#f2fbf7]"
-      : tone === "warning"
-        ? "border-[#e7c174] bg-[#fff9e8]"
-        : "border-line bg-panel";
-
   return (
-    <article className={`rounded-lg border p-4 shadow-sm ${toneClass}`}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-xs font-medium uppercase text-[#5b6770]">{label}</p>
-          <p className="mt-2 truncate text-2xl font-semibold text-ink">{value}</p>
-        </div>
-        <Icon className="h-5 w-5 shrink-0 text-[#5b6770]" aria-hidden="true" />
-      </div>
-      <p className="mt-3 truncate text-sm text-[#5b6770]">{detail}</p>
-    </article>
+    <DashboardMetric detail={detail} icon={Icon} label={label} tone={tone} value={value} />
   );
 }
 
@@ -353,15 +339,7 @@ function Panel({
   icon: LucideIcon;
   title: string;
 }) {
-  return (
-    <section className="overflow-hidden rounded-lg border border-line bg-panel shadow-sm">
-      <div className="flex items-center gap-2 border-b border-line px-4 py-3">
-        <Icon className="h-4 w-4 text-[#5b6770]" aria-hidden="true" />
-        <h2 className="text-base font-semibold">{title}</h2>
-      </div>
-      <div className="p-4">{children}</div>
-    </section>
-  );
+  return <DashboardPanel icon={Icon} title={title}>{children}</DashboardPanel>;
 }
 
 function SourceRow({
@@ -372,7 +350,7 @@ function SourceRow({
   source: DiscoverySource;
 }) {
   return (
-    <div className="flex flex-col gap-3 rounded-md border border-line bg-[#f8fafb] p-3 sm:flex-row sm:items-center sm:justify-between">
+    <div className="flex flex-col gap-3 rounded-md border border-line bg-subtle p-3 sm:flex-row sm:items-center sm:justify-between">
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <p className="font-semibold">{source.label}</p>
@@ -385,12 +363,12 @@ function SourceRow({
             tone={source.configured ? "positive" : "warning"}
           />
         </div>
-        <p className="mt-2 font-mono text-xs text-[#5b6770]">{source.key}</p>
-        {source.notes ? <p className="mt-2 text-sm text-[#5b6770]">{source.notes}</p> : null}
+        <p className="mt-2 font-mono text-xs text-muted">{source.key}</p>
+        {source.notes ? <p className="mt-2 text-sm text-muted">{source.notes}</p> : null}
       </div>
       <div className="shrink-0 text-left sm:text-right">
         <p className="text-xl font-semibold">{formatInteger(count)}</p>
-        <p className="text-xs uppercase text-[#5b6770]">loaded</p>
+        <p className="text-xs uppercase text-muted">loaded</p>
       </div>
     </div>
   );
@@ -399,16 +377,16 @@ function SourceRow({
 function RunRow({ run }: { run: DiscoveryImportRun }) {
   return (
     <tr className="border-b border-line last:border-b-0">
-      <td className="px-4 py-3 font-semibold">{run.source}</td>
-      <td className="px-4 py-3">
+      <td className="px-3 py-2.5 font-semibold">{run.source}</td>
+      <td className="px-3 py-2.5">
         <StatusPill label={run.status} tone={run.status === "succeeded" ? "positive" : "warning"} />
       </td>
-      <td className="px-4 py-3 font-mono">{formatInteger(run.fetchedCount)}</td>
-      <td className="px-4 py-3 text-[#5b6770]">
+      <td className="px-3 py-2.5 font-mono">{formatInteger(run.fetchedCount)}</td>
+      <td className="px-3 py-2.5 text-muted">
         {formatInteger(run.insertedCount)} / {formatInteger(run.updatedCount)}
       </td>
-      <td className="px-4 py-3 text-[#5b6770]">{formatDate(run.startedAt)}</td>
-      <td className="px-4 py-3 text-[#5b6770]">{formatDate(run.finishedAt)}</td>
+      <td className="px-3 py-2.5 text-muted">{formatDate(run.startedAt)}</td>
+      <td className="px-3 py-2.5 text-muted">{formatDate(run.finishedAt)}</td>
     </tr>
   );
 }
@@ -417,13 +395,13 @@ function CandidateRow({ candidate }: { candidate: DiscoveryCandidate }) {
   const canOpenWallet = candidate.status === "promoted";
 
   return (
-    <tr className="border-b border-line last:border-b-0 hover:bg-[#fbfcfd]">
-      <td className="px-4 py-3 align-top">
+    <tr className="ui-table-row">
+      <td className="px-3 py-2.5 align-top">
         <div className="flex min-w-0 flex-col gap-1">
           {canOpenWallet ? (
             <Link
               href={`/wallets/${candidate.walletAddress}`}
-              className="min-w-0 max-w-full whitespace-normal break-words font-semibold hover:text-[#297c73]"
+              className="min-w-0 max-w-full whitespace-normal break-words font-semibold hover:text-brand"
             >
               {candidate.sourceLabel || candidate.subaccountName || shortAddress(candidate.walletAddress)}
             </Link>
@@ -432,24 +410,24 @@ function CandidateRow({ candidate }: { candidate: DiscoveryCandidate }) {
               {candidate.sourceLabel || candidate.subaccountName || shortAddress(candidate.walletAddress)}
             </p>
           )}
-          <p className="font-mono text-xs text-[#5b6770]">
+          <p className="font-mono text-xs text-muted">
             {shortAddress(candidate.walletAddress)}
           </p>
-          <p className="text-xs text-[#5b6770]">{candidate.accountRole}</p>
+          <p className="text-xs text-muted">{candidate.accountRole}</p>
         </div>
       </td>
-      <td className="px-4 py-3 align-top">
+      <td className="px-3 py-2.5 align-top">
         <div className="grid gap-1">
           <span className="font-semibold">{candidate.source}</span>
-          <span className="text-xs text-[#5b6770]">
+          <span className="text-xs text-muted">
             {candidate.sourceRank ? `Rank #${candidate.sourceRank}` : "No rank"}
           </span>
           {candidate.sourceCohort ? (
-            <span className="text-xs text-[#5b6770]">{candidate.sourceCohort}</span>
+            <span className="text-xs text-muted">{candidate.sourceCohort}</span>
           ) : null}
         </div>
       </td>
-      <td className="px-4 py-3 align-top">
+      <td className="px-3 py-2.5 align-top">
         <div className="grid gap-1">
           <MetricLine
             label="PnL"
@@ -466,7 +444,7 @@ function CandidateRow({ candidate }: { candidate: DiscoveryCandidate }) {
           <MetricLine label="Copy score" value={formatScore(candidate.sourceCopyScore)} />
         </div>
       </td>
-      <td className="px-4 py-3 align-top">
+      <td className="px-3 py-2.5 align-top">
         <div className="flex max-w-[260px] flex-wrap gap-2">
           <StatusPill label={candidate.status} tone={candidateStatusTone(candidate.status)} />
           {candidate.failReason ? (
@@ -474,13 +452,13 @@ function CandidateRow({ candidate }: { candidate: DiscoveryCandidate }) {
           ) : null}
         </div>
       </td>
-      <td className="px-4 py-3 align-top">
+      <td className="px-3 py-2.5 align-top">
         <div className="grid gap-2">
           <StatusPill
             label={candidate.backfillStatus}
             tone={backfillStatusTone(candidate.backfillStatus)}
           />
-          <div className="grid gap-1 text-xs text-[#5b6770]">
+          <div className="grid gap-1 text-xs text-muted">
             <span>
               {formatInteger(candidate.backfillInsertedCount)} new /{" "}
               {formatInteger(candidate.backfillDuplicateCount)} dup
@@ -492,7 +470,7 @@ function CandidateRow({ candidate }: { candidate: DiscoveryCandidate }) {
           ) : null}
         </div>
       </td>
-      <td className="px-4 py-3 align-top">
+      <td className="px-3 py-2.5 align-top">
         <div className="grid gap-1">
           <MetricLine
             label="Trades"
@@ -509,7 +487,7 @@ function CandidateRow({ candidate }: { candidate: DiscoveryCandidate }) {
           <MetricLine label="Last trade" value={formatMs(candidate.lastTradeTimeMs)} />
         </div>
       </td>
-      <td className="px-4 py-3 align-top text-[#5b6770]">
+      <td className="px-3 py-2.5 align-top text-muted">
         <div className="grid gap-1">
           <span>{formatDate(candidate.lastSeenAt)}</span>
           <span className="text-xs">First {formatDate(candidate.firstSeenAt)}</span>
@@ -522,7 +500,7 @@ function CandidateRow({ candidate }: { candidate: DiscoveryCandidate }) {
 function MetricLine({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-center justify-between gap-3">
-      <span className="text-xs text-[#5b6770]">{label}</span>
+      <span className="text-xs text-muted">{label}</span>
       <span className="min-w-0 truncate text-right font-mono text-xs font-semibold">{value}</span>
     </div>
   );
@@ -548,11 +526,11 @@ function DictionaryBars({
         <div key={key}>
           <div className="flex items-center justify-between gap-3 text-sm">
             <span className="truncate font-medium">{reasonLabel(key)}</span>
-            <span className="shrink-0 font-mono text-[#5b6770]">{formatInteger(value)}</span>
+            <span className="shrink-0 font-mono text-muted">{formatInteger(value)}</span>
           </div>
-          <div className="mt-2 h-2 overflow-hidden rounded-full bg-[#e3e9ee]">
+          <div className="mt-2 h-2 overflow-hidden rounded-full bg-line">
             <div
-              className="h-full rounded-full bg-[#297c73]"
+              className="h-full rounded-full bg-brand"
               style={{ width: `${Math.max(0, Math.min(100, (value / total) * 100))}%` }}
             />
           </div>
@@ -563,7 +541,7 @@ function DictionaryBars({
 }
 
 function EmptyState({ text }: { text: string }) {
-  return <div className="py-10 text-center text-sm text-[#5b6770]">{text}</div>;
+  return <div className="py-10 text-center text-sm text-muted">{text}</div>;
 }
 
 function buildOverview(candidates: DiscoveryCandidate[]) {

@@ -6,7 +6,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Hyperliquid Copy Agent",
-  description: "Internal paper-first dashboard for Hyperliquid copytrading research.",
+  description: "Internal execution, monitoring, and analytics dashboard for Hyperliquid copy trading.",
 };
 
 export default function RootLayout({

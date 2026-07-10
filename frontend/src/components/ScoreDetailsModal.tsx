@@ -47,7 +47,7 @@ export function ScoreDetailsModal({ score, scoreDetail }: ScoreDetailsModalProps
         type="button"
         disabled={!canOpen}
         onClick={() => setOpen(true)}
-        className="inline-flex h-7 items-center gap-1.5 rounded-md border border-line bg-[#f7f9fb] px-2.5 text-xs font-medium text-[#344054] transition hover:border-[#9eb1c1] hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+        className="ui-button-secondary h-7 gap-1.5 px-2.5 text-xs disabled:cursor-not-allowed disabled:opacity-50"
       >
         <BarChart3 className="h-4 w-4" aria-hidden="true" />
         Detailed scoring
@@ -55,7 +55,7 @@ export function ScoreDetailsModal({ score, scoreDetail }: ScoreDetailsModalProps
 
       {open ? (
         <div
-          className="fixed inset-0 z-50 overflow-y-auto bg-[#071019]/55 px-3 py-6 backdrop-blur-sm sm:px-6"
+          className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/60 px-3 py-6 backdrop-blur-sm sm:px-6"
           role="presentation"
           onClick={() => setOpen(false)}
         >
@@ -66,25 +66,25 @@ export function ScoreDetailsModal({ score, scoreDetail }: ScoreDetailsModalProps
             className="mx-auto flex min-h-full w-full max-w-5xl items-center"
           >
             <div
-              className="w-full overflow-hidden rounded-lg border border-line bg-panel shadow-xl"
+              className="w-full overflow-hidden rounded-xl border border-line bg-panel shadow-raised"
               onClick={(event) => event.stopPropagation()}
             >
               <div className="flex items-start justify-between gap-4 border-b border-line px-4 py-4 sm:px-5">
                 <div className="min-w-0">
-                  <p className="text-xs font-medium uppercase text-[#526070]">
+                  <p className="text-xs font-medium uppercase text-muted">
                     Wallet scoring
                   </p>
                   <h2 id={titleId} className="mt-1 text-xl font-semibold">
                     Detailed scoring
                   </h2>
-                  <p className="mt-1 break-all text-sm text-[#526070]">
+                  <p className="mt-1 break-all text-sm text-muted">
                     {score.walletAddress}
                   </p>
                 </div>
                 <button
                   type="button"
                   onClick={() => setOpen(false)}
-                  className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-line bg-white text-[#526070] transition hover:border-[#9eb1c1] hover:text-ink"
+                  className="ui-icon-button rounded-full"
                   aria-label="Close detailed scoring"
                 >
                   <X className="h-4 w-4" aria-hidden="true" />
@@ -163,9 +163,9 @@ function ScoreSummaryMetric({
 
   return (
     <div className="p-4">
-      <p className="text-xs font-medium uppercase text-[#526070]">{label}</p>
+      <p className="text-xs font-medium uppercase text-muted">{label}</p>
       <p className={`mt-2 text-2xl font-semibold ${toneClass}`}>{value}</p>
-      <p className="mt-1 text-sm text-[#526070]">{detail}</p>
+      <p className="mt-1 text-sm text-muted">{detail}</p>
     </div>
   );
 }
@@ -187,17 +187,17 @@ function ScoreDetailComponent({ component }: { component: WalletScoreComponentDe
 
   return (
     <section className="overflow-hidden rounded-lg border border-line">
-      <div className="grid gap-4 border-b border-line bg-[#f7f9fb] px-4 py-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+      <div className="grid gap-4 border-b border-line bg-subtle px-4 py-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-3">
             <h3 className="font-semibold">{component.label}</h3>
             {component.weight ? (
-              <span className="rounded-md border border-line bg-white px-2 py-0.5 text-xs font-medium text-[#526070]">
+              <span className="rounded-md border border-line bg-white px-2 py-0.5 text-xs font-medium text-muted">
                 Weight {formatPercent(component.weight)}
               </span>
             ) : null}
           </div>
-          <p className="mt-1 text-sm text-[#526070]">{component.detail}</p>
+          <p className="mt-1 text-sm text-muted">{component.detail}</p>
         </div>
         <div className="grid gap-1 text-sm lg:min-w-[190px] lg:text-right">
           <p className="font-semibold">
@@ -206,24 +206,24 @@ function ScoreDetailComponent({ component }: { component: WalletScoreComponentDe
               {isPenalty ? formatPenaltyScore(component.score) : formatScore(component.score)}
             </span>
           </p>
-          <p className="text-[#526070]">
+          <p className="text-muted">
             Weighted {component.weightedScore ? formatScore(component.weightedScore) : "-"}
           </p>
         </div>
       </div>
-      <div className="h-1.5 bg-[#e4e9ef]">
+      <div className="h-1.5 bg-line">
         <div className={`h-full ${toneClass}`} style={{ width: `${progress}%` }} />
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[760px] border-collapse text-left text-sm">
-          <thead className="border-b border-line text-xs uppercase text-[#526070]">
+        <table className="ui-table min-w-[760px] text-sm">
+          <thead className="ui-table-head">
             <tr>
-              <th className="px-4 py-3 font-semibold">Input</th>
-              <th className="px-4 py-3 font-semibold">Value</th>
-              <th className="px-4 py-3 font-semibold">Score</th>
-              <th className="px-4 py-3 font-semibold">Weight</th>
-              <th className="px-4 py-3 font-semibold">Contribution</th>
-              <th className="px-4 py-3 font-semibold">How it is used</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Input</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Value</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Score</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Weight</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Contribution</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">How it is used</th>
             </tr>
           </thead>
           <tbody>
@@ -240,12 +240,12 @@ function ScoreDetailComponent({ component }: { component: WalletScoreComponentDe
 function ScoreDetailItemRow({ item }: { item: WalletScoreDetailItem }) {
   return (
     <tr className="border-b border-line last:border-b-0">
-      <td className="px-4 py-3 font-medium">{item.label}</td>
-      <td className="px-4 py-3 font-mono">{formatDetailValue(item.value, item.valueKind)}</td>
-      <td className="px-4 py-3 font-mono">
+      <td className="px-3 py-2.5 font-medium">{item.label}</td>
+      <td className="px-3 py-2.5 font-mono">{formatDetailValue(item.value, item.valueKind)}</td>
+      <td className="px-3 py-2.5 font-mono">
         {item.score ? formatScore(item.score) : "-"}
       </td>
-      <td className="px-4 py-3 font-mono">{item.weight ? formatPercent(item.weight) : "-"}</td>
+      <td className="px-3 py-2.5 font-mono">{item.weight ? formatPercent(item.weight) : "-"}</td>
       <td
         className={`px-4 py-3 font-mono font-semibold ${scoreTextClass(
           item.contribution,
@@ -254,7 +254,7 @@ function ScoreDetailItemRow({ item }: { item: WalletScoreDetailItem }) {
       >
         {formatSignedScore(item.contribution, item.effect)}
       </td>
-      <td className="max-w-[320px] px-4 py-3 text-[#526070]">{item.detail}</td>
+      <td className="max-w-[320px] px-3 py-2.5 text-muted">{item.detail}</td>
     </tr>
   );
 }
@@ -339,7 +339,7 @@ function scoreTone(value: string | number): "danger" | "neutral" | "positive" | 
 
 function scoreTextClass(value: string | number | null, inverted = false) {
   if (value === null) {
-    return "text-[#526070]";
+    return "text-muted";
   }
 
   const scoreValue = numberValue(value);

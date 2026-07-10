@@ -70,8 +70,8 @@ export function ImportFillsButton({
         onClick={importFills}
         className={
           compact
-            ? "inline-flex h-8 items-center gap-1 rounded-md border border-line bg-white px-2 text-xs font-medium text-ink disabled:opacity-50"
-            : "inline-flex h-10 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-medium text-white disabled:bg-[#98a2b3]"
+            ? "ui-button-secondary h-8 gap-1 px-2 text-xs disabled:opacity-50"
+            : "ui-button-primary h-10 px-4 disabled:border-faint disabled:bg-faint"
         }
         title="Import historical fills"
       >
@@ -79,7 +79,7 @@ export function ImportFillsButton({
         {isImporting ? "Importing" : "Import fills"}
       </button>
       {result ? (
-        <p className="text-xs text-[#526070]">
+        <p className="text-xs text-muted">
           {result.inserted} new, {result.duplicate} duplicate, {result.fetched} perp /{" "}
           {result.rawFetched} raw, {result.pagesFetched} pages
         </p>

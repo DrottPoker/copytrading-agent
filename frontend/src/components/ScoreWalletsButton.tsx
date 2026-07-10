@@ -48,14 +48,14 @@ export function ScoreWalletsButton() {
         type="button"
         disabled={isScoring}
         onClick={scoreWallets}
-        className="inline-flex h-8 items-center gap-1 rounded-md bg-ink px-3 text-xs font-medium text-white disabled:bg-[#98a2b3]"
+        className="ui-button-primary h-8 gap-1 px-3 text-xs disabled:border-faint disabled:bg-faint"
         title="Recalculate wallet scores"
       >
         <Gauge className="h-3.5 w-3.5" aria-hidden="true" />
         {isScoring ? "Scoring" : "Score wallets"}
       </button>
       {result ? (
-        <p className="text-xs text-[#526070]">
+        <p className="text-xs text-muted">
           {result.scoredWallets} scored, {result.windowDays}d
         </p>
       ) : null}

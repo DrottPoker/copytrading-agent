@@ -1,3 +1,4 @@
+import { WalletCards } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
@@ -53,13 +54,14 @@ export default async function WalletDetailPage({
     <>
       <PageTopPanel
         eyebrow="Wallet Pool"
+        icon={WalletCards}
         title={wallet.label || shortAddress(wallet.address)}
         meta={
           <>
-            <Link href="/wallets" className="text-xs font-medium text-[#5b6770] hover:text-ink">
+            <Link href="/wallets" className="text-xs font-medium text-muted hover:text-ink">
               Back to Wallet Pool
             </Link>
-            <span className="break-all font-mono text-xs text-[#5b6770]">{wallet.address}</span>
+            <span className="break-all font-mono text-xs text-muted">{wallet.address}</span>
           </>
         }
         actions={
@@ -105,11 +107,11 @@ export default async function WalletDetailPage({
       </section>
 
       <section className="grid gap-4 lg:grid-cols-[0.8fr_1.2fr]">
-        <div className="rounded-lg border border-line bg-panel p-4 shadow-sm">
+        <div className="ui-panel p-4">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between lg:flex-col lg:items-stretch">
             <div>
               <h2 className="text-base font-semibold">History Import</h2>
-              <p className="mt-2 text-sm leading-6 text-[#5b6770]">
+              <p className="mt-2 text-sm leading-6 text-muted">
                 Pulls recent perp fills and updates wallet stats after dedupe.
               </p>
             </div>
@@ -212,20 +214,20 @@ function HeaderMetric({
   tone?: "positive" | "warning" | "danger" | "neutral";
   value: string;
 }) {
-  const toneClass =
+  const valueClass =
     tone === "positive"
-      ? "border-[#9ccfc0] bg-[#f2fbf7]"
+      ? "text-positive"
       : tone === "warning"
-        ? "border-[#e7c174] bg-[#fff9e8]"
+        ? "text-warning"
         : tone === "danger"
-          ? "border-[#efb1aa] bg-[#fff5f3]"
-          : "border-line bg-[#f8fafb]";
+          ? "text-danger"
+          : "text-ink";
 
   return (
-    <div className={`rounded-lg border p-3 ${toneClass}`}>
-      <p className="text-xs font-medium uppercase text-[#5b6770]">{label}</p>
-      <p className="mt-2 truncate text-xl font-semibold">{value}</p>
-      {detail ? <p className="mt-1 text-xs text-[#5b6770]">{detail}</p> : null}
+    <div className="ui-metric p-3">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.05em] text-muted">{label}</p>
+      <p className={`mt-1.5 truncate text-xl font-semibold tabular-nums ${valueClass}`}>{value}</p>
+      {detail ? <p className="mt-1 text-xs text-muted">{detail}</p> : null}
     </div>
   );
 }
@@ -239,7 +241,7 @@ function ScoreBreakdownSection({
 }) {
   if (!score) {
     return (
-      <section className="rounded-lg border border-line bg-panel px-4 py-10 text-center text-sm text-[#526070]">
+      <section className="ui-panel px-4 py-10 text-center text-sm text-muted">
         No wallet score available yet.
       </section>
     );
@@ -261,11 +263,11 @@ function ScoreBreakdownSection({
   const scoreWindowDays = scoreDetail?.windowDays ?? 60;
 
   return (
-    <section className="overflow-hidden rounded-lg border border-line bg-panel">
+    <section className="ui-panel overflow-hidden">
       <div className="flex flex-col gap-3 border-b border-line px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h2 className="text-base font-semibold">Score Breakdown</h2>
-          <p className="mt-1 text-sm text-[#526070]">
+          <p className="mt-1 text-sm text-muted">
             Last scored {formatDate(score.updatedAt)}. Scoring window{" "}
             {formatInteger(scoreWindowDays)}D.
           </p>
@@ -298,12 +300,12 @@ function ScoreBreakdownSection({
         <div className="p-4">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
             <div>
-              <p className="text-xs font-medium uppercase text-[#526070]">Final score</p>
+              <p className="text-xs font-medium uppercase text-muted">Final score</p>
               <p className={`mt-2 text-5xl font-semibold ${scoreTextClass(score.score)}`}>
                 {formatScore(score.score)}
               </p>
             </div>
-            <div className="grid gap-2 text-sm text-[#526070] sm:text-right">
+            <div className="grid gap-2 text-sm text-muted sm:text-right">
               <p>
                 {formatInteger(scoreWindowDays)}D score realized PnL{" "}
                 {formatCurrency(score.copyablePnlUsd)}
@@ -356,14 +358,14 @@ function ScoreSignalList({
 }) {
   return (
     <div>
-      <p className="text-xs font-medium uppercase text-[#526070]">{title}</p>
+      <p className="text-xs font-medium uppercase text-muted">{title}</p>
       <div className="mt-2 grid gap-2">
         {items.length === 0 ? (
-          <p className="text-sm text-[#526070]">{empty}</p>
+          <p className="text-sm text-muted">{empty}</p>
         ) : (
           items.map((item) => (
             <div key={item.key} className="flex items-center justify-between gap-3 text-sm">
-              <span className="min-w-0 max-w-full whitespace-normal break-words text-[#526070]">{item.label}</span>
+              <span className="min-w-0 max-w-full whitespace-normal break-words text-muted">{item.label}</span>
               <span className={`font-semibold ${scoreTextClass(item.value)}`}>
                 {formatScore(item.value)}
               </span>
@@ -399,13 +401,13 @@ function ScoreComponentRow({
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
           <p className="font-medium">{component.label}</p>
-          <p className="mt-1 text-sm text-[#526070]">{component.detail}</p>
+          <p className="mt-1 text-sm text-muted">{component.detail}</p>
         </div>
         <span className={`shrink-0 text-lg font-semibold ${scoreTextClass(component.value, inverted)}`}>
           {inverted ? formatPenaltyScore(component.value) : formatScore(component.value)}
         </span>
       </div>
-      <div className="mt-3 h-2 overflow-hidden rounded-full bg-[#e4e9ef]">
+      <div className="mt-3 h-2 overflow-hidden rounded-full bg-line">
         <div
           className={`h-full rounded-full ${toneClass}`}
           style={{ width: `${Math.max(0, Math.min(100, component.value))}%` }}
@@ -418,7 +420,7 @@ function ScoreComponentRow({
 function PenaltyBreakdownList({ items }: { items: WalletScorePenaltyItem[] }) {
   if (items.length === 0) {
     return (
-      <div className="px-4 py-3 text-sm text-[#526070]">
+      <div className="px-4 py-3 text-sm text-muted">
         Penalty source details are not available yet.
       </div>
     );
@@ -426,7 +428,7 @@ function PenaltyBreakdownList({ items }: { items: WalletScorePenaltyItem[] }) {
 
   return (
     <div className="px-4 py-3">
-      <p className="text-xs font-medium uppercase text-[#526070]">Penalty sources</p>
+      <p className="text-xs font-medium uppercase text-muted">Penalty sources</p>
       <div className="mt-3 grid gap-3">
         {items.map((item) => (
           <PenaltyItemRow key={item.key} item={item} />
@@ -447,13 +449,13 @@ function PenaltyItemRow({ item }: { item: WalletScorePenaltyItem }) {
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="font-medium">{item.label}</p>
-          <p className="mt-1 text-sm text-[#526070]">{item.detail}</p>
+          <p className="mt-1 text-sm text-muted">{item.detail}</p>
         </div>
         <span className={`shrink-0 font-semibold ${scoreTextClass(value, true)}`}>
           {formatPenaltyScore(value)}
         </span>
       </div>
-      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[#e4e9ef]">
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-line">
         <div className={`h-full rounded-full ${toneClass}`} style={{ width: `${width}%` }} />
       </div>
     </div>
@@ -465,7 +467,7 @@ function CurrentStateSection({ state }: { state: WalletCurrentStateStats }) {
 
   return (
     <section className="grid gap-5 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
-      <div className="min-w-0 rounded-lg border border-line bg-panel shadow-sm">
+      <div className="min-w-0 ui-panel">
         <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
           <h2 className="text-base font-semibold">Perp State</h2>
           <StatusPill
@@ -502,7 +504,7 @@ function CurrentStateSection({ state }: { state: WalletCurrentStateStats }) {
         )}
       </div>
 
-      <div className="min-w-0 rounded-lg border border-line bg-panel shadow-sm">
+      <div className="min-w-0 ui-panel">
         <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
           <h2 className="text-base font-semibold">Spot Exposure</h2>
           <StatusPill label={`${formatInteger(state.spotBalanceCount)} balances`} tone="neutral" />
@@ -531,7 +533,7 @@ function StateMetric({
 
   return (
     <div className="p-4">
-      <p className="text-xs font-medium uppercase text-[#526070]">{label}</p>
+      <p className="text-xs font-medium uppercase text-muted">{label}</p>
       <p className={`mt-2 text-lg font-semibold ${toneClass}`}>{value}</p>
     </div>
   );
@@ -540,25 +542,25 @@ function StateMetric({
 function PerpPositionsTable({ positions }: { positions: WalletPerpPositionStats[] }) {
   return (
     <div className="overflow-x-auto border-t border-line">
-      <table className="w-full min-w-[920px] border-collapse text-left text-xs">
-        <thead className="border-b border-line bg-[#f7f9fb] text-xs uppercase text-[#526070]">
+      <table className="ui-table min-w-[920px] text-xs">
+        <thead className="ui-table-head">
           <tr>
-            <th className="px-3 py-2 font-semibold">Coin</th>
-            <th className="px-3 py-2 font-semibold">Side</th>
-            <th className="px-3 py-2 font-semibold">Opened</th>
-            <th className="px-3 py-2 font-semibold">Size</th>
-            <th className="px-3 py-2 font-semibold">Entry</th>
-            <th className="px-3 py-2 font-semibold">Notional</th>
-            <th className="px-3 py-2 font-semibold">PnL</th>
-            <th className="px-3 py-2 font-semibold">Fills</th>
-            <th className="px-3 py-2 font-semibold">Liq</th>
-            <th className="px-3 py-2 font-semibold">Lev</th>
+            <th scope="col" className="px-3 py-2 font-semibold">Coin</th>
+            <th scope="col" className="px-3 py-2 font-semibold">Side</th>
+            <th scope="col" className="px-3 py-2 font-semibold">Opened</th>
+            <th scope="col" className="px-3 py-2 font-semibold">Size</th>
+            <th scope="col" className="px-3 py-2 font-semibold">Entry</th>
+            <th scope="col" className="px-3 py-2 font-semibold">Notional</th>
+            <th scope="col" className="px-3 py-2 font-semibold">PnL</th>
+            <th scope="col" className="px-3 py-2 font-semibold">Fills</th>
+            <th scope="col" className="px-3 py-2 font-semibold">Liq</th>
+            <th scope="col" className="px-3 py-2 font-semibold">Lev</th>
           </tr>
         </thead>
         <tbody>
           {positions.length === 0 ? (
             <tr>
-              <td colSpan={10} className="px-4 py-10 text-center text-[#526070]">
+              <td colSpan={10} className="px-4 py-10 text-center text-muted">
                 No open perp positions.
               </td>
             </tr>
@@ -576,7 +578,7 @@ function PerpPositionRow({ position }: { position: WalletPerpPositionStats }) {
     <tr className="border-b border-line last:border-b-0">
       <td className="px-3 py-2 font-semibold">{position.coin}</td>
       <td className="px-3 py-2">{position.side}</td>
-      <td className="px-3 py-2 text-[#526070]">
+      <td className="px-3 py-2 text-muted">
         {position.openedAtMs ? formatMs(position.openedAtMs) : "-"}
       </td>
       <td className="px-3 py-2 font-mono">{formatCompactNumber(position.size)}</td>
@@ -590,7 +592,7 @@ function PerpPositionRow({ position }: { position: WalletPerpPositionStats }) {
           R {formatCurrency(position.realizedPnlUsd)}
         </div>
       </td>
-      <td className="px-3 py-2 font-mono text-[#526070]">
+      <td className="px-3 py-2 font-mono text-muted">
         <div>add {formatInteger(position.addFillCount)}</div>
         <div>reduce {formatInteger(position.reduceFillCount)}</div>
         {position.liquidationFillCount > 0 ? (
@@ -608,19 +610,19 @@ function PerpPositionRow({ position }: { position: WalletPerpPositionStats }) {
 function SpotBalancesTable({ balances }: { balances: WalletSpotBalanceStats[] }) {
   return (
     <div className="overflow-x-auto border-t border-line">
-      <table className="w-full min-w-[620px] border-collapse text-left text-sm">
-        <thead className="border-b border-line bg-[#f7f9fb] text-xs uppercase text-[#526070]">
+      <table className="ui-table min-w-[620px] text-sm">
+        <thead className="ui-table-head">
           <tr>
-            <th className="px-4 py-3 font-semibold">Coin</th>
-            <th className="px-4 py-3 font-semibold">Total</th>
-            <th className="px-4 py-3 font-semibold">Hold</th>
-            <th className="px-4 py-3 font-semibold">Entry notional</th>
+            <th scope="col" className="px-3 py-2.5 font-semibold">Coin</th>
+            <th scope="col" className="px-3 py-2.5 font-semibold">Total</th>
+            <th scope="col" className="px-3 py-2.5 font-semibold">Hold</th>
+            <th scope="col" className="px-3 py-2.5 font-semibold">Entry notional</th>
           </tr>
         </thead>
         <tbody>
           {balances.length === 0 ? (
             <tr>
-              <td colSpan={4} className="px-4 py-10 text-center text-[#526070]">
+              <td colSpan={4} className="px-4 py-10 text-center text-muted">
                 No spot balances.
               </td>
             </tr>
@@ -638,34 +640,34 @@ function SpotBalancesTable({ balances }: { balances: WalletSpotBalanceStats[] })
 function SpotBalanceRow({ balance }: { balance: WalletSpotBalanceStats }) {
   return (
     <tr className="border-b border-line last:border-b-0">
-      <td className="px-4 py-3 font-semibold">{balance.coin}</td>
-      <td className="px-4 py-3 font-mono">{formatCompactNumber(balance.total)}</td>
-      <td className="px-4 py-3 font-mono">{formatCompactNumber(balance.hold)}</td>
-      <td className="px-4 py-3 font-mono">{formatCurrency(balance.entryNotionalUsd)}</td>
+      <td className="px-3 py-2.5 font-semibold">{balance.coin}</td>
+      <td className="px-3 py-2.5 font-mono">{formatCompactNumber(balance.total)}</td>
+      <td className="px-3 py-2.5 font-mono">{formatCompactNumber(balance.hold)}</td>
+      <td className="px-3 py-2.5 font-mono">{formatCurrency(balance.entryNotionalUsd)}</td>
     </tr>
   );
 }
 
 function SourceTradeWindowsSection({ windows }: { windows: SourceTradeWindowStats[] }) {
   return (
-    <section className="overflow-hidden rounded-lg border border-line bg-panel">
+    <section className="ui-panel overflow-hidden">
       <div className="border-b border-line px-4 py-3">
         <h2 className="text-base font-semibold">Performance Windows</h2>
-        <p className="mt-1 text-sm text-[#526070]">
+        <p className="mt-1 text-sm text-muted">
           Reconstructed source trades only. Close-only and pre-existing fills are excluded.
         </p>
       </div>
       {windows.length === 0 ? (
-        <div className="px-4 py-8 text-center text-sm text-[#526070]">
+        <div className="px-4 py-8 text-center text-sm text-muted">
           No reconstructed source trade windows yet.
         </div>
       ) : null}
       <div className="grid gap-0 divide-y divide-line xl:grid-cols-5 xl:divide-x xl:divide-y-0">
         {windows.map((window) => (
           <div key={window.label} className="p-4">
-            <p className="text-xs font-medium uppercase text-[#526070]">{window.label}</p>
+            <p className="text-xs font-medium uppercase text-muted">{window.label}</p>
             <p className={windowPnlClass(window.netPnlUsd)}>{formatCurrency(window.netPnlUsd)}</p>
-            <div className="mt-3 grid gap-1 text-sm text-[#526070]">
+            <div className="mt-3 grid gap-1 text-sm text-muted">
               <p>
                 ROI{" "}
                 <span className={windowRoiClass(window.roiPct)}>
@@ -689,37 +691,37 @@ function SourceTradeWindowsSection({ windows }: { windows: SourceTradeWindowStat
 
 function CoinStatsSection({ coins }: { coins: WalletCoinStats[] }) {
   return (
-    <section className="min-w-0 overflow-hidden rounded-lg border border-line bg-panel shadow-sm">
+    <section className="min-w-0 ui-panel overflow-hidden">
       <div className="border-b border-line px-4 py-3">
         <h2 className="text-base font-semibold">Top Coins</h2>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[640px] border-collapse text-left text-sm">
-          <thead className="border-b border-line bg-[#f7f9fb] text-xs uppercase text-[#526070]">
+        <table className="ui-table min-w-[640px] text-sm">
+          <thead className="ui-table-head">
             <tr>
-              <th className="px-4 py-3 font-semibold">Coin</th>
-              <th className="px-4 py-3 font-semibold">Fills</th>
-              <th className="px-4 py-3 font-semibold">Buy / sell</th>
-              <th className="px-4 py-3 font-semibold">Notional</th>
-              <th className="px-4 py-3 font-semibold">PnL</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Coin</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Fills</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Buy / sell</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Notional</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">PnL</th>
             </tr>
           </thead>
           <tbody>
             {coins.length === 0 ? (
               <tr>
-                <td colSpan={5} className="px-4 py-10 text-center text-[#526070]">
+                <td colSpan={5} className="px-4 py-10 text-center text-muted">
                   No coin stats yet.
                 </td>
               </tr>
             ) : (
               coins.map((coin) => (
                 <tr key={coin.coin} className="border-b border-line last:border-b-0">
-                  <td className="px-4 py-3 font-semibold">{coin.coin}</td>
-                  <td className="px-4 py-3">{formatInteger(coin.fillCount)}</td>
-                  <td className="px-4 py-3">
+                  <td className="px-3 py-2.5 font-semibold">{coin.coin}</td>
+                  <td className="px-3 py-2.5">{formatInteger(coin.fillCount)}</td>
+                  <td className="px-3 py-2.5">
                     {formatInteger(coin.buyCount)} / {formatInteger(coin.sellCount)}
                   </td>
-                  <td className="px-4 py-3 font-mono">{formatCurrency(coin.notionalUsd)}</td>
+                  <td className="px-3 py-2.5 font-mono">{formatCurrency(coin.notionalUsd)}</td>
                   <td className={pnlClass(coin.pnlUsd)}>{formatCurrency(coin.pnlUsd)}</td>
                 </tr>
               ))
@@ -734,11 +736,11 @@ function CoinStatsSection({ coins }: { coins: WalletCoinStats[] }) {
 function SourceTradesSection({ sourceTrades }: { sourceTrades: SourceTradeListResponse }) {
   const { summary } = sourceTrades;
   return (
-    <section className="overflow-hidden rounded-lg border border-line bg-panel">
+    <section className="ui-panel overflow-hidden">
       <div className="flex flex-col gap-3 border-b border-line px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h2 className="text-base font-semibold">Source Trades</h2>
-          <p className="mt-1 text-sm text-[#526070]">
+          <p className="mt-1 text-sm text-muted">
             Reconstructed from {sourceTrades.days ? `${sourceTrades.days}D of` : "all"} observed
             open and close fills. Ignored fills are diagnostics only.
           </p>
@@ -767,27 +769,27 @@ function SourceTradesSection({ sourceTrades }: { sourceTrades: SourceTradeListRe
         <StateMetric label="Fees" value={formatCurrency(summary.feeUsd)} />
       </div>
       <div className="overflow-x-auto border-t border-line">
-        <table className="w-full min-w-[1180px] border-collapse text-left text-sm">
-          <thead className="border-b border-line bg-[#f7f9fb] text-xs uppercase text-[#526070]">
+        <table className="ui-table min-w-[1180px] text-sm">
+          <thead className="ui-table-head">
             <tr>
-              <th className="px-4 py-3 font-semibold">Status</th>
-              <th className="px-4 py-3 font-semibold">Coin</th>
-              <th className="px-4 py-3 font-semibold">Side</th>
-              <th className="px-4 py-3 font-semibold">Opened</th>
-              <th className="px-4 py-3 font-semibold">Closed</th>
-              <th className="px-4 py-3 font-semibold">Duration</th>
-              <th className="px-4 py-3 font-semibold">Entry</th>
-              <th className="px-4 py-3 font-semibold">Exit</th>
-              <th className="px-4 py-3 font-semibold">Size</th>
-              <th className="px-4 py-3 font-semibold">Notional</th>
-              <th className="px-4 py-3 font-semibold">Net PnL</th>
-              <th className="px-4 py-3 font-semibold">Fills</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Status</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Coin</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Side</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Opened</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Closed</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Duration</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Entry</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Exit</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Size</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Notional</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Net PnL</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Fills</th>
             </tr>
           </thead>
           <tbody>
             {sourceTrades.items.length === 0 ? (
               <tr>
-                <td colSpan={12} className="px-4 py-10 text-center text-[#526070]">
+                <td colSpan={12} className="px-4 py-10 text-center text-muted">
                   No complete source trades reconstructed for this window.
                 </td>
               </tr>
@@ -806,25 +808,25 @@ function SourceTradesSection({ sourceTrades }: { sourceTrades: SourceTradeListRe
 function SourceTradeRow({ trade }: { trade: SourceTrade }) {
   return (
     <tr className="border-b border-line last:border-b-0">
-      <td className="px-4 py-3">
+      <td className="px-3 py-2.5">
         <div className="flex flex-wrap gap-1">
           <StatusPill label={trade.status} tone={trade.status === "closed" ? "positive" : "neutral"} />
           {trade.hasLiquidation ? <StatusPill label="liquidation" tone="danger" /> : null}
         </div>
       </td>
-      <td className="px-4 py-3 font-semibold">{trade.coin}</td>
-      <td className="px-4 py-3">{trade.side}</td>
-      <td className="px-4 py-3 text-[#526070]">{formatMs(trade.openedAtMs)}</td>
-      <td className="px-4 py-3 text-[#526070]">
+      <td className="px-3 py-2.5 font-semibold">{trade.coin}</td>
+      <td className="px-3 py-2.5">{trade.side}</td>
+      <td className="px-3 py-2.5 text-muted">{formatMs(trade.openedAtMs)}</td>
+      <td className="px-3 py-2.5 text-muted">
         {trade.closedAtMs ? formatMs(trade.closedAtMs) : "-"}
       </td>
-      <td className="px-4 py-3 text-[#526070]">{formatDuration(trade.durationMs)}</td>
-      <td className="px-4 py-3 font-mono">{formatPrice(trade.averageEntryPrice)}</td>
-      <td className="px-4 py-3 font-mono">{formatPrice(trade.averageExitPrice)}</td>
-      <td className="px-4 py-3 font-mono">{formatCompactNumber(trade.closedSize)}</td>
-      <td className="px-4 py-3 font-mono">{formatCurrency(trade.entryNotionalUsd)}</td>
+      <td className="px-3 py-2.5 text-muted">{formatDuration(trade.durationMs)}</td>
+      <td className="px-3 py-2.5 font-mono">{formatPrice(trade.averageEntryPrice)}</td>
+      <td className="px-3 py-2.5 font-mono">{formatPrice(trade.averageExitPrice)}</td>
+      <td className="px-3 py-2.5 font-mono">{formatCompactNumber(trade.closedSize)}</td>
+      <td className="px-3 py-2.5 font-mono">{formatCurrency(trade.entryNotionalUsd)}</td>
       <td className={pnlClass(trade.netPnlUsd)}>{formatCurrency(trade.netPnlUsd)}</td>
-      <td className="px-4 py-3 text-[#526070]">
+      <td className="px-3 py-2.5 text-muted">
         {trade.entryFillCount} / {trade.closeFillCount}
       </td>
     </tr>
@@ -833,28 +835,28 @@ function SourceTradeRow({ trade }: { trade: SourceTrade }) {
 
 function CopyTradesSection({ trades, total }: { trades: CopyTrade[]; total: number }) {
   return (
-    <section className="min-w-0 overflow-hidden rounded-lg border border-line bg-panel shadow-sm">
+    <section className="min-w-0 ui-panel overflow-hidden">
       <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
         <h2 className="text-base font-semibold">Copy Trades</h2>
         <StatusPill label={`${total} trades`} tone="neutral" />
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[760px] border-collapse text-left text-sm">
-          <thead className="border-b border-line bg-[#f7f9fb] text-xs uppercase text-[#526070]">
+        <table className="ui-table min-w-[760px] text-sm">
+          <thead className="ui-table-head">
             <tr>
-              <th className="px-4 py-3 font-semibold">Status</th>
-              <th className="px-4 py-3 font-semibold">Coin</th>
-              <th className="px-4 py-3 font-semibold">Side</th>
-              <th className="px-4 py-3 font-semibold">Size</th>
-              <th className="px-4 py-3 font-semibold">Entry</th>
-              <th className="px-4 py-3 font-semibold">PnL</th>
-              <th className="px-4 py-3 font-semibold">Opened</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Status</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Coin</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Side</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Size</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Entry</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">PnL</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Opened</th>
             </tr>
           </thead>
           <tbody>
             {trades.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-4 py-10 text-center text-[#526070]">
+                <td colSpan={7} className="px-4 py-10 text-center text-muted">
                   No paper or live copy trades have been created for this wallet yet.
                 </td>
               </tr>
@@ -871,15 +873,15 @@ function CopyTradesSection({ trades, total }: { trades: CopyTrade[]; total: numb
 function CopyTradeRow({ trade }: { trade: CopyTrade }) {
   return (
     <tr className="border-b border-line last:border-b-0">
-      <td className="px-4 py-3">
+      <td className="px-3 py-2.5">
         <StatusPill label={trade.status} tone={trade.status === "open" ? "positive" : "neutral"} />
       </td>
-      <td className="px-4 py-3 font-semibold">{trade.coin}</td>
-      <td className="px-4 py-3">{trade.side}</td>
-      <td className="px-4 py-3 font-mono">{formatCurrency(trade.sizeUsd)}</td>
-      <td className="px-4 py-3 font-mono">{trade.ourEntryPrice ?? trade.sourceEntryPrice ?? "-"}</td>
+      <td className="px-3 py-2.5 font-semibold">{trade.coin}</td>
+      <td className="px-3 py-2.5">{trade.side}</td>
+      <td className="px-3 py-2.5 font-mono">{formatCurrency(trade.sizeUsd)}</td>
+      <td className="px-3 py-2.5 font-mono">{trade.ourEntryPrice ?? trade.sourceEntryPrice ?? "-"}</td>
       <td className={pnlClass(trade.pnlUsd)}>{trade.pnlUsd ? formatCurrency(trade.pnlUsd) : "-"}</td>
-      <td className="px-4 py-3 text-[#526070]">
+      <td className="px-3 py-2.5 text-muted">
         {trade.openedAt ? formatDate(trade.openedAt) : "-"}
       </td>
     </tr>
@@ -888,29 +890,29 @@ function CopyTradeRow({ trade }: { trade: CopyTrade }) {
 
 function FillsSection({ fills, total }: { fills: WalletFill[]; total: number }) {
   return (
-    <section className="overflow-hidden rounded-lg border border-line bg-panel">
+    <section className="ui-panel overflow-hidden">
       <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
         <h2 className="text-base font-semibold">Source Fills</h2>
         <StatusPill label={`${total} stored`} tone="neutral" />
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[1020px] border-collapse text-left text-sm">
-          <thead className="border-b border-line bg-[#f7f9fb] text-xs uppercase text-[#526070]">
+        <table className="ui-table min-w-[1020px] text-sm">
+          <thead className="ui-table-head">
             <tr>
-              <th className="px-4 py-3 font-semibold">Time</th>
-              <th className="px-4 py-3 font-semibold">Coin</th>
-              <th className="px-4 py-3 font-semibold">Side</th>
-              <th className="px-4 py-3 font-semibold">Price</th>
-              <th className="px-4 py-3 font-semibold">Size</th>
-              <th className="px-4 py-3 font-semibold">Notional</th>
-              <th className="px-4 py-3 font-semibold">PnL</th>
-              <th className="px-4 py-3 font-semibold">Source</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Time</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Coin</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Side</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Price</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Size</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Notional</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">PnL</th>
+              <th scope="col" className="px-3 py-2.5 font-semibold">Source</th>
             </tr>
           </thead>
           <tbody>
             {fills.length === 0 ? (
               <tr>
-                <td colSpan={8} className="px-4 py-10 text-center text-[#526070]">
+                <td colSpan={8} className="px-4 py-10 text-center text-muted">
                   No fills imported yet.
                 </td>
               </tr>
@@ -927,14 +929,14 @@ function FillsSection({ fills, total }: { fills: WalletFill[]; total: number }) 
 function FillRow({ fill }: { fill: WalletFill }) {
   return (
     <tr className="border-b border-line last:border-b-0">
-      <td className="px-4 py-3 text-[#526070]">{formatMs(fill.timestampMs)}</td>
-      <td className="px-4 py-3 font-semibold">{fill.coin}</td>
-      <td className="px-4 py-3">{fill.side}</td>
-      <td className="px-4 py-3 font-mono">{fill.price}</td>
-      <td className="px-4 py-3 font-mono">{fill.size}</td>
-      <td className="px-4 py-3 font-mono">{formatCurrency(fill.notionalUsd)}</td>
+      <td className="px-3 py-2.5 text-muted">{formatMs(fill.timestampMs)}</td>
+      <td className="px-3 py-2.5 font-semibold">{fill.coin}</td>
+      <td className="px-3 py-2.5">{fill.side}</td>
+      <td className="px-3 py-2.5 font-mono">{fill.price}</td>
+      <td className="px-3 py-2.5 font-mono">{fill.size}</td>
+      <td className="px-3 py-2.5 font-mono">{formatCurrency(fill.notionalUsd)}</td>
       <td className={pnlClass(fill.pnlUsd)}>{fill.pnlUsd ? formatCurrency(fill.pnlUsd) : "-"}</td>
-      <td className="px-4 py-3">
+      <td className="px-3 py-2.5">
         <StatusPill label={fill.isSnapshot ? "snapshot" : "realtime"} tone="neutral" />
       </td>
     </tr>
@@ -943,7 +945,7 @@ function FillRow({ fill }: { fill: WalletFill }) {
 
 function EmptyStatsPanel() {
   return (
-    <section className="rounded-lg border border-line bg-panel px-4 py-10 text-center text-sm text-[#526070]">
+    <section className="ui-panel px-4 py-10 text-center text-sm text-muted">
       No wallet stats available yet. Import fills to populate this page.
     </section>
   );
@@ -951,8 +953,8 @@ function EmptyStatsPanel() {
 
 function InfoBlock({ title, value }: { title: string; value: string }) {
   return (
-    <div className="rounded-lg border border-line bg-panel p-4">
-      <p className="text-xs font-medium uppercase text-[#526070]">{title}</p>
+    <div className="ui-panel p-4">
+      <p className="text-xs font-medium uppercase text-muted">{title}</p>
       <p className="mt-2 text-sm font-semibold">{value}</p>
     </div>
   );
@@ -969,18 +971,18 @@ function StatTile({
   detail: string;
   tone?: "positive" | "danger" | "neutral";
 }) {
-  const toneClass =
+  const valueClass =
     tone === "positive"
-      ? "border-[#a7d8c4] bg-[#eefaf5]"
+      ? "text-positive"
       : tone === "danger"
-        ? "border-[#f2aaa5] bg-[#fff2f0]"
-        : "border-line bg-panel";
+        ? "text-danger"
+        : "text-ink";
 
   return (
-    <article className={`rounded-lg border p-4 ${toneClass}`}>
-      <p className="text-xs font-medium uppercase text-[#526070]">{label}</p>
-      <p className="mt-2 truncate text-xl font-semibold text-ink">{value}</p>
-      <p className="mt-2 min-h-5 text-sm text-[#526070]">{detail}</p>
+    <article className="ui-metric">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.05em] text-muted">{label}</p>
+      <p className={`mt-1.5 truncate text-xl font-semibold tabular-nums ${valueClass}`}>{value}</p>
+      <p className="mt-2 min-h-5 text-xs leading-5 text-muted">{detail}</p>
     </article>
   );
 }
@@ -1065,7 +1067,7 @@ function windowPnlClass(value: string | null) {
 
 function windowRoiClass(value: string | null) {
   if (!value) {
-    return "font-semibold text-[#526070]";
+    return "font-semibold text-muted";
   }
   return numberValue(value) >= 0 ? "font-semibold text-positive" : "font-semibold text-danger";
 }
@@ -1075,7 +1077,7 @@ function scoreTextClass(
   inverted = false,
 ) {
   if (value === null || value === undefined) {
-    return "text-[#526070]";
+    return "text-muted";
   }
 
   const score = numberValue(value);

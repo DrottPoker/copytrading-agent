@@ -69,7 +69,7 @@ export function WalletActions({ wallet }: { wallet: Wallet }) {
       <div className="flex flex-wrap gap-2">
         <Link
           href={`/wallets/${wallet.address}`}
-          className="inline-flex h-8 items-center gap-1 rounded-md border border-line bg-white px-2 text-xs font-medium text-ink"
+          className="ui-button-secondary h-8 gap-1 px-2 text-xs"
           title="View wallet details"
         >
           <Eye className="h-3.5 w-3.5" aria-hidden="true" />
@@ -80,7 +80,7 @@ export function WalletActions({ wallet }: { wallet: Wallet }) {
           type="button"
           disabled={isBusy}
           onClick={() => patchWallet({ enabled: !wallet.enabled })}
-          className="inline-flex h-8 items-center gap-1 rounded-md border border-line bg-white px-2 text-xs font-medium text-ink disabled:opacity-50"
+          className="ui-button-secondary h-8 gap-1 px-2 text-xs disabled:opacity-50"
           title={wallet.enabled ? "Disable wallet" : "Enable wallet"}
         >
           {wallet.enabled ? (
@@ -100,7 +100,7 @@ export function WalletActions({ wallet }: { wallet: Wallet }) {
               copyEnabled: false,
             })
           }
-          className="inline-flex h-8 items-center gap-1 rounded-md border border-line bg-white px-2 text-xs font-medium text-ink disabled:opacity-50"
+          className="ui-button-secondary h-8 gap-1 px-2 text-xs disabled:opacity-50"
           title={wallet.pollingTier === "cooldown" ? "Clear cooldown" : "Force cooldown"}
         >
           <Clock3 className="h-3.5 w-3.5" aria-hidden="true" />
@@ -110,7 +110,7 @@ export function WalletActions({ wallet }: { wallet: Wallet }) {
           type="button"
           disabled={isBusy}
           onClick={deleteWallet}
-          className="inline-flex h-8 items-center gap-1 rounded-md border border-[#f2aaa5] bg-[#fff2f0] px-2 text-xs font-medium text-danger disabled:opacity-50"
+          className="ui-button-danger h-8 gap-1 px-2 text-xs disabled:opacity-50"
           title="Delete wallet"
         >
           <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />

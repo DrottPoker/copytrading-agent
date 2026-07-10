@@ -3,9 +3,13 @@
 @tailwind utilities;
 
 :root {
+  --chart-danger: #dc2626;
+  --chart-grid: #d5dbe3;
+  --chart-positive: #16855b;
   color-scheme: light;
-  background: #eef2f5;
-  color: #111827;
+  background: #f3f5f7;
+  color: #101828;
+  font-synthesis: none;
 }
 
 * {
@@ -15,8 +19,13 @@
 body {
   margin: 0;
   min-height: 100vh;
-  background: #eef2f5;
+  background: #f3f5f7;
+  color: #101828;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
 }
 
@@ -27,12 +36,127 @@ textarea {
   font: inherit;
 }
 
+button,
+a,
+input,
+select,
+textarea {
+  transition-duration: 150ms;
+  transition-property: color, background-color, border-color, box-shadow, opacity;
+  transition-timing-function: ease;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: #98a2b3;
+}
+
+table,
+.font-mono {
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+
 a {
   color: inherit;
   text-decoration: none;
 }
 
 ::selection {
-  background: #bfd7d2;
-  color: #0b1415;
+  background: #bfdbfe;
+  color: #172554;
+}
+
+* {
+  scrollbar-color: #cdd3dc transparent;
+  scrollbar-width: thin;
+}
+
+::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cdd3dc;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@layer components {
+  .ui-panel {
+    @apply rounded-xl border border-line bg-panel shadow-panel;
+  }
+
+  .ui-panel-header {
+    @apply flex min-h-11 items-center justify-between gap-3 border-b border-line px-4 py-2.5;
+  }
+
+  .ui-metric {
+    @apply rounded-xl border border-line bg-panel p-3.5 shadow-panel;
+  }
+
+  .ui-data-cell {
+    @apply rounded-lg border border-line bg-subtle px-3 py-2.5;
+  }
+
+  .ui-control {
+    @apply h-9 rounded-lg border border-line-strong bg-white px-3 text-sm text-ink shadow-panel outline-none hover:border-faint focus:border-brand focus:ring-2 focus:ring-brand/15;
+  }
+
+  .ui-button-secondary {
+    @apply inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-line-strong bg-white px-3 text-sm font-semibold text-secondary shadow-panel hover:border-faint hover:bg-subtle;
+  }
+
+  .ui-button-primary {
+    @apply inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-brand bg-brand px-3 text-sm font-semibold text-white shadow-panel hover:border-brand-hover hover:bg-brand-hover;
+  }
+
+  .ui-button-positive {
+    @apply inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-positive/25 bg-positive-soft px-3 text-sm font-semibold text-positive hover:border-positive/40;
+  }
+
+  .ui-button-warning {
+    @apply inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-warning/25 bg-warning-soft px-3 text-sm font-semibold text-warning hover:border-warning/40;
+  }
+
+  .ui-button-danger {
+    @apply inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-danger/25 bg-danger-soft px-3 text-sm font-semibold text-danger hover:border-danger/40;
+  }
+
+  .ui-icon-button {
+    @apply inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-line-strong bg-white text-secondary shadow-panel hover:border-faint hover:bg-subtle hover:text-ink;
+  }
+
+  .ui-table {
+    @apply w-full border-collapse text-left text-sm;
+  }
+
+  .ui-table-head {
+    @apply border-b border-line bg-subtle text-[11px] font-semibold uppercase tracking-[0.06em] text-muted;
+  }
+
+  .ui-table-row {
+    @apply border-b border-line last:border-b-0 hover:bg-subtle/80;
+  }
 }

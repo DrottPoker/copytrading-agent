@@ -110,10 +110,10 @@ export function LiveFeed({ initialEvents }: { initialEvents: LiveEvent[] }) {
   const newestEventAt = useMemo(() => events[0]?.createdAt ?? null, [events]);
 
   return (
-    <section className="overflow-hidden rounded-lg border border-line bg-panel">
+    <section className="ui-panel overflow-hidden">
       <div className="flex flex-col gap-3 border-b border-line px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
-          <RadioTower className="h-4 w-4 text-[#526070]" aria-hidden="true" />
+          <RadioTower className="h-4 w-4 text-muted" aria-hidden="true" />
           <h2 className="text-base font-semibold">Live Feed</h2>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -125,7 +125,7 @@ export function LiveFeed({ initialEvents }: { initialEvents: LiveEvent[] }) {
 
       <div className="divide-y divide-line">
         {events.length === 0 ? (
-          <div className="px-4 py-10 text-center text-sm text-[#526070]">No events yet.</div>
+          <div className="px-4 py-10 text-center text-sm text-muted">No events yet.</div>
         ) : (
           events.map((event, index) => (
             <article
@@ -137,10 +137,10 @@ export function LiveFeed({ initialEvents }: { initialEvents: LiveEvent[] }) {
               </div>
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium text-ink">{event.message}</p>
-                <p className="mt-1 truncate font-mono text-xs text-[#526070]">{event.channel}</p>
+                <p className="mt-1 truncate font-mono text-xs text-muted">{event.channel}</p>
                 <PayloadSummary event={event} />
               </div>
-              <time className="text-left text-xs text-[#526070] md:text-right">
+              <time className="text-left text-xs text-muted md:text-right">
                 {event.createdAt ? formatDate(event.createdAt) : "-"}
               </time>
             </article>
@@ -156,7 +156,7 @@ function PayloadSummary({ event }: { event: LiveEvent }) {
   const fill = recordPayload(event.payload.fill);
   if (fill) {
     return (
-      <p className="mt-2 font-mono text-xs text-[#526070]">
+      <p className="mt-2 font-mono text-xs text-muted">
         {walletAddress ? `${shortAddress(walletAddress)} ` : ""}
         {stringPayload(fill.coin)} {stringPayload(fill.side)} size {stringPayload(fill.size)}
       </p>
@@ -164,7 +164,7 @@ function PayloadSummary({ event }: { event: LiveEvent }) {
   }
 
   if (walletAddress) {
-    return <p className="mt-2 font-mono text-xs text-[#526070]">{shortAddress(walletAddress)}</p>;
+    return <p className="mt-2 font-mono text-xs text-muted">{shortAddress(walletAddress)}</p>;
   }
 
   return null;

@@ -225,15 +225,19 @@ function OperationIndicator({
   const isRunning = status === "running" || isPending;
 
   return (
-    <article className={`rounded-lg border p-4 shadow-sm ${operationToneClass(tone)}`}>
+    <article className="ui-metric">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-xs font-medium uppercase text-[#5b6770]">{titleText}</p>
+          <p className="text-xs font-medium uppercase text-muted">{titleText}</p>
           <div className="mt-2 flex min-w-0 items-center gap-2">
-            <StatusIcon
-              className={`h-4 w-4 shrink-0 ${status === "running" ? "animate-spin" : ""}`}
-              aria-hidden="true"
-            />
+            <span
+              className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${operationToneClass(tone)}`}
+            >
+              <StatusIcon
+                className={`h-4 w-4 ${status === "running" ? "animate-spin" : ""}`}
+                aria-hidden="true"
+              />
+            </span>
             <p className="truncate text-lg font-semibold text-ink">
               {operationStatusLabel(status)}
             </p>
@@ -246,7 +250,7 @@ function OperationIndicator({
             disabled={isRunning}
             aria-label={manualLabel}
             title={manualLabel}
-            className="inline-flex h-8 items-center gap-1 rounded-md border border-line bg-white px-2 text-xs font-medium text-ink shadow-sm transition hover:border-[#a9b5bf] hover:bg-[#f8fafb] disabled:cursor-not-allowed disabled:opacity-60"
+            className="ui-button-secondary h-8 px-2 text-xs disabled:cursor-not-allowed disabled:opacity-60"
           >
             {isRunning ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
@@ -255,15 +259,15 @@ function OperationIndicator({
             )}
             <span>{isRunning ? "Running" : "Run"}</span>
           </button>
-          <Icon className="h-5 w-5 text-[#5b6770]" aria-hidden="true" />
+          <Icon className="h-5 w-5 text-muted" aria-hidden="true" />
         </div>
       </div>
 
-      <p className="mt-3 truncate text-sm text-[#5b6770]">{operationTimeText(operation)}</p>
+      <p className="mt-3 truncate text-sm text-muted">{operationTimeText(operation)}</p>
       <div className="mt-4 grid grid-cols-3 gap-2">
         {metrics.map((metric) => (
           <div key={metric.key} className="min-w-0">
-            <p className="truncate text-[11px] font-medium uppercase text-[#5b6770]">
+            <p className="truncate text-[11px] font-medium uppercase text-muted">
               {metric.label}
             </p>
             <p className="mt-1 truncate text-sm font-semibold text-ink">
@@ -272,7 +276,7 @@ function OperationIndicator({
           </div>
         ))}
       </div>
-      <div className="mt-3 flex min-w-0 items-center justify-between gap-3 border-t border-line pt-3 text-xs text-[#5b6770]">
+      <div className="mt-3 flex min-w-0 items-center justify-between gap-3 border-t border-line pt-3 text-xs text-muted">
         <span className="truncate">Duration {duration}</span>
         {operation?.lastError ? (
           <span className="truncate text-danger" title={operation.lastError}>
@@ -306,15 +310,15 @@ function operationTone(status: string): OperationTone {
 
 function operationToneClass(tone: OperationTone) {
   if (tone === "positive") {
-    return "border-[#9ccfc0] bg-[#f2fbf7]";
+    return "bg-positive-soft text-positive";
   }
   if (tone === "danger") {
-    return "border-[#efb1aa] bg-[#fff5f3]";
+    return "bg-danger-soft text-danger";
   }
   if (tone === "warning") {
-    return "border-[#efd28b] bg-[#fff9e8]";
+    return "bg-warning-soft text-warning";
   }
-  return "border-line bg-panel";
+  return "bg-subtle text-muted";
 }
 
 function operationStatusIcon(status: string) {

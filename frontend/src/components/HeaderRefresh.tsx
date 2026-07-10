@@ -54,7 +54,7 @@ export function HeaderRefreshButton({
       type="button"
       onClick={refresh}
       title={controlTitle}
-      className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-line bg-white text-[#344054] shadow-sm hover:bg-[#f7f9fb]"
+      className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-line-strong bg-white text-secondary shadow-panel hover:border-faint hover:bg-subtle hover:text-ink"
     >
       <RefreshCw className={`h-3.5 w-3.5 ${active ? "animate-spin" : ""}`} aria-hidden="true" />
       <span className="sr-only">Refresh</span>
@@ -64,7 +64,7 @@ export function HeaderRefreshButton({
 
 export function HeaderUpdatedLabel({ label }: { label: string }) {
   return (
-    <span className="inline-flex min-h-8 items-center whitespace-nowrap text-xs font-medium text-[#5b6770]">
+    <span className="inline-flex min-h-8 items-center whitespace-nowrap text-xs font-medium text-muted">
       {label}
     </span>
   );

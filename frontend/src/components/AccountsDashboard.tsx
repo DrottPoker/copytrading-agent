@@ -25,6 +25,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
+import { DashboardMetric, DashboardPanel } from "@/components/DashboardSurface";
 import { getPublicApiBaseUrl } from "@/lib/config";
 import {
   formatCurrency,
@@ -648,145 +649,10 @@ export function AccountsDashboard({
         actions={
           <>
             <HeaderUpdatedLabel label={`Updated ${formatDate(lastUpdatedAt(summary, tradingAccounts))}`} />
-            <button
-              type="button"
-              onClick={openCreateAccount}
-              className="inline-flex min-h-9 items-center gap-2 rounded-md border border-line bg-white px-3 py-1.5 text-sm font-semibold text-ink shadow-sm hover:bg-[#f7f9fb]"
-            >
-              <Plus className="h-4 w-4" aria-hidden="true" />
-              Create account
-            </button>
             <StatusPill
               label={tradingAccounts.liveTradingEnabled ? "live enabled" : "live disabled"}
               tone={tradingAccounts.liveTradingEnabled ? "positive" : "neutral"}
             />
-            <select
-              aria-label="Select account"
-              className="h-9 min-w-[190px] rounded-md border border-line bg-white px-3 text-sm font-medium text-ink shadow-sm"
-              value={selectedAccountKey}
-              onChange={(event) => setSelectedAccountKey(event.target.value)}
-            >
-              {accountOptions.map((account) => (
-                <option key={`${account.accountType}:${account.key}`} value={account.key}>
-                  {accountOptionLabel(account)}
-                </option>
-              ))}
-            </select>
-            {selectedAccount ? (
-              <StatusPill
-                label={accountTradingStatusLabel(selectedAccount)}
-                tone={accountTradingStatusTone(selectedAccount)}
-              />
-            ) : null}
-            {selectedAccount?.accountType === "live" &&
-            selectedAccount.live.status === "exit_only" ? (
-              <>
-                <button
-                  type="button"
-                  onClick={() => void handleTradingAction("disable")}
-                  disabled={accountAction !== null}
-                  title="Reconcile the exchange account and disable only when it is flat"
-                  className="inline-flex min-h-9 items-center gap-2 rounded-md border border-line bg-white px-3 py-1.5 text-sm font-semibold text-ink shadow-sm hover:bg-[#f7f9fb] disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {accountAction === "disable" ? (
-                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                  ) : (
-                    <Square className="h-4 w-4" aria-hidden="true" />
-                  )}
-                  Verify flat and disable
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void handleTradingAction("close-all-and-stop")}
-                  disabled={accountAction !== null}
-                  className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[#efb1aa] bg-[#fff5f3] px-3 py-1.5 text-sm font-semibold text-danger shadow-sm hover:bg-[#ffe9e6] disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  <XCircle className="h-4 w-4" aria-hidden="true" />
-                  Close all
-                </button>
-              </>
-            ) : null}
-            {selectedAccount ? (
-              accountTradingEnabled(selectedAccount) ? (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => void handleTradingAction("stop")}
-                    disabled={accountAction !== null}
-                    className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[#f0c36d] bg-[#fff8e8] px-3 py-1.5 text-sm font-semibold text-warning shadow-sm hover:bg-[#fff2d2] disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {accountAction === "stop" ? (
-                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                    ) : (
-                      <Square className="h-4 w-4" aria-hidden="true" />
-                    )}
-                    Stop trading
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void handleTradingAction("close-all-and-stop")}
-                    disabled={accountAction !== null}
-                    className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[#efb1aa] bg-[#fff5f3] px-3 py-1.5 text-sm font-semibold text-danger shadow-sm hover:bg-[#ffe9e6] disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {accountAction === "close-all-and-stop" ? (
-                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                    ) : (
-                      <XCircle className="h-4 w-4" aria-hidden="true" />
-                    )}
-                    Close all and stop trading
-                  </button>
-                </>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => void handleTradingAction("start")}
-                  disabled={
-                    accountAction !== null ||
-                    (selectedAccount.accountType === "live" &&
-                      !tradingAccounts.liveTradingEnabled)
-                  }
-                  title={
-                    selectedAccount.accountType === "live" &&
-                    !tradingAccounts.liveTradingEnabled
-                      ? "Set LIVE_TRADING_ENABLED=true before starting this account"
-                      : "Start trading"
-                  }
-                  className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[#9ccfc0] bg-[#f2fbf7] px-3 py-1.5 text-sm font-semibold text-positive shadow-sm hover:bg-[#e5f6ee] disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {accountAction === "start" ? (
-                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                  ) : (
-                    <Play className="h-4 w-4" aria-hidden="true" />
-                  )}
-                  Start trading
-                </button>
-              )
-            ) : null}
-            {selectedAccount ? (
-              <button
-                type="button"
-                onClick={() => void handleDeleteAccount()}
-                disabled={
-                  accountAction !== null ||
-                  (selectedAccount.accountType === "live" &&
-                    selectedAccount.live.status !== "disabled")
-                }
-                title={
-                  selectedAccount.accountType === "live" &&
-                  selectedAccount.live.status !== "disabled"
-                    ? "Disable the live account after a fresh flat reconciliation before archiving it"
-                    : "Delete selected account"
-                }
-                className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[#efb1aa] bg-white px-3 py-1.5 text-sm font-semibold text-danger shadow-sm hover:bg-[#fff5f3] disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {accountAction === "delete" ? (
-                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                ) : (
-                  <Trash2 className="h-4 w-4" aria-hidden="true" />
-                )}
-                {selectedAccount.accountType === "live" ? "Archive account" : "Delete account"}
-              </button>
-            ) : null}
             {connectionState === "offline" ? <StatusPill label="offline" tone="danger" /> : null}
           </>
         }
@@ -798,6 +664,148 @@ export function AccountsDashboard({
           />
         }
       />
+
+      <section className="ui-panel flex flex-col gap-3 p-3 xl:flex-row xl:items-center xl:justify-between">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <span className="text-xs font-semibold uppercase tracking-[0.05em] text-muted">
+            Active account
+          </span>
+          <select
+            aria-label="Select account"
+            className="ui-control min-w-[220px]"
+            value={selectedAccountKey}
+            onChange={(event) => setSelectedAccountKey(event.target.value)}
+          >
+            {accountOptions.map((account) => (
+              <option key={`${account.accountType}:${account.key}`} value={account.key}>
+                {accountOptionLabel(account)}
+              </option>
+            ))}
+          </select>
+          {selectedAccount ? (
+            <StatusPill
+              label={accountTradingStatusLabel(selectedAccount)}
+              tone={accountTradingStatusTone(selectedAccount)}
+            />
+          ) : null}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 xl:justify-end">
+          <button type="button" onClick={openCreateAccount} className="ui-button-secondary">
+            <Plus className="h-4 w-4" aria-hidden="true" />
+            Create account
+          </button>
+          {selectedAccount?.accountType === "live" &&
+          selectedAccount.live.status === "exit_only" ? (
+            <>
+              <button
+                type="button"
+                onClick={() => void handleTradingAction("disable")}
+                disabled={accountAction !== null}
+                title="Reconcile the exchange account and disable only when it is flat"
+                className="ui-button-secondary disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {accountAction === "disable" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Square className="h-4 w-4" aria-hidden="true" />
+                )}
+                Verify flat and disable
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleTradingAction("close-all-and-stop")}
+                disabled={accountAction !== null}
+                className="ui-button-danger disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <XCircle className="h-4 w-4" aria-hidden="true" />
+                Close all
+              </button>
+            </>
+          ) : null}
+          {selectedAccount ? (
+            accountTradingEnabled(selectedAccount) ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => void handleTradingAction("stop")}
+                  disabled={accountAction !== null}
+                  className="ui-button-warning disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {accountAction === "stop" ? (
+                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <Square className="h-4 w-4" aria-hidden="true" />
+                  )}
+                  Stop trading
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleTradingAction("close-all-and-stop")}
+                  disabled={accountAction !== null}
+                  className="ui-button-danger disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {accountAction === "close-all-and-stop" ? (
+                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <XCircle className="h-4 w-4" aria-hidden="true" />
+                  )}
+                  Close all and stop trading
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => void handleTradingAction("start")}
+                disabled={
+                  accountAction !== null ||
+                  (selectedAccount.accountType === "live" &&
+                    !tradingAccounts.liveTradingEnabled)
+                }
+                title={
+                  selectedAccount.accountType === "live" &&
+                  !tradingAccounts.liveTradingEnabled
+                    ? "Set LIVE_TRADING_ENABLED=true before starting this account"
+                    : "Start trading"
+                }
+                className="ui-button-positive disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {accountAction === "start" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Play className="h-4 w-4" aria-hidden="true" />
+                )}
+                Start trading
+              </button>
+            )
+          ) : null}
+          {selectedAccount ? (
+            <button
+              type="button"
+              onClick={() => void handleDeleteAccount()}
+              disabled={
+                accountAction !== null ||
+                (selectedAccount.accountType === "live" &&
+                  selectedAccount.live.status !== "disabled")
+              }
+              title={
+                selectedAccount.accountType === "live" &&
+                selectedAccount.live.status !== "disabled"
+                  ? "Disable the live account after a fresh flat reconciliation before archiving it"
+                  : "Delete selected account"
+              }
+              className="ui-button-danger bg-white disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {accountAction === "delete" ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <Trash2 className="h-4 w-4" aria-hidden="true" />
+              )}
+              {selectedAccount.accountType === "live" ? "Archive account" : "Delete account"}
+            </button>
+          ) : null}
+        </div>
+      </section>
 
       <LiveRiskPanel
         enabled={tradingAccounts.liveTradingEnabled}
@@ -823,7 +831,7 @@ export function AccountsDashboard({
       />
 
       {actionError ? (
-        <div className="rounded-md border border-[#f2aaa5] bg-[#fff2f0] px-3 py-2 text-sm font-medium text-danger">
+        <div className="rounded-md border border-danger/25 bg-danger-soft px-3 py-2 text-sm font-medium text-danger">
           {actionError}
         </div>
       ) : null}
@@ -844,7 +852,7 @@ export function AccountsDashboard({
           }
         />
       ) : (
-        <section className="rounded-lg border border-line bg-panel p-8 text-center text-sm text-[#5b6770]">
+        <section className="ui-panel p-8 text-center text-sm text-muted">
           No accounts are synced yet.
         </section>
       )}
@@ -919,7 +927,8 @@ function CreateAccountDialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 overflow-y-auto bg-[#071019]/55 px-3 py-6 backdrop-blur-sm sm:px-6"
+      className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/60 px-3 py-6 backdrop-blur-sm sm:px-6"
+      onClick={onClose}
       role="presentation"
     >
       <div
@@ -929,7 +938,7 @@ function CreateAccountDialog({
         className="mx-auto flex min-h-full w-full max-w-xl items-center"
       >
         <form
-          className="w-full overflow-hidden rounded-lg border border-line bg-panel shadow-xl"
+          className="w-full overflow-hidden rounded-xl border border-line bg-panel shadow-raised"
           onClick={(event) => event.stopPropagation()}
           onSubmit={(event) => {
             event.preventDefault();
@@ -938,7 +947,7 @@ function CreateAccountDialog({
         >
           <div className="flex items-start justify-between gap-4 border-b border-line px-4 py-4 sm:px-5">
             <div>
-              <p className="text-xs font-medium uppercase text-[#526070]">Accounts</p>
+              <p className="text-xs font-medium uppercase text-muted">Accounts</p>
               <h2 id={titleId} className="mt-1 text-xl font-semibold">
                 Create account
               </h2>
@@ -946,7 +955,7 @@ function CreateAccountDialog({
             <button
               type="button"
               onClick={onClose}
-              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-line bg-white text-[#526070] transition hover:border-[#9eb1c1] hover:text-ink"
+              className="ui-icon-button rounded-full"
               aria-label="Close create account"
             >
               <X className="h-4 w-4" aria-hidden="true" />
@@ -974,8 +983,8 @@ function CreateAccountDialog({
             {accountType === "paper" ? (
               <label className="grid gap-2">
                 <span className="text-sm font-semibold text-ink">Starting balance</span>
-                <div className="flex items-center rounded-md border border-line bg-white shadow-sm focus-within:border-[#9eb1c1]">
-                  <span className="border-r border-line px-3 text-sm font-semibold text-[#5b6770]">
+                <div className="flex items-center rounded-md border border-line bg-white shadow-sm focus-within:border-brand">
+                  <span className="border-r border-line px-3 text-sm font-semibold text-muted">
                     USD
                   </span>
                   <input
@@ -987,7 +996,7 @@ function CreateAccountDialog({
                     className="h-10 min-w-0 flex-1 rounded-r-md px-3 text-sm font-medium text-ink outline-none"
                   />
                 </div>
-                <span className="text-xs font-medium text-[#5b6770]">
+                <span className="text-xs font-medium text-muted">
                   Starts disabled with {formatCurrency(parsedBalance || 0)}
                 </span>
               </label>
@@ -999,7 +1008,7 @@ function CreateAccountDialog({
                     maxLength={120}
                     value={liveLabel}
                     onChange={(event) => onLiveLabelChange(event.target.value)}
-                    className="h-10 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink shadow-sm outline-none focus:border-[#9eb1c1]"
+                    className="ui-control"
                     placeholder="Main wallet"
                   />
                 </label>
@@ -1008,7 +1017,7 @@ function CreateAccountDialog({
                   <input
                     value={liveWalletAddress}
                     onChange={(event) => onLiveWalletAddressChange(event.target.value)}
-                    className="h-10 rounded-md border border-line bg-white px-3 font-mono text-sm font-medium text-ink shadow-sm outline-none focus:border-[#9eb1c1]"
+                    className="ui-control font-mono"
                     placeholder="Uses and saves HYPERLIQUID_WALLET_ADDRESS when empty"
                   />
                 </label>
@@ -1017,36 +1026,36 @@ function CreateAccountDialog({
                   <input
                     value={liveVaultAddress}
                     onChange={(event) => onLiveVaultAddressChange(event.target.value)}
-                    className="h-10 rounded-md border border-line bg-white px-3 font-mono text-sm font-medium text-ink shadow-sm outline-none focus:border-[#9eb1c1]"
+                    className="ui-control font-mono"
                     placeholder="Optional"
                   />
                 </label>
-                <span className="text-xs font-medium text-[#5b6770]">
+                <span className="text-xs font-medium text-muted">
                   Starts disabled. The internal key is generated from the wallet route.
                 </span>
               </div>
             )}
 
             {error ? (
-              <div className="rounded-md border border-[#f2aaa5] bg-[#fff2f0] px-3 py-2 text-sm font-medium text-danger">
+              <div className="rounded-md border border-danger/25 bg-danger-soft px-3 py-2 text-sm font-medium text-danger">
                 {error}
               </div>
             ) : null}
           </div>
 
-          <div className="flex flex-wrap justify-end gap-2 border-t border-line bg-[#f7f9fb] px-4 py-3 sm:px-5">
+          <div className="flex flex-wrap justify-end gap-2 border-t border-line bg-subtle px-4 py-3 sm:px-5">
             <button
               type="button"
               onClick={onClose}
               disabled={isSubmitting}
-              className="inline-flex min-h-9 items-center rounded-md border border-line bg-white px-3 py-1.5 text-sm font-semibold text-ink hover:bg-[#f7f9fb] disabled:cursor-not-allowed disabled:opacity-60"
+              className="ui-button-secondary disabled:cursor-not-allowed disabled:opacity-60"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={!canCreate}
-              className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[#9ccfc0] bg-[#f2fbf7] px-3 py-1.5 text-sm font-semibold text-positive shadow-sm hover:bg-[#e5f6ee] disabled:cursor-not-allowed disabled:opacity-60"
+              className="ui-button-primary disabled:cursor-not-allowed disabled:opacity-60"
             >
               {isSubmitting ? (
                 <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
@@ -1081,8 +1090,8 @@ function AccountTypeOption({
       onClick={onClick}
       className={`flex min-h-20 items-center gap-3 rounded-md border px-3 py-3 text-left transition ${
         active
-          ? "border-[#9ccfc0] bg-[#f2fbf7] text-ink"
-          : "border-line bg-white text-[#344054] hover:bg-[#f7f9fb]"
+          ? "border-brand bg-brand-soft text-ink"
+          : "border-line bg-white text-secondary hover:bg-subtle"
       }`}
     >
       <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-line bg-white">
@@ -1090,7 +1099,7 @@ function AccountTypeOption({
       </span>
       <span className="min-w-0">
         <span className="block text-sm font-semibold">{label}</span>
-        <span className="mt-0.5 block text-xs font-medium text-[#5b6770]">{detail}</span>
+        <span className="mt-0.5 block text-xs font-medium text-muted">{detail}</span>
       </span>
     </button>
   );
@@ -1119,7 +1128,7 @@ function AccountContent({
                   type="button"
                   onClick={onReconcile}
                   disabled={isReconciling}
-                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-line bg-white text-[#5b6770] shadow-sm transition hover:bg-[#f7f9fb] hover:text-ink disabled:cursor-not-allowed disabled:opacity-60"
+                  className="ui-icon-button h-8 w-8 disabled:cursor-not-allowed disabled:opacity-60"
                   title="Reconcile live account"
                   aria-label="Reconcile live account"
                 >
@@ -1237,13 +1246,13 @@ function CapitalBalanceRows({ balances }: { balances: TradingCapitalBalance[] })
       {balances.map((balance) => (
         <div
           key={balance.key}
-          className="grid gap-2 rounded-md border border-line bg-[#f8fafb] px-3 py-2 sm:grid-cols-[minmax(180px,1fr)_150px_150px_110px] sm:items-center"
+          className="grid gap-2 rounded-md border border-line bg-subtle px-3 py-2 sm:grid-cols-[minmax(180px,1fr)_150px_150px_110px] sm:items-center"
         >
           <div className="min-w-0">
             <p className="break-words text-sm font-semibold text-ink">{balance.label}</p>
-            <p className="break-words font-mono text-xs text-[#5b6770]">{balance.key}</p>
+            <p className="break-words font-mono text-xs text-muted">{balance.key}</p>
             {balance.stale ? (
-              <p className="mt-1 text-xs font-medium text-[#9a6700]">
+              <p className="mt-1 text-xs font-medium text-warning">
                 Stale snapshot{balance.error ? `: ${balance.error}` : ""}
               </p>
             ) : null}
@@ -1275,24 +1284,15 @@ function MetricTile({
   tone?: Tone;
   value: string;
 }) {
-  const toneClass =
-    tone === "positive"
-      ? "border-[#9ccfc0] bg-[#f2fbf7]"
-      : tone === "danger"
-        ? "border-[#efb1aa] bg-[#fff5f3]"
-        : "border-line bg-panel";
-
   return (
-    <article className={`rounded-lg border p-4 shadow-sm ${toneClass}`}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="truncate text-xs font-medium uppercase text-[#5b6770]">{label}</p>
-          <p className="mt-2 truncate text-2xl font-semibold text-ink">{value}</p>
-        </div>
-        {action ?? <Icon className="h-5 w-5 shrink-0 text-[#5b6770]" aria-hidden="true" />}
-      </div>
-      <p className="mt-3 truncate text-sm text-[#5b6770]">{detail}</p>
-    </article>
+    <DashboardMetric
+      action={action}
+      detail={detail}
+      icon={Icon}
+      label={label}
+      tone={tone}
+      value={value}
+    />
   );
 }
 
@@ -1305,15 +1305,7 @@ function Panel({
   icon: LucideIcon;
   title: string;
 }) {
-  return (
-    <section className="overflow-hidden rounded-lg border border-line bg-panel shadow-sm">
-      <div className="flex items-center gap-2 border-b border-line px-4 py-3">
-        <Icon className="h-4 w-4 text-[#5b6770]" aria-hidden="true" />
-        <h2 className="text-base font-semibold text-ink">{title}</h2>
-      </div>
-      <div className="p-4">{children}</div>
-    </section>
-  );
+  return <DashboardPanel icon={Icon} title={title}>{children}</DashboardPanel>;
 }
 
 function LiveRiskPanel({
@@ -1323,14 +1315,13 @@ function LiveRiskPanel({
   enabled: boolean;
   limits: TradingAccountsResponse["riskLimits"];
 }) {
-  const panelClass = enabled
-    ? "border-[#9ccfc0] bg-[#f2fbf7]"
-    : "border-line bg-panel";
   return (
-    <section className={`mb-4 overflow-hidden rounded-lg border shadow-sm ${panelClass}`}>
-      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-black/10 px-4 py-3">
+    <section className="ui-panel mb-4 overflow-hidden">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-line px-4 py-3">
         <div className="flex min-w-0 items-start gap-3">
-          <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0 text-[#5b6770]" aria-hidden="true" />
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-brand-soft text-brand">
+            <ShieldAlert className="h-4 w-4" aria-hidden="true" />
+          </span>
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-base font-semibold text-ink">Live Trading</h2>
@@ -1339,7 +1330,7 @@ function LiveRiskPanel({
                 tone={enabled ? "positive" : "neutral"}
               />
             </div>
-            <p className="mt-1 text-sm text-[#526070]">
+            <p className="mt-1 text-sm text-muted">
               Controlled only by LIVE_TRADING_ENABLED in .env.
             </p>
           </div>
@@ -1349,7 +1340,7 @@ function LiveRiskPanel({
       <div className="px-4 py-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="text-sm font-semibold text-ink">Effective risk limits</p>
-          <p className="text-xs font-medium text-[#526070]">Configured risk policy</p>
+          <p className="text-xs font-medium text-muted">Configured risk policy</p>
         </div>
         <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5">
           <SmallMetric label="Weekly loss" value={formatPercent(limits.maxWeeklyLossPct)} />
@@ -1366,7 +1357,7 @@ function LiveRiskPanel({
             value={`${formatInteger(limits.entryIntentTtlSeconds)} s`}
           />
         </div>
-        <p className="mt-3 text-xs text-[#526070]">
+        <p className="mt-3 text-xs text-muted">
           Source leverage is copied without a local cap. The weekly loss limit uses account equity
           at the start of the current UTC week. {" "}
           Reduce-only exits
@@ -1435,19 +1426,19 @@ function CumulativePnlChart({ points }: { points: TimelinePoint[] }) {
           x2={width - padding}
           y1={zeroY}
           y2={zeroY}
-          stroke="#d7dde5"
+          stroke="var(--chart-grid)"
           strokeWidth="1"
         />
         <polyline
           fill="none"
           points={plottedPoints}
-          stroke={lastPoint.value >= 0 ? "#097a5f" : "#c93a32"}
+          stroke={lastPoint.value >= 0 ? "var(--chart-positive)" : "var(--chart-danger)"}
           strokeLinecap="round"
           strokeLinejoin="round"
           strokeWidth="3"
         />
       </svg>
-      <div className="mt-2 flex items-center justify-between gap-3 text-xs text-[#5b6770]">
+      <div className="mt-2 flex items-center justify-between gap-3 text-xs text-muted">
         <span>{points[0]?.label ?? "-"}</span>
         <span className={lastPoint.value >= 0 ? "text-positive" : "text-danger"}>
           {formatCurrency(lastPoint.value)}
@@ -1476,7 +1467,7 @@ function AllocationRows({ rows }: { rows: SourceRow[] }) {
                 <p className="font-mono text-xs font-semibold text-ink">
                   {formatCurrency(row.openMarginUsd)}
                 </p>
-                <p className="text-[11px] text-[#5b6770]">
+                <p className="text-[11px] text-muted">
                   {formatPercent(usedPct)} used
                 </p>
               </div>
@@ -1508,14 +1499,14 @@ function MarketRows({
           label={marketStatusLabel(marketDataStatus)}
           tone={marketDataStatus === "live" || marketDataStatus === "no_open_positions" ? "positive" : "warning"}
         />
-        <p className="text-xs text-[#5b6770]">{formatInteger(rows.length)} markets</p>
+        <p className="text-xs text-muted">{formatInteger(rows.length)} markets</p>
       </div>
       {rows.map((row) => (
         <div key={row.coin} className="grid gap-2">
           <div className="grid grid-cols-[96px_1fr_110px] items-center gap-3">
             <div className="min-w-0">
               <p className="truncate font-mono text-sm font-semibold text-ink">{row.coin}</p>
-              <p className="truncate text-[11px] text-[#5b6770]">
+              <p className="truncate text-[11px] text-muted">
                 {formatInteger(row.longCount)} long, {formatInteger(row.shortCount)} short
               </p>
             </div>
@@ -1592,7 +1583,7 @@ function PositionRows({ positions }: { positions: AccountPositionRow[] }) {
               {position.sourceHref ? (
                 <Link
                   href={position.sourceHref}
-                  className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink hover:text-[#297c73]"
+                  className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink hover:text-brand"
                 >
                   {position.sourceLabel}
                 </Link>
@@ -1601,7 +1592,7 @@ function PositionRows({ positions }: { positions: AccountPositionRow[] }) {
                   {position.sourceLabel}
                 </p>
               )}
-              <p className="mt-1 truncate text-[11px] text-[#5b6770]">
+              <p className="mt-1 truncate text-[11px] text-muted">
                 {position.detail}
               </p>
             </div>
@@ -1637,7 +1628,7 @@ function ClosedTradeRows({ trades }: { trades: AccountClosedTradeRow[] }) {
               {trade.sourceHref ? (
                 <Link
                   href={trade.sourceHref}
-                  className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink hover:text-[#297c73]"
+                  className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink hover:text-brand"
                 >
                   {trade.sourceLabel}
                 </Link>
@@ -1646,7 +1637,7 @@ function ClosedTradeRows({ trades }: { trades: AccountClosedTradeRow[] }) {
                   {trade.sourceLabel}
                 </p>
               )}
-              <p className="mt-1 text-[11px] text-[#5b6770]">
+              <p className="mt-1 text-[11px] text-muted">
                 {trade.detail}
               </p>
             </div>
@@ -1681,7 +1672,7 @@ function FillRows({ fills }: { fills: AccountExecutionRow[] }) {
               {fill.sourceHref ? (
                 <Link
                   href={fill.sourceHref}
-                  className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink hover:text-[#297c73]"
+                  className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink hover:text-brand"
                 >
                   {fill.sourceLabel}
                 </Link>
@@ -1690,7 +1681,7 @@ function FillRows({ fills }: { fills: AccountExecutionRow[] }) {
                   {fill.sourceLabel}
                 </p>
               )}
-              <p className="mt-1 truncate text-[11px] text-[#5b6770]">
+              <p className="mt-1 truncate text-[11px] text-muted">
                 {fill.detail}
               </p>
             </div>
@@ -1710,16 +1701,16 @@ function SourceIdentity({ row }: { row: SourceRow }) {
       <div className="flex flex-wrap items-center gap-1">
         <Link
           href={`/wallets/${row.sourceWallet}`}
-          className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold text-ink hover:text-[#297c73]"
+          className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold text-ink hover:text-brand"
         >
           {sourceDisplayName(row.sourceLabel, row.sourceWallet)}
         </Link>
         <StatusPill label={formatSourceStatus(row.sourceStatus)} tone={sourceStatusTone(row.sourceStatus)} />
       </div>
-      <p className="mt-1 truncate font-mono text-xs text-[#5b6770]">
+      <p className="mt-1 truncate font-mono text-xs text-muted">
         {shortAddress(row.sourceWallet)}
       </p>
-      <p className="mt-1 truncate text-[11px] text-[#5b6770]">
+      <p className="mt-1 truncate text-[11px] text-muted">
         {formatPoolRank(row.poolRank)}, {formatScore(row.score)} score
       </p>
     </div>
@@ -1741,17 +1732,17 @@ function RowMetric({
     tone === "positive" ? "text-positive" : tone === "danger" ? "text-danger" : "text-ink";
   return (
     <div className="min-w-0">
-      <p className="truncate text-[11px] font-medium uppercase text-[#5b6770]">{label}</p>
+      <p className="truncate text-[11px] font-medium uppercase text-muted">{label}</p>
       <p className={`mt-0.5 truncate font-mono text-xs font-semibold ${valueClass}`}>{value}</p>
-      {detail ? <p className="mt-0.5 truncate text-[11px] text-[#5b6770]">{detail}</p> : null}
+      {detail ? <p className="mt-0.5 truncate text-[11px] text-muted">{detail}</p> : null}
     </div>
   );
 }
 
 function SmallMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-line bg-[#f8fafb] px-3 py-2">
-      <p className="truncate text-[11px] font-medium uppercase text-[#5b6770]">{label}</p>
+    <div className="ui-data-cell">
+      <p className="truncate text-[11px] font-medium uppercase text-muted">{label}</p>
       <p className="mt-1 truncate font-mono text-sm font-semibold text-ink">{value}</p>
     </div>
   );
@@ -1770,7 +1761,7 @@ function MetricLine({
 }) {
   return (
     <div className="grid grid-cols-[130px_1fr_110px] items-center gap-3">
-      <p className="truncate text-xs font-medium text-[#344054]">{label}</p>
+      <p className="truncate text-xs font-medium text-secondary">{label}</p>
       <Bar value={value} tone={tone} />
       <p className="truncate text-right font-mono text-xs font-semibold text-ink">{valueLabel}</p>
     </div>
@@ -1780,21 +1771,21 @@ function MetricLine({
 function Bar({ tone = "neutral", value }: { tone?: Tone; value: number }) {
   const color =
     tone === "positive"
-      ? "bg-[#097a5f]"
+      ? "bg-positive"
       : tone === "danger"
-        ? "bg-[#c93a32]"
+        ? "bg-danger"
         : tone === "warning"
-          ? "bg-[#c47c14]"
-          : "bg-[#53606b]";
+          ? "bg-warning"
+          : "bg-muted";
   return (
-    <div className="h-2 overflow-hidden rounded-full bg-[#e5ebf0]">
+    <div className="h-2 overflow-hidden rounded-full bg-line">
       <div className={`h-full rounded-full ${color}`} style={{ width: `${clamp(value, 0, 1) * 100}%` }} />
     </div>
   );
 }
 
 function EmptyState({ text }: { text: string }) {
-  return <div className="py-6 text-center text-sm text-[#5b6770]">{text}</div>;
+  return <div className="py-6 text-center text-sm text-muted">{text}</div>;
 }
 
 function readCreateAccountDraft(): CreateAccountDraft {

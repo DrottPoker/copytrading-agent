@@ -51,6 +51,28 @@ Config:
   `frontend/config/app.json`
 - Credentials: `DASHBOARD_AUTH_USERNAME` and `DASHBOARD_AUTH_PASSWORD` in `.env`
 
+### Dashboard Interface
+
+The Next.js dashboard is designed as a compact internal operations tool.
+
+Behavior:
+
+- Groups routes into Execution, Intelligence, and System navigation areas.
+- Uses a persistent sidebar on desktop and a horizontally scrollable route row
+  on narrow screens.
+- Uses shared semantic tokens and reusable panel, metric, control, button,
+  status, and table primitives across every route.
+- Reserves green, amber, and red for real positive, warning, and danger states.
+  Normal interaction uses the blue brand accent and neutral surfaces.
+- Uses tabular numerals, compact table spacing, scoped table headers, keyboard
+  focus indicators, and a skip-to-content link for dense accessible scanning.
+- Keeps account selection and account lifecycle actions in a dedicated control
+  bar on `/accounts`.
+- Provides consistent loading, empty, not-found, offline, and recoverable error
+  states.
+- Keeps wide data tables horizontally scrollable without collapsing columns or
+  hiding source data on small screens.
+
 ### Ops Health Monitoring
 
 Endpoint: `GET /ops/health`

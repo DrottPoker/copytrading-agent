@@ -56,13 +56,13 @@ export function DatabaseFillRetentionPanel() {
   }
 
   return (
-    <section className="overflow-hidden rounded-lg border border-line bg-panel shadow-sm">
+    <section className="ui-panel overflow-hidden">
       <div className="flex flex-col gap-3 border-b border-line px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex min-w-0 items-start gap-2">
-          <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-[#5b6770]" aria-hidden="true" />
+          <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-muted" aria-hidden="true" />
           <div>
             <h2 className="text-base font-semibold">Fill Retention Cleanup</h2>
-            <p className="mt-1 text-sm leading-6 text-[#5b6770]">
+            <p className="mt-1 text-sm leading-6 text-muted">
               Deletes old unprotected fill history and derived source-trade rows in safe batches.
             </p>
           </div>
@@ -72,7 +72,7 @@ export function DatabaseFillRetentionPanel() {
             type="button"
             disabled={busyMode !== null}
             onClick={() => void runCleanup(true)}
-            className="inline-flex h-9 items-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-ink disabled:cursor-not-allowed disabled:opacity-50"
+            className="ui-button-secondary disabled:cursor-not-allowed disabled:opacity-50"
           >
             <ShieldCheck className="h-4 w-4" aria-hidden="true" />
             {busyMode === "dry-run" ? "Checking" : "Dry run"}
@@ -81,7 +81,7 @@ export function DatabaseFillRetentionPanel() {
             type="button"
             disabled={busyMode !== null}
             onClick={() => void runCleanup(false)}
-            className="inline-flex h-9 items-center gap-2 rounded-md border border-[#efb1aa] bg-[#fff5f3] px-3 text-sm font-medium text-danger disabled:cursor-not-allowed disabled:opacity-50"
+            className="ui-button-danger disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Trash2 className="h-4 w-4" aria-hidden="true" />
             {busyMode === "run" ? "Cleaning" : "Run cleanup"}
@@ -91,7 +91,7 @@ export function DatabaseFillRetentionPanel() {
 
       <div className="p-4">
         {error ? (
-          <div className="mb-4 rounded-md border border-[#efb1aa] bg-[#fff5f3] px-3 py-2 text-sm font-medium text-danger">
+          <div className="mb-4 rounded-md border border-danger/25 bg-danger-soft px-3 py-2 text-sm font-medium text-danger">
             {error}
           </div>
         ) : null}
@@ -126,10 +126,10 @@ export function DatabaseFillRetentionPanel() {
                 value={formatInteger(result.remainingCandidateFills)}
               />
             </div>
-            <p className="text-sm leading-6 text-[#5b6770]">{result.note}</p>
+            <p className="text-sm leading-6 text-muted">{result.note}</p>
           </div>
         ) : (
-          <p className="text-sm leading-6 text-[#5b6770]">
+          <p className="text-sm leading-6 text-muted">
             Default retention keeps 90 days and protects active, realtime, copy-enabled, open
             paper-position, open-position, and top scored wallets.
           </p>
@@ -141,8 +141,8 @@ export function DatabaseFillRetentionPanel() {
 
 function RetentionMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-line bg-[#f8fafb] p-3">
-      <p className="text-xs font-medium uppercase text-[#5b6770]">{label}</p>
+    <div className="rounded-md border border-line bg-subtle p-3">
+      <p className="text-xs font-medium uppercase text-muted">{label}</p>
       <p className="mt-2 break-words text-lg font-semibold leading-snug">{value}</p>
     </div>
   );
