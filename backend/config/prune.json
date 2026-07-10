@@ -10,8 +10,8 @@
       "max_drawdown_pct": 0.6
     },
     "low_score": {
-      "min_closed_trades": 50,
-      "threshold": 60,
+      "min_closed_trades": 40,
+      "threshold": 65,
       "operator": "lt"
     }
   },
