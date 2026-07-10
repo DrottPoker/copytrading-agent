@@ -234,10 +234,8 @@ Postgres is the source of truth.
 It stores wallets, fills, positions, scores, active copy set state, copy signals,
 copy trades, risk events, settings, job locks, and audit logs.
 
-`live_entry_safety_controls` is a singleton durable gate for new live exposure.
-Its state is `enabled`, `paused`, or `killed`, with an incrementing revision,
-operator reason, actor, and timestamp. Trading accounts carry lifecycle version,
-status change time, reason, and optional archive time. Financial and idempotency
+Trading accounts carry lifecycle version, status change time, reason, and
+optional archive time. Financial and idempotency
 children use account key and account type foreign keys with restricted deletion,
 so archive retains the execution ledger.
 
@@ -301,9 +299,10 @@ Redis restarts and shares the same transactional dependency as wallet data.
 
 ## Config Model
 
-Tweakable non-secret config lives in JSON files:
+Tweakable non-secret config lives in backend and frontend config files:
 
 - `backend/config/app.json`
+- `backend/config/backup.env`
 - `backend/config/database.json`
 - `backend/config/discovery.json`
 - `backend/config/live_trading.json`
@@ -318,18 +317,19 @@ The backend config files are grouped by operational area:
 
 - `app.json` owns non-secret runtime defaults such as worker mode, capability
   lease TTL, supervisor restart delay, shutdown drain window, realtime wakeup
-  queue size, inbox claim timeout, retry backoff, wallet pool page limit,
-  network, and shared infrastructure settings.
+  queue size, inbox claim timeout, retry backoff, Ops and backup status
+  monitoring, dashboard auth enablement, wallet pool page limit, network, and
+  shared infrastructure settings.
+- `backup.env` owns the automated Postgres backup interval and retention.
 - `discovery.json` owns source discovery, candidate filtering, backfill quality
   checks, and promotion.
 - `database.json` owns manual database maintenance defaults such as fill
   retention days, retention batch size, max rows, and protected top scored
   wallets.
-- `live_trading.json` owns live trading enablement, acknowledgements, live
-  execution guardrails, entry intent TTL, reconciliation freshness, min-order
-  wire buffer, account open-notional and position caps, daily and weekly loss
-  limits, order rate, leverage, reduce-only behavior, and market allow/block
-  lists.
+- `live_trading.json` owns live execution guardrails, entry intent TTL,
+  reconciliation freshness, min-order wire buffer, account open-notional and
+  position caps, daily and weekly loss limits, order rate, leverage, and
+  reduce-only behavior.
 - `trading.json` owns copy policy shared by paper and live copy, including
   source ranking limits, allocation pockets, minimum copy notional, optional
   min-order adjustment, price drift guard, and live mid-price cache settings.
@@ -340,7 +340,8 @@ The backend config files are grouped by operational area:
 - `scoring.json` owns scoring schedule, score windows, weights, ratio spans,
   thresholds, and penalties.
 
-Secrets and connection strings live in `.env`:
+Secrets, connection strings, deployment identity, and the single live trading
+activation switch live in `.env`:
 
 - `POSTGRES_DB`
 - `POSTGRES_USER`
@@ -349,32 +350,28 @@ Secrets and connection strings live in `.env`:
 - `DATABASE_URL_DIRECT`
 - `REDIS_URL`
 - Hyperliquid private key and wallet address
-- mainnet live entry arming token and expiry
+- `LIVE_TRADING_ENABLED`
 - dashboard auth credentials
-- backup interval, retention, and status monitoring settings
+- VPS dashboard host value used by Caddy
 
 Docker Compose builds `DATABASE_URL` and `DATABASE_URL_DIRECT` for app
 containers from `POSTGRES_*` and the local `postgres` service. Direct database
 URLs remain available for non-Compose runs and external Postgres migrations.
-Environment variables override JSON config. This is important in Docker Compose,
-where the backend container overrides `worker_run_in_api_process` without editing
-`backend/config/app.json`.
+Docker Compose injects only process-specific wiring such as `APP_ENV`,
+`WORKER_ROLE`, `SERVER_API_BASE_URL`, and database service URLs. Normal
+non-secret settings belong in the config files and must not be duplicated in
+`.env`.
 
-Repository defaults use mainnet market data and keep live trading,
-acknowledgements, and automatic live copy disabled. Mainnet entry activation is
-separate from general live execution so reduce-only exits remain available after
-entry arming expires.
-New mainnet exposure requires an explicit coin allowlist and an environment-only
-arming token whose activation window spans no more than 24 hours.
+Repository defaults use mainnet market data and keep live trading and automatic
+live copy disabled. `LIVE_TRADING_ENABLED=true` is the only global execution
+switch. The live adapter's market-policy function currently permits every market
+supported by Hyperliquid metadata.
 
-The Phase 6 database gate is an additional independent control. Migration
-`e5a1c7d9b3f2` creates it as `paused` and changes enabled live accounts to
-`exit_only`. Config activation never changes this row. An authenticated operator
-must resume it with a reason after checking reconciliation and risk limits.
-The same migration preserves financial children, reconstructs only unambiguous
+The Phase 6 migration chain preserves financial children, reconstructs only unambiguous
 missing account parents as disabled archived placeholders, and stops for manual
 review on account-type conflicts or unsafe duplicate live routes. After upgrade,
-restart both worker roles and the backend before reviewing and resuming entries.
+restart both worker roles and the backend. Migration `a7d3e9f1c5b2` removes the
+obsolete global entry-control table.
 
 ## Deployment Security Boundary
 
@@ -916,21 +913,12 @@ Generic live-ready tables sit beside the legacy paper tables:
 - `trading_reconciliation_runs`: one auditable row per live reconciliation
   attempt with component statuses, counts, errors, and final completeness.
 - `trading_fills`: reconciled exchange fill records.
-- `live_entry_safety_controls`: singleton fail-closed global entry state.
-
-The global entry gate and account lifecycle are separate controls. Pause or kill
-moves enabled live accounts to `exit_only`, cancels only unsent non-reduce orders,
-and records audit and risk rows. Submitted, uncertain, or partially filled entry
-orders remain visible for authoritative reconciliation. Reduce-only exits remain
-eligible when `live_trading_reduce_only_when_stopped` is enabled.
-
 Account transitions are guarded:
 
 - Create always produces a disabled account and deduplicates the active wallet
   route by network, wallet, and optional vault.
-- Start requires global entries enabled, valid live configuration, complete fresh
-  reconciliation, tradable capital, no unfinished close-all, and a second gate
-  check immediately before enabling.
+- Start requires `LIVE_TRADING_ENABLED=true`, valid credentials, complete fresh
+  reconciliation, tradable capital, and no unfinished close-all.
 - Stop moves the account to `exit_only` and cancels unsent entries.
 - Disable reconciles and requires the exchange to be flat with no pending work.
 - Delete archives only a disabled, freshly reconciled, flat account. Financial,
@@ -938,7 +926,7 @@ Account transitions are guarded:
 
 Every transition increments `lifecycle_version` and records a status timestamp
 and reason. The execution path reloads the current account under its execution
-lock and rechecks both account status and the global entry gate before final
+lock and rechecks account status, intent freshness, and risk limits before final
 entry dispatch.
 
 Existing paper accounts are mirrored into `trading_accounts`. A stopped paper
@@ -948,9 +936,9 @@ allowed after new entries are disabled.
 The Hyperliquid live adapter uses the official Python SDK at execution time. It
 submits IOC limit orders with deterministic client order ids and supports
 reduce-only orders. It refuses to submit unless live trading is enabled,
-acknowledged, the account network matches the configured network, account
-status allows the requested intent, and the intent is a live intent for that
-account. Mainnet also requires `live_trading_mainnet_acknowledged=true`.
+credentials are configured, the account network matches the configured network,
+account status allows the requested intent, and the intent is a live intent for
+that account.
 Before SDK submission, the adapter normalizes size and limit price to
 Hyperliquid tick and lot precision from market metadata. This prevents SDK
 `float_to_wire` rounding failures and stores the submitted wire size on the
@@ -986,11 +974,11 @@ position owns that market.
 Automatic copied live entries also require a complete reconciliation snapshot no
 older than the configured maximum and an unexpired entry intent. They pass
 account-level guardrails for max order notional, max account open notional, max
-open positions, max daily and weekly loss, max orders per minute, max leverage,
-and market allow/block lists. Stale or incomplete reconciliation and breached
+open positions, max daily and weekly loss, max orders per minute, and max leverage.
+Stale or incomplete reconciliation and breached
 stateful account limits trip the account to `exit_only`, cancel unsent entries,
 and record a critical risk event and audit entry. Expired intents and static
-order, leverage, slippage, or market violations are rejected before submission.
+order, leverage, or slippage violations are rejected before submission.
 Daily and weekly loss usage combines net realized PnL for the applicable period,
 after fees, with the current aggregate exchange unrealized PnL. The exchange
 aggregate is added once and is not reconstructed from source-attributed rows.

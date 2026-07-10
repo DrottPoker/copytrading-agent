@@ -1,7 +1,4 @@
 {
-  "enabled": false,
-  "acknowledged": false,
-  "mainnet_acknowledged": false,
   "account": {
     "capital_mode": "unified"
   },
@@ -17,9 +14,6 @@
     "lookback_minutes": 120,
     "max_snapshot_age_seconds": 90
   },
-  "copy_execution": {
-    "enabled": false
-  },
   "risk": {
     "min_order_notional_usd": 10,
     "min_order_notional_buffer_usd": 0.1,
@@ -31,9 +25,5 @@
     "max_orders_per_minute": 10,
     "max_leverage": 5,
     "reduce_only_when_stopped": true
-  },
-  "markets": {
-    "allowed_coins": [],
-    "blocked_coins": []
   }
 }

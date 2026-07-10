@@ -398,9 +398,19 @@ export async function getTradingAccounts(): Promise<TradingAccountsResponse> {
 function emptyTradingAccounts(): TradingAccountsResponse {
   return {
     accounts: [],
-    liveCopyEnabled: false,
     liveTradingEnabled: false,
-    safety: null,
+    riskLimits: {
+      maxOrderNotionalUsd: "0",
+      maxAccountOpenNotionalUsd: "0",
+      maxOpenPositions: 0,
+      maxDailyLossUsd: "0",
+      maxWeeklyLossUsd: "0",
+      maxOrdersPerMinute: 0,
+      maxLeverage: "0",
+      reconciliationMaxSnapshotAgeSeconds: 0,
+      entryIntentTtlSeconds: 0,
+      reduceOnlyWhenStopped: false,
+    },
     positions: [],
     closedTrades: [],
     recentFills: [],

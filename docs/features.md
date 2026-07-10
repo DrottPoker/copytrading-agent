@@ -27,8 +27,9 @@ Behavior:
 - `GET /health` and `GET /ready` remain unauthenticated for uptime checks.
 - All other backend routes require `DASHBOARD_AUTH_USERNAME` and
   `DASHBOARD_AUTH_PASSWORD`.
-- Production startup fails if auth is disabled or the password is still
-  `change-me`.
+- Production startup fails if auth is disabled, the username is empty, or the
+  password is still `change-me`. A short custom password is accepted, while a
+  longer unique password remains recommended.
 - The Next.js dashboard uses the same Basic Auth settings before serving
   dashboard pages or `/api/backend` proxy routes.
 - The Next.js dashboard proxies browser API calls through `/api/backend` and adds
@@ -44,9 +45,11 @@ Behavior:
 
 Config:
 
-- `DASHBOARD_AUTH_ENABLED`
-- `DASHBOARD_AUTH_USERNAME`
-- `DASHBOARD_AUTH_PASSWORD`
+- Backend auth enablement: `dashboard_auth_enabled` in
+  `backend/config/app.json`
+- Frontend auth enablement: `dashboardAuthEnabled` in
+  `frontend/config/app.json`
+- Credentials: `DASHBOARD_AUTH_USERNAME` and `DASHBOARD_AUTH_PASSWORD` in `.env`
 
 ### Ops Health Monitoring
 
@@ -76,20 +79,9 @@ What it does:
 
 Config:
 
-- `WORKER_HEARTBEAT_INTERVAL_SECONDS`
-- `WORKER_HEARTBEAT_STALE_SECONDS`
-- `WORKER_CAPABILITY_LEASE_TTL_SECONDS`
-- `WORKER_LOOP_RESTART_DELAY_SECONDS`
-- `WORKER_SHUTDOWN_DRAIN_SECONDS`
-- `REALTIME_EXECUTION_QUEUE_SIZE`
-- `REALTIME_EXECUTION_CLAIM_TIMEOUT_SECONDS`
-- `REALTIME_EXECUTION_RETRY_BASE_SECONDS`
-- `OPS_DISK_PATH`
-- `BACKUP_STATUS_ENABLED`
-- `BACKUP_STATUS_DIRECTORY`
-- `BACKUP_STATUS_STALE_SECONDS`
-- `BACKUP_INTERVAL_SECONDS`
-- `BACKUP_RETENTION_DAYS`
+- Worker, lease, supervisor, realtime inbox, disk, and backup status values:
+  `backend/config/app.json`
+- Automated backup interval and retention: `backend/config/backup.env`
 
 ### Analytics
 
@@ -926,15 +918,13 @@ Config:
 
 Current limitations:
 
-- Live trading can place Hyperliquid orders only when live trading is explicitly
-  enabled, acknowledged, configured with credentials, and enabled per account.
-  New entries also require the durable global entry state to be explicitly
-  resumed from its default paused state.
-  Repository defaults use mainnet market data with live trading and copy execution disabled.
-  New mainnet exposure additionally requires a non-empty coin allowlist and a
-  runtime arming token with an expiry no more than 24 hours ahead. Reduce-only
-  exits do not require a current entry arming window. Paper execution remains
-  the default simulation layer.
+- Live trading can place Hyperliquid orders only when
+  `LIVE_TRADING_ENABLED=true`, credentials are configured, and the account
+  lifecycle permits the requested action. The same switch controls automatic
+  live copy. Repository defaults use mainnet market data with live trading
+  disabled. There is no coin allowlist or blocklist, so every market supported by
+  the Hyperliquid adapter is eligible. Paper execution remains the default
+  simulation layer.
 - The execution model is still deterministic: it uses live mids, configured
   latency, configured adverse slippage, and a max drift guard, but it does not
   simulate order book depth or partial fills yet.
@@ -965,17 +955,11 @@ What it does:
 - Uses account `status` values of `enabled`, `exit_only`, and `disabled`.
   Disabled paper accounts are mirrored as `exit_only` because source exits and
   reductions remain allowed after Stop trading.
-- Adds a singleton durable live-entry control with `enabled`, `paused`, and
-  `killed` states. It starts paused after migration and exposes revision, reason,
-  actor, timestamp, reduce-only behavior, and effective risk limits.
-- Pause and kill move enabled live accounts to `exit_only`, cancel unsent entry
-  orders, preserve in-flight delivery state for reconciliation, and write audit
-  and risk records. Resume validates live configuration and always requires an
-  operator reason.
 - Adds guarded account transitions. Create starts disabled. Start performs a
-  complete fresh reconciliation and checks the global gate twice. Stop becomes
-  exit-only. Disable requires complete flat reconciliation and no pending work.
-  Delete archives the account and retains financial and audit history.
+  complete fresh reconciliation and validates that live trading is enabled.
+  Stop becomes exit-only. Disable requires complete flat reconciliation and no
+  pending work. Delete archives the account and retains financial and audit
+  history.
 - Tracks account lifecycle version, status time, status reason, and archive time.
   Active live routes are unique by network, wallet address, and optional vault.
 - Adds a shared `TradeIntent` contract for copied orders. Successful paper
@@ -1038,10 +1022,10 @@ What it does:
   capital is picked up before order sizing when the background loop is late.
 - Stores live exchange fills idempotently in `trading_fills` and syncs aggregate
   account-level live positions in `trading_positions`.
-- Blocks live order submission unless global live trading flags are enabled,
-  acknowledgements are present, the live account network matches the configured
-  network, the live account is enabled or exit-only, and the intent is a live
-  intent for that account.
+- Blocks live order submission unless `LIVE_TRADING_ENABLED=true`, credentials
+  are present, the live account network matches the configured network, the live
+  account is enabled or exit-only, and the intent is a live intent for that
+  account.
 - Routes prefixed HIP-3 live markets such as `xyz:SNDK` through the matching
   Hyperliquid SDK `perp_dexs` metadata and submits whichever SDK order coin name
   is present for that market, either `SNDK` or `xyz:SNDK`.
@@ -1050,9 +1034,8 @@ What it does:
   raw SDK key lookup messages.
 - Allows exit-only live accounts to submit reduce-only exits, but blocks new
   entries and adds.
-- Runs automatic live copy only when `live_trading_enabled` and
-  `live_trading_copy_enabled` are both true. Realtime live copy reuses the
-  shared source allocation policy, live mid-price cache, price drift guard,
+- Runs automatic live copy when `live_trading_enabled` is true. Realtime live
+  copy reuses the shared source allocation policy, live mid-price cache, price drift guard,
   optional min-order adjustment, deterministic client order ids, and live risk
   guardrails. Recovery-created stale entry skips are hidden from recent
   execution activity because they are replay markers, not current execution
@@ -1085,7 +1068,7 @@ What it does:
   remain allowed.
 - Enforces live entry guardrails for reconciliation freshness, entry intent TTL,
   max order notional, max account open notional, max open positions, daily and
-  weekly loss, max orders per minute, max leverage, and market allow/block lists.
+  weekly loss, max orders per minute, and max leverage.
   Stale reconciliation or a breached stateful account limit moves the account to
   `exit_only`, cancels unsent entries, and records a critical risk event. Expired
   intents and static order, leverage, slippage, or market violations are rejected
@@ -1113,8 +1096,6 @@ Config:
 
 - `backend/config/live_trading.json`
 - `live_trading_enabled`
-- `live_trading_acknowledged`
-- `live_trading_mainnet_acknowledged`
 - `live_trading_capital_mode`
 - `live_trading_limit_slippage_bps`
 - `live_trading_max_slippage_bps`
@@ -1124,7 +1105,6 @@ Config:
 - `live_trading_reconciliation_interval_seconds`
 - `live_trading_reconciliation_lookback_minutes`
 - `live_trading_reconciliation_max_snapshot_age_seconds`
-- `live_trading_copy_enabled`
 - `live_trading_min_order_notional_usd`
 - `live_trading_min_order_notional_buffer_usd`
 - `live_trading_max_order_notional_usd`
@@ -1135,18 +1115,12 @@ Config:
 - `live_trading_max_orders_per_minute`
 - `live_trading_max_leverage`
 - `live_trading_reduce_only_when_stopped`
-- `live_trading_allowed_coins`
-- `live_trading_blocked_coins`
 - `hyperliquid_private_key`
 - `hyperliquid_wallet_address`
 
 Live trading API:
 
 - `GET /trading/accounts`
-- `GET /trading/safety`
-- `POST /trading/safety/resume`
-- `POST /trading/safety/pause`
-- `POST /trading/safety/kill`
 - `POST /trading/accounts/live`
 - `PATCH /trading/accounts/{account_key}/status`
 - `POST /trading/accounts/{account_key}/start`
@@ -1199,6 +1173,7 @@ What it does:
 Files:
 
 - `backend/config/app.json`
+- `backend/config/backup.env`
 - `backend/config/database.json`
 - `backend/config/discovery.json`
 - `backend/config/live_trading.json`
@@ -1212,27 +1187,30 @@ Files:
 
 What it does:
 
-- Keeps tweakable non-secret settings in JSON config files.
-- Keeps secrets and connection strings in `.env`.
+- Keeps tweakable non-secret settings in backend and frontend config files.
+- Keeps secrets, connection strings, deployment identity, and the single live
+  trading activation switch in `.env`.
 - Uses `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD` as the local
   Compose Postgres source settings.
 - Builds app container `DATABASE_URL` and `DATABASE_URL_DIRECT` from local
   Postgres settings in Docker Compose.
 - Makes common system tuning possible without editing environment variables.
-- Environment variables override JSON config. This allows compose and deployment
-  environments to change runtime behavior without editing tracked config files.
+- Limits Compose environment injection to fixed process wiring, credentials,
+  connection strings, and deployment identity. Normal tuning stays in config
+  files.
 - `backend/config/app.json` owns non-secret runtime defaults such as worker
   mode, capability lease TTL, loop restart delay, shutdown drain, realtime queue
-  size, durable claim timeout, retry backoff, wallet pool page limit, network,
-  and shared infrastructure settings.
+  size, durable claim timeout, retry backoff, Ops and backup status monitoring,
+  dashboard auth enablement, wallet pool page limit, network, and shared
+  infrastructure settings.
+- `backend/config/backup.env` owns automated Postgres backup interval and
+  retention.
 - `backend/config/discovery.json` owns source discovery, candidate filtering,
   backfill quality checks, and promotion.
 - `backend/config/database.json` owns manual database maintenance defaults such
   as fill retention days, batch size, max rows, and protected top scored wallets.
-- `backend/config/live_trading.json` owns live trading enablement,
-  acknowledgements, entry TTL, reconciliation freshness, reduce-only behavior,
-  execution guardrails, daily and weekly risk limits, and market allow/block
-  lists.
+- `backend/config/live_trading.json` owns entry TTL, reconciliation freshness,
+  reduce-only behavior, execution guardrails, and daily and weekly risk limits.
 - `backend/config/trading.json` owns copy policy shared by paper and live copy:
   source ranking limits, allocation pockets, minimum copy notional, optional
   min-order adjustment, price drift guard, and live mid-price cache settings.
@@ -1274,12 +1252,11 @@ What it does:
   middleware while preserving authenticated non-browser API access.
 - Adds HSTS on the VPS plus content-type, frame, referrer, and permissions
   headers through Caddy.
-- Requires Alembic upgrade `e5a1c7d9b3f2` for the Phase 6 safety schema. The
-  migration defaults global entries to paused, moves enabled live accounts to
-  exit-only, preserves financial history, and stops on ambiguous legacy account
-  integrity conflicts.
-- Requires an operator to restart backend and workers, verify fresh complete
-  reconciliation and risk limits, then resume entries explicitly if intended.
+- Requires Alembic upgrade `a7d3e9f1c5b2`. The Phase 6 migrations preserve
+  financial history, enforce account lifecycle integrity, remove the obsolete
+  global entry-control table, and stop on ambiguous legacy account conflicts.
+- Requires an operator to restart backend and workers after changing
+  `LIVE_TRADING_ENABLED`.
 
 ### Backend Dependency Constraints
 
@@ -1499,7 +1476,7 @@ Purpose:
 Shared paper and live planning now classifies fills into ordered open, add,
 reduce, close, and flip parts through the common trading core.
 
-## Completed Phase 6 Safety
+## Completed Phase 6 Risk and Account Lifecycle
 
 ### Risk Engine
 
@@ -1511,25 +1488,25 @@ What it does:
 - Trips breached stateful account limits to `exit_only`, cancels unsent entries,
   and writes risk and audit records. Static order constraints reject only that
   submission.
-- Keeps reduce-only exits available while new exposure is paused or killed when
-  the configured stopped-mode policy allows them.
+- Keeps reduce-only exits available for `exit_only` accounts when the configured
+  stopped-mode policy allows them and live trading is enabled globally.
 
-### Settings and Control Panel
+### Settings and Accounts Panel
 
 What it does:
 
-- Exposes the durable live-entry state and effective risk limits in Accounts.
-- Supports reason-required resume, pause, and kill actions.
+- Exposes the `LIVE_TRADING_ENABLED` state and effective risk limits in Accounts.
 - Shows account lifecycle state and supports guarded start, stop, disable,
   close-all, reconciliation, and archive workflows.
 
 ### Live Small Mode
 
-Current safety model:
+Current activation model:
 
-- Live execution with very small risk and strict manual enablement.
-- New exposure runs only when global configuration, explicit acknowledgements,
-  mainnet arming when applicable, copy execution, durable entry state, and the
-  account lifecycle are all enabled.
-- Repository and migration defaults keep entries disabled and paused. Paper
-  remains the default execution layer.
+- `LIVE_TRADING_ENABLED=true` is the only global switch for live execution and
+  automatic live copy.
+- Account lifecycle, reconciliation freshness, idempotency, and configured risk
+  limits continue to protect execution correctness and exposure.
+- No acknowledgement, arming, global database gate, coin allowlist, or coin
+  blocklist is used. The repository default remains `false`, so paper remains the
+  default execution layer.

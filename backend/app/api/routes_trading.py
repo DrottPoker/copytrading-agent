@@ -11,7 +11,6 @@ from app.api.dependencies import db_session
 from app.core.config import Settings, get_settings
 from app.db.models import (
     DiscoveryWalletCandidate,
-    LiveEntrySafetyControl,
     TradingAccount,
     TradingFill,
     TradingOrder,
@@ -22,8 +21,6 @@ from app.db.models import (
 )
 from app.schemas.trading import (
     LiveCloseAllResponse,
-    LiveEntrySafetyChangeRequest,
-    LiveEntrySafetyRead,
     LiveOrderSubmitResponse,
     LiveReconciliationResponse,
     LiveRiskLimitsRead,
@@ -70,14 +67,8 @@ from app.services.live_trading_service import (
     start_live_trading_account,
     stop_live_trading_account,
     submit_live_trade_intent,
-    validate_live_trading_configuration,
 )
 from app.services.trading_account_service import list_trading_accounts
-from app.services.trading_safety_service import (
-    LiveEntrySafetyError,
-    load_live_entry_safety_control,
-    set_live_entry_safety_state,
-)
 from app.services.wallet_service import wallet_pool_rank_cte
 
 router = APIRouter(prefix="/trading", tags=["trading"])
@@ -93,31 +84,20 @@ def request_audit_actor(request: Request) -> str:
     return str(getattr(request.state, "audit_actor", "dashboard"))
 
 
-def live_entry_safety_read(
-    control: LiveEntrySafetyControl,
-    *,
-    settings: Settings,
-) -> LiveEntrySafetyRead:
-    return LiveEntrySafetyRead(
-        entry_state=control.entry_state,
-        revision=control.revision,
-        reason=control.reason,
-        changed_by=control.changed_by,
-        changed_at=control.changed_at,
-        reduce_only_exits_enabled_when_stopped=(settings.live_trading_reduce_only_when_stopped),
-        risk_limits=LiveRiskLimitsRead(
-            max_order_notional_usd=settings.live_trading_max_order_notional_usd,
-            max_account_open_notional_usd=(settings.live_trading_max_account_open_notional_usd),
-            max_open_positions=settings.live_trading_max_open_positions,
-            max_daily_loss_usd=settings.live_trading_max_daily_loss_usd,
-            max_weekly_loss_usd=settings.live_trading_max_weekly_loss_usd,
-            max_orders_per_minute=settings.live_trading_max_orders_per_minute,
-            max_leverage=settings.live_trading_max_leverage,
-            reconciliation_max_snapshot_age_seconds=(
-                settings.live_trading_reconciliation_max_snapshot_age_seconds
-            ),
-            entry_intent_ttl_seconds=settings.live_trading_entry_intent_ttl_seconds,
+def live_risk_limits_read(settings: Settings) -> LiveRiskLimitsRead:
+    return LiveRiskLimitsRead(
+        max_order_notional_usd=settings.live_trading_max_order_notional_usd,
+        max_account_open_notional_usd=settings.live_trading_max_account_open_notional_usd,
+        max_open_positions=settings.live_trading_max_open_positions,
+        max_daily_loss_usd=settings.live_trading_max_daily_loss_usd,
+        max_weekly_loss_usd=settings.live_trading_max_weekly_loss_usd,
+        max_orders_per_minute=settings.live_trading_max_orders_per_minute,
+        max_leverage=settings.live_trading_max_leverage,
+        reconciliation_max_snapshot_age_seconds=(
+            settings.live_trading_reconciliation_max_snapshot_age_seconds
         ),
+        entry_intent_ttl_seconds=settings.live_trading_entry_intent_ttl_seconds,
+        reduce_only_when_stopped=settings.live_trading_reduce_only_when_stopped,
     )
 
 
@@ -590,7 +570,6 @@ async def list_trading_accounts_route(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> TradingAccountsResponse:
     accounts = await list_trading_accounts(session)
-    safety_control = await load_live_entry_safety_control(session)
     stale_skip_activity_cutoff = datetime.now(UTC) - timedelta(
         seconds=settings.trading_copy_stale_entry_skip_activity_seconds
     )
@@ -653,9 +632,8 @@ async def list_trading_accounts_route(
         accounts=[
             enriched_trading_account_read(account, settings=settings) for account in accounts
         ],
-        live_copy_enabled=settings.live_trading_copy_enabled,
         live_trading_enabled=settings.live_trading_enabled,
-        safety=live_entry_safety_read(safety_control, settings=settings),
+        risk_limits=live_risk_limits_read(settings),
         positions=[
             trading_position_read(
                 position,
@@ -672,88 +650,6 @@ async def list_trading_accounts_route(
         closed_trades=[TradingClosedTradeRead.model_validate(trade) for trade in closed_trades],
         source_metadata=source_metadata,
         updated_at=datetime.now(UTC),
-    )
-
-
-@router.get("/safety", response_model=LiveEntrySafetyRead)
-async def get_live_entry_safety_route(
-    session: Annotated[AsyncSession, Depends(db_session)],
-    settings: Annotated[Settings, Depends(get_settings)],
-) -> LiveEntrySafetyRead:
-    control = await load_live_entry_safety_control(session)
-    return live_entry_safety_read(control, settings=settings)
-
-
-async def change_live_entry_safety_state(
-    *,
-    entry_state: str,
-    payload: LiveEntrySafetyChangeRequest,
-    session: AsyncSession,
-    settings: Settings,
-    actor: str,
-) -> LiveEntrySafetyRead:
-    try:
-        if entry_state == "enabled":
-            validate_live_trading_configuration(settings)
-        control = await set_live_entry_safety_state(
-            session,
-            entry_state=entry_state,
-            reason=payload.reason,
-            actor=actor,
-        )
-        response = live_entry_safety_read(control, settings=settings)
-        await session.commit()
-        return response
-    except LiveEntrySafetyError as exc:
-        await session.rollback()
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
-@router.post("/safety/resume", response_model=LiveEntrySafetyRead)
-async def resume_live_entries_route(
-    payload: LiveEntrySafetyChangeRequest,
-    request: Request,
-    session: Annotated[AsyncSession, Depends(db_session)],
-    settings: Annotated[Settings, Depends(get_settings)],
-) -> LiveEntrySafetyRead:
-    return await change_live_entry_safety_state(
-        entry_state="enabled",
-        payload=payload,
-        session=session,
-        settings=settings,
-        actor=request_audit_actor(request),
-    )
-
-
-@router.post("/safety/pause", response_model=LiveEntrySafetyRead)
-async def pause_live_entries_route(
-    payload: LiveEntrySafetyChangeRequest,
-    request: Request,
-    session: Annotated[AsyncSession, Depends(db_session)],
-    settings: Annotated[Settings, Depends(get_settings)],
-) -> LiveEntrySafetyRead:
-    return await change_live_entry_safety_state(
-        entry_state="paused",
-        payload=payload,
-        session=session,
-        settings=settings,
-        actor=request_audit_actor(request),
-    )
-
-
-@router.post("/safety/kill", response_model=LiveEntrySafetyRead)
-async def kill_live_entries_route(
-    payload: LiveEntrySafetyChangeRequest,
-    request: Request,
-    session: Annotated[AsyncSession, Depends(db_session)],
-    settings: Annotated[Settings, Depends(get_settings)],
-) -> LiveEntrySafetyRead:
-    return await change_live_entry_safety_state(
-        entry_state="killed",
-        payload=payload,
-        session=session,
-        settings=settings,
-        actor=request_audit_actor(request),
     )
 
 

@@ -1,5 +1,4 @@
 import json
-from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
@@ -19,8 +18,6 @@ SCORING_CONFIG_PATH = CONFIG_DIR / "scoring.json"
 TRADING_CONFIG_PATH = CONFIG_DIR / "trading.json"
 PAPER_TRADING_CONFIG_PATH = CONFIG_DIR / "paper_trading.json"
 LIVE_TRADING_CONFIG_PATH = CONFIG_DIR / "live_trading.json"
-MAINNET_LIVE_TRADING_ARMING_TOKEN = "ARM_MAINNET_LIVE_TRADING"
-MAINNET_LIVE_TRADING_MAX_ARMING_DURATION = timedelta(hours=24)
 DISCOVERY_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("enabled",): "discovery_enabled",
     ("sources", "default"): "discovery_default_sources",
@@ -297,9 +294,6 @@ TRADING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("copy", "market_price_cache_dexes"): "trading_copy_market_price_cache_dexes",
 }
 LIVE_TRADING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
-    ("enabled",): "live_trading_enabled",
-    ("acknowledged",): "live_trading_acknowledged",
-    ("mainnet_acknowledged",): "live_trading_mainnet_acknowledged",
     ("account", "capital_mode"): "live_trading_capital_mode",
     ("execution", "limit_slippage_bps"): "live_trading_limit_slippage_bps",
     ("execution", "max_slippage_bps"): "live_trading_max_slippage_bps",
@@ -311,7 +305,6 @@ LIVE_TRADING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("reconciliation", "max_snapshot_age_seconds"): (
         "live_trading_reconciliation_max_snapshot_age_seconds"
     ),
-    ("copy_execution", "enabled"): "live_trading_copy_enabled",
     ("risk", "min_order_notional_usd"): "live_trading_min_order_notional_usd",
     ("risk", "min_order_notional_buffer_usd"): ("live_trading_min_order_notional_buffer_usd"),
     ("risk", "max_order_notional_usd"): "live_trading_max_order_notional_usd",
@@ -322,8 +315,6 @@ LIVE_TRADING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("risk", "max_orders_per_minute"): "live_trading_max_orders_per_minute",
     ("risk", "max_leverage"): "live_trading_max_leverage",
     ("risk", "reduce_only_when_stopped"): "live_trading_reduce_only_when_stopped",
-    ("markets", "allowed_coins"): "live_trading_allowed_coins",
-    ("markets", "blocked_coins"): "live_trading_blocked_coins",
 }
 
 
@@ -375,11 +366,6 @@ class Settings(BaseSettings):
 
     paper_trading_enabled: bool = True
     live_trading_enabled: bool = False
-    live_trading_acknowledged: bool = False
-    live_trading_mainnet_acknowledged: bool = False
-    live_trading_mainnet_arming_token: str | None = Field(default=None, repr=False)
-    live_trading_mainnet_armed_at: datetime | None = None
-    live_trading_mainnet_armed_until: datetime | None = None
     live_trading_capital_mode: Literal["unified", "standard_per_dex"] = "unified"
     live_trading_limit_slippage_bps: Decimal = Field(default=Decimal("20"), ge=0, le=10000)
     live_trading_max_slippage_bps: Decimal = Field(default=Decimal("50"), ge=0, le=10000)
@@ -393,7 +379,6 @@ class Settings(BaseSettings):
         ge=5,
         le=3600,
     )
-    live_trading_copy_enabled: bool = False
     live_trading_min_order_notional_usd: Decimal = Field(default=Decimal("10"), ge=0)
     live_trading_min_order_notional_buffer_usd: Decimal = Field(
         default=Decimal("0.10"),
@@ -410,8 +395,6 @@ class Settings(BaseSettings):
     live_trading_max_orders_per_minute: int = Field(default=10, ge=0, le=10000)
     live_trading_max_leverage: Decimal = Field(default=Decimal("5"), gt=0, le=100)
     live_trading_reduce_only_when_stopped: bool = True
-    live_trading_allowed_coins: list[str] = Field(default_factory=list, max_length=500)
-    live_trading_blocked_coins: list[str] = Field(default_factory=list, max_length=500)
     trading_copy_top_wallet_count: int = Field(default=10, ge=1, le=10)
     trading_copy_top_tier_wallet_count: int = Field(default=3, ge=0, le=10)
     trading_copy_top_tier_allocation_pct: Decimal = Field(default=Decimal("0.20"), ge=0, le=1)
@@ -826,25 +809,6 @@ class Settings(BaseSettings):
             return [source.strip() for source in value.split(",") if source.strip()]
         return value
 
-    @field_validator("live_trading_allowed_coins", "live_trading_blocked_coins", mode="before")
-    @classmethod
-    def normalize_live_trading_coin_lists(cls, value: Any) -> list[str]:
-        if isinstance(value, str):
-            return [coin.strip() for coin in value.split(",") if coin.strip()]
-        return value
-
-    @field_validator(
-        "live_trading_mainnet_arming_token",
-        "live_trading_mainnet_armed_at",
-        "live_trading_mainnet_armed_until",
-        mode="before",
-    )
-    @classmethod
-    def normalize_optional_live_trading_arming_values(cls, value: Any) -> Any:
-        if isinstance(value, str) and not value.strip():
-            return None
-        return value
-
     @model_validator(mode="after")
     def guard_live_trading(self) -> "Settings":
         if self.worker_heartbeat_stale_seconds <= self.worker_heartbeat_interval_seconds:
@@ -981,29 +945,6 @@ class Settings(BaseSettings):
                 "trading_copy_top_tier_wallet_count must be less than or equal to "
                 "trading_copy_top_wallet_count."
             )
-        allowed_live_coins = {
-            normalize_live_trading_coin(coin) for coin in self.live_trading_allowed_coins
-        }
-        blocked_live_coins = {
-            normalize_live_trading_coin(coin) for coin in self.live_trading_blocked_coins
-        }
-        allowed_live_coins.discard("")
-        blocked_live_coins.discard("")
-        if allowed_live_coins & blocked_live_coins:
-            raise ValueError("A live trading coin cannot be both allowed and blocked.")
-        if self.live_trading_enabled and not self.live_trading_acknowledged:
-            raise ValueError(
-                "LIVE_TRADING_ENABLED requires LIVE_TRADING_ACKNOWLEDGED=true. "
-                "Live trading must never be enabled accidentally."
-            )
-        if (
-            self.live_trading_enabled
-            and self.hyperliquid_network == "mainnet"
-            and not self.live_trading_mainnet_acknowledged
-        ):
-            raise ValueError(
-                "LIVE_TRADING_ENABLED on mainnet requires LIVE_TRADING_MAINNET_ACKNOWLEDGED=true."
-            )
         if self.live_trading_enabled and not self.hyperliquid_private_key:
             raise ValueError("LIVE_TRADING_ENABLED requires HYPERLIQUID_PRIVATE_KEY.")
         if self.live_trading_enabled and not self.hyperliquid_wallet_address:
@@ -1014,14 +955,6 @@ class Settings(BaseSettings):
             and self.dashboard_auth_password == "change-me"
         ):
             raise ValueError("DASHBOARD_AUTH_PASSWORD must be changed before production startup.")
-        if (
-            self.app_env == "production"
-            and self.dashboard_auth_enabled
-            and len(self.dashboard_auth_password) < 16
-        ):
-            raise ValueError(
-                "DASHBOARD_AUTH_PASSWORD must contain at least 16 characters in production."
-            )
         if (
             self.app_env == "production"
             and self.dashboard_auth_enabled
@@ -1081,40 +1014,6 @@ class Settings(BaseSettings):
         if self.hyperliquid_network == "testnet":
             return "wss://api.hyperliquid-testnet.xyz/ws"
         return "wss://api.hyperliquid.xyz/ws"
-
-
-def mainnet_live_entry_arming_error(
-    settings: Settings,
-    *,
-    now: datetime | None = None,
-) -> str | None:
-    if settings.hyperliquid_network != "mainnet":
-        return None
-    if settings.live_trading_mainnet_arming_token != MAINNET_LIVE_TRADING_ARMING_TOKEN:
-        return (
-            "Mainnet live entries require "
-            "LIVE_TRADING_MAINNET_ARMING_TOKEN=ARM_MAINNET_LIVE_TRADING."
-        )
-
-    armed_at = settings.live_trading_mainnet_armed_at
-    armed_until = settings.live_trading_mainnet_armed_until
-    if armed_at is None or armed_at.tzinfo is None:
-        return "Mainnet live entries require a timezone-aware LIVE_TRADING_MAINNET_ARMED_AT."
-    if armed_until is None or armed_until.tzinfo is None:
-        return "Mainnet live entries require a timezone-aware LIVE_TRADING_MAINNET_ARMED_UNTIL."
-
-    resolved_now = now or datetime.now(UTC)
-    resolved_at = armed_at.astimezone(UTC)
-    resolved_until = armed_until.astimezone(UTC)
-    if resolved_until <= resolved_at:
-        return "Mainnet live entry arming expiry must be after its start time."
-    if resolved_until - resolved_at > MAINNET_LIVE_TRADING_MAX_ARMING_DURATION:
-        return "Mainnet live entry arming cannot last more than 24 hours."
-    if resolved_at > resolved_now:
-        return "Mainnet live entry arming window has not started."
-    if resolved_until <= resolved_now:
-        return "Mainnet live entry arming has expired."
-    return None
 
 
 @lru_cache
@@ -1218,10 +1117,6 @@ def get_nested_config_value(config: dict[str, Any], path: tuple[str, ...]) -> An
             return None
         current = current[key]
     return current
-
-
-def normalize_live_trading_coin(value: str) -> str:
-    return str(value or "").strip().casefold()
 
 
 @lru_cache

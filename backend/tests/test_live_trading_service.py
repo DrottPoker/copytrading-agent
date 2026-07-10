@@ -154,27 +154,19 @@ def test_map_exchange_order_status_covers_documented_terminal_variants(
     assert map_exchange_order_status(exchange_status) == local_status
 
 
-def test_mainnet_account_start_requires_entry_arming_and_allowlist() -> None:
+def test_mainnet_account_start_uses_single_live_trading_flag() -> None:
     settings = Settings()
     settings.hyperliquid_network = "mainnet"
     settings.hyperliquid_private_key = "0x" + "1" * 64
     settings.hyperliquid_wallet_address = "0x" + "2" * 40
-    settings.live_trading_enabled = True
-    settings.live_trading_acknowledged = True
-    settings.live_trading_mainnet_acknowledged = True
 
     with pytest.raises(
         live_trading_service.LiveTradingServiceError,
-        match="LIVE_TRADING_MAINNET_ARMING_TOKEN",
+        match="Live trading is disabled",
     ):
         validate_live_trading_configuration(settings)
 
-    now = datetime.now(UTC)
-    settings.live_trading_mainnet_arming_token = "ARM_MAINNET_LIVE_TRADING"
-    settings.live_trading_mainnet_armed_at = now - timedelta(minutes=1)
-    settings.live_trading_mainnet_armed_until = now + timedelta(hours=1)
-    settings.live_trading_allowed_coins = ["BTC"]
-
+    settings.live_trading_enabled = True
     validate_live_trading_configuration(settings)
 
 

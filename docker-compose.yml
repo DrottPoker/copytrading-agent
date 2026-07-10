@@ -95,7 +95,6 @@ services:
       SERVER_API_BASE_URL: http://backend:8000
       DASHBOARD_AUTH_USERNAME: ${DASHBOARD_AUTH_USERNAME:-admin}
       DASHBOARD_AUTH_PASSWORD: ${DASHBOARD_AUTH_PASSWORD:-change-me}
-      DASHBOARD_AUTH_ENABLED: ${DASHBOARD_AUTH_ENABLED:-true}
     ports:
       - "3000:3000"
     read_only: true
@@ -144,12 +143,12 @@ services:
   postgres-backup:
     image: postgres:18-alpine
     command: sh /usr/local/bin/postgres-backup-loop.sh
+    env_file:
+      - backend/config/backup.env
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-copyagent}
       POSTGRES_USER: ${POSTGRES_USER:-copyagent}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-copyagent-local-dev-password}
-      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
-      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-7}
       BACKUP_DIR: /backups
       POSTGRES_HOST: postgres
     volumes:

@@ -15,7 +15,7 @@ This repository currently contains the foundation:
 - Worker entrypoint placeholder
 - Next.js internal dashboard shell
 - Docker Compose for backend, trading worker, maintenance worker, frontend, local Postgres, Redis, and Caddy
-- Paper-first config defaults with a live trading acknowledgement guard
+- Paper-first config defaults with one explicit `LIVE_TRADING_ENABLED` switch
 
 ## Phase 2
 
@@ -48,7 +48,6 @@ Current schema includes:
 - `trading_reconciliation_runs`, auditable live reconciliation results and
   component completeness
 - `trading_fills`, reconciled paper or live execution fills
-- `live_entry_safety_controls`, singleton durable entry state and revision
 - `paper_trading_accounts`
 - `paper_copy_allocations`
 - `paper_positions`
@@ -76,19 +75,20 @@ When running with Docker Compose, use:
 docker compose -f docker-compose.vps.yml run --rm backend python -m alembic upgrade head
 ```
 
-Phase 6 migration `e5a1c7d9b3f2` is intentionally fail-closed:
+Phase 6 migration `e5a1c7d9b3f2` adds account lifecycle and integrity controls:
 
-- It creates the durable global entry control in `paused` state.
-- It changes any enabled live account to `exit_only`.
 - It preserves financial child rows and creates disabled archived parent rows for
   unambiguous legacy orphans.
 - It stops for manual review if account types conflict, orphan account types are
   ambiguous, or duplicate active live routes contain history or active state.
 
-After upgrade, restart the backend and both workers, open Accounts, confirm a
-complete fresh reconciliation and the displayed risk limits, then explicitly
-resume global live entries only if live execution is intended. Do not update the
-safety row directly in Postgres.
+Migration `a7d3e9f1c5b2` removes the former global live-entry gate and restores
+accounts that were automatically moved to `exit_only` by its migration default.
+`LIVE_TRADING_ENABLED` in `.env` is the only global live execution switch.
+
+After upgrade, restart the backend and both workers. Starting an individual live
+account still requires complete fresh reconciliation and the normal account
+lifecycle checks.
 
 For an existing VPS deployment after pulling this phase:
 
@@ -300,10 +300,6 @@ API:
 - `GET /ops/health`
 - `GET /analytics`
 - `GET /trading/accounts`
-- `GET /trading/safety`
-- `POST /trading/safety/resume`
-- `POST /trading/safety/pause`
-- `POST /trading/safety/kill`
 - `POST /trading/accounts/live`
 - `PATCH /trading/accounts/{account_key}/status`
 - `DELETE /trading/accounts/{account_key}`
@@ -468,19 +464,13 @@ Config:
 - `backend/config/paper_trading.json`
 - `backend/config/live_trading.json`
 
-Live safety and account lifecycle:
+Live activation and account lifecycle:
 
-- The singleton live-entry control has `enabled`, `paused`, and `killed` states.
-  Migration `e5a1c7d9b3f2` creates it as `paused` and moves enabled live accounts
-  to `exit_only`. Neither config flags nor a worker restart automatically resume
-  new entries.
-- Pause and kill require an operator reason, increment a durable revision, move
-  enabled live accounts to `exit_only`, cancel unsent entry orders, and write
-  audit and risk records. Orders already submitted or uncertain remain subject
-  to reconciliation instead of being misclassified as canceled.
+- `LIVE_TRADING_ENABLED=true` in `.env` is the only global live execution
+  switch. Automatic live copy follows the same value.
 - Starting an account performs a complete exchange reconciliation, requires a
-  fresh snapshot, rechecks the global entry gate, and only then transitions the
-  account to `enabled`.
+  fresh snapshot, validates the configured wallet identity, and only then
+  transitions the account to `enabled`.
 - Stop transitions the account to `exit_only` and cancels unsent entries.
   Reduce-only position management remains available when configured through
   `risk.reduce_only_when_stopped`.
@@ -493,8 +483,8 @@ Live safety and account lifecycle:
   optional vault.
 - Every new live entry must pass a fresh reconciliation check, intent TTL,
   account open-notional cap, open-position cap, daily and weekly loss limits,
-  order-rate limit, max leverage, and market allow/block policy. A breached
-  stateful account limit or stale reconciliation trips the account to
+  order-rate limit, max leverage, and price safety checks. A breached stateful
+  account limit or stale reconciliation trips the account to
   `exit_only`, cancels unsent entries, and persists the event for audit. Expired
   intents and static order, leverage, slippage, or market violations are rejected
   before submission without opening exposure.
@@ -629,11 +619,11 @@ Sizing policy:
   dialog is open, stores the in-progress draft in browser session storage, and
   keeps the dialog open until the user cancels, presses Escape, closes it, or
   finishes account creation.
-- The Accounts page exposes the durable global entry state and its effective
-  risk limits. Resume, pause, and kill actions require a recorded reason.
+- The Accounts page shows whether `LIVE_TRADING_ENABLED` is active and displays
+  the effective risk limits.
 - The Accounts page can start, stop, verify flat and disable, or close all live
-  positions. Starting requires the global entry state to be enabled and performs
-  a fresh complete reconciliation. Stopping changes the account to `exit_only`.
+  positions. Starting requires `LIVE_TRADING_ENABLED=true` and performs a fresh
+  complete reconciliation. Stopping changes the account to `exit_only`.
   Disable succeeds only after a complete flat reconciliation. Close all uses the
   resumable durable dispatcher and disables only after the exchange is confirmed
   flat.
@@ -692,9 +682,8 @@ Sizing policy:
   job lock. Reconciliation uses the same account lock so it cannot race an
   in-flight dispatch. The order and outbox row are committed before an exchange
   request, and no account or order row lock is held while Hyperliquid is called.
-- New entry finalization also uses a global entry gate. Pause or kill cannot race
-  the final pre-submit entry checks, and a stopped global state never converts a
-  reduce-only exit into an entry block.
+- New entry finalization reruns intent freshness and risk checks under the
+  per-account execution lock immediately before dispatch.
 - A lost exchange response is stored as `uncertain`, not `failed`. The trading
   worker queries Hyperliquid by deterministic client order id before any retry
   decision, so a possibly accepted order is not submitted blindly a second time.
@@ -732,9 +721,9 @@ Sizing policy:
 
 Notes:
 
-- Live trading can place Hyperliquid orders only when live trading is explicitly
-  enabled, acknowledged, configured with credentials, and enabled per account.
-  Paper execution remains the default simulation layer.
+- Live trading can place Hyperliquid orders only when
+  `LIVE_TRADING_ENABLED=true`, credentials are configured, and the live account
+  is enabled. Paper execution remains the default simulation layer.
 - Live copy reserves one source per live account and market while exposure is
   open. Another source opening the same market is skipped until the market is
   free, even if it is the same side, because Hyperliquid nets the exchange
@@ -752,6 +741,7 @@ Notes:
 Tweakable non-secret settings live in config files:
 
 - `backend/config/app.json`
+- `backend/config/backup.env`
 - `backend/config/discovery.json`
 - `backend/config/database.json`
 - `backend/config/live_trading.json`
@@ -767,14 +757,19 @@ component weights, profitability, consistency, risk, copyability, recency,
 penalties, and window scores.
 
 `backend/config/app.json` owns non-secret runtime defaults such as worker mode,
-wallet pool page limit, network, and shared infrastructure request settings.
+worker supervision, realtime execution inbox timing, Ops monitoring, backup
+status monitoring, wallet pool page limit, network, and shared infrastructure
+request settings.
+
+`backend/config/backup.env` owns the automated Postgres backup interval and
+retention. It is loaded directly by the Compose backup service.
 
 `backend/config/prune.json` uses organized sections for prune rules, scheduled
 worker behavior, and worker execution defaults.
 
-`frontend/config/app.json` owns non-secret dashboard defaults such as browser
-proxy URL, server backend URL, polling intervals, and server-side backend fetch
-timeout.
+`frontend/config/app.json` owns non-secret dashboard defaults such as dashboard
+auth enablement, browser proxy URL, server backend URL, polling intervals, and
+server-side backend fetch timeout.
 
 `backend/config/discovery.json` uses organized sections for discovery sources,
 discovery import, prefiltering, candidate backfill, quality checks, and
@@ -786,9 +781,8 @@ the shared fill-import storage and market-filter settings.
 `backend/config/database.json` owns manual database maintenance defaults such as
 fill retention days, batch size, max rows, and protected top scored wallets.
 
-`backend/config/live_trading.json` owns live trading enablement,
-acknowledgements, account capital mode, copy execution, execution limits, risk
-guardrails, and market allow/block lists. `account.capital_mode` defaults to
+`backend/config/live_trading.json` owns account capital mode, execution limits,
+reconciliation, and risk guardrails. `account.capital_mode` defaults to
 `unified`, where Hyperliquid `spotClearinghouseState` is the balance source of
 truth for live trading capital. Set it to `standard_per_dex` only when the live
 wallet is intentionally using separate default and HIP-3 perp balances.
@@ -802,24 +796,12 @@ guard, and the live mid-price cache settings.
 paper copy enablement, simulated fee rate, simulated slippage, simulated latency,
 and paper recovery cadence.
 
-The Ops Health page reads runtime settings from environment variables:
+Worker, inbox, Ops, and backup status settings are read from
+`backend/config/app.json`. Backup interval and retention are read from
+`backend/config/backup.env`. Do not duplicate these settings in `.env`.
 
-- `WORKER_HEARTBEAT_INTERVAL_SECONDS`
-- `WORKER_HEARTBEAT_STALE_SECONDS`
-- `WORKER_CAPABILITY_LEASE_TTL_SECONDS`
-- `WORKER_LOOP_RESTART_DELAY_SECONDS`
-- `WORKER_SHUTDOWN_DRAIN_SECONDS`
-- `REALTIME_EXECUTION_QUEUE_SIZE`
-- `REALTIME_EXECUTION_CLAIM_TIMEOUT_SECONDS`
-- `REALTIME_EXECUTION_RETRY_BASE_SECONDS`
-- `OPS_DISK_PATH`
-- `BACKUP_STATUS_ENABLED`
-- `BACKUP_STATUS_DIRECTORY`
-- `BACKUP_STATUS_STALE_SECONDS`
-- `BACKUP_INTERVAL_SECONDS`
-- `BACKUP_RETENTION_DAYS`
-
-Use `.env` only for secrets and connection strings:
+Use `.env` only for secrets, connection strings, deployment identity, and the
+single live trading switch:
 
 ```bash
 cp .env.example .env
@@ -829,10 +811,11 @@ Docker Compose uses local Postgres by default. Set `POSTGRES_DB`,
 `POSTGRES_USER`, and `POSTGRES_PASSWORD`; the compose files build
 `DATABASE_URL` and `DATABASE_URL_DIRECT` for the app containers.
 
-Change `DASHBOARD_AUTH_PASSWORD` before exposing the dashboard or API. A
-production deployment requires a non-empty username and a unique password of at
-least 16 characters. Backend auth is enabled by default and protects every route except `/health` and
-`/ready`. The dashboard also enforces Basic Auth before serving pages or
+Change the default `DASHBOARD_AUTH_PASSWORD` before exposing the dashboard or
+API. A short custom password is accepted, although a longer unique password is
+recommended. Production requires a non-empty username and rejects the literal
+default `change-me`. Backend auth is enabled by default and protects every route
+except `/health` and `/ready`. The dashboard also enforces Basic Auth before serving pages or
 `/api/backend` proxy routes. Backend credentials are attached by the Next.js
 server, so they are not placed in the client bundle. Browser mutation requests
 must be same-origin or match the configured backend CORS origin allowlist. The
@@ -894,9 +877,11 @@ Use `docker-compose.vps.yml` for a Linux VPS. It exposes only Caddy on ports 80
 and 443, keeps backend, frontend, Postgres, and Redis on the internal Docker
 network, and persists Postgres and Redis data in Docker volumes.
 
-Set `DASHBOARD_DOMAIN` to a DNS name that resolves to the VPS. Do not use `:80`
-or an IP-only HTTP listener because dashboard Basic Auth must be protected by
-TLS. Caddy provisions HTTPS for the configured domain.
+`DASHBOARD_DOMAIN` supports two deployment modes. Set it to `:80` to access the
+dashboard temporarily through `http://VPS_IP`, or set it to a DNS hostname such
+as `copy.example.com` to let Caddy provision HTTPS automatically. IP-only HTTP
+is supported but sends Basic Auth without TLS, so prefer a DNS hostname for any
+long-running or internet-exposed deployment.
 
 Required first-time flow:
 
@@ -921,53 +906,28 @@ Local VPS Postgres data lives in the `postgres_data` Docker volume. Do not run
 `docker compose -f docker-compose.vps.yml down -v` unless you intentionally want
 to delete the database. The `postgres-backup` service runs `pg_dump` every 24
 hours by default and writes dumps to `backups/postgres`. `/ops` checks that
-folder when `BACKUP_STATUS_ENABLED=true`. Set `POSTGRES_DB`, `POSTGRES_USER`,
+folder when `backup_status_enabled=true` in `backend/config/app.json`. Set
+`POSTGRES_DB`, `POSTGRES_USER`,
 and `POSTGRES_PASSWORD` before the first Postgres start because changing them
 later does not alter an existing database volume.
 
 Full guide: [docs/deployment.md](docs/deployment.md)
 
-## Safety Defaults
+## Live Trading Activation
 
 The repository uses mainnet market data for monitoring and paper trading while
-live trading, acknowledgements, and automatic live copy remain disabled:
-
-```json
-{
-  "enabled": false,
-  "acknowledged": false,
-  "mainnet_acknowledged": false,
-  "account": {
-    "capital_mode": "unified"
-  },
-  "copy_execution": {
-    "enabled": false
-  }
-}
-```
-
-When live trading is intentionally enabled, startup requires
-`HYPERLIQUID_PRIVATE_KEY` and `HYPERLIQUID_WALLET_ADDRESS`. Mainnet also requires
-`mainnet_acknowledged=true`. Starting a mainnet account or submitting a new
-mainnet entry additionally requires a non-empty `LIVE_TRADING_ALLOWED_COINS`
-list and a runtime arming window:
+live execution defaults to disabled:
 
 ```dotenv
-HYPERLIQUID_NETWORK=mainnet
-LIVE_TRADING_MAINNET_ARMING_TOKEN=ARM_MAINNET_LIVE_TRADING
-LIVE_TRADING_MAINNET_ARMED_AT=YYYY-MM-DDTHH:MM:SSZ
-LIVE_TRADING_MAINNET_ARMED_UNTIL=YYYY-MM-DDTHH:MM:SSZ
+LIVE_TRADING_ENABLED=false
 ```
 
-The arming timestamps must be timezone-aware, include the current time, and span
-no more than 24 hours. Expired or missing arming blocks new mainnet exposure. Reduce-only
-exits remain available so an expired entry window cannot trap an open position.
-Automatic live copy also requires both `enabled=true` and
-`copy_execution.enabled=true`. Environment variables override JSON defaults.
-The private key is not stored in Postgres. These flags are necessary but not
-sufficient for new entries: the durable database entry control must also be
-resumed explicitly. Its migration default is `paused`, and pause or kill leaves
-reduce-only exits available when `risk.reduce_only_when_stopped=true`.
+Set it to `true` and restart the backend and trading worker to activate live
+execution and automatic live copy. Startup then requires
+`HYPERLIQUID_PRIVATE_KEY` and `HYPERLIQUID_WALLET_ADDRESS`. There are no
+acknowledgement flags, time-based arming values, global database gate, coin
+allowlist, or coin blocklist. The market-policy function currently allows every
+coin. The private key is not stored in Postgres.
 
 Default live risk limits are 100 USD per order, 500 USD open notional per
 account, 5 open positions, 50 USD daily loss, 150 USD weekly loss, 10 orders per

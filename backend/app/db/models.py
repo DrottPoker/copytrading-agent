@@ -13,7 +13,6 @@ from sqlalchemy import (
     Index,
     Integer,
     Numeric,
-    SmallInteger,
     Text,
     UniqueConstraint,
 )
@@ -668,48 +667,6 @@ class JobLock(Base):
     locked_until: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
-    )
-
-
-class LiveEntrySafetyControl(Base, TimestampMixin, UpdatedAtMixin):
-    __tablename__ = "live_entry_safety_controls"
-    __table_args__ = (
-        CheckConstraint("id = 1", name="ck_live_entry_safety_controls_singleton"),
-        CheckConstraint(
-            "entry_state in ('enabled', 'paused', 'killed')",
-            name="ck_live_entry_safety_controls_state",
-        ),
-        CheckConstraint(
-            "revision >= 0",
-            name="ck_live_entry_safety_controls_revision",
-        ),
-    )
-
-    id: Mapped[int] = mapped_column(
-        SmallInteger,
-        primary_key=True,
-        server_default=text("1"),
-    )
-    entry_state: Mapped[str] = mapped_column(
-        Text,
-        nullable=False,
-        server_default=text("'paused'"),
-    )
-    revision: Mapped[int] = mapped_column(
-        BigInteger,
-        nullable=False,
-        server_default=text("0"),
-    )
-    reason: Mapped[str | None] = mapped_column(Text)
-    changed_by: Mapped[str] = mapped_column(
-        Text,
-        nullable=False,
-        server_default=text("'system'"),
-    )
-    changed_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
     )
 
 

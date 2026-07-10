@@ -73,7 +73,6 @@ async def test_handle_websocket_message_prioritizes_live_copy(monkeypatch) -> No
 
     settings = SimpleNamespace(
         live_trading_enabled=True,
-        live_trading_copy_enabled=True,
         paper_trading_enabled=True,
         paper_copy_enabled=True,
     )
@@ -149,7 +148,6 @@ async def test_execution_finishes_before_blocked_presentation_events(monkeypatch
             redis=object(),
             settings=SimpleNamespace(
                 live_trading_enabled=True,
-                live_trading_copy_enabled=True,
                 paper_trading_enabled=True,
                 paper_copy_enabled=True,
             ),
@@ -229,7 +227,6 @@ async def test_handle_websocket_snapshot_prioritizes_live_recovery(monkeypatch) 
 
     settings = SimpleNamespace(
         live_trading_enabled=True,
-        live_trading_copy_enabled=True,
         paper_trading_enabled=True,
         paper_copy_enabled=True,
     )
@@ -270,7 +267,6 @@ async def test_startup_copy_recovery_prioritizes_live_recovery(monkeypatch) -> N
 
     settings = SimpleNamespace(
         live_trading_enabled=True,
-        live_trading_copy_enabled=True,
         paper_trading_enabled=True,
         paper_copy_enabled=True,
     )
@@ -578,7 +574,6 @@ async def test_trading_worker_registers_core_loops_with_supervisor(monkeypatch) 
         paper_trading_enabled=False,
         paper_copy_enabled=False,
         live_trading_enabled=False,
-        live_trading_copy_enabled=False,
         live_trading_reduce_only_when_stopped=False,
         worker_shutdown_drain_seconds=1,
         realtime_execution_queue_size=2,

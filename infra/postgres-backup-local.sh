@@ -3,12 +3,20 @@ set -euo pipefail
 
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.vps.yml}"
 BACKUP_DIR="${BACKUP_DIR:-backups/postgres}"
-RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-7}"
+BACKUP_CONFIG_FILE="${BACKUP_CONFIG_FILE:-backend/config/backup.env}"
 
 if [ ! -f "$COMPOSE_FILE" ]; then
   echo "Run this script from the repository root or set COMPOSE_FILE." >&2
   exit 1
 fi
+if [ ! -f "$BACKUP_CONFIG_FILE" ]; then
+  echo "Backup config was not found at $BACKUP_CONFIG_FILE." >&2
+  exit 1
+fi
+
+# shellcheck disable=SC1090
+. "$BACKUP_CONFIG_FILE"
+RETENTION_DAYS="${BACKUP_RETENTION_DAYS:?BACKUP_RETENTION_DAYS must be configured}"
 
 mkdir -p "$BACKUP_DIR"
 

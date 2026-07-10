@@ -34,7 +34,6 @@ try {
     $env:DASHBOARD_AUTH_ENABLED = "false"
     $env:WORKER_RUN_IN_API_PROCESS = "false"
     $env:LIVE_TRADING_ENABLED = "false"
-    $env:LIVE_TRADING_COPY_ENABLED = "false"
 
     Push-Location (Join-Path $repoRoot "backend")
     try {

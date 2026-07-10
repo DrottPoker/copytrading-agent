@@ -13,6 +13,10 @@
   "realtime_execution_queue_size": 1000,
   "realtime_execution_claim_timeout_seconds": 300,
   "realtime_execution_retry_base_seconds": 5,
+  "ops_disk_path": "/",
+  "backup_status_enabled": true,
+  "backup_status_directory": "/app/backups/postgres",
+  "backup_status_stale_seconds": 129600,
   "hyperliquid_network": "mainnet",
   "hyperliquid_info_request_retries": 4,
   "hyperliquid_info_retry_base_delay_seconds": 1.5,
@@ -24,6 +28,7 @@
   "max_realtime_wallets": 10,
   "realtime_subscription_refresh_seconds": 15,
   "realtime_reconnect_seconds": 5,
+  "dashboard_auth_enabled": true,
   "cors_origins": [
     "http://localhost:3000",
     "http://127.0.0.1:3000"

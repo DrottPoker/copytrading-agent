@@ -67,7 +67,6 @@ from app.services.trading_core import (
     margin_from_notional,
     trade_is_buy,
 )
-from app.services.trading_safety_service import load_live_entry_safety_control
 
 logger = logging.getLogger(__name__)
 ZERO = Decimal("0")
@@ -346,9 +345,7 @@ async def refresh_stale_live_copy_accounts(
 
 
 def live_copy_processing_enabled(settings: Settings) -> bool:
-    return (
-        settings.live_trading_enabled and settings.live_trading_copy_enabled
-    ) or settings.live_trading_reduce_only_when_stopped
+    return settings.live_trading_enabled
 
 
 def live_copy_account_snapshot_is_stale(
@@ -494,25 +491,14 @@ async def apply_live_open_part(
             or hide_stale_entry_skips,
             source_fill_age_seconds=fill_age_seconds,
         )
-    if not settings.live_trading_enabled or not settings.live_trading_copy_enabled:
+    if not settings.live_trading_enabled:
         return await record_live_skip(
             session,
             account=account,
             allocation=allocation,
             fill=fill,
             part=part,
-            reason="live_entry_execution_paused",
-            leverage=source_leverage,
-        )
-    safety_control = await load_live_entry_safety_control(session)
-    if safety_control.entry_state != "enabled":
-        return await record_live_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            reason=f"live_entries_{safety_control.entry_state}",
+            reason="live_trading_disabled",
             leverage=source_leverage,
         )
     coin = str(fill.get("coin") or "")

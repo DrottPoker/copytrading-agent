@@ -164,23 +164,13 @@ export type LiveRiskLimits = {
   maxLeverage: string;
   reconciliationMaxSnapshotAgeSeconds: number;
   entryIntentTtlSeconds: number;
-};
-
-export type LiveEntrySafety = {
-  entryState: "enabled" | "paused" | "killed";
-  revision: number;
-  reason: string | null;
-  changedBy: string;
-  changedAt: string;
-  reduceOnlyExitsEnabledWhenStopped: boolean;
-  riskLimits: LiveRiskLimits;
+  reduceOnlyWhenStopped: boolean;
 };
 
 export type TradingAccountsResponse = {
   accounts: TradingAccount[];
   liveTradingEnabled: boolean;
-  liveCopyEnabled: boolean;
-  safety: LiveEntrySafety | null;
+  riskLimits: LiveRiskLimits;
   positions: TradingPosition[];
   recentFills: TradingFill[];
   recentOrders: TradingOrder[];

@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { frontendConfig } from "@/lib/config";
+
 type BasicCredentials = {
   username: string;
   password: string;
@@ -28,7 +30,7 @@ export const config = {
 };
 
 function dashboardAuthEnabled() {
-  return process.env.DASHBOARD_AUTH_ENABLED !== "false";
+  return frontendConfig.dashboardAuthEnabled;
 }
 
 function parseBasicAuth(authorization: string | null): BasicCredentials | null {

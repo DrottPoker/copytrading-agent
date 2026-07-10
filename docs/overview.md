@@ -57,7 +57,7 @@ The current application runs in paper mode:
 
 - Monitoring is enabled.
 - Paper copy simulation is enabled by default.
-- Live trading is disabled unless explicitly enabled and acknowledged in config.
+- Live trading is disabled unless `LIVE_TRADING_ENABLED=true` is set in `.env`.
 - Scheduled pruning is sharp by default and deletes matching non-active wallets
   after pool import when configured prune rules match. Sources with open paper
   positions are exempt until the copied exposure is closed.
@@ -75,4 +75,5 @@ The current application runs in paper mode:
 
 Browser dashboard API calls use the Next.js proxy at `/api/backend`. Server-side
 dashboard calls use `SERVER_API_BASE_URL`, defaulting to `http://127.0.0.1:8000`
-locally and `http://backend:8000` in Docker Compose.
+locally. Docker Compose injects the fixed internal service address
+`http://backend:8000`; it is not a user-tweakable `.env` setting.

@@ -63,7 +63,6 @@ const CREATE_ACCOUNT_DRAFT_STORAGE_KEY = "copyagent.accounts.createAccountDraft"
 
 type Tone = "positive" | "warning" | "danger" | "neutral";
 type TradingAction = "start" | "stop" | "disable" | "close-all-and-stop" | "delete";
-type SafetyAction = "resume" | "pause" | "kill";
 type CreateAccountType = "paper" | "live";
 type RefreshOptions = {
   skipIfCreateDialogOpen?: boolean;
@@ -263,7 +262,6 @@ export function AccountsDashboard({
     "live",
   );
   const [accountAction, setAccountAction] = useState<TradingAction | null>(null);
-  const [safetyAction, setSafetyAction] = useState<SafetyAction | null>(null);
   const [createDraft, setCreateDraft] = useState<CreateAccountDraft>(readCreateAccountDraft);
   const [createSubmitting, setCreateSubmitting] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -385,9 +383,9 @@ export function AccountsDashboard({
       if (
         selectedAccount.accountType === "live" &&
         action === "start" &&
-        tradingAccounts.safety?.entryState !== "enabled"
+        !tradingAccounts.liveTradingEnabled
       ) {
-        setActionError("Resume global live entries before starting a live account.");
+        setActionError("Set LIVE_TRADING_ENABLED=true before starting a live account.");
         return;
       }
       if (
@@ -444,7 +442,7 @@ export function AccountsDashboard({
         setAccountAction(null);
       }
     },
-    [accountAction, accountView, refresh, selectedAccount, tradingAccounts.safety?.entryState],
+    [accountAction, accountView, refresh, selectedAccount, tradingAccounts.liveTradingEnabled],
   );
 
   const handleDeleteAccount = useCallback(async () => {
@@ -489,54 +487,6 @@ export function AccountsDashboard({
       setAccountAction(null);
     }
   }, [accountAction, refresh, selectedAccount]);
-
-  const handleSafetyAction = useCallback(
-    async (action: SafetyAction) => {
-      if (safetyAction) {
-        return;
-      }
-      if (
-        action === "kill" &&
-        !window.confirm(
-          "Kill all live entries now? Enabled live accounts become exit-only and unsent entries are canceled.",
-        )
-      ) {
-        return;
-      }
-      const defaultReason =
-        action === "resume"
-          ? "Dashboard operator resumed live entries."
-          : action === "pause"
-            ? "Dashboard operator paused live entries."
-            : "Dashboard operator activated the live entry kill switch.";
-      const reason = window.prompt("Reason for this safety action", defaultReason)?.trim();
-      if (!reason) {
-        return;
-      }
-
-      setSafetyAction(action);
-      setActionError(null);
-      try {
-        const response = await fetch(`${getPublicApiBaseUrl()}/trading/safety/${action}`, {
-          cache: "no-store",
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ reason }),
-        });
-        if (!response.ok) {
-          setActionError(await responseError(response, `Live entry ${action} failed`));
-          return;
-        }
-        await refresh();
-      } catch {
-        setConnectionState("offline");
-        setActionError(`Live entry ${action} failed.`);
-      } finally {
-        setSafetyAction(null);
-      }
-    },
-    [refresh, safetyAction],
-  );
 
   const handleReconcileLiveAccount = useCallback(
     async (account: TradingAccount) => {
@@ -706,57 +656,10 @@ export function AccountsDashboard({
               <Plus className="h-4 w-4" aria-hidden="true" />
               Create account
             </button>
-            {tradingAccounts.safety ? (
-              <>
-                <StatusPill
-                  label={`entries ${tradingAccounts.safety.entryState}`}
-                  tone={
-                    tradingAccounts.safety.entryState === "enabled"
-                      ? "positive"
-                      : tradingAccounts.safety.entryState === "killed"
-                        ? "danger"
-                        : "warning"
-                  }
-                />
-                {tradingAccounts.safety.entryState === "enabled" ? (
-                  <button
-                    type="button"
-                    onClick={() => void handleSafetyAction("pause")}
-                    disabled={safetyAction !== null}
-                    className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[#f0c36d] bg-[#fff8e8] px-3 py-1.5 text-sm font-semibold text-warning shadow-sm hover:bg-[#fff2d2] disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    <ShieldAlert className="h-4 w-4" aria-hidden="true" />
-                    Pause entries
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => void handleSafetyAction("resume")}
-                    disabled={safetyAction !== null || !tradingAccounts.liveTradingEnabled}
-                    title={
-                      tradingAccounts.liveTradingEnabled
-                        ? "Resume the durable live entry gate"
-                        : "Enable live trading configuration before resuming entries"
-                    }
-                    className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[#9ccfc0] bg-[#f2fbf7] px-3 py-1.5 text-sm font-semibold text-positive shadow-sm hover:bg-[#e5f6ee] disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    <Play className="h-4 w-4" aria-hidden="true" />
-                    Resume entries
-                  </button>
-                )}
-                {tradingAccounts.safety.entryState !== "killed" ? (
-                  <button
-                    type="button"
-                    onClick={() => void handleSafetyAction("kill")}
-                    disabled={safetyAction !== null}
-                    className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[#efb1aa] bg-[#fff5f3] px-3 py-1.5 text-sm font-semibold text-danger shadow-sm hover:bg-[#ffe9e6] disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    <XCircle className="h-4 w-4" aria-hidden="true" />
-                    Kill entries
-                  </button>
-                ) : null}
-              </>
-            ) : null}
+            <StatusPill
+              label={tradingAccounts.liveTradingEnabled ? "live enabled" : "live disabled"}
+              tone={tradingAccounts.liveTradingEnabled ? "positive" : "neutral"}
+            />
             <select
               aria-label="Select account"
               className="h-9 min-w-[190px] rounded-md border border-line bg-white px-3 text-sm font-medium text-ink shadow-sm"
@@ -840,12 +743,12 @@ export function AccountsDashboard({
                   disabled={
                     accountAction !== null ||
                     (selectedAccount.accountType === "live" &&
-                      tradingAccounts.safety?.entryState !== "enabled")
+                      !tradingAccounts.liveTradingEnabled)
                   }
                   title={
                     selectedAccount.accountType === "live" &&
-                    tradingAccounts.safety?.entryState !== "enabled"
-                      ? "Resume global live entries before starting this account"
+                    !tradingAccounts.liveTradingEnabled
+                      ? "Set LIVE_TRADING_ENABLED=true before starting this account"
                       : "Start trading"
                   }
                   className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[#9ccfc0] bg-[#f2fbf7] px-3 py-1.5 text-sm font-semibold text-positive shadow-sm hover:bg-[#e5f6ee] disabled:cursor-not-allowed disabled:opacity-60"
@@ -896,7 +799,10 @@ export function AccountsDashboard({
         }
       />
 
-      {tradingAccounts.safety ? <LiveSafetyPanel safety={tradingAccounts.safety} /> : null}
+      <LiveRiskPanel
+        enabled={tradingAccounts.liveTradingEnabled}
+        limits={tradingAccounts.riskLimits}
+      />
 
       <CreateAccountDialog
         accountType={createAccountType}
@@ -1410,25 +1316,16 @@ function Panel({
   );
 }
 
-function LiveSafetyPanel({
-  safety,
+function LiveRiskPanel({
+  enabled,
+  limits,
 }: {
-  safety: NonNullable<TradingAccountsResponse["safety"]>;
+  enabled: boolean;
+  limits: TradingAccountsResponse["riskLimits"];
 }) {
-  const tone =
-    safety.entryState === "enabled"
-      ? "positive"
-      : safety.entryState === "killed"
-        ? "danger"
-        : "warning";
-  const panelClass =
-    safety.entryState === "enabled"
-      ? "border-[#9ccfc0] bg-[#f2fbf7]"
-      : safety.entryState === "killed"
-        ? "border-[#efb1aa] bg-[#fff5f3]"
-        : "border-[#f0c36d] bg-[#fff8e8]";
-  const limits = safety.riskLimits;
-
+  const panelClass = enabled
+    ? "border-[#9ccfc0] bg-[#f2fbf7]"
+    : "border-line bg-panel";
   return (
     <section className={`mb-4 overflow-hidden rounded-lg border shadow-sm ${panelClass}`}>
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-black/10 px-4 py-3">
@@ -1436,26 +1333,23 @@ function LiveSafetyPanel({
           <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0 text-[#5b6770]" aria-hidden="true" />
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-base font-semibold text-ink">Live Entry Safety</h2>
-              <StatusPill label={`entries ${safety.entryState}`} tone={tone} />
+              <h2 className="text-base font-semibold text-ink">Live Trading</h2>
+              <StatusPill
+                label={enabled ? "enabled by environment" : "disabled by environment"}
+                tone={enabled ? "positive" : "neutral"}
+              />
             </div>
             <p className="mt-1 text-sm text-[#526070]">
-              {safety.reason ?? "No reason recorded."}
+              Controlled only by LIVE_TRADING_ENABLED in .env.
             </p>
           </div>
         </div>
-        <p className="text-xs font-medium text-[#526070]">
-          Revision {formatInteger(safety.revision)}, changed by {safety.changedBy} at{" "}
-          {formatDate(safety.changedAt)}
-        </p>
       </div>
 
       <div className="px-4 py-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="text-sm font-semibold text-ink">Effective risk limits</p>
-          <p className="text-xs font-medium text-[#526070]">
-            Review before resuming new exposure.
-          </p>
+          <p className="text-xs font-medium text-[#526070]">Configured risk policy</p>
         </div>
         <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5">
           <SmallMetric label="Max order" value={formatCurrency(limits.maxOrderNotionalUsd)} />
@@ -1482,9 +1376,9 @@ function LiveSafetyPanel({
         </div>
         <p className="mt-3 text-xs text-[#526070]">
           Reduce-only exits
-          {safety.reduceOnlyExitsEnabledWhenStopped
-            ? " remain enabled while entries are stopped."
-            : " follow the global live configuration while entries are stopped."}
+          {limits.reduceOnlyWhenStopped
+            ? " remain available for exit-only accounts while live trading is enabled."
+            : " require an enabled account."}
         </p>
       </div>
     </section>

@@ -56,7 +56,6 @@ def live_settings() -> Settings:
     settings.hyperliquid_private_key = "0x" + "1" * 64
     settings.hyperliquid_wallet_address = "0x" + "2" * 40
     settings.live_trading_enabled = True
-    settings.live_trading_acknowledged = True
     return settings
 
 

@@ -27,7 +27,7 @@ from app.services.live_trading_service import (
     live_account_weekly_net_pnl,
     live_reconciliation_is_fresh,
     validate_live_account_can_start,
-    validate_live_entry_state_guardrails,
+    validate_live_entry_risk_guardrails,
 )
 from app.services.trading_core import TradeIntent
 
@@ -317,7 +317,7 @@ async def test_daily_loss_guard_includes_current_unrealized_loss(
     monkeypatch.setattr(live_trading_service, "trip_live_account_risk", fake_trip)
 
     with pytest.raises(LiveOrderSubmitError, match="daily loss guard"):
-        await validate_live_entry_state_guardrails(
+        await validate_live_entry_risk_guardrails(
             CommitSession(),  # type: ignore[arg-type]
             account=account,
             intent=live_intent(created_at=datetime.now(UTC)),
@@ -388,24 +388,12 @@ def stopped_live_settings(*, allow_reduce_only: bool) -> Settings:
     settings.hyperliquid_private_key = "0x" + "1" * 64
     settings.hyperliquid_wallet_address = "0x" + "2" * 40
     settings.live_trading_enabled = False
-    settings.live_trading_acknowledged = True
     settings.live_trading_reduce_only_when_stopped = allow_reduce_only
     return settings
 
 
-def test_reduce_only_exit_is_allowed_when_global_live_trading_is_stopped() -> None:
+def test_global_live_trading_flag_blocks_reduce_only_execution_when_false() -> None:
     settings = stopped_live_settings(allow_reduce_only=True)
-    client = HyperliquidLiveTradingClient(settings=settings)
-    account = live_account(status="disabled")
-
-    client.validate_account_order(
-        account=account,
-        intent=live_intent(created_at=datetime.now(UTC), reduce_only=True),
-    )
-
-
-def test_reduce_only_exit_respects_stopped_execution_configuration() -> None:
-    settings = stopped_live_settings(allow_reduce_only=False)
     client = HyperliquidLiveTradingClient(settings=settings)
     account = live_account(status="disabled")
 
@@ -417,3 +405,15 @@ def test_reduce_only_exit_respects_stopped_execution_configuration() -> None:
             account=account,
             intent=live_intent(created_at=datetime.now(UTC), reduce_only=True),
         )
+
+
+def test_reduce_only_exit_is_allowed_for_stopped_account_when_live_is_enabled() -> None:
+    settings = stopped_live_settings(allow_reduce_only=True)
+    settings.live_trading_enabled = True
+    client = HyperliquidLiveTradingClient(settings=settings)
+    account = live_account(status="disabled")
+
+    client.validate_account_order(
+        account=account,
+        intent=live_intent(created_at=datetime.now(UTC), reduce_only=True),
+    )

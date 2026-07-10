@@ -29,7 +29,7 @@ from app.services.live_trading_service import (
     complete_live_close_all_operation,
     resume_live_close_all_operations,
     run_live_trading_account_reconciliation,
-    validate_live_entry_state_guardrails,
+    validate_live_entry_risk_guardrails,
 )
 from app.services.trading_core import TradeIntent
 from app.services.trading_safety_service import apply_live_account_status
@@ -460,7 +460,7 @@ async def test_risk_guard_does_not_transition_disabled_account(
         LiveOrderSubmitError,
         match="complete exchange reconciliation snapshot",
     ):
-        await validate_live_entry_state_guardrails(  # type: ignore[arg-type]
+        await validate_live_entry_risk_guardrails(  # type: ignore[arg-type]
             session,
             account=account,
             intent=live_intent(),

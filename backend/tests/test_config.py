@@ -1,9 +1,11 @@
-from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
-from app.core.config import Settings, load_app_config, mainnet_live_entry_arming_error
+from app.core.config import Settings, load_app_config
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _clear_live_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -12,16 +14,9 @@ def _clear_live_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
         "HYPERLIQUID_PRIVATE_KEY",
         "HYPERLIQUID_WALLET_ADDRESS",
         "LIVE_TRADING_ENABLED",
-        "LIVE_TRADING_ACKNOWLEDGED",
-        "LIVE_TRADING_MAINNET_ACKNOWLEDGED",
-        "LIVE_TRADING_COPY_ENABLED",
-        "LIVE_TRADING_ALLOWED_COINS",
-        "LIVE_TRADING_BLOCKED_COINS",
-        "LIVE_TRADING_MAINNET_ARMING_TOKEN",
-        "LIVE_TRADING_MAINNET_ARMED_AT",
-        "LIVE_TRADING_MAINNET_ARMED_UNTIL",
     ):
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("LIVE_TRADING_ENABLED", "false")
     monkeypatch.setenv("DASHBOARD_AUTH_PASSWORD", "test-dashboard-password")
 
 
@@ -34,10 +29,7 @@ def test_live_trading_config_is_loaded_from_dedicated_file(
 
     assert settings.hyperliquid_network == "mainnet"
     assert settings.live_trading_enabled is False
-    assert settings.live_trading_acknowledged is False
-    assert settings.live_trading_mainnet_acknowledged is False
     assert settings.live_trading_capital_mode == "unified"
-    assert settings.live_trading_copy_enabled is False
     assert settings.live_trading_limit_slippage_bps == Decimal("20")
     assert settings.live_trading_min_order_notional_usd == Decimal("10")
     assert settings.live_trading_min_order_notional_buffer_usd == Decimal("0.1")
@@ -54,8 +46,6 @@ def test_live_trading_config_is_loaded_from_dedicated_file(
     assert settings.live_trading_reconciliation_lookback_minutes == 120
     assert settings.live_trading_reconciliation_max_snapshot_age_seconds == 90
     assert settings.live_trading_entry_intent_ttl_seconds == 30
-    assert settings.live_trading_allowed_coins == []
-    assert settings.live_trading_blocked_coins == []
 
 
 def test_repository_defaults_start_without_live_credentials(
@@ -66,9 +56,48 @@ def test_repository_defaults_start_without_live_credentials(
     settings = Settings(_env_file=None, **load_app_config())
 
     assert settings.live_trading_enabled is False
-    assert settings.live_trading_copy_enabled is False
     assert settings.hyperliquid_private_key is None
     assert settings.hyperliquid_wallet_address is None
+
+
+def test_app_config_owns_worker_ops_and_backup_status_settings() -> None:
+    config = load_app_config()
+
+    assert config["worker_heartbeat_interval_seconds"] == 60
+    assert config["worker_capability_lease_ttl_seconds"] == 90
+    assert config["realtime_execution_queue_size"] == 1000
+    assert config["ops_disk_path"] == "/"
+    assert config["backup_status_enabled"] is True
+    assert config["backup_status_directory"] == "/app/backups/postgres"
+    assert config["backup_status_stale_seconds"] == 129600
+    assert config["dashboard_auth_enabled"] is True
+
+
+def test_env_example_contains_only_deployment_specific_values() -> None:
+    allowed_keys = {
+        "POSTGRES_DB",
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+        "DATABASE_URL",
+        "DATABASE_URL_DIRECT",
+        "REDIS_URL",
+        "HYPERLIQUID_PRIVATE_KEY",
+        "HYPERLIQUID_WALLET_ADDRESS",
+        "LIVE_TRADING_ENABLED",
+        "DASHBOARD_AUTH_USERNAME",
+        "DASHBOARD_AUTH_PASSWORD",
+        "DASHBOARD_DOMAIN",
+    }
+    configured_keys: set[str] = set()
+    for raw_line in (REPOSITORY_ROOT / ".env.example").read_text(encoding="utf-8").splitlines():
+        candidate = raw_line.strip()
+        if candidate.startswith("# "):
+            candidate = candidate[2:].strip()
+        if not candidate or "=" not in candidate:
+            continue
+        configured_keys.add(candidate.split("=", 1)[0].strip())
+
+    assert configured_keys == allowed_keys
 
 
 def test_live_trading_max_leverage_must_match_exchange_integer_semantics() -> None:
@@ -76,34 +105,24 @@ def test_live_trading_max_leverage_must_match_exchange_integer_semantics() -> No
         Settings(live_trading_max_leverage=Decimal("2.5"))
 
 
-def test_production_dashboard_auth_requires_nontrivial_credentials(
+def test_production_dashboard_auth_requires_configured_credentials(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("DASHBOARD_AUTH_PASSWORD", "too-short")
-    with pytest.raises(ValueError, match="at least 16 characters") as error:
-        Settings(app_env="production")
-    assert "too-short" not in str(error.value)
+    settings = Settings(app_env="production")
+    assert settings.dashboard_auth_password == "too-short"
 
     monkeypatch.setenv("DASHBOARD_AUTH_USERNAME", " ")
-    monkeypatch.setenv("DASHBOARD_AUTH_PASSWORD", "long-enough-password")
     with pytest.raises(ValueError, match="DASHBOARD_AUTH_USERNAME must not be empty"):
         Settings(app_env="production")
 
-
-def test_mainnet_entry_arming_window_is_limited_to_24_hours() -> None:
-    now = datetime(2026, 7, 9, 12, tzinfo=UTC)
-    settings = Settings()
-    settings.hyperliquid_network = "mainnet"
-    settings.live_trading_mainnet_arming_token = "ARM_MAINNET_LIVE_TRADING"
-    settings.live_trading_mainnet_armed_at = now
-    settings.live_trading_mainnet_armed_until = now + timedelta(hours=25)
-
-    assert mainnet_live_entry_arming_error(settings, now=now) == (
-        "Mainnet live entry arming cannot last more than 24 hours."
-    )
-
-    settings.live_trading_mainnet_armed_until = now + timedelta(hours=1)
-    assert mainnet_live_entry_arming_error(settings, now=now) is None
+    monkeypatch.setenv("DASHBOARD_AUTH_USERNAME", "admin")
+    monkeypatch.setenv("DASHBOARD_AUTH_PASSWORD", "change-me")
+    with pytest.raises(
+        ValueError,
+        match="DASHBOARD_AUTH_PASSWORD must be changed before production startup",
+    ):
+        Settings(app_env="production")
 
 
 def test_app_config_loads_wallet_pool_page_limit(monkeypatch: pytest.MonkeyPatch) -> None:

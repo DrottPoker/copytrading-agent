@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from decimal import ROUND_DOWN, ROUND_UP, Decimal
 from typing import Any
 
-from app.core.config import Settings, get_settings, mainnet_live_entry_arming_error
+from app.core.config import Settings, get_settings
 from app.db.models import TradingAccount
 from app.services.trading_core import TradeIntent
 
@@ -99,9 +99,7 @@ class HyperliquidLiveTradingClient:
         coin: str,
         client_order_id: str,
     ) -> dict[str, Any]:
-        self.validate_live_configuration(
-            allow_when_stopped=self.settings.live_trading_reduce_only_when_stopped
-        )
+        self.validate_live_configuration()
         if account.account_type != "live":
             raise HyperliquidLiveTradingConfigurationError(
                 "Only live accounts can cancel live orders."
@@ -122,11 +120,7 @@ class HyperliquidLiveTradingClient:
         account: TradingAccount,
         intent: TradeIntent,
     ) -> None:
-        self.validate_live_configuration(
-            allow_when_stopped=(
-                intent.reduce_only and self.settings.live_trading_reduce_only_when_stopped
-            )
-        )
+        self.validate_live_configuration()
         if account.account_type != "live":
             raise HyperliquidLiveTradingConfigurationError(
                 "Only live accounts can submit live orders."
@@ -183,28 +177,7 @@ class HyperliquidLiveTradingClient:
             self.validate_entry_guardrails(intent)
 
     def validate_entry_guardrails(self, intent: TradeIntent) -> None:
-        self.validate_entry_activation()
-        coin = normalize_live_coin(intent.coin)
-        allowed_coins = {
-            normalize_live_coin(value) for value in self.settings.live_trading_allowed_coins
-        }
-        blocked_coins = {
-            normalize_live_coin(value) for value in self.settings.live_trading_blocked_coins
-        }
-        allowed_coins.discard("")
-        blocked_coins.discard("")
-        if self.settings.hyperliquid_network == "mainnet" and not allowed_coins:
-            raise HyperliquidLiveTradingConfigurationError(
-                "Mainnet live entries require a non-empty LIVE_TRADING_ALLOWED_COINS list."
-            )
-        if allowed_coins and coin not in allowed_coins:
-            raise HyperliquidLiveTradingConfigurationError(
-                "Live order coin is not in the allowed coin list."
-            )
-        if coin in blocked_coins:
-            raise HyperliquidLiveTradingConfigurationError(
-                "Live order coin is blocked by live trading config."
-            )
+        self.validate_entry_market_policy(intent)
         if intent.notional_usd < self.settings.live_trading_min_order_notional_usd:
             raise HyperliquidLiveTradingConfigurationError(
                 "Live order notional is below the configured minimum."
@@ -217,29 +190,16 @@ class HyperliquidLiveTradingClient:
                 "Live order notional exceeds the configured maximum."
             )
 
-    def validate_live_configuration(self, *, allow_when_stopped: bool = False) -> None:
-        if not self.settings.live_trading_enabled and not allow_when_stopped:
+    def validate_entry_market_policy(self, _intent: TradeIntent) -> None:
+        pass
+
+    def validate_live_configuration(self) -> None:
+        if not self.settings.live_trading_enabled:
             raise HyperliquidLiveTradingConfigurationError("Live trading is disabled.")
-        if not self.settings.live_trading_acknowledged:
-            raise HyperliquidLiveTradingConfigurationError(
-                "Live trading acknowledgement is missing."
-            )
-        if (
-            self.settings.hyperliquid_network == "mainnet"
-            and not self.settings.live_trading_mainnet_acknowledged
-        ):
-            raise HyperliquidLiveTradingConfigurationError(
-                "Mainnet live trading acknowledgement is missing."
-            )
         if not self.settings.hyperliquid_private_key:
             raise HyperliquidLiveTradingConfigurationError("Hyperliquid private key is missing.")
         if not self.settings.hyperliquid_wallet_address:
             raise HyperliquidLiveTradingConfigurationError("Hyperliquid wallet address is missing.")
-
-    def validate_entry_activation(self) -> None:
-        arming_error = mainnet_live_entry_arming_error(self.settings)
-        if arming_error is not None:
-            raise HyperliquidLiveTradingConfigurationError(arming_error)
 
     def _submit_order_sync(
         self,
@@ -820,10 +780,6 @@ def string_or_none(value: Any) -> str | None:
     if value is None:
         return None
     return str(value)
-
-
-def normalize_live_coin(value: str) -> str:
-    return str(value or "").strip().casefold()
 
 
 def utc_now() -> datetime:

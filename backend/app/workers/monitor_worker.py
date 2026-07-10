@@ -378,10 +378,7 @@ async def run_owned_monitor_services(
 
     if (
         runs_trading
-        and (
-            settings.live_trading_enabled
-            or getattr(settings, "live_trading_reduce_only_when_stopped", False)
-        )
+        and settings.live_trading_enabled
         and settings.live_trading_reconciliation_enabled
     ):
         add_supervised(

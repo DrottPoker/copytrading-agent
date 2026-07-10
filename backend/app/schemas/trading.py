@@ -188,10 +188,6 @@ class TradingSourceMetadataRead(CamelModel):
     allocation_pct: Decimal | None = None
 
 
-class LiveEntrySafetyChangeRequest(CamelModel):
-    reason: str = Field(min_length=3, max_length=500)
-
-
 class LiveRiskLimitsRead(CamelModel):
     max_order_notional_usd: Decimal
     max_account_open_notional_usd: Decimal
@@ -202,23 +198,13 @@ class LiveRiskLimitsRead(CamelModel):
     max_leverage: Decimal
     reconciliation_max_snapshot_age_seconds: int
     entry_intent_ttl_seconds: int
-
-
-class LiveEntrySafetyRead(CamelModel):
-    entry_state: Literal["enabled", "paused", "killed"]
-    revision: int
-    reason: str | None = None
-    changed_by: str
-    changed_at: datetime
-    reduce_only_exits_enabled_when_stopped: bool
-    risk_limits: LiveRiskLimitsRead
+    reduce_only_when_stopped: bool
 
 
 class TradingAccountsResponse(CamelModel):
     accounts: list[TradingAccountRead]
     live_trading_enabled: bool = False
-    live_copy_enabled: bool = False
-    safety: LiveEntrySafetyRead | None = None
+    risk_limits: LiveRiskLimitsRead
     positions: list[TradingPositionRead] = Field(default_factory=list)
     recent_fills: list[TradingFillRead] = Field(default_factory=list)
     recent_orders: list[TradingOrderRead] = Field(default_factory=list)

@@ -31,10 +31,6 @@ from app.integrations.hyperliquid_live_client import (
 from app.services.job_lock_service import (
     JobLockAlreadyHeldError,
     job_lock,
-    job_lock_owner,
-    release_job_lock,
-    release_job_lock_safely,
-    try_acquire_job_lock,
 )
 from app.services.live_execution_state import (
     RECONCILABLE_ORDER_STATUSES,
@@ -54,13 +50,8 @@ from app.services.trading_core import (
     margin_from_notional,
 )
 from app.services.trading_safety_service import (
-    LIVE_ENTRY_GATE_LOCK_KEY,
-    LiveEntrySafetyError,
     apply_live_account_status,
     cancel_unsent_live_entries,
-    ensure_live_entries_enabled,
-    live_entry_gate,
-    load_live_entry_safety_control,
     record_audit_log,
     record_risk_event,
     trip_live_account_risk,
@@ -279,11 +270,6 @@ def validate_live_trading_configuration(settings: Settings) -> None:
     try:
         client = HyperliquidLiveTradingClient(settings=settings)
         client.validate_live_configuration()
-        client.validate_entry_activation()
-        if settings.hyperliquid_network == "mainnet" and not settings.live_trading_allowed_coins:
-            raise ValueError(
-                "Mainnet live entries require a non-empty LIVE_TRADING_ALLOWED_COINS list."
-            )
     except Exception as exc:
         raise LiveTradingServiceError(str(exc) or exc.__class__.__name__) from exc
 
@@ -699,8 +685,6 @@ async def start_live_trading_account(
 ) -> TradingAccount:
     validate_live_trading_configuration(settings)
     try:
-        await ensure_live_entries_enabled(session)
-        await session.commit()
         async with job_lock(
             session,
             key=f"live_close_all:{account_key}",
@@ -729,57 +713,53 @@ async def start_live_trading_account(
                     )
                 start_lifecycle_version = account.lifecycle_version
 
-        async with live_entry_gate(session):
-            await ensure_live_entries_enabled(session)
+        async with job_lock(
+            session,
+            key=f"live_close_all:{account_key}",
+            ttl_seconds=300,
+        ):
             async with job_lock(
                 session,
-                key=f"live_close_all:{account_key}",
+                key=f"live_execution:{account_key}",
                 ttl_seconds=300,
             ):
-                async with job_lock(
+                account = await load_live_account_for_update(
                     session,
-                    key=f"live_execution:{account_key}",
-                    ttl_seconds=300,
+                    account_key=account_key,
+                )
+                if account.lifecycle_version != start_lifecycle_version:
+                    raise LiveTradingServiceError(
+                        "Live account lifecycle changed during start reconciliation. "
+                        "Review the current state before retrying Start.",
+                        status_code=409,
+                    )
+                validate_live_account_identity(account, settings=settings)
+                validate_live_account_can_start(account, settings=settings)
+                if await live_account_has_incomplete_close_operation(
+                    session,
+                    account_key=account.key,
                 ):
-                    account = await load_live_account_for_update(
-                        session,
-                        account_key=account_key,
+                    raise LiveTradingServiceError(
+                        "Resolve the active close-all operation before starting this account.",
+                        status_code=409,
                     )
-                    if account.lifecycle_version != start_lifecycle_version:
-                        raise LiveTradingServiceError(
-                            "Live account lifecycle changed during start reconciliation. "
-                            "Review the current state before retrying Start.",
-                            status_code=409,
-                        )
-                    validate_live_account_identity(account, settings=settings)
-                    validate_live_account_can_start(account, settings=settings)
-                    if await live_account_has_incomplete_close_operation(
-                        session,
-                        account_key=account.key,
-                    ):
-                        raise LiveTradingServiceError(
-                            "Resolve the active close-all operation before starting this account.",
-                            status_code=409,
-                        )
-                    apply_live_account_status(
-                        account,
-                        status="enabled",
-                        reason="start_after_complete_reconciliation",
-                    )
-                    record_audit_log(
-                        session,
-                        actor=actor,
-                        action="live_account.start",
-                        payload={
-                            "accountKey": account.key,
-                            "reconciliationRunId": str(result.run_id) if result.run_id else None,
-                            "lifecycleVersion": account.lifecycle_version,
-                        },
-                    )
-                    await session.flush()
-                    return account
-    except LiveEntrySafetyError as exc:
-        raise LiveTradingServiceError(str(exc), status_code=409) from exc
+                apply_live_account_status(
+                    account,
+                    status="enabled",
+                    reason="start_after_complete_reconciliation",
+                )
+                record_audit_log(
+                    session,
+                    actor=actor,
+                    action="live_account.start",
+                    payload={
+                        "accountKey": account.key,
+                        "reconciliationRunId": str(result.run_id) if result.run_id else None,
+                        "lifecycleVersion": account.lifecycle_version,
+                    },
+                )
+                await session.flush()
+                return account
     except JobLockAlreadyHeldError as exc:
         raise LiveTradingServiceError(
             "Live execution or close-all is already running for this account.",
@@ -1722,20 +1702,6 @@ async def submit_live_trade_intent_under_account_lock(
     settings: Settings,
     live_client: HyperliquidLiveTradingClient,
 ) -> LiveOrderLifecycleResult:
-    entry_gate_owner: str | None = None
-    if not intent.reduce_only:
-        entry_gate_owner = job_lock_owner()
-        acquired = await try_acquire_job_lock(
-            session,
-            key=LIVE_ENTRY_GATE_LOCK_KEY,
-            owner=entry_gate_owner,
-            ttl_seconds=300,
-        )
-        if not acquired:
-            raise LiveOrderSubmitError(
-                "Another live entry or safety transition is currently running.",
-                status_code=409,
-            )
     try:
         async with job_lock(
             session,
@@ -1766,11 +1732,7 @@ async def submit_live_trade_intent_under_account_lock(
                     order=existing_order,
                     settings=settings,
                 )
-                try:
-                    await ensure_live_entries_enabled(session)
-                except LiveEntrySafetyError as exc:
-                    raise LiveOrderSubmitError(str(exc), status_code=409) from exc
-                await validate_live_entry_state_guardrails(
+                await validate_live_entry_risk_guardrails(
                     session,
                     account=account,
                     intent=intent,
@@ -1824,13 +1786,6 @@ async def submit_live_trade_intent_under_account_lock(
                 order=order,
                 dispatch=dispatch,
             )
-            if entry_gate_owner is not None:
-                await release_job_lock(
-                    session,
-                    key=LIVE_ENTRY_GATE_LOCK_KEY,
-                    owner=entry_gate_owner,
-                )
-                entry_gate_owner = None
             try:
                 result = await live_client.submit_order(account=account, intent=intent)
             except (
@@ -1865,13 +1820,6 @@ async def submit_live_trade_intent_under_account_lock(
             "Another live order is already being dispatched for this account.",
             status_code=409,
         ) from exc
-    finally:
-        if entry_gate_owner is not None:
-            await release_job_lock_safely(
-                session,
-                key=LIVE_ENTRY_GATE_LOCK_KEY,
-                owner=entry_gate_owner,
-            )
 
 
 async def ensure_live_entry_intent_is_fresh(
@@ -1918,7 +1866,6 @@ async def recover_live_order_dispatches(
     trading_client: HyperliquidLiveTradingClient | None = None,
     limit: int = 100,
 ) -> LiveDispatchRecoveryResult:
-    entry_control = await load_live_entry_safety_control(session)
     dispatch_ids_result = await session.scalars(
         select(TradingOrderDispatch.id)
         .where(
@@ -1969,9 +1916,7 @@ async def recover_live_order_dispatches(
 
             inspected += 1
             if dispatch.status == "pending" and order.status == "ready":
-                if not order.reduce_only and (
-                    not settings.live_trading_enabled or entry_control.entry_state != "enabled"
-                ):
+                if not order.reduce_only and not settings.live_trading_enabled:
                     refreshed_order = await session.get(TradingOrder, order.id)
                     refreshed_dispatch = await session.get(TradingOrderDispatch, dispatch.id)
                     if refreshed_order is not None and refreshed_dispatch is not None:
@@ -1989,7 +1934,7 @@ async def recover_live_order_dispatches(
                             payload={
                                 "accountKey": refreshed_order.account_key,
                                 "orderId": str(refreshed_order.id),
-                                "entryState": entry_control.entry_state,
+                                "liveTradingEnabled": False,
                             },
                         )
                         await session.commit()
@@ -2066,7 +2011,7 @@ async def recover_live_order_dispatches(
     )
 
 
-async def validate_live_entry_state_guardrails(
+async def validate_live_entry_risk_guardrails(
     session: AsyncSession,
     *,
     account: TradingAccount,

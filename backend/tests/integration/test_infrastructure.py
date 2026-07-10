@@ -101,7 +101,6 @@ async def test_fastapi_health_and_wallet_crud_use_real_dependencies(
     monkeypatch.setenv("DASHBOARD_AUTH_ENABLED", "false")
     monkeypatch.setenv("WORKER_RUN_IN_API_PROCESS", "false")
     monkeypatch.setenv("LIVE_TRADING_ENABLED", "false")
-    monkeypatch.setenv("LIVE_TRADING_COPY_ENABLED", "false")
     get_settings.cache_clear()
     get_engine.cache_clear()
     get_redis.cache_clear()

@@ -1917,13 +1917,6 @@ function buildLiveExecutionStatus(tradingAccounts: TradingAccountsResponse): {
       tone: liveAccounts.length > 0 ? "warning" : "neutral",
     };
   }
-  if (!tradingAccounts.liveCopyEnabled) {
-    return {
-      copyingAccountCount: 0,
-      label: "live copy disabled",
-      tone: "warning",
-    };
-  }
   if (enabledLiveAccounts.length > 0) {
     return {
       copyingAccountCount: enabledLiveAccounts.length,
@@ -2034,10 +2027,7 @@ function buildLiveMonitoredSources(
   livePositions: TradingPosition[],
 ): MonitoredSource[] {
   const metadataBySource = buildSourceMetadata(summary, tradingAccounts);
-  const liveCopyReady =
-    tradingAccounts.liveTradingEnabled &&
-    tradingAccounts.liveCopyEnabled &&
-    enabledLiveAccountCount > 0;
+  const liveCopyReady = tradingAccounts.liveTradingEnabled && enabledLiveAccountCount > 0;
   const liveAllocationCapital = tradingAccounts.accounts
     .filter(
       (account) =>
@@ -2586,9 +2576,6 @@ function resolveLiveSourceStatusReason({
   }
   if (!tradingAccounts.liveTradingEnabled) {
     return "live_trading_disabled";
-  }
-  if (!tradingAccounts.liveCopyEnabled) {
-    return "live_copy_disabled";
   }
   if (openPositionCount > 0) {
     return "live_existing_exposure_only";
