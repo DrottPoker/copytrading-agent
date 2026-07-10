@@ -23,6 +23,7 @@ function position(overrides: Partial<TradingPosition>): TradingPosition {
     entryPrice: "100",
     notionalUsd: "100",
     leverage: "1",
+    marginMode: "cross",
     marginUsd: "100",
     currentNotionalUsd: "100",
     markPrice: "100",

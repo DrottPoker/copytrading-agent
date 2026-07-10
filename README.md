@@ -96,6 +96,9 @@ accounts that were automatically moved to `exit_only` by its migration default.
 `LIVE_TRADING_ENABLED` in `.env` is the only global live execution switch.
 Migration `b8e4f0a2d6c1` expands wallet fill ingest latency to `BIGINT` so old
 snapshot fills cannot overflow during realtime ingestion.
+Migration `c9d5a1e7f3b2` stores the authoritative live margin mode on orders and
+positions so cross and isolated execution survive retries, reconciliation, and
+dashboard reads.
 
 After upgrade, restart the backend and both workers. Starting an individual live
 account still requires complete fresh reconciliation and the normal account
@@ -511,10 +514,21 @@ Live activation and account lifecycle:
   exchange unrealized PnL. Its percentage base is reconstructed start-of-week
   account equity. Current unrealized PnL is included once and is not duplicated
   across positions or fill rows.
-- Non-reduce-only orders copy the source wallet leverage without a local maximum.
-  Hyperliquid still requires a positive whole number and enforces the market's
-  supported leverage. The adapter applies it before order submission and
-  requires an `ok` response. Reduce-only orders never change leverage.
+- Non-reduce-only orders copy both source leverage and source margin mode from
+  current Hyperliquid `clearinghouseState`. Hyperliquid still requires positive
+  whole-number leverage and enforces the market's supported leverage. The
+  adapter applies `updateLeverage` with `isCross=true` for cross and
+  `isCross=false` for isolated before order submission, and requires an `ok`
+  response. Live entry is skipped when either source setting is unavailable.
+  Reduce-only orders never change margin settings.
+- Live copy recovery rechecks every open source-attributed position and updates
+  the target leverage and margin mode when the source changes either setting
+  without producing a fill. The default configured recovery interval is 15
+  seconds.
+- A live account and coin can belong to only one source while copied exposure
+  is open. Another source on the same coin is skipped until the market is free,
+  because Hyperliquid exposes one physical position and margin setting per
+  account and coin. Different coins can independently use cross or isolated.
 
 Paper accounts:
 

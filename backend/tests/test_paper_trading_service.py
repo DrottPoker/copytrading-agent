@@ -19,6 +19,8 @@ from app.services.paper_trading_service import (
     paper_monitor_status,
     paper_position_read,
     paper_source_status,
+    parse_source_leverages,
+    parse_source_margin_modes,
     pnl_per_monitored_hour,
     select_realtime_slot_sources,
     source_fill_age_exceeds_entry_limit,
@@ -55,6 +57,36 @@ def test_adjust_open_sizing_to_min_order_when_enabled() -> None:
     assert adjustment.original_notional_usd == Decimal("5")
     assert adjustment.adjusted_notional_usd == Decimal("10")
     assert adjustment.min_order_notional_usd == Decimal("10")
+
+
+def test_source_position_margin_setting_parses_leverage_and_mode() -> None:
+    payload = {
+        "assetPositions": [
+            {
+                "position": {
+                    "coin": "VVV",
+                    "leverage": {"type": "isolated", "value": 1},
+                    "szi": "2",
+                }
+            },
+            {
+                "position": {
+                    "coin": "BTC",
+                    "leverage": {"type": "cross", "value": 5},
+                    "szi": "0.1",
+                }
+            },
+        ]
+    }
+
+    assert parse_source_leverages(payload) == {
+        "VVV": Decimal("1"),
+        "BTC": Decimal("5"),
+    }
+    assert parse_source_margin_modes(payload) == {
+        "VVV": "isolated",
+        "BTC": "cross",
+    }
 
 
 @pytest.mark.parametrize(

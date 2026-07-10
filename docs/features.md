@@ -1103,8 +1103,10 @@ What it does:
 - Reserves one source per live account and market while exposure is open.
   Another source opening the same market is skipped until the market is free,
   even if it is the same side, because Hyperliquid nets exchange position and
-  leverage at account level. Matching exits and adds from the reserved source
-  remain allowed.
+  margin settings at account level. This prevents leverage or cross/isolated
+  settings from different sources overwriting each other. Different coins can
+  independently use different margin modes. Matching exits and adds from the
+  reserved source remain allowed.
 - Enforces live entry guardrails for reconciliation freshness, entry intent TTL,
   weekly account loss percentage, and max orders per minute.
   Stale reconciliation or a breached stateful account limit moves the account to
@@ -1116,10 +1118,17 @@ What it does:
   equity at the start of the UTC week. Current unrealized PnL is included once
   without duplicating it through position or fill rows.
 - Requires positive whole-number leverage for non-reduce-only entries, copies
-  source leverage without a local maximum, applies it through
-  Hyperliquid's leverage update before order submission, and requires an `ok`
-  response. Hyperliquid enforces the market's supported leverage. Reduce-only
-  orders do not change exchange leverage.
+  source leverage without a local maximum, and copies source cross or isolated
+  mode. Hyperliquid's leverage update is sent with the matching `isCross` value
+  before order submission and must return `ok`. Missing source leverage or
+  margin mode skips the entry instead of guessing. Hyperliquid enforces each
+  market's supported leverage. Reduce-only orders do not change exchange margin
+  settings.
+- Rechecks leverage and margin mode for every open source-attributed position
+  during live copy recovery. A source change without a fill is applied to the
+  target through the account execution lock and persisted in the audit trail.
+- Exposes margin mode together with leverage on live positions and orders in the
+  dashboard.
 - Reconciles matched live fills back into source-attributed live positions so
   exit-only accounts can continue to reduce or close copied exposure.
 - Exposes live open-position entry execution delay by matching live open fills

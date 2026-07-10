@@ -12,6 +12,7 @@ TradeAction = Literal["open", "add", "reduce", "close", "flip_close", "flip_open
 TradeSide = Literal["long", "short"]
 TradingAccountType = Literal["paper", "live"]
 TradingAccountStatus = Literal["disabled", "enabled", "exit_only"]
+MarginMode = Literal["cross", "isolated"]
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,7 @@ class TradeIntent:
     source_perp_equity_usd: Decimal | None
     source_exposure_pct: Decimal | None
     created_at: datetime
+    margin_mode: MarginMode = "cross"
 
 
 def build_client_order_id(
@@ -94,6 +96,7 @@ def build_copy_trade_intent(
     source_perp_equity_usd: Decimal | None,
     source_exposure_pct: Decimal | None,
     created_at: datetime | None = None,
+    margin_mode: MarginMode = "cross",
 ) -> TradeIntent:
     reduce_only = action in {"reduce", "close", "flip_close"}
     is_buy = trade_is_buy(side=side, reduce_only=reduce_only)
@@ -129,6 +132,7 @@ def build_copy_trade_intent(
         source_perp_equity_usd=source_perp_equity_usd,
         source_exposure_pct=source_exposure_pct,
         created_at=created_at or datetime.now(UTC),
+        margin_mode=margin_mode,
     )
 
 
@@ -227,6 +231,7 @@ def trade_intent_payload(intent: TradeIntent | None) -> dict[str, Any] | None:
         "notionalUsd": str(intent.notional_usd),
         "marginUsd": str(intent.margin_usd),
         "leverage": str(intent.leverage),
+        "marginMode": intent.margin_mode,
         "limitPrice": str(intent.limit_price),
         "sourcePrice": str(intent.source_price) if intent.source_price is not None else None,
         "observedPrice": (

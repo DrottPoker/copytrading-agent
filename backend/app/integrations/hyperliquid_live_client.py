@@ -8,7 +8,7 @@ from typing import Any
 
 from app.core.config import Settings, get_settings
 from app.db.models import TradingAccount
-from app.services.trading_core import TradeIntent
+from app.services.trading_core import MarginMode, TradeIntent
 
 
 class HyperliquidLiveTradingError(RuntimeError):
@@ -114,6 +114,32 @@ class HyperliquidLiveTradingClient:
         )
         return response if isinstance(response, dict) else {"response": response}
 
+    async def update_margin_setting(
+        self,
+        *,
+        account: TradingAccount,
+        coin: str,
+        leverage: Decimal,
+        margin_mode: MarginMode,
+    ) -> dict[str, Any]:
+        self.validate_live_configuration()
+        if account.account_type != "live":
+            raise HyperliquidLiveTradingConfigurationError(
+                "Only live accounts can update exchange margin settings."
+            )
+        if account.network != self.settings.hyperliquid_network:
+            raise HyperliquidLiveTradingConfigurationError(
+                "Live account network does not match the configured network."
+            )
+        exchange_leverage = validated_live_entry_leverage(leverage)
+        return await asyncio.to_thread(
+            self._update_margin_setting_sync,
+            account,
+            coin,
+            exchange_leverage,
+            margin_mode,
+        )
+
     def validate_account_order(
         self,
         *,
@@ -160,6 +186,7 @@ class HyperliquidLiveTradingClient:
             )
         if not intent.reduce_only:
             validated_live_entry_leverage(intent.leverage)
+            validated_margin_mode(intent.margin_mode)
         if intent.observed_price is not None and intent.observed_price > Decimal("0"):
             slippage_bps = (
                 (intent.limit_price - intent.observed_price).copy_abs()
@@ -227,6 +254,7 @@ class HyperliquidLiveTradingClient:
                 exchange,
                 coin=order_coin,
                 leverage=exchange_leverage,
+                margin_mode=intent.margin_mode,
             )
         cloid = self._build_cloid(intent.client_order_id)
         try:
@@ -260,6 +288,23 @@ class HyperliquidLiveTradingClient:
             submitted_size=wire_values.size,
             submitted_limit_price=wire_values.limit_price,
             submitted_notional_usd=wire_values.notional_usd,
+        )
+
+    def _update_margin_setting_sync(
+        self,
+        account: TradingAccount,
+        coin: str,
+        leverage: int,
+        margin_mode: MarginMode,
+    ) -> dict[str, Any]:
+        exchange = self._build_exchange(account, coin=coin)
+        order_coin = resolve_live_order_exchange_coin(exchange, coin)
+        validate_live_order_market(exchange, order_coin, display_coin=coin)
+        return apply_live_entry_exchange_leverage(
+            exchange,
+            coin=order_coin,
+            leverage=leverage,
+            margin_mode=margin_mode,
         )
 
     def _build_exchange(self, account: TradingAccount, *, coin: str | None = None) -> Any:
@@ -297,11 +342,20 @@ def validated_live_entry_leverage(
     return int(integral_leverage)
 
 
+def validated_margin_mode(margin_mode: str) -> MarginMode:
+    if margin_mode not in {"cross", "isolated"}:
+        raise HyperliquidLiveTradingConfigurationError(
+            "Live order margin mode must be cross or isolated."
+        )
+    return margin_mode
+
+
 def apply_live_entry_exchange_leverage(
     exchange: Any,
     *,
     coin: str,
     leverage: int,
+    margin_mode: MarginMode,
 ) -> dict[str, Any]:
     update_leverage = getattr(exchange, "update_leverage", None)
     if not callable(update_leverage):
@@ -309,7 +363,11 @@ def apply_live_entry_exchange_leverage(
             "Hyperliquid exchange client cannot enforce entry leverage."
         )
     try:
-        response = update_leverage(leverage, coin, is_cross=True)
+        response = update_leverage(
+            leverage,
+            coin,
+            is_cross=validated_margin_mode(margin_mode) == "cross",
+        )
     except Exception as exc:
         raise HyperliquidLiveOrderRejectedError(
             "Hyperliquid leverage update failed before order submission."
@@ -327,7 +385,8 @@ def apply_live_entry_exchange_leverage(
     return {
         "coin": coin,
         "leverage": leverage,
-        "isCross": True,
+        "isCross": margin_mode == "cross",
+        "marginMode": margin_mode,
         "response": response,
     }
 

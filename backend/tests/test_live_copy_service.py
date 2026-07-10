@@ -180,6 +180,13 @@ async def test_recovery_stale_live_entry_skip_is_hidden_from_activity(monkeypatc
             close_ratio=None,
             start_position=Decimal("0"),
         ),
+        source_account_state=PaperSourceAccountState(
+            dex="",
+            perp_equity=Decimal("1000"),
+            leverage_by_coin={"HYPE": Decimal("25")},
+            positions_by_coin={},
+            margin_mode_by_coin={"HYPE": "cross"},
+        ),
         source_perp_equity=Decimal("1000"),
         source_leverages={"HYPE": Decimal("25")},
         market_prices=ExecutionMarketPrices(prices={}, sources={}),
@@ -195,6 +202,108 @@ async def test_recovery_stale_live_entry_skip_is_hidden_from_activity(monkeypatc
     assert captured["reason"] == "live_source_fill_too_old"
     assert captured["hidden_from_activity"] is True
     assert captured["leverage"] == Decimal("25")
+
+
+@pytest.mark.asyncio
+async def test_live_entry_skips_when_source_margin_mode_is_missing(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_record_live_skip(*_args, **kwargs):
+        captured.update(kwargs)
+        return PaperCopyBatchResult(skipped_fills=1)
+
+    monkeypatch.setattr(live_copy_service, "record_live_skip", fake_record_live_skip)
+
+    result = await live_copy_service.apply_live_open_part(
+        object(),
+        account=live_account(last_reconciled_at=datetime(2026, 1, 1, tzinfo=UTC)),
+        allocation=PaperSourceAllocation(
+            source_wallet="0xsource",
+            source_label="Source",
+            rank=1,
+            pool_rank=1,
+            score=Decimal("90"),
+            allocation_pct=Decimal("0.2"),
+            active=True,
+            has_realtime_slot=True,
+            status_reason="trading",
+        ),
+        fill={"externalFillId": "fill-1", "coin": "HYPE", "price": "100"},
+        part=SourceFillPart(
+            action="open",
+            side="long",
+            source_size=Decimal("0.1"),
+            source_notional_usd=Decimal("10"),
+            sequence_index=0,
+            close_ratio=None,
+            start_position=Decimal("0"),
+        ),
+        source_account_state=PaperSourceAccountState(
+            dex="",
+            perp_equity=Decimal("1000"),
+            leverage_by_coin={"HYPE": Decimal("1")},
+            positions_by_coin={},
+        ),
+        source_perp_equity=Decimal("1000"),
+        source_leverages={"HYPE": Decimal("1")},
+        market_prices=ExecutionMarketPrices(prices={}, sources={}),
+        settings=Settings(),
+        trading_client=object(),
+    )
+
+    assert result.skipped_fills == 1
+    assert captured["reason"] == "live_source_margin_mode_missing"
+
+
+@pytest.mark.asyncio
+async def test_recovery_syncs_current_source_leverage_and_margin_mode(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    position = live_position(source_wallet="0xsource", side="long")
+
+    class ScalarResult:
+        def all(self):
+            return [position]
+
+    class FakeSession:
+        async def scalars(self, _query):
+            return ScalarResult()
+
+    async def fake_load_source_account_state(**_kwargs):
+        return PaperSourceAccountState(
+            dex="",
+            perp_equity=Decimal("1000"),
+            leverage_by_coin={"HYPE": Decimal("1")},
+            positions_by_coin={},
+            margin_mode_by_coin={"HYPE": "isolated"},
+        )
+
+    async def fake_sync_live_position_margin_setting(*_args, **kwargs):
+        captured.update(kwargs)
+        return True
+
+    monkeypatch.setattr(
+        live_copy_service,
+        "load_source_account_state",
+        fake_load_source_account_state,
+    )
+    monkeypatch.setattr(
+        live_copy_service,
+        "sync_live_position_margin_setting",
+        fake_sync_live_position_margin_setting,
+    )
+
+    updated = await live_copy_service.sync_live_source_margin_settings(
+        FakeSession(),
+        source_wallet="0xsource",
+        settings=Settings(),
+        info_client=object(),
+        trading_client=object(),
+    )
+
+    assert updated == 1
+    assert captured["leverage"] == Decimal("1")
+    assert captured["margin_mode"] == "isolated"
+    assert captured["coin"] == "HYPE"
 
 
 def test_live_copy_combine_batch_results_merges_skip_reasons() -> None:
@@ -877,6 +986,7 @@ async def test_record_live_skip_persists_diagnostic_order() -> None:
         ),
         reason="live_price_drift_too_high",
         leverage=Decimal("10"),
+        margin_mode="cross",
         hidden_from_activity=True,
         source_fill_age_seconds=600.1234,
     )
@@ -923,6 +1033,7 @@ def live_position(
         entry_price=Decimal("100"),
         notional_usd=Decimal("10"),
         leverage=Decimal("10"),
+        margin_mode="cross",
         margin_usd=Decimal("1"),
         realized_pnl_usd=Decimal("0"),
         fee_usd=Decimal("0"),

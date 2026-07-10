@@ -531,7 +531,7 @@ def test_parse_live_position_reads_signed_position_size() -> None:
                 "szi": "-0.25",
                 "entryPx": "65000",
                 "positionValue": "16250",
-                "leverage": {"value": "5"},
+                "leverage": {"type": "isolated", "value": "5"},
                 "marginUsed": "3250",
             }
         }
@@ -542,7 +542,79 @@ def test_parse_live_position_reads_signed_position_size() -> None:
     assert snapshot.side == "short"
     assert snapshot.size == Decimal("0.25")
     assert snapshot.leverage == Decimal("5")
+    assert snapshot.margin_mode == "isolated"
     assert snapshot.margin_usd == Decimal("3250")
+
+
+@pytest.mark.asyncio
+async def test_margin_setting_sync_commits_before_exchange_update(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    account = TradingAccount(
+        key="live_test",
+        account_type="live",
+        label="Live Test",
+        status="enabled",
+        network="mainnet",
+    )
+    exchange_position = live_position(raw_payload={})
+    exchange_position.margin_mode = "cross"
+    source_position = live_position(raw_payload={})
+    source_position.source_wallet = "0xsource"
+    source_position.margin_mode = "cross"
+
+    class ScalarResult:
+        def all(self):
+            return [exchange_position, source_position]
+
+    class FakeSession:
+        async def scalars(self, _query):
+            return ScalarResult()
+
+        async def commit(self):
+            events.append("commit")
+
+        def add(self, _value):
+            events.append("audit")
+
+    class FakeClient:
+        async def update_margin_setting(self, **_kwargs):
+            events.append("exchange")
+            return {"status": "ok"}
+
+    @asynccontextmanager
+    async def fake_job_lock(*_args, **_kwargs):
+        yield
+
+    async def fake_load_live_account(*_args, **_kwargs):
+        return account
+
+    monkeypatch.setattr(live_trading_service, "job_lock", fake_job_lock)
+    monkeypatch.setattr(live_trading_service, "load_live_account", fake_load_live_account)
+    monkeypatch.setattr(
+        live_trading_service,
+        "validate_live_account_identity",
+        lambda *_args, **_kwargs: None,
+    )
+
+    changed = await live_trading_service.sync_live_position_margin_setting(
+        FakeSession(),
+        account_key="live_test",
+        source_wallet="0xsource",
+        coin="HYPE",
+        leverage=Decimal("1"),
+        margin_mode="isolated",
+        settings=Settings(),
+        client=FakeClient(),
+    )
+
+    assert changed is True
+    assert events.index("commit") < events.index("exchange")
+    assert exchange_position.leverage == Decimal("1")
+    assert exchange_position.margin_mode == "isolated"
+    assert source_position.leverage == Decimal("1")
+    assert source_position.margin_mode == "isolated"
 
 
 def test_live_position_market_values_read_raw_payload() -> None:
@@ -900,6 +972,7 @@ def test_build_testnet_live_trade_intent_is_reduce_only_when_requested() -> None
         limit_price=Decimal("100"),
         leverage=Decimal("2"),
         reduce_only=True,
+        margin_mode="isolated",
         source_fill_id="manual-1",
         created_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
@@ -909,6 +982,7 @@ def test_build_testnet_live_trade_intent_is_reduce_only_when_requested() -> None
     assert intent.is_buy is True
     assert intent.size == Decimal("0.1")
     assert intent.margin_usd == Decimal("5")
+    assert intent.margin_mode == "isolated"
 
 
 def test_live_account_key_is_generated_from_wallet_route() -> None:

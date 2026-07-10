@@ -117,6 +117,7 @@ type DashboardPosition = {
   coin: string;
   side: "long" | "short";
   leverage: string | number | null;
+  marginMode: "cross" | "isolated" | null;
   marginUsd: string | number | null;
   notionalUsd: string | number | null;
   currentNotionalUsd: string | number | null;
@@ -1229,7 +1230,9 @@ function PositionRow({
             <p className="font-semibold text-ink">{position.coin}</p>
             <StatusPill label={position.accountType} tone={position.accountType === "live" ? "positive" : "neutral"} />
             <StatusPill label={position.side} tone={position.side === "long" ? "positive" : "warning"} />
-            <span className="font-mono text-xs text-muted">{formatLeverage(position.leverage)}</span>
+            <span className="font-mono text-xs text-muted">
+              {formatLeverage(position.leverage, position.marginMode)}
+            </span>
           </div>
           {isLiveExchangeSource(position.sourceWallet) ? (
             <p className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink">
@@ -1591,6 +1594,7 @@ function buildPaperDashboardPositions(paperPositions: PaperPosition[]): Dashboar
     entryPrice: position.entryPrice,
     id: position.id,
     leverage: position.leverage,
+    marginMode: null,
     marginUsd: position.marginUsd,
     markPrice: position.markPrice,
     notionalUsd: position.notionalUsd,
@@ -1623,6 +1627,7 @@ function buildLiveDashboardPositions(
     entryPrice: position.entryPrice,
     id: position.id,
     leverage: position.leverage,
+    marginMode: position.marginMode,
     marginUsd: position.marginUsd,
     markPrice: position.markPrice,
     notionalUsd: position.notionalUsd,
@@ -1803,7 +1808,7 @@ function buildLiveOrderActivity(
         value: formatPrice(order.limitPrice),
         detail: order.averageFillPrice
           ? `avg ${formatPrice(order.averageFillPrice)}`
-          : formatLeverage(order.leverage),
+          : formatLeverage(order.leverage, order.marginMode),
       },
       {
         label: "Result",
@@ -2895,13 +2900,17 @@ function formatBps(value: string | number | null | undefined) {
   )} bps`;
 }
 
-function formatLeverage(value: string | number | null | undefined) {
+function formatLeverage(
+  value: string | number | null | undefined,
+  marginMode?: "cross" | "isolated" | null,
+) {
   if (value === null || value === undefined) {
     return "-";
   }
-  return `${new Intl.NumberFormat("sv-SE", { maximumFractionDigits: 2 }).format(
+  const leverage = `${new Intl.NumberFormat("sv-SE", { maximumFractionDigits: 2 }).format(
     numberValue(value),
   )}x`;
+  return marginMode ? `${leverage} ${marginMode}` : leverage;
 }
 
 function formatCloseType(value: string) {

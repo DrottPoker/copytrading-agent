@@ -179,6 +179,7 @@ def trading_order_from_intent(intent: TradeIntent) -> TradingOrder:
         requested_notional_usd=intent.notional_usd,
         margin_usd=intent.margin_usd,
         leverage=intent.leverage,
+        margin_mode=intent.margin_mode,
         limit_price=intent.limit_price,
         filled_size=ZERO,
         filled_notional_usd=ZERO,
@@ -210,6 +211,11 @@ def trade_intent_from_order(order: TradingOrder) -> TradeIntent:
         notional_usd=Decimal(order.requested_notional_usd),
         margin_usd=Decimal(order.margin_usd or ZERO),
         leverage=Decimal(order.leverage or Decimal("1")),
+        margin_mode=(
+            raw_intent.get("marginMode")
+            if raw_intent.get("marginMode") in {"cross", "isolated"}
+            else order.margin_mode
+        ),
         limit_price=Decimal(order.limit_price or ZERO),
         source_price=optional_decimal(raw_intent.get("sourcePrice")),
         observed_price=optional_decimal(raw_intent.get("observedPrice")),

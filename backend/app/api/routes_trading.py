@@ -898,6 +898,7 @@ async def submit_testnet_live_order_route(
             notional_usd=payload.notional_usd,
             limit_price=payload.limit_price,
             leverage=payload.leverage,
+            margin_mode=payload.margin_mode,
             reduce_only=payload.reduce_only,
         )
         result = await submit_live_trade_intent(

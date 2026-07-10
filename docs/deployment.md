@@ -145,7 +145,9 @@ mid-price cache policy with paper copy through `backend/config/trading.json`.
 The 50 percent weekly account-loss limit, 50 orders-per-minute limit, and other
 live execution settings stay in `backend/config/live_trading.json`. Copied source
 leverage has no local maximum; Hyperliquid enforces each market's supported
-leverage.
+leverage. Live entries also copy source cross or isolated mode. Migration
+`c9d5a1e7f3b2` must be applied before restarting the backend and trading worker
+because margin mode is persisted on live orders and positions.
 
 Build the images:
 

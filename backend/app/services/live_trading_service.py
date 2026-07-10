@@ -45,6 +45,7 @@ from app.services.live_execution_state import (
     trade_intent_from_order,
 )
 from app.services.trading_core import (
+    MarginMode,
     TradeIntent,
     build_copy_trade_intent,
     margin_from_notional,
@@ -213,6 +214,7 @@ class LivePositionSnapshot:
     entry_price: Decimal
     notional_usd: Decimal
     leverage: Decimal
+    margin_mode: MarginMode
     margin_usd: Decimal
     raw_payload: dict[str, Any]
 
@@ -1820,6 +1822,120 @@ async def submit_live_trade_intent_under_account_lock(
         ) from exc
 
 
+async def sync_live_position_margin_setting(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    source_wallet: str,
+    coin: str,
+    leverage: Decimal,
+    margin_mode: MarginMode,
+    settings: Settings,
+    client: HyperliquidLiveTradingClient | None = None,
+) -> bool:
+    live_client = client or HyperliquidLiveTradingClient(settings=settings)
+    try:
+        async with job_lock(
+            session,
+            key=f"live_execution:{account_key}",
+            ttl_seconds=120,
+        ):
+            account = await load_live_account(session, account_key=account_key)
+            validate_live_account_identity(account, settings=settings)
+            position_query = select(TradingPosition).where(
+                TradingPosition.account_key == account_key,
+                TradingPosition.account_type == "live",
+                TradingPosition.coin == coin,
+                TradingPosition.source_wallet.in_([source_wallet, LIVE_EXCHANGE_SOURCE]),
+            )
+            result = await session.scalars(position_query)
+            positions = list(result.all())
+            exchange_position = next(
+                (
+                    position
+                    for position in positions
+                    if position.source_wallet == LIVE_EXCHANGE_SOURCE
+                ),
+                None,
+            )
+            source_position = next(
+                (position for position in positions if position.source_wallet == source_wallet),
+                None,
+            )
+            if exchange_position is None or source_position is None:
+                return False
+
+            changed = (
+                exchange_position.leverage != leverage
+                or exchange_position.margin_mode != margin_mode
+            )
+            await session.commit()
+            response: dict[str, Any] | None = None
+            if changed:
+                try:
+                    response = await live_client.update_margin_setting(
+                        account=account,
+                        coin=coin,
+                        leverage=leverage,
+                        margin_mode=margin_mode,
+                    )
+                except (
+                    HyperliquidLiveOrderRejectedError,
+                    HyperliquidLiveTradingConfigurationError,
+                ) as exc:
+                    raise LiveOrderSubmitError(str(exc) or exc.__class__.__name__) from exc
+                except Exception as exc:
+                    raise LiveOrderSubmitError(
+                        "Live margin setting update failed before synchronization."
+                    ) from exc
+
+            locked_result = await session.scalars(position_query.with_for_update())
+            positions = list(locked_result.all())
+            if not any(
+                position.source_wallet == LIVE_EXCHANGE_SOURCE for position in positions
+            ) or not any(position.source_wallet == source_wallet for position in positions):
+                raise LiveOrderSubmitError(
+                    "Live margin setting changed externally but local position state disappeared."
+                )
+            synced_at = datetime.now(UTC)
+            for position in positions:
+                position.leverage = leverage
+                position.margin_mode = margin_mode
+                position.margin_usd = margin_from_notional(position.notional_usd, leverage)
+                position.raw_payload = merge_raw_payload(
+                    position.raw_payload,
+                    {
+                        "marginSettingSync": {
+                            "leverage": str(leverage),
+                            "marginMode": margin_mode,
+                            "sourceWallet": source_wallet,
+                            "syncedAt": synced_at.isoformat(),
+                            "exchangeResponse": response,
+                        }
+                    },
+                )
+            if changed:
+                record_audit_log(
+                    session,
+                    actor="copy_recovery",
+                    action="live_position.margin_setting_synced",
+                    payload={
+                        "accountKey": account_key,
+                        "coin": coin,
+                        "leverage": str(leverage),
+                        "marginMode": margin_mode,
+                        "sourceWallet": source_wallet,
+                    },
+                )
+            await session.commit()
+            return changed
+    except JobLockAlreadyHeldError as exc:
+        raise LiveOrderSubmitError(
+            "Live margin setting sync deferred because account execution is busy.",
+            status_code=409,
+        ) from exc
+
+
 async def ensure_live_entry_intent_is_fresh(
     session: AsyncSession,
     *,
@@ -2203,6 +2319,7 @@ def reset_live_order_for_retry(order: TradingOrder, *, intent: TradeIntent) -> N
     order.requested_notional_usd = intent.notional_usd
     order.margin_usd = intent.margin_usd
     order.leverage = intent.leverage
+    order.margin_mode = intent.margin_mode
     order.limit_price = intent.limit_price
     order.raw_payload = merge_raw_payload(
         order.raw_payload,
@@ -3320,6 +3437,7 @@ async def apply_live_open_fill_to_position(
                 entry_price=parsed_fill["price"],
                 notional_usd=fill_notional,
                 leverage=order.leverage or Decimal("1"),
+                margin_mode=order.margin_mode,
                 margin_usd=margin_delta,
                 realized_pnl_usd=ZERO,
                 fee_usd=fee_usd,
@@ -3341,11 +3459,11 @@ async def apply_live_open_fill_to_position(
     ) / next_size
     position.size = next_size
     position.notional_usd += fill_notional
-    position.margin_usd += margin_delta
-    position.leverage = effective_leverage(
-        notional_usd=position.notional_usd,
-        margin_usd=position.margin_usd,
-        fallback=order.leverage or Decimal("1"),
+    position.leverage = order.leverage or Decimal("1")
+    position.margin_mode = order.margin_mode
+    position.margin_usd = margin_from_notional(
+        position.notional_usd,
+        position.leverage,
     )
     position.fee_usd += fee_usd
     position.last_reconciled_at = filled_at
@@ -3494,6 +3612,12 @@ def sync_live_source_positions_from_exchange_positions(
             if position.size <= POSITION_EPSILON:
                 stale_positions.append(position)
                 continue
+            position.leverage = exchange_position.leverage
+            position.margin_mode = exchange_position.margin_mode
+            position.margin_usd = margin_from_notional(
+                position.notional_usd,
+                position.leverage,
+            )
             if mark_price is None or mark_price <= ZERO:
                 position.last_reconciled_at = reconciled_at
                 updated += 1
@@ -3580,6 +3704,7 @@ async def reconcile_live_positions(
                 entry_price=snapshot.entry_price,
                 notional_usd=snapshot.notional_usd,
                 leverage=snapshot.leverage,
+                margin_mode=snapshot.margin_mode,
                 margin_usd=snapshot.margin_usd,
                 realized_pnl_usd=ZERO,
                 fee_usd=ZERO,
@@ -3595,6 +3720,7 @@ async def reconcile_live_positions(
         position.entry_price = snapshot.entry_price
         position.notional_usd = snapshot.notional_usd
         position.leverage = snapshot.leverage
+        position.margin_mode = snapshot.margin_mode
         position.margin_usd = snapshot.margin_usd
         position.raw_payload = snapshot.raw_payload
         position.last_reconciled_at = reconciled_at
@@ -3738,6 +3864,7 @@ def build_testnet_live_trade_intent(
     limit_price: Decimal,
     leverage: Decimal,
     reduce_only: bool,
+    margin_mode: MarginMode = "cross",
     source_fill_id: str | None = None,
     created_at: datetime | None = None,
 ) -> TradeIntent:
@@ -3764,6 +3891,7 @@ def build_testnet_live_trade_intent(
         notional_usd=notional_usd,
         margin_usd=margin_from_notional(notional_usd, leverage),
         leverage=leverage,
+        margin_mode=margin_mode,
         limit_price=limit_price,
         source_price=limit_price,
         observed_price=limit_price,
@@ -3812,6 +3940,9 @@ def build_live_close_position_intent(
         notional_usd=notional_usd,
         margin_usd=margin_from_notional(notional_usd, leverage),
         leverage=leverage,
+        margin_mode=(
+            position.margin_mode if position.margin_mode in {"cross", "isolated"} else "cross"
+        ),
         limit_price=limit_price,
         source_price=mid_price,
         observed_price=mid_price,
@@ -4209,7 +4340,9 @@ def parse_live_position(payload: dict[str, Any]) -> LivePositionSnapshot | None:
     size = abs(signed_size)
     entry_price = decimal_or_none(position.get("entryPx")) or ZERO
     notional = decimal_or_none(position.get("positionValue")) or (size * entry_price)
-    leverage = parse_position_leverage(position.get("leverage"))
+    raw_leverage = position.get("leverage")
+    leverage = parse_position_leverage(raw_leverage)
+    margin_mode = parse_position_margin_mode(raw_leverage)
     margin = decimal_or_none(position.get("marginUsed")) or margin_from_notional(
         notional,
         leverage,
@@ -4221,6 +4354,7 @@ def parse_live_position(payload: dict[str, Any]) -> LivePositionSnapshot | None:
         entry_price=entry_price,
         notional_usd=notional,
         leverage=leverage,
+        margin_mode=margin_mode,
         margin_usd=margin,
         raw_payload=payload,
     )
@@ -4232,6 +4366,14 @@ def parse_position_leverage(value: Any) -> Decimal:
         return parsed if parsed is not None and parsed > ZERO else Decimal("1")
     parsed = decimal_or_none(value)
     return parsed if parsed is not None and parsed > ZERO else Decimal("1")
+
+
+def parse_position_margin_mode(value: Any) -> MarginMode:
+    if isinstance(value, dict):
+        margin_mode = str(value.get("type") or "").strip().casefold()
+        if margin_mode == "isolated":
+            return "isolated"
+    return "cross"
 
 
 def infer_position_side(fill: dict[str, Any]) -> str | None:

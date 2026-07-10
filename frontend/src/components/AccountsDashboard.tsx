@@ -155,6 +155,7 @@ type AccountPositionRow = {
   executionValue: string;
   id: string;
   leverage: string | number | null;
+  marginMode: "cross" | "isolated" | null;
   notionalUsd: string | number | null;
   side: "long" | "short";
   sourceHref: string | null;
@@ -1597,7 +1598,11 @@ function PositionRows({ positions }: { positions: AccountPositionRow[] }) {
               </p>
             </div>
             <RowMetric label="Unrealized" tone={unrealized >= 0 ? "positive" : "danger"} value={formatCurrency(unrealized)} />
-            <RowMetric label="Notional" detail={`${formatLeverage(position.leverage)} leverage`} value={formatCurrency(position.notionalUsd)} />
+            <RowMetric
+              label="Notional"
+              detail={formatLeverage(position.leverage, position.marginMode)}
+              value={formatCurrency(position.notionalUsd)}
+            />
             <RowMetric label="Entry" detail={position.entryDetail} value={formatPrice(position.entryPrice)} />
             <RowMetric label="Execution" detail={position.executionDetail} value={position.executionValue} />
           </div>
@@ -2325,6 +2330,7 @@ function paperPositionRow(position: PaperPosition): AccountPositionRow {
     executionValue: formatExecutionMs(position.entryExecutionDelayMs),
     id: position.id,
     leverage: position.leverage,
+    marginMode: null,
     notionalUsd: position.currentNotionalUsd ?? position.notionalUsd,
     side: position.side,
     sourceHref: `/wallets/${position.sourceWallet}`,
@@ -2349,6 +2355,7 @@ function livePositionRow(
     executionValue: formatExecutionMs(position.entryExecutionDelayMs),
     id: position.id,
     leverage: position.leverage,
+    marginMode: position.marginMode,
     notionalUsd: position.currentNotionalUsd ?? position.notionalUsd,
     side: position.side,
     sourceHref: isExchange ? null : `/wallets/${position.sourceWallet}`,
@@ -2505,7 +2512,9 @@ function liveOrderExecutionRow(
     notionalDetail: `filled ${formatCurrency(order.filledNotionalUsd)}`,
     notionalUsd: order.requestedNotionalUsd,
     price: order.limitPrice,
-    priceDetail: order.averageFillPrice ? `avg ${formatPrice(order.averageFillPrice)}` : formatLeverage(order.leverage),
+    priceDetail: order.averageFillPrice
+      ? `avg ${formatPrice(order.averageFillPrice)}`
+      : formatLeverage(order.leverage, order.marginMode),
     realizedPnlUsd: "0",
     sourceHref: isExchange ? null : `/wallets/${order.sourceWallet}`,
     sourceLabel: isExchange
@@ -3010,13 +3019,17 @@ function formatSize(value: string | number | null | undefined) {
   return new Intl.NumberFormat("sv-SE", { maximumFractionDigits: 6 }).format(decimal(value));
 }
 
-function formatLeverage(value: string | number | null | undefined) {
+function formatLeverage(
+  value: string | number | null | undefined,
+  marginMode?: "cross" | "isolated" | null,
+) {
   if (value === null || value === undefined) {
     return "-";
   }
-  return `${new Intl.NumberFormat("sv-SE", { maximumFractionDigits: 2 }).format(
+  const leverage = `${new Intl.NumberFormat("sv-SE", { maximumFractionDigits: 2 }).format(
     decimal(value),
   )}x`;
+  return marginMode ? `${leverage} ${marginMode}` : leverage;
 }
 
 function formatBps(value: string | number | null | undefined) {

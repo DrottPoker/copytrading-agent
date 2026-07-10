@@ -155,8 +155,8 @@ def test_prune_config_loads_low_score_rule(monkeypatch: pytest.MonkeyPatch) -> N
     config = load_app_config()
     settings = Settings(_env_file=None, **config)
 
-    assert settings.wallet_prune_low_score_min_closed_trades == 50
-    assert settings.wallet_prune_low_score_threshold == Decimal("60")
+    assert settings.wallet_prune_low_score_min_closed_trades == 40
+    assert settings.wallet_prune_low_score_threshold == Decimal("70")
     assert settings.wallet_prune_low_score_operator == "lt"
 
 

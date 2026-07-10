@@ -13,7 +13,7 @@ from app.integrations.hyperliquid_live_client import (
     live_order_wire_values,
     parse_order_response,
 )
-from app.services.trading_core import TradeIntent
+from app.services.trading_core import MarginMode, TradeIntent
 
 
 class FakeExchange:
@@ -268,8 +268,58 @@ async def test_live_client_submits_ioc_order_with_fake_exchange() -> None:
         "coin": "BTC",
         "leverage": 5,
         "isCross": True,
+        "marginMode": "cross",
         "response": {"status": "ok", "response": {"type": "default"}},
     }
+
+
+@pytest.mark.asyncio
+async def test_live_client_copies_isolated_margin_mode_before_entry() -> None:
+    exchange = FakeExchange()
+    client = HyperliquidLiveTradingClient(
+        settings=live_test_settings(),
+        exchange_factory=lambda _account: exchange,
+        cloid_factory=lambda value: value,
+    )
+
+    result = await client.submit_order(
+        account=live_test_account(status="enabled"),
+        intent=live_test_intent(
+            leverage=Decimal("1"),
+            margin_mode="isolated",
+        ),
+    )
+
+    assert exchange.leverage_updates == [
+        {
+            "coin": "BTC",
+            "leverage": 1,
+            "is_cross": False,
+        }
+    ]
+    assert result.raw_response["leverageUpdate"]["marginMode"] == "isolated"
+    assert result.raw_response["leverageUpdate"]["isCross"] is False
+
+
+@pytest.mark.asyncio
+async def test_live_client_syncs_margin_setting_without_submitting_order() -> None:
+    exchange = FakeExchange()
+    client = HyperliquidLiveTradingClient(
+        settings=live_test_settings(),
+        exchange_factory=lambda _account: exchange,
+    )
+
+    result = await client.update_margin_setting(
+        account=live_test_account(status="enabled"),
+        coin="BTC",
+        leverage=Decimal("1"),
+        margin_mode="isolated",
+    )
+
+    assert exchange.events == ["update_leverage"]
+    assert exchange.orders == []
+    assert result["leverage"] == 1
+    assert result["marginMode"] == "isolated"
 
 
 @pytest.mark.asyncio
@@ -724,6 +774,7 @@ def live_test_intent(
     source_price: Decimal = Decimal("100"),
     observed_price: Decimal = Decimal("100"),
     leverage: Decimal = Decimal("5"),
+    margin_mode: MarginMode = "cross",
 ) -> TradeIntent:
     return TradeIntent(
         account_key="live_test",
@@ -751,4 +802,5 @@ def live_test_intent(
         source_perp_equity_usd=Decimal("1000"),
         source_exposure_pct=Decimal("0.05"),
         created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        margin_mode=margin_mode,
     )

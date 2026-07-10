@@ -86,6 +86,7 @@ class TradingPositionRead(CamelModel):
     entry_price: Decimal
     notional_usd: Decimal
     leverage: Decimal
+    margin_mode: Literal["cross", "isolated"]
     margin_usd: Decimal
     current_notional_usd: Decimal | None = None
     mark_price: Decimal | None = None
@@ -101,6 +102,11 @@ class TradingPositionRead(CamelModel):
     last_reconciled_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+    @field_validator("margin_mode", mode="before")
+    @classmethod
+    def legacy_position_margin_mode_defaults_to_cross(cls, value: object) -> object:
+        return "cross" if value is None else value
 
 
 class TradingFillRead(CamelModel):
@@ -144,6 +150,7 @@ class TradingOrderRead(CamelModel):
     requested_notional_usd: Decimal
     margin_usd: Decimal | None
     leverage: Decimal | None
+    margin_mode: Literal["cross", "isolated"]
     limit_price: Decimal | None
     average_fill_price: Decimal | None
     filled_size: Decimal
@@ -155,6 +162,11 @@ class TradingOrderRead(CamelModel):
     filled_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+    @field_validator("margin_mode", mode="before")
+    @classmethod
+    def legacy_order_margin_mode_defaults_to_cross(cls, value: object) -> object:
+        return "cross" if value is None else value
 
 
 class TradingClosedTradeRead(CamelModel):
@@ -215,6 +227,7 @@ class TestnetLiveOrderRequest(CamelModel):
     notional_usd: Decimal = Field(gt=0, le=Decimal("1000000"))
     limit_price: Decimal = Field(gt=0)
     leverage: Decimal = Field(default=Decimal("1"), gt=0, le=Decimal("100"))
+    margin_mode: Literal["cross", "isolated"] = "cross"
     reduce_only: bool = False
 
 

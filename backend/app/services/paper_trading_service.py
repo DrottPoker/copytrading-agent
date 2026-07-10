@@ -47,9 +47,7 @@ from app.services.realtime_subscription_state_service import (
 )
 from app.services.trading_account_service import sync_paper_trading_account_mirrors
 from app.services.trading_core import (
-    MinOrderAdjustment as PaperMinOrderAdjustment,
-)
-from app.services.trading_core import (
+    MarginMode,
     TradeIntent,
     adjust_open_sizing_to_min_order,
     build_copy_trade_intent,
@@ -57,6 +55,9 @@ from app.services.trading_core import (
     open_notional_skip_reason,
     safe_leverage,
     trade_intent_payload,
+)
+from app.services.trading_core import (
+    MinOrderAdjustment as PaperMinOrderAdjustment,
 )
 from app.services.wallet_current_state_service import object_or_empty
 
@@ -172,6 +173,7 @@ class PaperSourceAccountState:
     perp_equity: Decimal
     leverage_by_coin: dict[str, Decimal]
     positions_by_coin: dict[str, "PaperSourceCurrentPosition"]
+    margin_mode_by_coin: dict[str, MarginMode] = field(default_factory=dict)
     skip_reason: str | None = None
 
 
@@ -3049,6 +3051,7 @@ async def load_source_account_state(
         )
 
     leverage_by_coin = parse_source_leverages(clearinghouse_state)
+    margin_mode_by_coin = parse_source_margin_modes(clearinghouse_state)
     positions_by_coin = parse_source_current_positions(clearinghouse_state)
     margin_summary_raw = clearinghouse_state.get("marginSummary")
     if not isinstance(margin_summary_raw, dict):
@@ -3057,6 +3060,7 @@ async def load_source_account_state(
             perp_equity=ZERO,
             leverage_by_coin=leverage_by_coin,
             positions_by_coin=positions_by_coin,
+            margin_mode_by_coin=margin_mode_by_coin,
             skip_reason="source_account_margin_summary_missing",
         )
 
@@ -3067,6 +3071,7 @@ async def load_source_account_state(
             perp_equity=ZERO,
             leverage_by_coin=leverage_by_coin,
             positions_by_coin=positions_by_coin,
+            margin_mode_by_coin=margin_mode_by_coin,
             skip_reason="source_perp_equity_missing",
         )
     if perp_equity <= ZERO:
@@ -3081,12 +3086,14 @@ async def load_source_account_state(
                 perp_equity=unified_equity,
                 leverage_by_coin=leverage_by_coin,
                 positions_by_coin=positions_by_coin,
+                margin_mode_by_coin=margin_mode_by_coin,
             )
         return PaperSourceAccountState(
             dex=dex,
             perp_equity=ZERO,
             leverage_by_coin=leverage_by_coin,
             positions_by_coin=positions_by_coin,
+            margin_mode_by_coin=margin_mode_by_coin,
             skip_reason="source_perp_equity_zero",
         )
 
@@ -3095,6 +3102,7 @@ async def load_source_account_state(
         perp_equity=perp_equity,
         leverage_by_coin=leverage_by_coin,
         positions_by_coin=positions_by_coin,
+        margin_mode_by_coin=margin_mode_by_coin,
     )
 
 
@@ -3164,6 +3172,33 @@ def parse_source_leverages(payload: dict[str, Any]) -> dict[str, Decimal]:
         if coin and leverage_value is not None and leverage_value > ZERO:
             leverages[coin] = leverage_value
     return leverages
+
+
+def parse_source_margin_modes(payload: dict[str, Any]) -> dict[str, MarginMode]:
+    raw_positions = payload.get("assetPositions")
+    if not isinstance(raw_positions, list):
+        return {}
+
+    margin_modes: dict[str, MarginMode] = {}
+    for item in raw_positions:
+        if not isinstance(item, dict):
+            continue
+        position = object_or_empty(item.get("position"))
+        coin = str(position.get("coin") or "")
+        leverage = object_or_empty(position.get("leverage"))
+        margin_mode = normalize_margin_mode(leverage.get("type"))
+        if coin and margin_mode is not None:
+            margin_modes[coin] = margin_mode
+    return margin_modes
+
+
+def normalize_margin_mode(value: Any) -> MarginMode | None:
+    normalized = str(value or "").strip().casefold()
+    if normalized == "cross":
+        return "cross"
+    if normalized == "isolated":
+        return "isolated"
+    return None
 
 
 def parse_source_current_positions(
@@ -4290,6 +4325,37 @@ def resolve_coin_decimal(values_by_coin: dict[str, Any], coin: str) -> Decimal |
     for key, raw_value in values_by_coin.items():
         if normalize_coin_symbol(str(key)) in normalized_candidates:
             value = decimal_or_none(raw_value)
+            if value is not None:
+                return value
+    return None
+
+
+def resolve_coin_margin_mode(
+    values_by_coin: dict[str, MarginMode],
+    coin: str,
+) -> MarginMode | None:
+    candidates = coin_symbol_candidates(coin)
+    if not candidates:
+        return None
+
+    for candidate in candidates:
+        value = normalize_margin_mode(values_by_coin.get(candidate))
+        if value is not None:
+            return value
+
+    casefold_index = {
+        str(key).casefold(): value for key, value in values_by_coin.items() if str(key).strip()
+    }
+    for candidate in candidates:
+        value = normalize_margin_mode(casefold_index.get(candidate.casefold()))
+        if value is not None:
+            return value
+
+    normalized_candidates = {normalize_coin_symbol(candidate) for candidate in candidates}
+    normalized_candidates.discard("")
+    for key, raw_value in values_by_coin.items():
+        if normalize_coin_symbol(str(key)) in normalized_candidates:
+            value = normalize_margin_mode(raw_value)
             if value is not None:
                 return value
     return None

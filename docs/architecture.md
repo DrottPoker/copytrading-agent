@@ -1026,11 +1026,22 @@ Weekly loss usage combines net realized PnL after fees with current aggregate
 exchange unrealized PnL. The percentage base is current account equity minus
 weekly net PnL, which reconstructs start-of-week equity. The exchange aggregate
 is added once and is not reconstructed from source-attributed rows.
-For non-reduce-only orders, leverage follows the source wallet without a local
-maximum. It must remain a positive whole number. The adapter applies it to the
-resolved Hyperliquid market and requires a successful leverage update before
-submitting the order. Hyperliquid enforces market leverage support. Reduce-only
-orders never mutate the exchange leverage setting.
+For non-reduce-only orders, leverage and margin mode follow the current source
+position without a local leverage maximum. Leverage must remain a positive
+whole number. The adapter applies `updateLeverage` to the resolved Hyperliquid
+market with `isCross=true` for cross or `isCross=false` for isolated and
+requires a successful response before submitting the order. Missing source
+leverage or margin mode blocks the entry instead of falling back to a local
+value. Reduce-only orders never mutate exchange margin settings.
+
+The source `userFills` stream does not emit leverage-only or margin-mode-only
+changes. The live copy recovery loop therefore reads current source
+`clearinghouseState` for every open source-attributed position. It serializes a
+target margin-setting update through the same per-account execution lock used
+by order submission, records the accepted change in the audit log, and updates
+the stored source and exchange position views. This keeps an open target
+position aligned when the source changes from 3x to 1x or between cross and
+isolated without placing another order.
 Live capital mode is config-driven. `unified` uses Hyperliquid
 `spotClearinghouseState` as the balance source of truth for equity, cash, Start
 trading validation, and live copy sizing. `standard_per_dex` keeps separate
@@ -1102,8 +1113,11 @@ to reduce or close copied exposure without allowing new entries.
 Live copy reserves one source per live account and market while source
 exposure is open. A different source opening the same market is skipped until
 that market is free, even on the same side, because Hyperliquid stores one net
-exchange position and leverage setting for the account market. Matching exits
-and adds from the reserved source continue to execute.
+exchange position and margin setting for the account market. This also prevents
+cross, isolated, or leverage settings from different sources overwriting each
+other on the same coin. Different coins in the same account can independently
+follow different source margin modes. Matching exits and adds from the reserved
+source continue to execute.
 
 The paper summary exposes closed trade history separately from raw recent fills.
 Closed trade rows are derived from paper `close` and `flip_close` executions,

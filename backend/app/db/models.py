@@ -787,6 +787,10 @@ class TradingPosition(Base, TimestampMixin, UpdatedAtMixin):
     __table_args__ = (
         CheckConstraint("account_type in ('paper', 'live')", name="ck_trading_positions_type"),
         CheckConstraint("side in ('long', 'short')", name="ck_trading_positions_side"),
+        CheckConstraint(
+            "margin_mode in ('cross', 'isolated')",
+            name="ck_trading_positions_margin_mode",
+        ),
         ForeignKeyConstraint(
             ["account_key", "account_type"],
             ["trading_accounts.key", "trading_accounts.account_type"],
@@ -815,6 +819,11 @@ class TradingPosition(Base, TimestampMixin, UpdatedAtMixin):
     entry_price: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
     notional_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
     leverage: Mapped[Decimal] = mapped_column(Numeric, nullable=False, server_default=text("1"))
+    margin_mode: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        server_default=text("'cross'"),
+    )
     margin_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False, server_default=text("0"))
     realized_pnl_usd: Mapped[Decimal] = mapped_column(
         Numeric, nullable=False, server_default=text("0")
@@ -840,6 +849,10 @@ class TradingOrder(Base, TimestampMixin, UpdatedAtMixin):
             name="ck_trading_orders_action",
         ),
         CheckConstraint("side in ('long', 'short')", name="ck_trading_orders_side"),
+        CheckConstraint(
+            "margin_mode in ('cross', 'isolated')",
+            name="ck_trading_orders_margin_mode",
+        ),
         CheckConstraint(
             "status in ("
             "'planned', 'ready', 'submitting', 'uncertain', 'submitted', 'accepted', "
@@ -881,6 +894,11 @@ class TradingOrder(Base, TimestampMixin, UpdatedAtMixin):
     requested_notional_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
     margin_usd: Mapped[Decimal | None] = mapped_column(Numeric)
     leverage: Mapped[Decimal | None] = mapped_column(Numeric)
+    margin_mode: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        server_default=text("'cross'"),
+    )
     limit_price: Mapped[Decimal | None] = mapped_column(Numeric)
     average_fill_price: Mapped[Decimal | None] = mapped_column(Numeric)
     filled_size: Mapped[Decimal] = mapped_column(Numeric, nullable=False, server_default=text("0"))

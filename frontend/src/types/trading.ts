@@ -52,6 +52,7 @@ export type TradingPosition = {
   entryPrice: string;
   notionalUsd: string;
   leverage: string;
+  marginMode: "cross" | "isolated";
   marginUsd: string;
   currentNotionalUsd: string | null;
   markPrice: string | null;
@@ -110,6 +111,7 @@ export type TradingOrder = {
   requestedNotionalUsd: string;
   marginUsd: string | null;
   leverage: string | null;
+  marginMode: "cross" | "isolated";
   limitPrice: string | null;
   averageFillPrice: string | null;
   filledSize: string;

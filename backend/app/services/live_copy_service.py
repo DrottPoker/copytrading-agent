@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from datetime import UTC, datetime
-from decimal import ROUND_DOWN, Decimal
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import func, or_, select
@@ -34,6 +34,7 @@ from app.services.live_trading_service import (
     load_live_source_position,
     reconcile_live_trading_account,
     submit_live_trade_intent,
+    sync_live_position_margin_setting,
 )
 from app.services.market_price_cache import MarketPriceCache, dex_from_coin
 from app.services.paper_trading_service import (
@@ -49,11 +50,14 @@ from app.services.paper_trading_service import (
     is_preexisting_source_add,
     leverage_for_fill,
     load_execution_market_prices,
+    load_source_account_state,
     load_source_account_states,
     paper_source_fill_from_wallet_fill,
     part_requires_source_equity,
     plan_source_fill,
     refresh_paper_copy_allocations,
+    resolve_coin_decimal,
+    resolve_coin_margin_mode,
     resolve_source_current_position,
     sorted_paper_source_fills,
     source_fill_age_exceeds_entry_limit,
@@ -61,6 +65,7 @@ from app.services.paper_trading_service import (
     source_state_available_for_reconciliation,
 )
 from app.services.trading_core import (
+    MarginMode,
     TradeIntent,
     adjust_open_sizing_to_min_order,
     build_client_order_id,
@@ -259,6 +264,7 @@ async def process_live_copy_recovery(
     source_wallet: str | None = None,
     settings: Settings | None = None,
     client: HyperliquidClient | None = None,
+    trading_client: HyperliquidLiveTradingClient | None = None,
     price_cache: MarketPriceCache | None = None,
     max_sources: int = 100,
     fill_limit_per_source: int = 1000,
@@ -274,6 +280,7 @@ async def process_live_copy_recovery(
                 source_wallet=source_wallet,
                 settings=resolved_settings,
                 client=hyperliquid_client,
+                trading_client=trading_client,
                 price_cache=price_cache,
                 max_sources=max_sources,
                 fill_limit_per_source=fill_limit_per_source,
@@ -289,7 +296,15 @@ async def process_live_copy_recovery(
         )
 
     total = PaperCopyBatchResult()
+    live_client = trading_client or HyperliquidLiveTradingClient(settings=resolved_settings)
     for wallet in source_wallets:
+        await sync_live_source_margin_settings(
+            session,
+            source_wallet=wallet,
+            settings=resolved_settings,
+            info_client=client,
+            trading_client=live_client,
+        )
         start_time_ms = await live_copy_recovery_start_time_ms(session, source_wallet=wallet)
         if start_time_ms is None:
             continue
@@ -307,11 +322,88 @@ async def process_live_copy_recovery(
             fills=fills,
             settings=resolved_settings,
             client=client,
+            trading_client=live_client,
             price_cache=price_cache,
             hide_stale_entry_skips=True,
         )
         total = combine_batch_results(total, result)
     return total
+
+
+async def sync_live_source_margin_settings(
+    session: AsyncSession,
+    *,
+    source_wallet: str,
+    settings: Settings,
+    info_client: HyperliquidClient,
+    trading_client: HyperliquidLiveTradingClient,
+) -> int:
+    position_result = await session.scalars(
+        select(TradingPosition).where(
+            TradingPosition.account_type == "live",
+            TradingPosition.source_wallet == source_wallet,
+            TradingPosition.size > POSITION_EPSILON,
+        )
+    )
+    positions = list(position_result.all())
+    if not positions:
+        return 0
+
+    source_states: dict[str, PaperSourceAccountState] = {}
+    unified_equity_cache: dict[str, Decimal | None] = {}
+    for dex in sorted({dex_from_coin(position.coin) for position in positions}):
+        source_states[dex] = await load_source_account_state(
+            client=info_client,
+            source_wallet=source_wallet,
+            dex=dex,
+            unified_equity_cache=unified_equity_cache,
+        )
+
+    updated = 0
+    for position in positions:
+        source_state = source_states.get(dex_from_coin(position.coin))
+        if source_state is None:
+            continue
+        leverage = resolve_coin_decimal(source_state.leverage_by_coin, position.coin)
+        margin_mode = resolve_coin_margin_mode(
+            source_state.margin_mode_by_coin,
+            position.coin,
+        )
+        if (
+            leverage is None
+            or leverage <= ZERO
+            or leverage != leverage.to_integral_value()
+            or margin_mode is None
+        ):
+            logger.warning(
+                "live source margin setting unavailable account=%s source=%s coin=%s",
+                position.account_key,
+                source_wallet,
+                position.coin,
+            )
+            continue
+        try:
+            changed = await sync_live_position_margin_setting(
+                session,
+                account_key=position.account_key,
+                source_wallet=source_wallet,
+                coin=position.coin,
+                leverage=leverage,
+                margin_mode=margin_mode,
+                settings=settings,
+                client=trading_client,
+            )
+        except LiveOrderSubmitError as exc:
+            logger.info(
+                "live source margin setting sync deferred account=%s source=%s coin=%s error=%s",
+                position.account_key,
+                source_wallet,
+                position.coin,
+                exc,
+            )
+            continue
+        updated += int(changed)
+    return updated
 
 
 async def refresh_stale_live_copy_accounts(
@@ -425,6 +517,7 @@ async def apply_live_copy_part(
             allocation=allocation,
             fill=fill,
             part=part,
+            source_account_state=source_account_state,
             source_perp_equity=source_perp_equity,
             source_leverages=source_leverages,
             market_prices=market_prices,
@@ -454,6 +547,7 @@ async def apply_live_open_part(
     allocation: PaperSourceAllocation,
     fill: dict[str, Any],
     part: SourceFillPart,
+    source_account_state: PaperSourceAccountState | None,
     source_perp_equity: Decimal,
     source_leverages: dict[str, Decimal],
     market_prices: ExecutionMarketPrices,
@@ -461,11 +555,43 @@ async def apply_live_open_part(
     trading_client: HyperliquidLiveTradingClient,
     hide_stale_entry_skips: bool = False,
 ) -> PaperCopyBatchResult:
-    source_leverage = leverage_for_fill(fill=fill, source_leverages=source_leverages)
-    source_leverage = max(
-        source_leverage.to_integral_value(rounding=ROUND_DOWN),
-        Decimal("1"),
+    coin = str(fill.get("coin") or "")
+    raw_source_leverage = resolve_coin_decimal(source_leverages, coin)
+    source_leverage = raw_source_leverage or Decimal("1")
+    if raw_source_leverage is None or raw_source_leverage <= ZERO:
+        return await record_live_skip(
+            session,
+            account=account,
+            allocation=allocation,
+            fill=fill,
+            part=part,
+            reason="live_source_leverage_missing",
+            leverage=source_leverage,
+        )
+    if raw_source_leverage != raw_source_leverage.to_integral_value():
+        return await record_live_skip(
+            session,
+            account=account,
+            allocation=allocation,
+            fill=fill,
+            part=part,
+            reason="live_source_leverage_invalid",
+            leverage=source_leverage,
+        )
+    source_margin_mode = resolve_coin_margin_mode(
+        source_account_state.margin_mode_by_coin if source_account_state is not None else {},
+        coin,
     )
+    if source_margin_mode is None:
+        return await record_live_skip(
+            session,
+            account=account,
+            allocation=allocation,
+            fill=fill,
+            part=part,
+            reason="live_source_margin_mode_missing",
+            leverage=source_leverage,
+        )
     if account.status != "enabled":
         return await record_live_skip(
             session,
@@ -475,6 +601,7 @@ async def apply_live_open_part(
             part=part,
             reason="live_account_not_enabled",
             leverage=source_leverage,
+            margin_mode=source_margin_mode,
         )
     if source_perp_equity <= ZERO:
         return await record_live_skip(
@@ -485,6 +612,7 @@ async def apply_live_open_part(
             part=part,
             reason="live_source_equity_missing",
             leverage=source_leverage,
+            margin_mode=source_margin_mode,
         )
     if source_fill_age_exceeds_entry_limit(fill, settings=settings):
         fill_age_seconds = source_fill_age_seconds(fill)
@@ -496,6 +624,7 @@ async def apply_live_open_part(
             part=part,
             reason="live_source_fill_too_old",
             leverage=source_leverage,
+            margin_mode=source_margin_mode,
             hidden_from_activity=live_stale_entry_skip_hidden_from_activity(
                 fill,
                 settings=settings,
@@ -512,8 +641,8 @@ async def apply_live_open_part(
             part=part,
             reason="live_trading_disabled",
             leverage=source_leverage,
+            margin_mode=source_margin_mode,
         )
-    coin = str(fill.get("coin") or "")
     dex = dex_from_coin(coin)
     tradable_equity_usd = live_tradable_equity_usd(
         account,
@@ -529,6 +658,7 @@ async def apply_live_open_part(
             part=part,
             reason="live_account_no_tradable_equity",
             leverage=source_leverage,
+            margin_mode=source_margin_mode,
         )
 
     allocation_equity_usd = live_copy_allocation_equity_usd(
@@ -545,6 +675,7 @@ async def apply_live_open_part(
             part=part,
             reason="live_account_no_allocation_equity",
             leverage=source_leverage,
+            margin_mode=source_margin_mode,
         )
 
     position = await load_live_source_position(
@@ -562,6 +693,7 @@ async def apply_live_open_part(
             part=part,
             reason="live_preexisting_source_add",
             leverage=source_leverage,
+            margin_mode=source_margin_mode,
         )
     if position is not None and position.side != part.side:
         return await record_live_skip(
@@ -572,6 +704,7 @@ async def apply_live_open_part(
             part=part,
             reason="live_position_side_mismatch",
             leverage=source_leverage,
+            margin_mode=source_margin_mode,
         )
     if position is None and not allocation.active:
         return await record_live_skip(
@@ -582,6 +715,7 @@ async def apply_live_open_part(
             part=part,
             reason="live_allocation_inactive",
             leverage=source_leverage,
+            margin_mode=source_margin_mode,
         )
     if await live_market_is_reserved_by_other_source(
         session,
@@ -597,6 +731,7 @@ async def apply_live_open_part(
             part=part,
             reason="live_market_reserved_by_other_source",
             leverage=source_leverage,
+            margin_mode=source_margin_mode,
         )
     exchange_position = await load_live_source_position(
         session,
@@ -618,6 +753,7 @@ async def apply_live_open_part(
             part=part,
             reason=exchange_conflict,
             leverage=source_leverage,
+            margin_mode=source_margin_mode,
         )
 
     execution_context = build_execution_context(
@@ -637,6 +773,7 @@ async def apply_live_open_part(
             part=part,
             reason="live_execution_price_unavailable",
             leverage=source_leverage,
+            margin_mode=source_margin_mode,
         )
     if execution_context.price_drift_bps > settings.trading_copy_max_price_drift_bps:
         return await record_live_skip(
@@ -647,6 +784,7 @@ async def apply_live_open_part(
             part=part,
             reason="live_price_drift_too_high",
             leverage=source_leverage,
+            margin_mode=source_margin_mode,
             limit_price=execution_context.execution_price,
         )
 
@@ -689,6 +827,7 @@ async def apply_live_open_part(
             part=part,
             reason="live_below_min_order_notional",
             leverage=source_leverage,
+            margin_mode=source_margin_mode,
             limit_price=price,
             margin_usd=margin_usd,
             requested_notional_usd=notional_usd,
@@ -709,6 +848,7 @@ async def apply_live_open_part(
         notional_usd=notional_usd,
         margin_usd=margin_usd,
         leverage=source_leverage,
+        margin_mode=source_margin_mode,
         limit_price=price,
         source_price=execution_context.source_price,
         observed_price=execution_context.observed_price,
@@ -937,6 +1077,9 @@ async def apply_live_close_part(
         notional_usd=order_notional_usd,
         margin_usd=margin_from_notional(order_notional_usd, leverage),
         leverage=leverage,
+        margin_mode=(
+            position.margin_mode if position.margin_mode in {"cross", "isolated"} else "cross"
+        ),
         limit_price=price,
         source_price=execution_context.source_price,
         observed_price=execution_context.observed_price,
@@ -1117,6 +1260,11 @@ async def apply_live_orphan_exchange_close_part(
         notional_usd=order_notional_usd,
         margin_usd=margin_from_notional(order_notional_usd, leverage),
         leverage=leverage,
+        margin_mode=(
+            exchange_position.margin_mode
+            if exchange_position.margin_mode in {"cross", "isolated"}
+            else "cross"
+        ),
         limit_price=price,
         source_price=execution_context.source_price,
         observed_price=execution_context.observed_price,
@@ -1178,6 +1326,7 @@ async def record_live_skip(
     part: SourceFillPart,
     reason: str,
     leverage: Decimal | None = None,
+    margin_mode: MarginMode = "cross",
     limit_price: Decimal | None = None,
     margin_usd: Decimal | None = None,
     requested_notional_usd: Decimal | None = None,
@@ -1208,6 +1357,7 @@ async def record_live_skip(
     resolved_leverage = leverage if leverage is not None and leverage > ZERO else Decimal("1")
     reduce_only = part.action in {"reduce", "close", "flip_close"}
     raw_payload: dict[str, Any] = {
+        "marginMode": margin_mode,
         "skipReason": reason,
         "sourceFill": {
             "externalFillId": source_fill_id,
@@ -1245,6 +1395,7 @@ async def record_live_skip(
         requested_notional_usd=resolved_notional,
         margin_usd=margin_usd,
         leverage=resolved_leverage,
+        margin_mode=margin_mode,
         limit_price=resolved_price if resolved_price > ZERO else None,
         filled_size=ZERO,
         filled_notional_usd=ZERO,
