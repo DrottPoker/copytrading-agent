@@ -486,19 +486,20 @@ Live activation and account lifecycle:
   `status_reason`. Active live wallet routes are unique by network, wallet, and
   optional vault.
 - Every new live entry must pass a fresh reconciliation check, intent TTL,
-  account open-notional cap, open-position cap, daily and weekly loss limits,
-  order-rate limit, max leverage, and price safety checks. A breached stateful
+  50 percent weekly account-loss limit, 50 orders-per-minute limit, and price
+  safety checks. A breached stateful
   account limit or stale reconciliation trips the account to
   `exit_only`, cancels unsent entries, and persists the event for audit. Expired
-  intents and static order, leverage, slippage, or market violations are rejected
+  intents and invalid exchange leverage or slippage values are rejected
   before submission without opening exposure.
-- Daily and weekly loss usage is net realized PnL for the period, after fees,
-  plus the current aggregate exchange unrealized PnL. The current unrealized
-  value is included once and is not duplicated across positions or fill rows.
-- Non-reduce-only orders require a positive whole-number leverage at or below
-  the configured cap. The live adapter applies that leverage to the resolved
-  Hyperliquid market and requires an `ok` response before submitting the order.
-  Reduce-only orders never change the exchange leverage setting.
+- Weekly loss usage is net realized PnL after fees plus current aggregate
+  exchange unrealized PnL. Its percentage base is reconstructed start-of-week
+  account equity. Current unrealized PnL is included once and is not duplicated
+  across positions or fill rows.
+- Non-reduce-only orders copy the source wallet leverage without a local maximum.
+  Hyperliquid still requires a positive whole number and enforces the market's
+  supported leverage. The adapter applies it before order submission and
+  requires an `ok` response. Reduce-only orders never change leverage.
 
 Paper accounts:
 
@@ -933,12 +934,12 @@ acknowledgement flags, time-based arming values, global database gate, coin
 allowlist, or coin blocklist. The market-policy function currently allows every
 coin. The private key is not stored in Postgres.
 
-Default live risk limits are 100 USD per order, 500 USD open notional per
-account, 5 open positions, 50 USD daily loss, 150 USD weekly loss, 10 orders per
-minute, 5x leverage, a 90-second maximum reconciliation snapshot age, and a
-30-second entry intent TTL. Review `backend/config/live_trading.json` before any
-intentional activation. Shared copy allocation now caps total open copied margin
-at 80 percent by default in `backend/config/trading.json`.
+Default live risk limits are 50 percent weekly loss against reconstructed
+start-of-week account equity and 50 orders per minute, plus a 90-second maximum
+reconciliation snapshot age and a 30-second entry intent TTL. Order notional,
+account open notional, position count, daily loss, and source leverage have no
+local maximum. Shared copy allocation still caps total open copied margin at 80
+percent by default in `backend/config/trading.json`.
 
 Do not enable live trading before paper trading proves edge after delay, fees,
 slippage, and exit behavior.

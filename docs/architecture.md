@@ -335,9 +335,8 @@ The backend config files are grouped by operational area:
   retention days, retention batch size, max rows, and protected top scored
   wallets.
 - `live_trading.json` owns live execution guardrails, entry intent TTL,
-  reconciliation freshness, min-order wire buffer, account open-notional and
-  position caps, daily and weekly loss limits, order rate, leverage, and
-  reduce-only behavior.
+  reconciliation freshness, min-order wire buffer, weekly account-loss
+  percentage, order rate, and reduce-only behavior.
 - `trading.json` owns copy policy shared by paper and live copy, including
   source ranking limits, allocation pockets, minimum copy notional, optional
   min-order adjustment, price drift guard, and live mid-price cache settings.
@@ -985,19 +984,20 @@ is flat, the same source has historical live open fills, and no other source
 position owns that market.
 Automatic copied live entries also require a complete reconciliation snapshot no
 older than the configured maximum and an unexpired entry intent. They pass
-account-level guardrails for max order notional, max account open notional, max
-open positions, max daily and weekly loss, max orders per minute, and max leverage.
+account-level guardrails for weekly loss percentage and max orders per minute.
 Stale or incomplete reconciliation and breached
 stateful account limits trip the account to `exit_only`, cancel unsent entries,
 and record a critical risk event and audit entry. Expired intents and static
-order, leverage, or slippage violations are rejected before submission.
-Daily and weekly loss usage combines net realized PnL for the applicable period,
-after fees, with the current aggregate exchange unrealized PnL. The exchange
-aggregate is added once and is not reconstructed from source-attributed rows.
-For non-reduce-only orders, leverage must be a positive whole number no greater
-than the configured cap. The adapter applies it to the resolved Hyperliquid
-market and requires a successful leverage update before submitting the order.
-Reduce-only orders never mutate the exchange leverage setting.
+leverage or slippage violations are rejected before submission.
+Weekly loss usage combines net realized PnL after fees with current aggregate
+exchange unrealized PnL. The percentage base is current account equity minus
+weekly net PnL, which reconstructs start-of-week equity. The exchange aggregate
+is added once and is not reconstructed from source-attributed rows.
+For non-reduce-only orders, leverage follows the source wallet without a local
+maximum. It must remain a positive whole number. The adapter applies it to the
+resolved Hyperliquid market and requires a successful leverage update before
+submitting the order. Hyperliquid enforces market leverage support. Reduce-only
+orders never mutate the exchange leverage setting.
 Live capital mode is config-driven. `unified` uses Hyperliquid
 `spotClearinghouseState` as the balance source of truth for equity, cash, Start
 trading validation, and live copy sizing. `standard_per_dex` keeps separate

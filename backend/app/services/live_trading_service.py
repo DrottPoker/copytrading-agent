@@ -6,7 +6,7 @@ from hashlib import blake2s
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import case, delete, func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1735,9 +1735,7 @@ async def submit_live_trade_intent_under_account_lock(
                 await validate_live_entry_risk_guardrails(
                     session,
                     account=account,
-                    intent=intent,
                     settings=settings,
-                    exclude_order_id=existing_order.id if existing_order is not None else None,
                 )
 
             if will_dispatch:
@@ -2015,9 +2013,7 @@ async def validate_live_entry_risk_guardrails(
     session: AsyncSession,
     *,
     account: TradingAccount,
-    intent: TradeIntent,
     settings: Settings,
-    exclude_order_id: UUID | None = None,
 ) -> None:
     now = datetime.now(UTC)
 
@@ -2053,78 +2049,27 @@ async def validate_live_entry_risk_guardrails(
             ),
             limit=settings.live_trading_reconciliation_max_snapshot_age_seconds,
         )
-    if settings.live_trading_max_account_open_notional_usd > ZERO:
-        open_notional = await live_account_open_notional(
-            session,
-            account_key=account.key,
-            exclude_order_id=exclude_order_id,
-            reconciled_at=account.last_reconciled_at,
-        )
-        reserved_notional = live_entry_reserved_notional(intent, settings=settings)
-        if open_notional + reserved_notional > settings.live_trading_max_account_open_notional_usd:
-            await reject(
-                rule="max_account_open_notional",
-                message="Live account open notional guard would be exceeded.",
-                observed=str(open_notional + reserved_notional),
-                limit=str(settings.live_trading_max_account_open_notional_usd),
-            )
-
-    if settings.live_trading_max_open_positions > 0:
-        open_coins = await live_account_open_coins(
-            session,
-            account_key=account.key,
-            exclude_order_id=exclude_order_id,
-            reconciled_at=account.last_reconciled_at,
-        )
-        if (
-            intent.coin not in open_coins
-            and len(open_coins) >= settings.live_trading_max_open_positions
-        ):
-            await reject(
-                rule="max_open_positions",
-                message="Live account open position guard would be exceeded.",
-                observed=len(open_coins) + 1,
-                limit=settings.live_trading_max_open_positions,
-            )
-
-    current_unrealized_pnl = ZERO
-    if (
-        settings.live_trading_max_daily_loss_usd > ZERO
-        or settings.live_trading_max_weekly_loss_usd > ZERO
-    ):
+    if settings.live_trading_max_weekly_loss_pct > ZERO:
         current_unrealized_pnl = await live_account_current_unrealized_pnl(
             session,
             account_key=account.key,
         )
-
-    if settings.live_trading_max_daily_loss_usd > ZERO:
-        daily_net_pnl = await live_account_daily_net_pnl(
-            session,
-            account_key=account.key,
-            now=now,
-        )
-        daily_net_pnl += current_unrealized_pnl
-        if daily_net_pnl <= -settings.live_trading_max_daily_loss_usd:
-            await reject(
-                rule="max_daily_loss",
-                message="Live account daily loss guard is active.",
-                observed=str(daily_net_pnl),
-                limit=str(settings.live_trading_max_daily_loss_usd),
-            )
-
-    if settings.live_trading_max_weekly_loss_usd > ZERO:
         weekly_net_pnl = await live_account_weekly_net_pnl(
             session,
             account_key=account.key,
             now=now,
         )
         weekly_net_pnl += current_unrealized_pnl
-        if weekly_net_pnl <= -settings.live_trading_max_weekly_loss_usd:
+        weekly_loss_pct = live_account_weekly_loss_pct(
+            account,
+            weekly_net_pnl=weekly_net_pnl,
+        )
+        if weekly_loss_pct >= settings.live_trading_max_weekly_loss_pct:
             await reject(
                 rule="max_weekly_loss",
-                message="Live account weekly loss guard is active.",
-                observed=str(weekly_net_pnl),
-                limit=str(settings.live_trading_max_weekly_loss_usd),
+                message="Live account weekly loss percentage guard is active.",
+                observed=str(weekly_loss_pct),
+                limit=str(settings.live_trading_max_weekly_loss_pct),
             )
 
     if settings.live_trading_max_orders_per_minute > 0:
@@ -2140,158 +2085,6 @@ async def validate_live_entry_risk_guardrails(
                 observed=recent_orders,
                 limit=settings.live_trading_max_orders_per_minute,
             )
-
-
-def live_entry_reserved_notional(intent: TradeIntent, *, settings: Settings) -> Decimal:
-    minimum_wire_notional = (
-        max(
-            settings.trading_copy_min_order_notional_usd,
-            settings.live_trading_min_order_notional_usd,
-        )
-        + settings.live_trading_min_order_notional_buffer_usd
-    )
-    return max(intent.notional_usd, minimum_wire_notional)
-
-
-async def live_account_open_notional(
-    session: AsyncSession,
-    *,
-    account_key: str,
-    exclude_order_id: UUID | None = None,
-    reconciled_at: datetime | None = None,
-) -> Decimal:
-    aggregate_value = await session.scalar(
-        select(func.coalesce(func.sum(TradingPosition.notional_usd), ZERO)).where(
-            TradingPosition.account_key == account_key,
-            TradingPosition.account_type == "live",
-            TradingPosition.source_wallet == LIVE_EXCHANGE_SOURCE,
-        )
-    )
-    aggregate_notional = decimal_or_none(aggregate_value) or ZERO
-    position_notional = aggregate_notional
-    if position_notional <= ZERO:
-        source_value = await session.scalar(
-            select(func.coalesce(func.sum(TradingPosition.notional_usd), ZERO)).where(
-                TradingPosition.account_key == account_key,
-                TradingPosition.account_type == "live",
-                TradingPosition.source_wallet != LIVE_EXCHANGE_SOURCE,
-            )
-        )
-        position_notional = decimal_or_none(source_value) or ZERO
-    pending_statement = select(
-        func.coalesce(func.sum(TradingOrder.requested_notional_usd), ZERO)
-    ).where(
-        TradingOrder.account_key == account_key,
-        TradingOrder.account_type == "live",
-        TradingOrder.reduce_only.is_(False),
-        TradingOrder.status.in_(
-            ["ready", "submitting", "uncertain", "submitted", "accepted", "partially_filled"]
-        ),
-    )
-    if exclude_order_id is not None:
-        pending_statement = pending_statement.where(TradingOrder.id != exclude_order_id)
-    pending_value = await session.scalar(pending_statement)
-    recent_filled_notional = ZERO
-    if reconciled_at is not None:
-        recent_statement = select(
-            func.coalesce(
-                func.sum(
-                    case(
-                        (
-                            TradingOrder.filled_notional_usd > ZERO,
-                            TradingOrder.filled_notional_usd,
-                        ),
-                        else_=TradingOrder.requested_notional_usd,
-                    )
-                ),
-                ZERO,
-            )
-        ).where(
-            TradingOrder.account_key == account_key,
-            TradingOrder.account_type == "live",
-            TradingOrder.reduce_only.is_(False),
-            TradingOrder.status == "filled",
-            TradingOrder.filled_at > reconciled_at,
-        )
-        if exclude_order_id is not None:
-            recent_statement = recent_statement.where(TradingOrder.id != exclude_order_id)
-        recent_filled_notional = decimal_or_none(await session.scalar(recent_statement)) or ZERO
-    return position_notional + (decimal_or_none(pending_value) or ZERO) + recent_filled_notional
-
-
-async def live_account_open_coins(
-    session: AsyncSession,
-    *,
-    account_key: str,
-    exclude_order_id: UUID | None = None,
-    reconciled_at: datetime | None = None,
-) -> set[str]:
-    aggregate_result = await session.scalars(
-        select(TradingPosition.coin).where(
-            TradingPosition.account_key == account_key,
-            TradingPosition.account_type == "live",
-            TradingPosition.source_wallet == LIVE_EXCHANGE_SOURCE,
-        )
-    )
-    aggregate_coins = {coin for coin in aggregate_result.all() if coin}
-    position_coins = aggregate_coins
-    if not position_coins:
-        source_result = await session.scalars(
-            select(TradingPosition.coin).where(
-                TradingPosition.account_key == account_key,
-                TradingPosition.account_type == "live",
-                TradingPosition.source_wallet != LIVE_EXCHANGE_SOURCE,
-            )
-        )
-        position_coins = {coin for coin in source_result.all() if coin}
-    pending_statement = select(TradingOrder.coin).where(
-        TradingOrder.account_key == account_key,
-        TradingOrder.account_type == "live",
-        TradingOrder.reduce_only.is_(False),
-        TradingOrder.status.in_(
-            ["ready", "submitting", "uncertain", "submitted", "accepted", "partially_filled"]
-        ),
-    )
-    if exclude_order_id is not None:
-        pending_statement = pending_statement.where(TradingOrder.id != exclude_order_id)
-    pending_result = await session.scalars(pending_statement)
-    recent_filled_coins: set[str] = set()
-    if reconciled_at is not None:
-        recent_statement = select(TradingOrder.coin).where(
-            TradingOrder.account_key == account_key,
-            TradingOrder.account_type == "live",
-            TradingOrder.reduce_only.is_(False),
-            TradingOrder.status == "filled",
-            TradingOrder.filled_at > reconciled_at,
-        )
-        if exclude_order_id is not None:
-            recent_statement = recent_statement.where(TradingOrder.id != exclude_order_id)
-        recent_result = await session.scalars(recent_statement)
-        recent_filled_coins = {coin for coin in recent_result.all() if coin}
-    return position_coins | {coin for coin in pending_result.all() if coin} | recent_filled_coins
-
-
-async def live_account_daily_net_pnl(
-    session: AsyncSession,
-    *,
-    account_key: str,
-    now: datetime,
-) -> Decimal:
-    utc_now = now.replace(tzinfo=UTC) if now.tzinfo is None else now.astimezone(UTC)
-    day_start = utc_now.replace(hour=0, minute=0, second=0, microsecond=0)
-    value = await session.scalar(
-        select(
-            func.coalesce(
-                func.sum(TradingFill.realized_pnl_usd - TradingFill.fee_usd),
-                ZERO,
-            )
-        ).where(
-            TradingFill.account_key == account_key,
-            TradingFill.account_type == "live",
-            TradingFill.filled_at >= day_start,
-        )
-    )
-    return decimal_or_none(value) or ZERO
 
 
 async def live_account_current_unrealized_pnl(
@@ -2338,6 +2131,20 @@ async def live_account_weekly_net_pnl(
         )
     )
     return decimal_or_none(value) or ZERO
+
+
+def live_account_weekly_loss_pct(
+    account: TradingAccount,
+    *,
+    weekly_net_pnl: Decimal,
+) -> Decimal:
+    if weekly_net_pnl >= ZERO:
+        return ZERO
+    current_equity = decimal_or_none(account.equity_usd) or ZERO
+    week_start_equity = max(current_equity - weekly_net_pnl, ZERO)
+    if week_start_equity <= ZERO:
+        return Decimal("1")
+    return -weekly_net_pnl / week_start_equity
 
 
 async def live_account_recent_order_count(

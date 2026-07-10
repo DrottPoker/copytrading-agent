@@ -461,10 +461,7 @@ async def apply_live_open_part(
     trading_client: HyperliquidLiveTradingClient,
     hide_stale_entry_skips: bool = False,
 ) -> PaperCopyBatchResult:
-    source_leverage = min(
-        leverage_for_fill(fill=fill, source_leverages=source_leverages),
-        settings.live_trading_max_leverage,
-    )
+    source_leverage = leverage_for_fill(fill=fill, source_leverages=source_leverages)
     source_leverage = max(
         source_leverage.to_integral_value(rounding=ROUND_DOWN),
         Decimal("1"),

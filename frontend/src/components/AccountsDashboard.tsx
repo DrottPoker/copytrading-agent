@@ -1352,19 +1352,11 @@ function LiveRiskPanel({
           <p className="text-xs font-medium text-[#526070]">Configured risk policy</p>
         </div>
         <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5">
-          <SmallMetric label="Max order" value={formatCurrency(limits.maxOrderNotionalUsd)} />
-          <SmallMetric
-            label="Max open notional"
-            value={formatCurrency(limits.maxAccountOpenNotionalUsd)}
-          />
-          <SmallMetric label="Open positions" value={formatInteger(limits.maxOpenPositions)} />
-          <SmallMetric label="Daily loss" value={formatCurrency(limits.maxDailyLossUsd)} />
-          <SmallMetric label="Weekly loss" value={formatCurrency(limits.maxWeeklyLossUsd)} />
+          <SmallMetric label="Weekly loss" value={formatPercent(limits.maxWeeklyLossPct)} />
           <SmallMetric
             label="Order rate"
             value={`${formatInteger(limits.maxOrdersPerMinute)} / min`}
           />
-          <SmallMetric label="Max leverage" value={`${formatScore(limits.maxLeverage)}x`} />
           <SmallMetric
             label="Reconciliation age"
             value={`${formatInteger(limits.reconciliationMaxSnapshotAgeSeconds)} s`}
@@ -1375,6 +1367,8 @@ function LiveRiskPanel({
           />
         </div>
         <p className="mt-3 text-xs text-[#526070]">
+          Source leverage is copied without a local cap. The weekly loss limit uses account equity
+          at the start of the current UTC week. {" "}
           Reduce-only exits
           {limits.reduceOnlyWhenStopped
             ? " remain available for exit-only accounts while live trading is enabled."

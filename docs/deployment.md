@@ -142,8 +142,10 @@ and reads trading capital from `spotClearinghouseState`. Set it to
   endpoint before any mainnet enablement.
 Live copy shares source ranking, allocation, min-order, price drift, and
 mid-price cache policy with paper copy through `backend/config/trading.json`.
-Live order execution limits and account risk guardrails stay in
-`backend/config/live_trading.json`.
+The 50 percent weekly account-loss limit, 50 orders-per-minute limit, and other
+live execution settings stay in `backend/config/live_trading.json`. Copied source
+leverage has no local maximum; Hyperliquid enforces each market's supported
+leverage.
 
 Build the images:
 

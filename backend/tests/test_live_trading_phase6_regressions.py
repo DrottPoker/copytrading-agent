@@ -463,7 +463,6 @@ async def test_risk_guard_does_not_transition_disabled_account(
         await validate_live_entry_risk_guardrails(  # type: ignore[arg-type]
             session,
             account=account,
-            intent=live_intent(),
             settings=Settings(),
         )
 

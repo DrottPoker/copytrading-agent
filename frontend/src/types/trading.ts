@@ -155,13 +155,8 @@ export type TradingSourceMetadata = {
 };
 
 export type LiveRiskLimits = {
-  maxOrderNotionalUsd: string;
-  maxAccountOpenNotionalUsd: string;
-  maxOpenPositions: number;
-  maxDailyLossUsd: string;
-  maxWeeklyLossUsd: string;
+  maxWeeklyLossPct: string;
   maxOrdersPerMinute: number;
-  maxLeverage: string;
   reconciliationMaxSnapshotAgeSeconds: number;
   entryIntentTtlSeconds: number;
   reduceOnlyWhenStopped: boolean;

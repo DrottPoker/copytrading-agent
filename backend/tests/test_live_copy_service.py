@@ -181,7 +181,7 @@ async def test_recovery_stale_live_entry_skip_is_hidden_from_activity(monkeypatc
             start_position=Decimal("0"),
         ),
         source_perp_equity=Decimal("1000"),
-        source_leverages={},
+        source_leverages={"HYPE": Decimal("25")},
         market_prices=ExecutionMarketPrices(prices={}, sources={}),
         settings=Settings(
             trading_copy_max_entry_age_seconds=15,
@@ -194,6 +194,7 @@ async def test_recovery_stale_live_entry_skip_is_hidden_from_activity(monkeypatc
     assert result.skipped_fills == 1
     assert captured["reason"] == "live_source_fill_too_old"
     assert captured["hidden_from_activity"] is True
+    assert captured["leverage"] == Decimal("25")
 
 
 def test_live_copy_combine_batch_results_merges_skip_reasons() -> None:

@@ -164,19 +164,14 @@ def test_live_entry_market_policy_allows_every_coin(coin: str) -> None:
     client.validate_entry_guardrails(live_test_intent(coin=coin))
 
 
-def test_live_client_rejects_entry_above_configured_max_leverage() -> None:
+def test_live_client_accepts_source_leverage_without_local_cap() -> None:
     settings = live_test_settings()
-    settings.live_trading_max_leverage = Decimal("3")
     client = HyperliquidLiveTradingClient(settings=settings)
 
-    with pytest.raises(
-        HyperliquidLiveTradingConfigurationError,
-        match="leverage exceeds",
-    ):
-        client.validate_account_order(
-            account=live_test_account(status="enabled"),
-            intent=live_test_intent(leverage=Decimal("4")),
-        )
+    client.validate_account_order(
+        account=live_test_account(status="enabled"),
+        intent=live_test_intent(leverage=Decimal("25")),
+    )
 
 
 @pytest.mark.asyncio
@@ -641,20 +636,13 @@ async def test_live_client_blocks_network_mismatch() -> None:
         await client.submit_order(account=account, intent=intent)
 
 
-@pytest.mark.asyncio
-async def test_live_client_blocks_entry_above_max_notional() -> None:
+def test_live_client_accepts_entry_without_local_max_notional() -> None:
     settings = live_test_settings()
-    settings.live_trading_max_order_notional_usd = Decimal("25")
-    client = HyperliquidLiveTradingClient(
-        settings=settings,
-        exchange_factory=lambda _account: FakeExchange(),
-        cloid_factory=lambda value: value,
-    )
+    client = HyperliquidLiveTradingClient(settings=settings)
     account = live_test_account(status="enabled")
-    intent = live_test_intent(notional_usd=Decimal("50"))
+    intent = live_test_intent(notional_usd=Decimal("1000000"))
 
-    with pytest.raises(HyperliquidLiveTradingConfigurationError):
-        await client.submit_order(account=account, intent=intent)
+    client.validate_account_order(account=account, intent=intent)
 
 
 @pytest.mark.asyncio

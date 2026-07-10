@@ -307,13 +307,8 @@ LIVE_TRADING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ),
     ("risk", "min_order_notional_usd"): "live_trading_min_order_notional_usd",
     ("risk", "min_order_notional_buffer_usd"): ("live_trading_min_order_notional_buffer_usd"),
-    ("risk", "max_order_notional_usd"): "live_trading_max_order_notional_usd",
-    ("risk", "max_account_open_notional_usd"): ("live_trading_max_account_open_notional_usd"),
-    ("risk", "max_open_positions"): "live_trading_max_open_positions",
-    ("risk", "max_daily_loss_usd"): "live_trading_max_daily_loss_usd",
-    ("risk", "max_weekly_loss_usd"): "live_trading_max_weekly_loss_usd",
+    ("risk", "max_weekly_loss_pct"): "live_trading_max_weekly_loss_pct",
     ("risk", "max_orders_per_minute"): "live_trading_max_orders_per_minute",
-    ("risk", "max_leverage"): "live_trading_max_leverage",
     ("risk", "reduce_only_when_stopped"): "live_trading_reduce_only_when_stopped",
 }
 
@@ -384,16 +379,8 @@ class Settings(BaseSettings):
         default=Decimal("0.10"),
         ge=0,
     )
-    live_trading_max_order_notional_usd: Decimal = Field(default=Decimal("100"), ge=0)
-    live_trading_max_account_open_notional_usd: Decimal = Field(
-        default=Decimal("500"),
-        ge=0,
-    )
-    live_trading_max_open_positions: int = Field(default=5, ge=0, le=1000)
-    live_trading_max_daily_loss_usd: Decimal = Field(default=Decimal("50"), ge=0)
-    live_trading_max_weekly_loss_usd: Decimal = Field(default=Decimal("150"), ge=0)
-    live_trading_max_orders_per_minute: int = Field(default=10, ge=0, le=10000)
-    live_trading_max_leverage: Decimal = Field(default=Decimal("5"), gt=0, le=100)
+    live_trading_max_weekly_loss_pct: Decimal = Field(default=Decimal("0.5"), ge=0, le=1)
+    live_trading_max_orders_per_minute: int = Field(default=50, ge=0, le=10000)
     live_trading_reduce_only_when_stopped: bool = True
     trading_copy_top_wallet_count: int = Field(default=10, ge=1, le=10)
     trading_copy_top_tier_wallet_count: int = Field(default=3, ge=0, le=10)
@@ -925,21 +912,11 @@ class Settings(BaseSettings):
                 "must be less than "
                 "scoring_copyability_execution_zero_score_fills_per_trade_at_or_above."
             )
-        if (
-            self.live_trading_max_order_notional_usd > Decimal("0")
-            and self.live_trading_min_order_notional_usd > self.live_trading_max_order_notional_usd
-        ):
-            raise ValueError(
-                "live_trading_min_order_notional_usd must be less than or equal to "
-                "live_trading_max_order_notional_usd."
-            )
         if self.live_trading_limit_slippage_bps > self.live_trading_max_slippage_bps:
             raise ValueError(
                 "live_trading_limit_slippage_bps must be less than or equal to "
                 "live_trading_max_slippage_bps."
             )
-        if self.live_trading_max_leverage != self.live_trading_max_leverage.to_integral_value():
-            raise ValueError("live_trading_max_leverage must be a whole number.")
         if self.trading_copy_top_tier_wallet_count > self.trading_copy_top_wallet_count:
             raise ValueError(
                 "trading_copy_top_tier_wallet_count must be less than or equal to "

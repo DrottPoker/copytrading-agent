@@ -1067,20 +1067,20 @@ What it does:
   leverage at account level. Matching exits and adds from the reserved source
   remain allowed.
 - Enforces live entry guardrails for reconciliation freshness, entry intent TTL,
-  max order notional, max account open notional, max open positions, daily and
-  weekly loss, max orders per minute, and max leverage.
+  weekly account loss percentage, and max orders per minute.
   Stale reconciliation or a breached stateful account limit moves the account to
   `exit_only`, cancels unsent entries, and records a critical risk event. Expired
-  intents and static order, leverage, slippage, or market violations are rejected
+  intents and invalid exchange leverage or slippage values are rejected
   before submission.
-- Calculates daily and weekly loss usage from net realized PnL for the period,
-  after fees, plus the current aggregate exchange unrealized PnL. Current
-  unrealized PnL is included once without duplicating it through position or
-  fill rows.
-- Requires positive whole-number leverage for non-reduce-only entries, clamps
-  copied source leverage to the configured cap, applies it through
+- Calculates weekly loss usage from net realized PnL after fees plus current
+  aggregate exchange unrealized PnL. The percentage base reconstructs account
+  equity at the start of the UTC week. Current unrealized PnL is included once
+  without duplicating it through position or fill rows.
+- Requires positive whole-number leverage for non-reduce-only entries, copies
+  source leverage without a local maximum, applies it through
   Hyperliquid's leverage update before order submission, and requires an `ok`
-  response. Reduce-only orders do not change exchange leverage.
+  response. Hyperliquid enforces the market's supported leverage. Reduce-only
+  orders do not change exchange leverage.
 - Reconciles matched live fills back into source-attributed live positions so
   exit-only accounts can continue to reduce or close copied exposure.
 - Exposes live open-position entry execution delay by matching live open fills
@@ -1107,13 +1107,8 @@ Config:
 - `live_trading_reconciliation_max_snapshot_age_seconds`
 - `live_trading_min_order_notional_usd`
 - `live_trading_min_order_notional_buffer_usd`
-- `live_trading_max_order_notional_usd`
-- `live_trading_max_account_open_notional_usd`
-- `live_trading_max_open_positions`
-- `live_trading_max_daily_loss_usd`
-- `live_trading_max_weekly_loss_usd`
+- `live_trading_max_weekly_loss_pct`
 - `live_trading_max_orders_per_minute`
-- `live_trading_max_leverage`
 - `live_trading_reduce_only_when_stopped`
 - `hyperliquid_private_key`
 - `hyperliquid_wallet_address`
@@ -1486,8 +1481,7 @@ reduce, close, and flip parts through the common trading core.
 
 What it does:
 
-- Enforces maximum account open notional, open positions, order notional, order
-  rate, leverage, price safety, daily loss, and weekly loss.
+- Enforces a weekly account-loss percentage, order rate, and price safety.
 - Requires a complete fresh reconciliation and an unexpired entry intent.
 - Trips breached stateful account limits to `exit_only`, cancels unsent entries,
   and writes risk and audit records. Static order constraints reject only that

@@ -21,7 +21,6 @@ from app.services.live_trading_service import (
     LivePerpState,
     build_testnet_live_trade_intent,
     fetch_live_perp_states,
-    live_account_open_notional,
     prune_live_reconciliation_runs,
     recompute_live_account_fill_totals,
     reconcile_live_fills,
@@ -264,62 +263,6 @@ async def test_uncertain_dispatch_is_recovered_by_cloid_before_any_retry(
     assert order.status == "filled"
     assert dispatch is not None
     assert dispatch.status == "completed"
-
-
-@pytest.mark.asyncio
-async def test_uncertain_entry_reserves_account_guardrail_notional(
-    integration_sessionmaker: async_sessionmaker[AsyncSession],
-) -> None:
-    account = live_account()
-    intent = reduce_only_intent(account)
-    order = TradingOrder(
-        account_key=account.key,
-        account_type="live",
-        source_wallet=intent.source_wallet,
-        source_fill_id="entry-fill",
-        sequence_index=0,
-        client_order_id="0x" + "4" * 32,
-        coin="ETH",
-        action="open",
-        side="long",
-        is_buy=True,
-        reduce_only=False,
-        order_type="ioc",
-        status="uncertain",
-        requested_size=Decimal("1"),
-        requested_notional_usd=Decimal("100"),
-        margin_usd=Decimal("100"),
-        leverage=Decimal("1"),
-        limit_price=Decimal("100"),
-        filled_size=Decimal("0"),
-        filled_notional_usd=Decimal("0"),
-        fee_usd=Decimal("0"),
-    )
-    position = TradingPosition(
-        account_key=account.key,
-        account_type="live",
-        source_wallet="__exchange__",
-        coin="BTC",
-        side="long",
-        size=Decimal("0.5"),
-        entry_price=Decimal("100"),
-        notional_usd=Decimal("50"),
-        leverage=Decimal("1"),
-        margin_usd=Decimal("50"),
-        realized_pnl_usd=Decimal("0"),
-        fee_usd=Decimal("0"),
-        opened_at=datetime.now(UTC),
-    )
-
-    async with integration_sessionmaker() as session:
-        session.add_all([account, order, position])
-        await session.commit()
-        reserved_notional = await live_account_open_notional(
-            session,
-            account_key=account.key,
-        )
-
-    assert reserved_notional == Decimal("150")
 
 
 @pytest.mark.asyncio

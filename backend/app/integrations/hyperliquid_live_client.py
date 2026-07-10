@@ -159,10 +159,7 @@ class HyperliquidLiveTradingClient:
                 "Live order notional is below the Hyperliquid minimum."
             )
         if not intent.reduce_only:
-            validated_live_entry_leverage(
-                intent.leverage,
-                max_leverage=self.settings.live_trading_max_leverage,
-            )
+            validated_live_entry_leverage(intent.leverage)
         if intent.observed_price is not None and intent.observed_price > Decimal("0"):
             slippage_bps = (
                 (intent.limit_price - intent.observed_price).copy_abs()
@@ -181,13 +178,6 @@ class HyperliquidLiveTradingClient:
         if intent.notional_usd < self.settings.live_trading_min_order_notional_usd:
             raise HyperliquidLiveTradingConfigurationError(
                 "Live order notional is below the configured minimum."
-            )
-        if (
-            self.settings.live_trading_max_order_notional_usd > Decimal("0")
-            and intent.notional_usd > self.settings.live_trading_max_order_notional_usd
-        ):
-            raise HyperliquidLiveTradingConfigurationError(
-                "Live order notional exceeds the configured maximum."
             )
 
     def validate_entry_market_policy(self, _intent: TradeIntent) -> None:
@@ -224,14 +214,6 @@ class HyperliquidLiveTradingClient:
                 intent.reduce_only or self.settings.trading_copy_adjust_small_orders_to_min_order
             ),
         )
-        if (
-            not intent.reduce_only
-            and self.settings.live_trading_max_order_notional_usd > Decimal("0")
-            and wire_values.notional_usd > self.settings.live_trading_max_order_notional_usd
-        ):
-            raise HyperliquidLiveTradingConfigurationError(
-                "Live order notional exceeds the configured maximum after lot rounding."
-            )
         if self.settings.live_trading_order_expires_after_ms > 0 and hasattr(
             exchange, "set_expires_after"
         ):
@@ -240,10 +222,7 @@ class HyperliquidLiveTradingClient:
             )
         leverage_update: dict[str, Any] | None = None
         if not intent.reduce_only:
-            exchange_leverage = validated_live_entry_leverage(
-                intent.leverage,
-                max_leverage=self.settings.live_trading_max_leverage,
-            )
+            exchange_leverage = validated_live_entry_leverage(intent.leverage)
             leverage_update = apply_live_entry_exchange_leverage(
                 exchange,
                 coin=order_coin,
@@ -305,8 +284,6 @@ class HyperliquidLiveTradingClient:
 
 def validated_live_entry_leverage(
     leverage: Decimal,
-    *,
-    max_leverage: Decimal,
 ) -> int:
     if not leverage.is_finite() or leverage <= Decimal("0"):
         raise HyperliquidLiveTradingConfigurationError(
@@ -316,10 +293,6 @@ def validated_live_entry_leverage(
     if leverage != integral_leverage:
         raise HyperliquidLiveTradingConfigurationError(
             "Live order leverage must be a whole number for exchange execution."
-        )
-    if leverage > max_leverage:
-        raise HyperliquidLiveTradingConfigurationError(
-            "Live order leverage exceeds the configured maximum."
         )
     return int(integral_leverage)
 

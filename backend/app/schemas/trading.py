@@ -189,13 +189,8 @@ class TradingSourceMetadataRead(CamelModel):
 
 
 class LiveRiskLimitsRead(CamelModel):
-    max_order_notional_usd: Decimal
-    max_account_open_notional_usd: Decimal
-    max_open_positions: int
-    max_daily_loss_usd: Decimal
-    max_weekly_loss_usd: Decimal
+    max_weekly_loss_pct: Decimal
     max_orders_per_minute: int
-    max_leverage: Decimal
     reconciliation_max_snapshot_age_seconds: int
     entry_intent_ttl_seconds: int
     reduce_only_when_stopped: bool

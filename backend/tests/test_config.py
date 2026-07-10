@@ -33,13 +33,8 @@ def test_live_trading_config_is_loaded_from_dedicated_file(
     assert settings.live_trading_limit_slippage_bps == Decimal("20")
     assert settings.live_trading_min_order_notional_usd == Decimal("10")
     assert settings.live_trading_min_order_notional_buffer_usd == Decimal("0.1")
-    assert settings.live_trading_max_order_notional_usd == Decimal("100")
-    assert settings.live_trading_max_account_open_notional_usd == Decimal("500")
-    assert settings.live_trading_max_open_positions == 5
-    assert settings.live_trading_max_daily_loss_usd == Decimal("50")
-    assert settings.live_trading_max_weekly_loss_usd == Decimal("150")
-    assert settings.live_trading_max_leverage == Decimal("5")
-    assert settings.live_trading_max_orders_per_minute == 10
+    assert settings.live_trading_max_weekly_loss_pct == Decimal("0.5")
+    assert settings.live_trading_max_orders_per_minute == 50
     assert settings.live_trading_reduce_only_when_stopped is True
     assert settings.live_trading_reconciliation_enabled is True
     assert settings.live_trading_reconciliation_interval_seconds == 30
@@ -98,11 +93,6 @@ def test_env_example_contains_only_deployment_specific_values() -> None:
         configured_keys.add(candidate.split("=", 1)[0].strip())
 
     assert configured_keys == allowed_keys
-
-
-def test_live_trading_max_leverage_must_match_exchange_integer_semantics() -> None:
-    with pytest.raises(ValueError, match="live_trading_max_leverage must be a whole number"):
-        Settings(live_trading_max_leverage=Decimal("2.5"))
 
 
 def test_production_dashboard_auth_requires_configured_credentials(

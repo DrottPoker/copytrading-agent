@@ -24,6 +24,7 @@ from app.services.live_trading_service import (
     LiveTradingServiceError,
     ensure_live_entry_intent_is_fresh,
     live_account_current_unrealized_pnl,
+    live_account_weekly_loss_pct,
     live_account_weekly_net_pnl,
     live_reconciliation_is_fresh,
     validate_live_account_can_start,
@@ -279,18 +280,26 @@ async def test_current_unrealized_pnl_prefers_exchange_positions_without_double_
     assert value == Decimal("-60")
 
 
+def test_weekly_loss_pct_uses_reconstructed_week_start_equity() -> None:
+    account = live_account()
+    account.equity_usd = Decimal("40")
+
+    assert live_account_weekly_loss_pct(
+        account,
+        weekly_net_pnl=Decimal("-60"),
+    ) == Decimal("0.6")
+
+
 @pytest.mark.asyncio
-async def test_daily_loss_guard_includes_current_unrealized_loss(
+async def test_weekly_loss_percentage_guard_includes_current_unrealized_loss(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     account = live_account()
+    account.equity_usd = Decimal("40")
     account.last_reconciled_at = datetime.now(UTC)
     account.config_payload = {"lastReconciliation": {"status": "complete"}}
     settings = Settings(
-        live_trading_max_account_open_notional_usd=Decimal("0"),
-        live_trading_max_open_positions=0,
-        live_trading_max_daily_loss_usd=Decimal("50"),
-        live_trading_max_weekly_loss_usd=Decimal("0"),
+        live_trading_max_weekly_loss_pct=Decimal("0.5"),
         live_trading_max_orders_per_minute=0,
     )
     observed: dict[str, object] = {}
@@ -313,20 +322,19 @@ async def test_daily_loss_guard_includes_current_unrealized_loss(
         "live_account_current_unrealized_pnl",
         fake_unrealized,
     )
-    monkeypatch.setattr(live_trading_service, "live_account_daily_net_pnl", fake_realized)
+    monkeypatch.setattr(live_trading_service, "live_account_weekly_net_pnl", fake_realized)
     monkeypatch.setattr(live_trading_service, "trip_live_account_risk", fake_trip)
 
-    with pytest.raises(LiveOrderSubmitError, match="daily loss guard"):
+    with pytest.raises(LiveOrderSubmitError, match="weekly loss percentage guard"):
         await validate_live_entry_risk_guardrails(
             CommitSession(),  # type: ignore[arg-type]
             account=account,
-            intent=live_intent(created_at=datetime.now(UTC)),
             settings=settings,
         )
 
-    assert observed["rule"] == "max_daily_loss"
-    assert observed["observed"] == "-60"
-    assert observed["limit"] == "50"
+    assert observed["rule"] == "max_weekly_loss"
+    assert observed["observed"] == "0.6"
+    assert observed["limit"] == "0.5"
 
 
 @pytest.mark.asyncio

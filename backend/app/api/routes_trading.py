@@ -86,13 +86,8 @@ def request_audit_actor(request: Request) -> str:
 
 def live_risk_limits_read(settings: Settings) -> LiveRiskLimitsRead:
     return LiveRiskLimitsRead(
-        max_order_notional_usd=settings.live_trading_max_order_notional_usd,
-        max_account_open_notional_usd=settings.live_trading_max_account_open_notional_usd,
-        max_open_positions=settings.live_trading_max_open_positions,
-        max_daily_loss_usd=settings.live_trading_max_daily_loss_usd,
-        max_weekly_loss_usd=settings.live_trading_max_weekly_loss_usd,
+        max_weekly_loss_pct=settings.live_trading_max_weekly_loss_pct,
         max_orders_per_minute=settings.live_trading_max_orders_per_minute,
-        max_leverage=settings.live_trading_max_leverage,
         reconciliation_max_snapshot_age_seconds=(
             settings.live_trading_reconciliation_max_snapshot_age_seconds
         ),
