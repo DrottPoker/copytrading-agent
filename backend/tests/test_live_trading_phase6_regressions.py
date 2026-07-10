@@ -1,0 +1,476 @@
+from datetime import UTC, datetime
+from decimal import Decimal
+from typing import Any
+from uuid import uuid4
+
+import pytest
+from sqlalchemy.dialects import postgresql
+
+from app.core.config import Settings
+from app.db.models import (
+    AuditLog,
+    RiskEvent,
+    TradingAccount,
+    TradingCloseAllOperation,
+    TradingOrder,
+    TradingPosition,
+)
+from app.services import live_trading_service, trading_safety_service
+from app.services.live_trading_service import (
+    LiveCloseAllResult,
+    LiveFillFetchResult,
+    LiveOrderLifecycleResult,
+    LiveOrderReconciliationResult,
+    LiveOrderSubmitError,
+    LivePerpSnapshot,
+    LivePositionReconciliationResult,
+    LiveReconciliationResult,
+    close_live_account_position,
+    complete_live_close_all_operation,
+    resume_live_close_all_operations,
+    run_live_trading_account_reconciliation,
+    validate_live_entry_state_guardrails,
+)
+from app.services.trading_core import TradeIntent
+from app.services.trading_safety_service import apply_live_account_status
+
+
+class FakeScalarRows:
+    def __init__(self, rows: list[Any]) -> None:
+        self.rows = rows
+
+    def all(self) -> list[Any]:
+        return self.rows
+
+
+class FakeSession:
+    def __init__(
+        self,
+        *,
+        scalar_values: list[Any] | None = None,
+        scalars_values: list[list[Any]] | None = None,
+    ) -> None:
+        self.scalar_values = list(scalar_values or [])
+        self.scalars_values = list(scalars_values or [])
+        self.scalar_statements: list[Any] = []
+        self.scalars_statements: list[Any] = []
+        self.added: list[Any] = []
+        self.commit_count = 0
+        self.rollback_count = 0
+        self.flush_count = 0
+        self.refresh_count = 0
+
+    async def scalar(self, statement: Any) -> Any:
+        self.scalar_statements.append(statement)
+        return self.scalar_values.pop(0) if self.scalar_values else None
+
+    async def scalars(self, statement: Any) -> FakeScalarRows:
+        self.scalars_statements.append(statement)
+        rows = self.scalars_values.pop(0) if self.scalars_values else []
+        return FakeScalarRows(rows)
+
+    def add(self, value: Any) -> None:
+        self.added.append(value)
+
+    async def commit(self) -> None:
+        self.commit_count += 1
+
+    async def rollback(self) -> None:
+        self.rollback_count += 1
+
+    async def flush(self) -> None:
+        self.flush_count += 1
+
+    async def refresh(self, _value: Any, **_kwargs: Any) -> None:
+        self.refresh_count += 1
+
+
+def live_account(*, status: str, lifecycle_version: int = 0) -> TradingAccount:
+    return TradingAccount(
+        key="live_test",
+        account_type="live",
+        label="Live Test",
+        status=status,
+        network="testnet",
+        wallet_address="0x" + "2" * 40,
+        realized_pnl_usd=Decimal("0"),
+        fee_usd=Decimal("0"),
+        lifecycle_version=lifecycle_version,
+        status_changed_at=datetime.now(UTC),
+        status_reason=f"initial_{status}",
+    )
+
+
+def live_position(*, coin: str) -> TradingPosition:
+    return TradingPosition(
+        id=uuid4(),
+        account_key="live_test",
+        account_type="live",
+        source_wallet=live_trading_service.LIVE_EXCHANGE_SOURCE,
+        coin=coin,
+        side="long",
+        size=Decimal("1"),
+        entry_price=Decimal("100"),
+        notional_usd=Decimal("100"),
+        leverage=Decimal("2"),
+        margin_usd=Decimal("50"),
+        realized_pnl_usd=Decimal("0"),
+        fee_usd=Decimal("0"),
+        opened_at=datetime.now(UTC),
+    )
+
+
+def live_order(*, reduce_only: bool = True, status: str = "filled") -> TradingOrder:
+    return TradingOrder(
+        id=uuid4(),
+        account_key="live_test",
+        account_type="live",
+        source_wallet="0xsource",
+        source_fill_id="fill-1",
+        sequence_index=0,
+        client_order_id="0x" + "a" * 32,
+        coin="BTC",
+        action="close" if reduce_only else "open",
+        side="long",
+        is_buy=not reduce_only,
+        reduce_only=reduce_only,
+        order_type="ioc",
+        status=status,
+        requested_size=Decimal("1"),
+        requested_notional_usd=Decimal("100"),
+        filled_size=Decimal("1") if status == "filled" else Decimal("0"),
+        filled_notional_usd=Decimal("100") if status == "filled" else Decimal("0"),
+        fee_usd=Decimal("0"),
+    )
+
+
+def live_intent(*, reduce_only: bool = False) -> TradeIntent:
+    return TradeIntent(
+        account_key="live_test",
+        account_type="live",
+        source_wallet="0xsource",
+        source_fill_id="fill-1",
+        sequence_index=0,
+        client_order_id="0x" + "a" * 32,
+        coin="BTC",
+        action="close" if reduce_only else "open",
+        side="long",
+        is_buy=not reduce_only,
+        reduce_only=reduce_only,
+        size=Decimal("1"),
+        notional_usd=Decimal("100"),
+        margin_usd=Decimal("50"),
+        leverage=Decimal("2"),
+        limit_price=Decimal("100"),
+        source_price=Decimal("100"),
+        observed_price=Decimal("100"),
+        price_drift_bps=Decimal("0"),
+        price_source="phase6_regression_test",
+        allocation_pct=Decimal("0.2"),
+        allocation_usd=Decimal("100"),
+        source_perp_equity_usd=Decimal("1000"),
+        source_exposure_pct=Decimal("0.1"),
+        created_at=datetime.now(UTC),
+    )
+
+
+@pytest.mark.asyncio
+async def test_manual_close_from_disabled_keeps_exit_only_with_another_position(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account = live_account(status="disabled", lifecycle_version=4)
+    target_position = live_position(coin="BTC")
+    remaining_position = live_position(coin="ETH")
+    exchange_positions = {
+        target_position.id: target_position,
+        remaining_position.id: remaining_position,
+    }
+    close_order = live_order()
+    session = FakeSession()
+    reconciliation_count = 0
+
+    async def fake_load_position(*_args: Any, position_id: Any, **_kwargs: Any) -> TradingPosition:
+        return exchange_positions[position_id]
+
+    async def fake_get_position(*_args: Any, position_id: Any, **_kwargs: Any) -> Any:
+        return exchange_positions.get(position_id)
+
+    async def fake_load_account(*_args: Any, **_kwargs: Any) -> TradingAccount:
+        return account
+
+    async def fake_stop_account(*_args: Any, **kwargs: Any) -> TradingAccount:
+        assert kwargs["force_exit_only"] is True
+        apply_live_account_status(
+            account,
+            status="exit_only",
+            reason="manual_close_detected_exposure",
+        )
+        return account
+
+    async def fake_reconcile(*_args: Any, **_kwargs: Any) -> LiveReconciliationResult:
+        nonlocal reconciliation_count
+        reconciliation_count += 1
+        if reconciliation_count == 2:
+            exchange_positions.pop(target_position.id)
+        return LiveReconciliationResult(
+            account_key=account.key,
+            user_address=account.wallet_address or "",
+            open_positions=len(exchange_positions),
+            status="complete",
+        )
+
+    async def fake_load_mids(*_args: Any, **_kwargs: Any) -> dict[str, Decimal]:
+        return {"BTC": Decimal("100")}
+
+    async def fake_submit(*_args: Any, **_kwargs: Any) -> LiveOrderLifecycleResult:
+        return LiveOrderLifecycleResult(
+            order=close_order,
+            exchange_result=None,
+            submitted=True,
+        )
+
+    monkeypatch.setattr(live_trading_service, "load_live_position", fake_load_position)
+    monkeypatch.setattr(live_trading_service, "get_live_position", fake_get_position)
+    monkeypatch.setattr(live_trading_service, "load_live_account", fake_load_account)
+    monkeypatch.setattr(live_trading_service, "stop_live_trading_account", fake_stop_account)
+    monkeypatch.setattr(live_trading_service, "reconcile_live_trading_account", fake_reconcile)
+    monkeypatch.setattr(live_trading_service, "load_live_close_mids", fake_load_mids)
+    monkeypatch.setattr(
+        live_trading_service,
+        "build_live_close_position_intent",
+        lambda **_kwargs: live_intent(reduce_only=True),
+    )
+    monkeypatch.setattr(live_trading_service, "submit_live_trade_intent", fake_submit)
+
+    result = await close_live_account_position(  # type: ignore[arg-type]
+        session,
+        position_id=target_position.id,
+        settings=Settings(),
+        info_client=object(),  # type: ignore[arg-type]
+    )
+
+    assert result.submitted is True
+    assert reconciliation_count == 2
+    assert target_position.id not in exchange_positions
+    assert remaining_position.id in exchange_positions
+    assert account.status == "exit_only"
+    assert account.lifecycle_version == 5
+    assert account.status_reason == "manual_close_detected_exposure"
+
+
+@pytest.mark.asyncio
+async def test_partial_reconciliation_promotes_disabled_account_with_exposure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account = live_account(status="disabled", lifecycle_version=7)
+    session = FakeSession()
+    order_result = LiveOrderReconciliationResult()
+    fill_result = LiveFillFetchResult(
+        fills=(),
+        complete=False,
+        pages=1,
+        error="Fill history is incomplete.",
+    )
+    perp_snapshot = LivePerpSnapshot(states=(), requested_dexes=())
+    position_result = LivePositionReconciliationResult(
+        open_positions=1,
+        removed_positions=0,
+        complete=True,
+    )
+
+    async def return_order_result(*_args: Any, **_kwargs: Any) -> LiveOrderReconciliationResult:
+        return order_result
+
+    async def return_zero(*_args: Any, **_kwargs: Any) -> int:
+        return 0
+
+    async def return_none(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    async def return_fill_result(*_args: Any, **_kwargs: Any) -> LiveFillFetchResult:
+        return fill_result
+
+    async def return_perp_snapshot(*_args: Any, **_kwargs: Any) -> LivePerpSnapshot:
+        return perp_snapshot
+
+    async def return_empty_state(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {}
+
+    async def return_position_result(*_args: Any, **_kwargs: Any) -> Any:
+        return position_result
+
+    async def return_empty_ids(*_args: Any, **_kwargs: Any) -> tuple[Any, ...]:
+        return ()
+
+    monkeypatch.setattr(
+        live_trading_service,
+        "reconcile_live_order_statuses",
+        return_order_result,
+    )
+    monkeypatch.setattr(
+        live_trading_service,
+        "live_fill_reconciliation_start_time_ms",
+        return_zero,
+    )
+    monkeypatch.setattr(live_trading_service, "fetch_live_fills_by_time", return_fill_result)
+    monkeypatch.setattr(live_trading_service, "reconcile_live_fills", return_zero)
+    monkeypatch.setattr(
+        live_trading_service,
+        "update_live_orders_from_reconciled_fills",
+        return_zero,
+    )
+    monkeypatch.setattr(
+        live_trading_service,
+        "recompute_live_account_fill_totals",
+        return_none,
+    )
+    monkeypatch.setattr(live_trading_service, "fetch_live_perp_states", return_perp_snapshot)
+    monkeypatch.setattr(live_trading_service, "fetch_live_spot_state", return_empty_state)
+    monkeypatch.setattr(live_trading_service, "fetch_live_user_abstraction", return_empty_state)
+    monkeypatch.setattr(live_trading_service, "reconcile_live_positions", return_position_result)
+    monkeypatch.setattr(live_trading_service, "still_unresolved_live_order_ids", return_empty_ids)
+    monkeypatch.setattr(
+        live_trading_service,
+        "reconciliation_component_errors",
+        lambda **_kwargs: {"fills": "Fill history is incomplete."},
+    )
+    monkeypatch.setattr(
+        live_trading_service,
+        "reconciliation_components_payload",
+        lambda **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        live_trading_service,
+        "update_live_account_from_state",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(live_trading_service, "prune_live_reconciliation_runs", return_none)
+
+    result = await run_live_trading_account_reconciliation(  # type: ignore[arg-type]
+        session,
+        account=account,
+        settings=Settings(hyperliquid_network="testnet"),
+        info_client=object(),  # type: ignore[arg-type]
+    )
+
+    assert result.status == "partial"
+    assert result.open_positions == 1
+    assert account.status == "exit_only"
+    assert account.lifecycle_version == 8
+    assert account.status_reason == "external_exposure_detected_during_partial_reconciliation"
+    risk_event = next(value for value in session.added if isinstance(value, RiskEvent))
+    audit_log = next(value for value in session.added if isinstance(value, AuditLog))
+    assert risk_event.event_type == "live_external_exposure_detected"
+    assert risk_event.payload["reconciliationStatus"] == "partial"
+    assert audit_log.action == "live_account.external_exposure_detected"
+
+
+@pytest.mark.asyncio
+async def test_close_all_flat_completion_stays_exit_only_with_nonterminal_order() -> None:
+    account = live_account(status="exit_only", lifecycle_version=3)
+    operation = TradingCloseAllOperation(
+        id=uuid4(),
+        account_key=account.key,
+        status="running",
+        requested_at=datetime.now(UTC),
+    )
+    session = FakeSession(scalar_values=[1])
+
+    result = await complete_live_close_all_operation(  # type: ignore[arg-type]
+        session,
+        account=account,
+        operation=operation,
+        submitted_orders=1,
+    )
+
+    assert result.operation_status == "partially_completed"
+    assert result.status == "exit_only"
+    assert result.failed_orders == 1
+    assert account.status == "exit_only"
+    assert account.lifecycle_version == 3
+    assert operation.status == "partially_completed"
+    assert operation.completed_at is None
+    assert operation.last_error == "1 non-terminal live orders remain."
+    assert not any(
+        isinstance(value, AuditLog) and value.action == "live_account.close_all_completed"
+        for value in session.added
+    )
+
+
+@pytest.mark.asyncio
+async def test_failed_close_all_operation_is_selected_for_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account = live_account(status="exit_only")
+    operation_id = uuid4()
+    session = FakeSession(scalars_values=[[account.key]])
+    recovery_calls: list[str] = []
+
+    async def fake_load_account(*_args: Any, **_kwargs: Any) -> TradingAccount:
+        return account
+
+    async def fake_close_all(*_args: Any, **kwargs: Any) -> LiveCloseAllResult:
+        recovery_calls.append(kwargs["account"].key)
+        return LiveCloseAllResult(
+            account_key=account.key,
+            operation_id=operation_id,
+            operation_status="completed",
+            submitted_orders=1,
+            failed_orders=0,
+            status="disabled",
+        )
+
+    monkeypatch.setattr(live_trading_service, "load_live_account", fake_load_account)
+    monkeypatch.setattr(live_trading_service, "close_all_live_account_positions", fake_close_all)
+
+    results = await resume_live_close_all_operations(  # type: ignore[arg-type]
+        session,
+        settings=Settings(),
+    )
+
+    compiled = str(
+        session.scalars_statements[0].compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    assert "'failed'" in compiled
+    assert recovery_calls == [account.key]
+    assert [result.operation_id for result in results] == [operation_id]
+
+
+@pytest.mark.asyncio
+async def test_risk_guard_does_not_transition_disabled_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account = live_account(status="disabled", lifecycle_version=9)
+    account.config_payload = {"lastReconciliationAttempt": {"status": "partial"}}
+    session = FakeSession()
+
+    async def fake_cancel(*_args: Any, **_kwargs: Any) -> int:
+        return 1
+
+    monkeypatch.setattr(
+        trading_safety_service,
+        "cancel_unsent_live_entries",
+        fake_cancel,
+    )
+
+    with pytest.raises(
+        LiveOrderSubmitError,
+        match="complete exchange reconciliation snapshot",
+    ):
+        await validate_live_entry_state_guardrails(  # type: ignore[arg-type]
+            session,
+            account=account,
+            intent=live_intent(),
+            settings=Settings(),
+        )
+
+    assert account.status == "disabled"
+    assert account.lifecycle_version == 9
+    assert account.status_reason == "initial_disabled"
+    risk_event = next(value for value in session.added if isinstance(value, RiskEvent))
+    assert risk_event.event_type == "live_account_risk_trip"
+    assert risk_event.payload["rule"] == "reconciliation_incomplete"
+    assert risk_event.payload["lifecycleVersion"] == 9

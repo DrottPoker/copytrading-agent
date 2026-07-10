@@ -282,9 +282,7 @@ TRADING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("copy", "standard_allocation_pct"): "trading_copy_standard_allocation_pct",
     ("copy", "max_total_allocation_pct"): "trading_copy_max_total_allocation_pct",
     ("copy", "min_order_notional_usd"): "trading_copy_min_order_notional_usd",
-    ("copy", "adjust_small_orders_to_min_order"): (
-        "trading_copy_adjust_small_orders_to_min_order"
-    ),
+    ("copy", "adjust_small_orders_to_min_order"): ("trading_copy_adjust_small_orders_to_min_order"),
     ("copy", "max_entry_age_seconds"): "trading_copy_max_entry_age_seconds",
     ("copy", "stale_entry_skip_activity_seconds"): (
         "trading_copy_stale_entry_skip_activity_seconds"
@@ -292,9 +290,7 @@ TRADING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("copy", "max_price_drift_bps"): "trading_copy_max_price_drift_bps",
     ("copy", "use_live_mid_price"): "trading_copy_use_live_mid_price",
     ("copy", "market_price_cache_enabled"): "trading_copy_market_price_cache_enabled",
-    ("copy", "market_price_cache_stale_seconds"): (
-        "trading_copy_market_price_cache_stale_seconds"
-    ),
+    ("copy", "market_price_cache_stale_seconds"): ("trading_copy_market_price_cache_stale_seconds"),
     ("copy", "market_price_cache_refresh_seconds"): (
         "trading_copy_market_price_cache_refresh_seconds"
     ),
@@ -308,19 +304,23 @@ LIVE_TRADING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("execution", "limit_slippage_bps"): "live_trading_limit_slippage_bps",
     ("execution", "max_slippage_bps"): "live_trading_max_slippage_bps",
     ("execution", "order_expires_after_ms"): "live_trading_order_expires_after_ms",
+    ("execution", "entry_intent_ttl_seconds"): "live_trading_entry_intent_ttl_seconds",
     ("reconciliation", "enabled"): "live_trading_reconciliation_enabled",
     ("reconciliation", "interval_seconds"): ("live_trading_reconciliation_interval_seconds"),
     ("reconciliation", "lookback_minutes"): ("live_trading_reconciliation_lookback_minutes"),
+    ("reconciliation", "max_snapshot_age_seconds"): (
+        "live_trading_reconciliation_max_snapshot_age_seconds"
+    ),
     ("copy_execution", "enabled"): "live_trading_copy_enabled",
     ("risk", "min_order_notional_usd"): "live_trading_min_order_notional_usd",
-    ("risk", "min_order_notional_buffer_usd"): (
-        "live_trading_min_order_notional_buffer_usd"
-    ),
+    ("risk", "min_order_notional_buffer_usd"): ("live_trading_min_order_notional_buffer_usd"),
     ("risk", "max_order_notional_usd"): "live_trading_max_order_notional_usd",
     ("risk", "max_account_open_notional_usd"): ("live_trading_max_account_open_notional_usd"),
     ("risk", "max_open_positions"): "live_trading_max_open_positions",
     ("risk", "max_daily_loss_usd"): "live_trading_max_daily_loss_usd",
+    ("risk", "max_weekly_loss_usd"): "live_trading_max_weekly_loss_usd",
     ("risk", "max_orders_per_minute"): "live_trading_max_orders_per_minute",
+    ("risk", "max_leverage"): "live_trading_max_leverage",
     ("risk", "reduce_only_when_stopped"): "live_trading_reduce_only_when_stopped",
     ("markets", "allowed_coins"): "live_trading_allowed_coins",
     ("markets", "blocked_coins"): "live_trading_blocked_coins",
@@ -335,7 +335,11 @@ class PaperTradingAccountConfig(BaseModel):
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=(".env", "../.env"), extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=(".env", "../.env"),
+        extra="ignore",
+        hide_input_in_errors=True,
+    )
 
     app_name: str = "Hyperliquid Copy Agent"
     app_version: str = "0.1.0"
@@ -345,6 +349,12 @@ class Settings(BaseSettings):
     worker_role: Literal["all", "trading", "maintenance"] = "all"
     worker_heartbeat_interval_seconds: int = Field(default=60, ge=10, le=3600)
     worker_heartbeat_stale_seconds: int = Field(default=180, ge=30, le=7200)
+    worker_capability_lease_ttl_seconds: int = Field(default=90, ge=30, le=3600)
+    worker_loop_restart_delay_seconds: int = Field(default=5, ge=1, le=300)
+    worker_shutdown_drain_seconds: int = Field(default=30, ge=1, le=300)
+    realtime_execution_queue_size: int = Field(default=1000, ge=10, le=100000)
+    realtime_execution_claim_timeout_seconds: int = Field(default=300, ge=30, le=3600)
+    realtime_execution_retry_base_seconds: int = Field(default=5, ge=1, le=300)
     ops_disk_path: str = "/"
     backup_status_enabled: bool = True
     backup_status_directory: str = "/app/backups/postgres"
@@ -374,9 +384,15 @@ class Settings(BaseSettings):
     live_trading_limit_slippage_bps: Decimal = Field(default=Decimal("20"), ge=0, le=10000)
     live_trading_max_slippage_bps: Decimal = Field(default=Decimal("50"), ge=0, le=10000)
     live_trading_order_expires_after_ms: int = Field(default=10000, ge=0, le=60000)
+    live_trading_entry_intent_ttl_seconds: int = Field(default=30, ge=1, le=3600)
     live_trading_reconciliation_enabled: bool = True
     live_trading_reconciliation_interval_seconds: int = Field(default=30, ge=5, le=3600)
     live_trading_reconciliation_lookback_minutes: int = Field(default=120, ge=1, le=10080)
+    live_trading_reconciliation_max_snapshot_age_seconds: int = Field(
+        default=90,
+        ge=5,
+        le=3600,
+    )
     live_trading_copy_enabled: bool = False
     live_trading_min_order_notional_usd: Decimal = Field(default=Decimal("10"), ge=0)
     live_trading_min_order_notional_buffer_usd: Decimal = Field(
@@ -390,7 +406,9 @@ class Settings(BaseSettings):
     )
     live_trading_max_open_positions: int = Field(default=5, ge=0, le=1000)
     live_trading_max_daily_loss_usd: Decimal = Field(default=Decimal("50"), ge=0)
+    live_trading_max_weekly_loss_usd: Decimal = Field(default=Decimal("150"), ge=0)
     live_trading_max_orders_per_minute: int = Field(default=10, ge=0, le=10000)
+    live_trading_max_leverage: Decimal = Field(default=Decimal("5"), gt=0, le=100)
     live_trading_reduce_only_when_stopped: bool = True
     live_trading_allowed_coins: list[str] = Field(default_factory=list, max_length=500)
     live_trading_blocked_coins: list[str] = Field(default_factory=list, max_length=500)
@@ -829,6 +847,16 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def guard_live_trading(self) -> "Settings":
+        if self.worker_heartbeat_stale_seconds <= self.worker_heartbeat_interval_seconds:
+            raise ValueError(
+                "worker_heartbeat_stale_seconds must be greater than "
+                "worker_heartbeat_interval_seconds."
+            )
+        if self.worker_capability_lease_ttl_seconds <= self.worker_heartbeat_interval_seconds:
+            raise ValueError(
+                "worker_capability_lease_ttl_seconds must be greater than "
+                "worker_heartbeat_interval_seconds."
+            )
         account_keys = [account.key for account in self.paper_copy_accounts]
         if len(account_keys) != len(set(account_keys)):
             raise ValueError("paper_copy_accounts keys must be unique.")
@@ -946,6 +974,8 @@ class Settings(BaseSettings):
                 "live_trading_limit_slippage_bps must be less than or equal to "
                 "live_trading_max_slippage_bps."
             )
+        if self.live_trading_max_leverage != self.live_trading_max_leverage.to_integral_value():
+            raise ValueError("live_trading_max_leverage must be a whole number.")
         if self.trading_copy_top_tier_wallet_count > self.trading_copy_top_wallet_count:
             raise ValueError(
                 "trading_copy_top_tier_wallet_count must be less than or equal to "
@@ -984,6 +1014,20 @@ class Settings(BaseSettings):
             and self.dashboard_auth_password == "change-me"
         ):
             raise ValueError("DASHBOARD_AUTH_PASSWORD must be changed before production startup.")
+        if (
+            self.app_env == "production"
+            and self.dashboard_auth_enabled
+            and len(self.dashboard_auth_password) < 16
+        ):
+            raise ValueError(
+                "DASHBOARD_AUTH_PASSWORD must contain at least 16 characters in production."
+            )
+        if (
+            self.app_env == "production"
+            and self.dashboard_auth_enabled
+            and not self.dashboard_auth_username.strip()
+        ):
+            raise ValueError("DASHBOARD_AUTH_USERNAME must not be empty in production.")
         if self.app_env == "production" and not self.dashboard_auth_enabled:
             raise ValueError("DASHBOARD_AUTH_ENABLED=false is not allowed in production.")
         return self

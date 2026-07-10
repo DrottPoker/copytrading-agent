@@ -135,14 +135,18 @@ async def compact_candidate_batch(
         """
     )
     row = (
-        await session.execute(
-            statement,
-            {
-                **field_params,
-                "batch_size": batch_size,
-            },
+        (
+            await session.execute(
+                statement,
+                {
+                    **field_params,
+                    "batch_size": batch_size,
+                },
+            )
         )
-    ).mappings().one()
+        .mappings()
+        .one()
+    )
     return CompactBatchResult(
         processed=int(row["processed"] or 0),
         before_bytes=int(row["before_bytes"] or 0),
@@ -193,14 +197,18 @@ async def sample_candidate_bytes(
         """
     )
     row = (
-        await session.execute(
-            statement,
-            {
-                **field_params,
-                "sample_size": sample_size,
-            },
+        (
+            await session.execute(
+                statement,
+                {
+                    **field_params,
+                    "sample_size": sample_size,
+                },
+            )
         )
-    ).mappings().one()
+        .mappings()
+        .one()
+    )
     return (
         int(row["before_bytes"] or 0),
         int(row["after_bytes"] or 0),

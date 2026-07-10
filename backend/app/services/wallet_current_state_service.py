@@ -85,11 +85,7 @@ async def get_wallet_current_state(
     if dex_list_error is not None:
         perp_errors.append(dex_list_error)
     known_dex_set = set(known_dexes)
-    missing_dexes = [
-        dex
-        for dex in all_dexes
-        if dex not in known_dex_set
-    ]
+    missing_dexes = [dex for dex in all_dexes if dex not in known_dex_set]
     if missing_dexes:
         fallback_states, fallback_errors = await load_wallet_perp_clearinghouse_states(
             client=hyperliquid_client,
@@ -154,9 +150,7 @@ async def get_wallet_current_state(
         ),
         positions=perp_summary.positions,
         spot_balances=spot_balances,
-        error=join_error_messages(
-            [*perp_errors, spot_error, account_value_summary.error]
-        ),
+        error=join_error_messages([*perp_errors, spot_error, account_value_summary.error]),
     )
 
 
@@ -181,9 +175,7 @@ async def load_known_wallet_perp_dexes_for_addresses(
     if not normalized_addresses:
         return {}
 
-    dexes_by_address: dict[str, set[str]] = {
-        address: set() for address in normalized_addresses
-    }
+    dexes_by_address: dict[str, set[str]] = {address: set() for address in normalized_addresses}
     fill_result = await session.execute(
         select(WalletFill.wallet_address, WalletFill.coin)
         .where(
@@ -206,10 +198,7 @@ async def load_known_wallet_perp_dexes_for_addresses(
         if dex and wallet_address in dexes_by_address:
             dexes_by_address[wallet_address].add(dex)
 
-    return {
-        address: tuple(sorted(dexes))
-        for address, dexes in dexes_by_address.items()
-    }
+    return {address: tuple(sorted(dexes)) for address, dexes in dexes_by_address.items()}
 
 
 async def load_wallet_perp_clearinghouse_states(
@@ -371,9 +360,7 @@ def summarize_perp_clearinghouse_states(
 
     positions = parse_perp_positions({"assetPositions": raw_positions})
     if total_position_notional == ZERO:
-        total_position_notional = sum_decimal(
-            position.position_value_usd for position in positions
-        )
+        total_position_notional = sum_decimal(position.position_value_usd for position in positions)
     if total_margin_used == ZERO:
         total_margin_used = sum_decimal(position.margin_used_usd for position in positions)
 
@@ -383,9 +370,7 @@ def summarize_perp_clearinghouse_states(
         withdrawable_usd=withdrawable,
         total_position_notional_usd=total_position_notional,
         total_margin_used_usd=total_margin_used,
-        total_unrealized_pnl_usd=sum_decimal(
-            position.unrealized_pnl_usd for position in positions
-        ),
+        total_unrealized_pnl_usd=sum_decimal(position.unrealized_pnl_usd for position in positions),
         positions=positions,
         raw_positions=raw_positions,
     )

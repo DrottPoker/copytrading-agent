@@ -9,7 +9,9 @@ from app.db.models import PaperTradingAccount, TradingAccount
 
 async def list_trading_accounts(session: AsyncSession) -> list[TradingAccount]:
     result = await session.scalars(
-        select(TradingAccount).order_by(
+        select(TradingAccount)
+        .where(TradingAccount.archived_at.is_(None))
+        .order_by(
             TradingAccount.account_type.asc(),
             TradingAccount.created_at.asc(),
             TradingAccount.key.asc(),

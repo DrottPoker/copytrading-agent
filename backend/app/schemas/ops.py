@@ -2,6 +2,8 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal
 
+from pydantic import Field
+
 from app.schemas.base import CamelModel
 from app.schemas.operation import OperationStatusRead
 
@@ -78,6 +80,26 @@ class OpsDatabaseSummary(CamelModel):
     error: str | None = None
 
 
+class OpsWorkerLoopState(CamelModel):
+    name: str
+    status: str
+    health: CheckStatus
+    restart_count: int
+    consecutive_failures: int
+    last_error: str | None
+    last_started_at: datetime | None
+    last_progress_at: datetime | None
+    updated_at: datetime | None
+
+
+class OpsRealtimeQueueHealth(CamelModel):
+    depth: int
+    capacity: int
+    dropped: int
+    utilization_pct: Decimal | None
+    status: CheckStatus
+
+
 class OpsWorkerHeartbeat(CamelModel):
     key: str
     role: str
@@ -90,6 +112,10 @@ class OpsWorkerHeartbeat(CamelModel):
     trading_loops: bool
     maintenance_loops: bool
     started_at: datetime | None
+    instance_id: str | None = None
+    capabilities: list[str] = Field(default_factory=list)
+    loops: list[OpsWorkerLoopState] = Field(default_factory=list)
+    realtime_queue: OpsRealtimeQueueHealth | None = None
 
 
 class OpsServiceConfig(CamelModel):

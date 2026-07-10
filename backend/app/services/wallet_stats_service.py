@@ -38,12 +38,12 @@ async def get_wallet_stats(session: AsyncSession, *, address: str) -> WalletStat
                 func.coalesce(func.sum(case((WalletFill.side == "sell", 1), else_=0)), 0).label(
                     "sell_count"
                 ),
-                func.coalesce(
-                    func.sum(case((WalletFill.pnl_usd > 0, 1), else_=0)), 0
-                ).label("profitable_fill_count"),
-                func.coalesce(
-                    func.sum(case((WalletFill.pnl_usd < 0, 1), else_=0)), 0
-                ).label("losing_fill_count"),
+                func.coalesce(func.sum(case((WalletFill.pnl_usd > 0, 1), else_=0)), 0).label(
+                    "profitable_fill_count"
+                ),
+                func.coalesce(func.sum(case((WalletFill.pnl_usd < 0, 1), else_=0)), 0).label(
+                    "losing_fill_count"
+                ),
                 func.avg(WalletFill.ingest_latency_ms).label("average_ingest_latency_ms"),
                 func.max(WalletFill.ingest_latency_ms).label("max_ingest_latency_ms"),
                 func.min(WalletFill.timestamp_ms).label("first_fill_time_ms"),

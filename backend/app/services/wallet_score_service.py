@@ -241,9 +241,7 @@ async def _recalculate_wallet_scores(
     if records:
         stmt = insert(WalletScore).values(records)
         update_columns = {
-            key: getattr(stmt.excluded, key)
-            for key in records[0]
-            if key != "wallet_address"
+            key: getattr(stmt.excluded, key) for key in records[0] if key != "wallet_address"
         }
         update_columns["updated_at"] = func.now()
         await session.execute(
@@ -604,6 +602,7 @@ async def metrics_with_current_drawdowns(
     semaphore = asyncio.Semaphore(settings.scoring_current_drawdown_concurrency)
 
     async with HyperliquidClient() as client:
+
         async def load_metric(metric: WalletScoreMetrics) -> WalletScoreMetrics:
             if metric.trade_count <= 0:
                 return metric
@@ -668,12 +667,11 @@ async def metric_with_current_drawdown(
     else:
         if perp_summary.total_unrealized_pnl_usd < ZERO:
             current_drawdown_pct = (
-                perp_summary.total_unrealized_pnl_usd.copy_abs()
-                / account_value
+                perp_summary.total_unrealized_pnl_usd.copy_abs() / account_value
             ).quantize(RATIO_QUANT)
-        current_margin_usage_pct = (
-            perp_summary.total_margin_used_usd / account_value
-        ).quantize(RATIO_QUANT)
+        current_margin_usage_pct = (perp_summary.total_margin_used_usd / account_value).quantize(
+            RATIO_QUANT
+        )
         current_notional_exposure_pct = (
             perp_summary.total_position_notional_usd / account_value
         ).quantize(RATIO_QUANT)
@@ -851,9 +849,7 @@ def calculate_score_explanation(
             score=breakdown.pnl_score,
             weight=settings.scoring_weight_pnl,
             weight_sum=weight_sum,
-            detail=(
-                "Profitability scores total, average, and median realized trade ROI."
-            ),
+            detail=("Profitability scores total, average, and median realized trade ROI."),
             items=profitability_score_items(metrics, settings=settings),
         ),
         score_component_detail(
@@ -863,8 +859,7 @@ def calculate_score_explanation(
             weight=settings.scoring_weight_consistency,
             weight_sum=weight_sum,
             detail=(
-                "Consistency scores repeatability and evenness, not profitability "
-                "or win rate."
+                "Consistency scores repeatability and evenness, not profitability or win rate."
             ),
             items=consistency_score_items(metrics, settings=settings),
         ),
@@ -899,9 +894,7 @@ def calculate_score_explanation(
             score=breakdown.recency_score,
             weight=settings.scoring_weight_recency,
             weight_sum=weight_sum,
-            detail=(
-                "Recency decays as the latest non-liquidation trading fill gets older."
-            ),
+            detail=("Recency decays as the latest non-liquidation trading fill gets older."),
             items=recency_score_items(metrics, now=now, settings=settings),
         ),
     ]
@@ -1232,8 +1225,7 @@ def risk_score_items(
             value=realized_drawdown,
             value_kind="percent",
             penalty=min_decimal(
-                realized_drawdown
-                * settings.scoring_risk_realized_drawdown_penalty_per_ratio,
+                realized_drawdown * settings.scoring_risk_realized_drawdown_penalty_per_ratio,
                 settings.scoring_risk_realized_drawdown_penalty_max,
             ),
             detail="Closed-trade drawdown divided by realized drawdown base.",
@@ -1384,10 +1376,7 @@ def copyability_score_items(
                 settings.scoring_copyability_weight_execution_simplicity,
                 weight_sum,
             ),
-            detail=(
-                "Average entry and close fills per closed trade. Lower is easier "
-                "to follow."
-            ),
+            detail=("Average entry and close fills per closed trade. Lower is easier to follow."),
         ),
         detail_item(
             key="forced_exit_fill_ratio",
@@ -1849,8 +1838,7 @@ def profit_distribution_consistency_score(
         return ZERO
     return score_value(
         min_decimal(
-            distribution_ratio
-            / settings.scoring_consistency_profit_distribution_full_score_ratio,
+            distribution_ratio / settings.scoring_consistency_profit_distribution_full_score_ratio,
             ONE,
         )
         * HUNDRED
@@ -2009,9 +1997,7 @@ def current_drawdown_risk_penalty(
     if span <= ZERO:
         return settings.scoring_current_drawdown_penalty_max
     return (
-        (current_drawdown_pct - start_ratio)
-        / span
-        * settings.scoring_current_drawdown_penalty_max
+        (current_drawdown_pct - start_ratio) / span * settings.scoring_current_drawdown_penalty_max
     )
 
 
@@ -2277,9 +2263,7 @@ def calculate_penalty_items(
             label="Current drawdown unavailable",
             value=current_drawdown_penalty,
             max_value=settings.scoring_current_drawdown_missing_penalty,
-            detail=(
-                "Live perp state was unavailable or had zero perp equity during scoring."
-            ),
+            detail=("Live perp state was unavailable or had zero perp equity during scoring."),
         ),
         penalty_item(
             key="negative_pnl",
@@ -2287,8 +2271,7 @@ def calculate_penalty_items(
             value=negative_pnl_penalty,
             max_value=settings.scoring_penalty_negative_pnl_max,
             detail=(
-                f"Net PnL is {metrics.net_pnl_usd}; gross profit is "
-                f"{metrics.gross_profit_usd}."
+                f"Net PnL is {metrics.net_pnl_usd}; gross profit is {metrics.gross_profit_usd}."
             ),
         ),
         penalty_item(
@@ -2304,8 +2287,7 @@ def calculate_penalty_items(
             value=open_only_penalty,
             max_value=settings.scoring_penalty_open_only,
             detail=(
-                f"{metrics.open_trade_count} open trades and "
-                f"{metrics.trade_count} closed trades."
+                f"{metrics.open_trade_count} open trades and {metrics.trade_count} closed trades."
             ),
         ),
     ]
@@ -2410,9 +2392,7 @@ def metrics_from_row(row: Any) -> WalletScoreMetrics:
             int(row["first_fill_time_ms"]) if row["first_fill_time_ms"] is not None else None
         ),
         last_trade_time_ms=(
-            int(row["last_activity_time_ms"])
-            if row["last_activity_time_ms"] is not None
-            else None
+            int(row["last_activity_time_ms"]) if row["last_activity_time_ms"] is not None else None
         ),
         trades_24h=int(row["fills_24h"] or 0),
         notional_24h=decimal_value(row["notional_24h"]),

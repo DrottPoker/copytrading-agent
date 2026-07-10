@@ -33,6 +33,7 @@ from app.services.fill_import_service import (
 from app.services.pool_fill_import_service import import_due_pool_wallet_fills
 from app.services.source_trade_reconstruction_service import list_reconstructed_source_trades
 from app.services.wallet_cleanup_service import (
+    WalletDataProtectedError,
     prune_all_wallets,
     prune_current_drawdown_wallets,
     prune_low_score_wallets,
@@ -51,12 +52,15 @@ from app.services.wallet_stats_service import get_wallet_stats, list_wallet_copy
 
 
 def wallet_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, WalletDataProtectedError):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     if isinstance(exc, ValueError):
         return HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
         )
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Wallet not found.")
+
 
 router = APIRouter(prefix="/wallets", tags=["wallets"])
 

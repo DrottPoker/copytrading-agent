@@ -13,6 +13,7 @@ from app.db.models import (
     TradingCloseAllOperation,
     TradingFill,
     TradingOrder,
+    TradingOrderDispatch,
     TradingPosition,
 )
 from app.integrations.hyperliquid_live_client import LiveOrderResult
@@ -66,6 +67,75 @@ def test_apply_order_status_response_maps_filled_order() -> None:
     assert order.status == "filled"
     assert order.exchange_order_id == "123"
     assert order.filled_at == datetime.fromtimestamp(1_725_000_000_000 / 1000, UTC)
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_keeps_unrecognized_exchange_status_unresolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    order = live_order(status="uncertain")
+    order.id = uuid4()
+    dispatch = TradingOrderDispatch(
+        id=uuid4(),
+        order_id=order.id,
+        account_key=order.account_key,
+        client_order_id=order.client_order_id,
+        status="uncertain",
+        attempt_count=1,
+        available_at=datetime.now(UTC),
+    )
+
+    class Rows:
+        def all(self) -> list[TradingOrder]:
+            return [order]
+
+    class Session:
+        async def scalars(self, _statement: object) -> Rows:
+            return Rows()
+
+        async def flush(self) -> None:
+            return None
+
+    class Client:
+        async def order_status(self, *, user: str, oid: int | str) -> dict[str, object]:
+            assert user == "0xuser"
+            assert oid == order.client_order_id
+            return {
+                "status": "order",
+                "order": {
+                    "order": {"oid": 123},
+                    "status": "futureStatus",
+                },
+            }
+
+    async def fake_load_dispatch(*_args: object, **_kwargs: object) -> TradingOrderDispatch:
+        return dispatch
+
+    monkeypatch.setattr(
+        live_trading_service,
+        "load_live_order_dispatch",
+        fake_load_dispatch,
+    )
+
+    result = await live_trading_service.reconcile_live_order_statuses(
+        Session(),  # type: ignore[arg-type]
+        account=TradingAccount(
+            key="live_test",
+            account_type="live",
+            label="Live Test",
+            status="exit_only",
+            network="testnet",
+        ),
+        user_address="0xuser",
+        client=Client(),  # type: ignore[arg-type]
+    )
+
+    assert result.unresolved_order_ids == (order.id,)
+    assert result.errors == {
+        order.client_order_id: "Exchange order status is missing or unrecognized."
+    }
+    assert order.status == "uncertain"
+    assert dispatch.status == "uncertain"
 
 
 @pytest.mark.parametrize(
@@ -715,7 +785,11 @@ async def test_close_all_keeps_account_exit_only_when_positions_remain(monkeypat
         return 1
 
     async def fake_reconcile_live_trading_account(*_args: object, **_kwargs: object) -> object:
-        return object()
+        return live_trading_service.LiveReconciliationResult(
+            account_key=account.key,
+            user_address="0x" + "1" * 40,
+            status="complete",
+        )
 
     async def fake_load_live_exchange_positions(*_args: object, **_kwargs: object) -> list[object]:
         return [position]
@@ -747,6 +821,24 @@ async def test_close_all_keeps_account_exit_only_when_positions_remain(monkeypat
         fake_submit_live_trade_intent,
     )
     monkeypatch.setattr(live_trading_service, "job_lock", fake_job_lock)
+
+    async def fake_load_live_account_for_update(*_args: object, **_kwargs: object) -> object:
+        return account
+
+    monkeypatch.setattr(
+        live_trading_service,
+        "load_live_account_for_update",
+        fake_load_live_account_for_update,
+    )
+
+    async def fake_cancel_unsent_live_entries(*_args: object, **_kwargs: object) -> int:
+        return 0
+
+    monkeypatch.setattr(
+        live_trading_service,
+        "cancel_unsent_live_entries",
+        fake_cancel_unsent_live_entries,
+    )
     monkeypatch.setattr(
         live_trading_service,
         "get_or_create_live_close_all_operation",

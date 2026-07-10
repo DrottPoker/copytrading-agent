@@ -104,12 +104,24 @@ The monitor worker supports explicit roles through `WORKER_ROLE`:
 
 Docker Compose runs `trading-worker` and `maintenance-worker` as separate
 services and sets `WORKER_RUN_IN_API_PROCESS=false` on the backend container.
-Long-running jobs take rows in `job_locks`, so manual API triggers and worker
-services do not run the same long job concurrently. Active jobs renew their lock
-TTL, so a long healthy run does not look expired while it is still working.
-Workers also update lightweight heartbeat rows in `settings`. The Ops Health
-page uses those rows to show whether the trading and maintenance workers are
-fresh, stale, or missing.
+Before starting loops, each runtime acquires renewable capability leases in
+`job_locks`. The keys are `worker_runtime:trading` and
+`worker_runtime:maintenance`; an `all` worker must own both. Lease renewal is
+fail-closed. Renewal calls have a deadline shorter than the TTL. A renewal
+timeout or lost owner sets the shared stop signal before canceling the runtime,
+so intake, heartbeat, and all supervised loops stop before lease release.
+
+Every long-running loop is registered with a named supervisor. Unexpected loop
+exit updates runtime state, records the error, waits for the configured restart
+delay, and restarts it. Workers update heartbeat rows in `settings` with a stable
+process instance id, owned capabilities, per-loop state, restart counts, latest
+progress, and realtime queue depth, capacity, and drop count. Ops derives worker
+health from both heartbeat freshness and the actual loop payload.
+
+Long-running maintenance jobs still take job-specific rows in `job_locks`, so
+manual API triggers and workers do not run the same operation concurrently.
+Active jobs renew their TTL. A failed scoring stage reports failure to its caller,
+and score-dependent prune does not run after that failure.
 Long-running operation status is also stored in `settings`. Status writes use a
 short transaction with an advisory lock and row-level locking so progress
 updates do not overwrite each other when API and worker activity overlap.
@@ -133,6 +145,9 @@ Trading worker responsibilities:
 - Subscribe to Hyperliquid `allMids` over WebSocket and maintain a short-lived
   price cache for copy execution.
 - Store snapshot and realtime fills in Postgres.
+- Place committed fill batches on a bounded realtime execution queue. Live copy
+  runs before paper copy in the queue consumer. If the queue is full, the fill
+  remains in Postgres and periodic recovery replays it.
 - Simulate paper copies for non-snapshot fills from scored allocation wallets.
 - Submit live copy orders for non-snapshot fills when live trading and live copy
   execution are enabled.
@@ -141,7 +156,13 @@ Trading worker responsibilities:
 - Reconcile enabled live accounts when live trading reconciliation is enabled.
 - Recover pending or uncertain live order outbox rows and resume unfinished
   live close-all operations before normal account reconciliation.
-- Publish system and fill events to Redis.
+- Publish presentation events to Redis Streams through a best-effort boundary.
+  Raw fill, result, and error events are published concurrently with a fixed
+  overall deadline only after live and paper execution. Redis failure never
+  fails fill persistence or trading work, and Redis latency cannot delay an
+  entry decision or block the next inbox item without bound.
+- Claim durable realtime execution payloads from Postgres. The local bounded
+  queue only wakes the consumer and can be rebuilt after any restart.
 
 Maintenance worker responsibilities:
 
@@ -213,6 +234,13 @@ Postgres is the source of truth.
 It stores wallets, fills, positions, scores, active copy set state, copy signals,
 copy trades, risk events, settings, job locks, and audit logs.
 
+`live_entry_safety_controls` is a singleton durable gate for new live exposure.
+Its state is `enabled`, `paused`, or `killed`, with an incrementing revision,
+operator reason, actor, and timestamp. Trading accounts carry lifecycle version,
+status change time, reason, and optional archive time. Financial and idempotency
+children use account key and account type foreign keys with restricted deletion,
+so archive retains the execution ledger.
+
 `wallet_fills` is the largest table. It is optimized as an append-heavy fact
 table: rows have a real UUID primary key, dedupe is enforced by wallet address
 and non-null external fill ID, and timestamp indexes support wallet detail,
@@ -229,26 +257,44 @@ state, and materialized source trades. Use `GET /database/stats?exact_fill_stats
 only when an exact `wallet_fills` scan is needed for diagnostics. Manual fill
 retention cleanup deletes old unprotected `wallet_fills`, old closed
 `source_trades`, and old `source_trade_ignored_fills` in batches. It protects
-active, realtime-slot, copy-enabled, open paper-position, open position
-snapshot, and top scored wallets. Deleted space becomes reusable after vacuum,
-but total database file size may not shrink immediately on managed Postgres.
+active, realtime-slot, copy-enabled, active-allocation, open source-position,
+open paper-position, open live-position, in-flight-order, and top scored
+wallets. Deleted space becomes reusable after vacuum, but total database file
+size may not shrink immediately on managed Postgres.
 The Database page also has ignored-fill cleanup. It deletes raw fills that were
 classified as pre-existing-position adds or close-only fills and are not needed
 for reconstructed source trades. Unmatched close fills are kept when they line up
 with a materialized source-trade close, so source trades can still be rebuilt
 from retained raw fills.
 
+Wallet deletion, pruning, and retention share one explicit dependency and
+protection policy. Wallet-owned research and materialization rows are deleted
+in dependency order. Discovery candidates and completed paper or live execution
+records are classified separately and retained. Every destructive path checks
+protection again immediately before mutation, and direct wallet deletion returns
+`409` while a protection remains. The database also enforces copy signal, copy
+trade link, and trading fill order relationships with foreign keys. Invalid
+legacy references are repaired by the migration before the constraints are
+created.
+
 ### Redis
 
-Redis is runtime state only.
+Redis is presentation runtime state only. It is not an execution queue or a
+trading source of truth.
 
 It is used for:
 
-- Recent live events.
-- Pub/sub channels.
-- Future queues, kill switch cache, and runtime state.
+- A bounded Redis Stream, `events:stream:v1`, for recent versioned events.
+- Server-Sent Events replay through the Redis stream id and `Last-Event-ID`.
+- Pub/sub compatibility channels for connected runtime consumers.
 
-Redis can be rebuilt from Postgres and Hyperliquid history.
+Worker publication has a timeout and catches Redis failures. Presentation events
+can be delayed or omitted while Redis is unavailable, but committed fills,
+execution, reconciliation, and recovery continue. The legacy `events:recent`
+list is read only as a compatibility fallback when the stream is empty.
+
+Redis can be rebuilt from Postgres and Hyperliquid history. The stream is capped
+to recent events and is not an audit ledger.
 
 Job locks are stored in Postgres, not Redis, so duplicate prevention survives
 Redis restarts and shares the same transactional dependency as wallet data.
@@ -270,16 +316,20 @@ Tweakable non-secret config lives in JSON files:
 
 The backend config files are grouped by operational area:
 
-- `app.json` owns non-secret runtime defaults such as worker mode, wallet pool
-  page limit, network, and shared infrastructure request settings.
+- `app.json` owns non-secret runtime defaults such as worker mode, capability
+  lease TTL, supervisor restart delay, shutdown drain window, realtime wakeup
+  queue size, inbox claim timeout, retry backoff, wallet pool page limit,
+  network, and shared infrastructure settings.
 - `discovery.json` owns source discovery, candidate filtering, backfill quality
   checks, and promotion.
 - `database.json` owns manual database maintenance defaults such as fill
   retention days, retention batch size, max rows, and protected top scored
   wallets.
 - `live_trading.json` owns live trading enablement, acknowledgements, live
-  execution guardrails, min-order wire buffer, account risk limits, and market
-  allow/block lists.
+  execution guardrails, entry intent TTL, reconciliation freshness, min-order
+  wire buffer, account open-notional and position caps, daily and weekly loss
+  limits, order rate, leverage, reduce-only behavior, and market allow/block
+  lists.
 - `trading.json` owns copy policy shared by paper and live copy, including
   source ranking limits, allocation pockets, minimum copy notional, optional
   min-order adjustment, price drift guard, and live mid-price cache settings.
@@ -316,6 +366,32 @@ separate from general live execution so reduce-only exits remain available after
 entry arming expires.
 New mainnet exposure requires an explicit coin allowlist and an environment-only
 arming token whose activation window spans no more than 24 hours.
+
+The Phase 6 database gate is an additional independent control. Migration
+`e5a1c7d9b3f2` creates it as `paused` and changes enabled live accounts to
+`exit_only`. Config activation never changes this row. An authenticated operator
+must resume it with a reason after checking reconciliation and risk limits.
+The same migration preserves financial children, reconstructs only unambiguous
+missing account parents as disabled archived placeholders, and stops for manual
+review on account-type conflicts or unsafe duplicate live routes. After upgrade,
+restart both worker roles and the backend before reviewing and resuming entries.
+
+## Deployment Security Boundary
+
+The browser reaches the backend through the same-origin Next.js proxy. The proxy
+rejects cross-origin mutation requests before forwarding them, replaces client
+authorization with server-side Basic Auth, and sets the upstream origin to the
+backend origin. The backend independently validates `Origin` for authenticated
+`POST`, `PUT`, `PATCH`, and `DELETE` requests against same-origin and configured
+CORS origins. These paired origin checks form the CSRF boundary for browser
+mutations. Command-line clients without an `Origin` header still authenticate
+through Basic Auth.
+
+Backend and frontend images run as non-root users. Compose applies read-only root
+filesystems, explicit writable `tmpfs` mounts, `no-new-privileges`, and drops all
+Linux capabilities for application containers. Redis has a healthcheck before
+workers start. Caddy applies HSTS on the VPS and content-type, frame, referrer,
+and permissions headers at the edge.
 
 ## Test Architecture
 
@@ -572,9 +648,16 @@ sequenceDiagram
   wallet scoring and paper allocation filters during normal operation. The
   standalone `POST /wallets/prune-current-drawdown` endpoint remains available
   for isolated maintenance.
-- All pruning rules exclude source wallets with open `paper_positions`. Orphan
-  fill pruning also keeps fill rows for those sources even if their
-  `watched_wallets` row is missing.
+- All pruning rules use the shared protection policy. Sources with active copy
+  state, active paper allocations, open source, paper, or live positions,
+  legacy open copy trades, or non-terminal trading orders are excluded. Orphan
+  fill pruning applies the same policy even if the `watched_wallets` row is
+  missing.
+- Protection is rechecked immediately before delete. Only addresses actually
+  deleted are added to the discovery ignore list.
+- Cleanup removes all rows classified as wallet-owned, including monitoring,
+  source-trade sync, ignored-fill, score snapshot, and inactive allocation rows.
+  Discovery candidates and completed execution history are preserved.
 - Pruned wallets are also added to the discovery ignore list so scheduled imports
   do not immediately re-add the same address.
 
@@ -590,10 +673,18 @@ sequenceDiagram
 
   Worker->>WS: subscribe userFills
   WS-->>Worker: snapshot or realtime fills
-  Worker->>DB: insert fills with dedupe
-  Worker->>Redis: publish event
+  Worker->>DB: commit fills and execution inbox row
+  Worker->>Worker: enqueue inbox wakeup
+  alt queue has capacity
+    Worker->>DB: claim oldest due inbox row
+  else queue is full
+    Worker->>DB: poll and claim the durable inbox row
+  end
+  Worker->>DB: execute live then paper copy
+  Worker->>DB: delete success or schedule retry
+  Worker-->>Redis: best-effort XADD presentation event
   UI->>API: GET /events or /events/recent
-  API->>Redis: read or subscribe
+  API->>Redis: XREAD from Last-Event-ID or XREVRANGE recent
   API-->>UI: live event stream
 ```
 
@@ -825,6 +916,30 @@ Generic live-ready tables sit beside the legacy paper tables:
 - `trading_reconciliation_runs`: one auditable row per live reconciliation
   attempt with component statuses, counts, errors, and final completeness.
 - `trading_fills`: reconciled exchange fill records.
+- `live_entry_safety_controls`: singleton fail-closed global entry state.
+
+The global entry gate and account lifecycle are separate controls. Pause or kill
+moves enabled live accounts to `exit_only`, cancels only unsent non-reduce orders,
+and records audit and risk rows. Submitted, uncertain, or partially filled entry
+orders remain visible for authoritative reconciliation. Reduce-only exits remain
+eligible when `live_trading_reduce_only_when_stopped` is enabled.
+
+Account transitions are guarded:
+
+- Create always produces a disabled account and deduplicates the active wallet
+  route by network, wallet, and optional vault.
+- Start requires global entries enabled, valid live configuration, complete fresh
+  reconciliation, tradable capital, no unfinished close-all, and a second gate
+  check immediately before enabling.
+- Stop moves the account to `exit_only` and cancels unsent entries.
+- Disable reconciles and requires the exchange to be flat with no pending work.
+- Delete archives only a disabled, freshly reconciled, flat account. Financial,
+  dispatch, close-all, reconciliation, risk, and audit history is retained.
+
+Every transition increments `lifecycle_version` and records a status timestamp
+and reason. The execution path reloads the current account under its execution
+lock and rechecks both account status and the global entry gate before final
+entry dispatch.
 
 Existing paper accounts are mirrored into `trading_accounts`. A stopped paper
 account is mirrored as `exit_only` because copied exits and reductions are still
@@ -868,9 +983,21 @@ If a copied source-position row is missing but the exchange still has matching
 orphan exposure, recovery can submit a reduce-only close only when source state
 is flat, the same source has historical live open fills, and no other source
 position owns that market.
-Automatic copied live entries also pass account-level guardrails for max order
-notional, max account open notional, max open positions, max daily loss, max
-orders per minute, and market allow/block lists.
+Automatic copied live entries also require a complete reconciliation snapshot no
+older than the configured maximum and an unexpired entry intent. They pass
+account-level guardrails for max order notional, max account open notional, max
+open positions, max daily and weekly loss, max orders per minute, max leverage,
+and market allow/block lists. Stale or incomplete reconciliation and breached
+stateful account limits trip the account to `exit_only`, cancel unsent entries,
+and record a critical risk event and audit entry. Expired intents and static
+order, leverage, slippage, or market violations are rejected before submission.
+Daily and weekly loss usage combines net realized PnL for the applicable period,
+after fees, with the current aggregate exchange unrealized PnL. The exchange
+aggregate is added once and is not reconstructed from source-attributed rows.
+For non-reduce-only orders, leverage must be a positive whole number no greater
+than the configured cap. The adapter applies it to the resolved Hyperliquid
+market and requires a successful leverage update before submitting the order.
+Reduce-only orders never mutate the exchange leverage setting.
 Live capital mode is config-driven. `unified` uses Hyperliquid
 `spotClearinghouseState` as the balance source of truth for equity, cash, Start
 trading validation, and live copy sizing. `standard_per_dex` keeps separate

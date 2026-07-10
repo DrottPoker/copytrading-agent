@@ -37,6 +37,39 @@ async def test_alembic_head_matches_fresh_database_schema(
 
 
 @pytest.mark.asyncio
+async def test_cleanup_relationships_are_database_enforced(
+    integration_engine: AsyncEngine,
+) -> None:
+    async with integration_engine.connect() as connection:
+        constraints = set(
+            (
+                await connection.scalars(
+                    text(
+                        """
+                        select conname
+                        from pg_constraint
+                        where contype = 'f'
+                          and conname in (
+                            'fk_copy_trades_entry_signal_id_copy_signals',
+                            'fk_copy_trades_exit_signal_id_copy_signals',
+                            'fk_source_trade_links_copy_trade_id_copy_trades',
+                            'fk_trading_fills_order_id_trading_orders'
+                          )
+                        """
+                    )
+                )
+            ).all()
+        )
+
+    assert constraints == {
+        "fk_copy_trades_entry_signal_id_copy_signals",
+        "fk_copy_trades_exit_signal_id_copy_signals",
+        "fk_source_trade_links_copy_trade_id_copy_trades",
+        "fk_trading_fills_order_id_trading_orders",
+    }
+
+
+@pytest.mark.asyncio
 async def test_postgres_and_redis_round_trip(
     integration_sessionmaker: async_sessionmaker[AsyncSession],
     integration_redis,

@@ -64,6 +64,7 @@ async def lifespan(app_instance: FastAPI):
                 await asyncio.gather(background_task, return_exceptions=True)
             logger.info("api background worker stopped")
 
+
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,

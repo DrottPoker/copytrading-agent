@@ -45,9 +45,7 @@ def test_hyperdash_profitable_cohorts_are_known_discovery_sources() -> None:
     assert normalize_requested_sources(sources) == sources
     assert HYPERDASH_PNL_COHORT_SOURCES == set(sources)
     assert (
-        hyperdash_cohort_id_from_url(
-            "https://hyperdash.com/explore/cohorts/extremely_profitable"
-        )
+        hyperdash_cohort_id_from_url("https://hyperdash.com/explore/cohorts/extremely_profitable")
         == "extremely_profitable"
     )
 
@@ -192,9 +190,7 @@ async def test_subaccount_candidates_use_unified_account_value_when_perp_value_i
 
 
 def test_hypertracker_segment_wallets_url_uses_configured_base_url() -> None:
-    settings = Settings(
-        discovery_hypertracker_static_base_url="https://example.com/aggregator/"
-    )
+    settings = Settings(discovery_hypertracker_static_base_url="https://example.com/aggregator/")
 
     assert (
         hypertracker_segment_wallets_url("hypertracker_humble_earner", settings)
@@ -203,9 +199,7 @@ def test_hypertracker_segment_wallets_url_uses_configured_base_url() -> None:
 
 
 def test_hypertracker_leaderboard_url_uses_configured_base_url() -> None:
-    settings = Settings(
-        discovery_hypertracker_static_base_url="https://example.com/aggregator/"
-    )
+    settings = Settings(discovery_hypertracker_static_base_url="https://example.com/aggregator/")
 
     assert (
         hypertracker_leaderboard_url("hypertracker_avg_daily_perp_pnl", settings)

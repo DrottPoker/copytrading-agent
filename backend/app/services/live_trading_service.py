@@ -6,7 +6,7 @@ from hashlib import blake2s
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import case, delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,7 +28,14 @@ from app.integrations.hyperliquid_live_client import (
     HyperliquidLiveTradingConfigurationError,
     LiveOrderResult,
 )
-from app.services.job_lock_service import JobLockAlreadyHeldError, job_lock
+from app.services.job_lock_service import (
+    JobLockAlreadyHeldError,
+    job_lock,
+    job_lock_owner,
+    release_job_lock,
+    release_job_lock_safely,
+    try_acquire_job_lock,
+)
 from app.services.live_execution_state import (
     RECONCILABLE_ORDER_STATUSES,
     RECOVERABLE_ORDER_STATUSES,
@@ -46,6 +53,18 @@ from app.services.trading_core import (
     build_copy_trade_intent,
     margin_from_notional,
 )
+from app.services.trading_safety_service import (
+    LIVE_ENTRY_GATE_LOCK_KEY,
+    LiveEntrySafetyError,
+    apply_live_account_status,
+    cancel_unsent_live_entries,
+    ensure_live_entries_enabled,
+    live_entry_gate,
+    load_live_entry_safety_control,
+    record_audit_log,
+    record_risk_event,
+    trip_live_account_risk,
+)
 
 ZERO = Decimal("0")
 POSITION_EPSILON = Decimal("0.000000000001")
@@ -59,6 +78,7 @@ LIVE_ACCOUNT_KEY_MAX_LENGTH = 64
 LIVE_CAPITAL_MODE_UNIFIED = "unified"
 LIVE_CAPITAL_MODE_STANDARD_PER_DEX = "standard_per_dex"
 LIVE_CAPITAL_MODES = {LIVE_CAPITAL_MODE_UNIFIED, LIVE_CAPITAL_MODE_STANDARD_PER_DEX}
+EVM_ADDRESS_PATTERN = re.compile(r"^0x[a-f0-9]{40}$")
 UNIFIED_USER_ABSTRACTION_KEYS = {
     "portfolio",
     "portfolioaccount",
@@ -232,9 +252,7 @@ class LivePerpSnapshot:
     @property
     def component_errors(self) -> dict[str, str]:
         errors = {
-            f"perp:{state.dex or 'default'}": state.error
-            for state in self.states
-            if state.error
+            f"perp:{state.dex or 'default'}": state.error for state in self.states if state.error
         }
         if self.catalog_error:
             errors["perp_catalog"] = self.catalog_error
@@ -388,17 +406,26 @@ def live_tradable_equity_usd(
     return live_perp_equity_usd(account, dex=dex)
 
 
-def validate_live_account_can_start(account: TradingAccount, *, settings: Settings) -> None:
+def validate_live_account_can_start(
+    account: TradingAccount,
+    *,
+    settings: Settings,
+    now: datetime | None = None,
+) -> None:
     reconciliation_status = live_reconciliation_status(account)
     if reconciliation_status != "complete":
         raise LiveTradingServiceError(
             "Live account requires a complete exchange reconciliation before it can start.",
             status_code=409,
         )
+    if not live_reconciliation_is_fresh(account, settings=settings, now=now):
+        raise LiveTradingServiceError(
+            "Live account requires a fresh exchange reconciliation before it can start.",
+            status_code=409,
+        )
     last_reconciliation = account_last_reconciliation(account)
-    if (
-        live_capital_mode(settings) == LIVE_CAPITAL_MODE_UNIFIED
-        and user_abstraction_is_standard(last_reconciliation.get("userAbstraction"))
+    if live_capital_mode(settings) == LIVE_CAPITAL_MODE_UNIFIED and user_abstraction_is_standard(
+        last_reconciliation.get("userAbstraction")
     ):
         raise LiveTradingServiceError(
             "Hyperliquid account is not in Unified account mode.",
@@ -410,6 +437,25 @@ def validate_live_account_can_start(account: TradingAccount, *, settings: Settin
             "starting live trading.",
             status_code=409,
         )
+
+
+def live_reconciliation_is_fresh(
+    account: TradingAccount,
+    *,
+    settings: Settings,
+    now: datetime | None = None,
+) -> bool:
+    reconciled_at = account.last_reconciled_at
+    if reconciled_at is None:
+        return False
+    if reconciled_at.tzinfo is None:
+        reconciled_at = reconciled_at.replace(tzinfo=UTC)
+    age = (now or datetime.now(UTC)) - reconciled_at.astimezone(UTC)
+    return (
+        timedelta(0)
+        <= age
+        <= timedelta(seconds=settings.live_trading_reconciliation_max_snapshot_age_seconds)
+    )
 
 
 async def create_live_trading_account(
@@ -432,8 +478,11 @@ async def create_live_trading_account(
         settings=settings,
     )
     resolved_vault_address = normalize_optional_address(vault_address)
+    if resolved_vault_address is not None:
+        validate_evm_address(resolved_vault_address, field_name="vault address")
     existing_route = await find_existing_live_account_for_route(
         session,
+        network=settings.hyperliquid_network,
         wallet_address=resolved_wallet_address,
         vault_address=resolved_vault_address,
         include_config_wallet_fallback=not normalize_optional_address(wallet_address),
@@ -446,10 +495,21 @@ async def create_live_trading_account(
         wallet_address=resolved_wallet_address,
         vault_address=resolved_vault_address,
     )
-    existing = await session.scalar(
-        select(TradingAccount).where(TradingAccount.key == account_key)
-    )
+    existing = await session.scalar(select(TradingAccount).where(TradingAccount.key == account_key))
     if existing is not None:
+        if existing.account_type == "live" and existing.archived_at is not None:
+            existing.label = account_label
+            existing.network = settings.hyperliquid_network
+            existing.wallet_address = resolved_wallet_address
+            existing.vault_address = resolved_vault_address
+            existing.archived_at = None
+            apply_live_account_status(
+                existing,
+                status="disabled",
+                reason="restored_archived_account",
+            )
+            await session.flush()
+            return existing
         raise LiveAccountCreateError("Trading account key already exists.", status_code=409)
 
     account = TradingAccount(
@@ -477,39 +537,63 @@ async def delete_live_trading_account(
     session: AsyncSession,
     *,
     account_key: str,
+    settings: Settings,
+    info_client: HyperliquidClient | None = None,
+    actor: str = "dashboard",
 ) -> None:
-    account = await load_live_account_for_update(session, account_key=account_key)
-    if account.status == "enabled":
+    try:
+        async with job_lock(
+            session,
+            key=f"live_close_all:{account_key}",
+            ttl_seconds=300,
+        ):
+            async with job_lock(
+                session,
+                key=f"live_execution:{account_key}",
+                ttl_seconds=120,
+            ):
+                account = await load_live_account_for_update(session, account_key=account_key)
+                validate_live_account_identity(account, settings=settings)
+                await run_live_trading_account_reconciliation(
+                    session,
+                    account=account,
+                    settings=settings,
+                    info_client=info_client,
+                )
+                account = await load_live_account_for_update(session, account_key=account_key)
+                await validate_live_account_can_be_removed(
+                    session,
+                    account=account,
+                    settings=settings,
+                )
+                account.archived_at = datetime.now(UTC)
+                apply_live_account_status(
+                    account,
+                    status="disabled",
+                    reason="archived_by_dashboard",
+                )
+                record_audit_log(
+                    session,
+                    actor=actor,
+                    action="live_account.archive",
+                    payload={
+                        "accountKey": account.key,
+                        "network": account.network,
+                        "lifecycleVersion": account.lifecycle_version,
+                    },
+                )
+                await session.flush()
+    except JobLockAlreadyHeldError as exc:
         raise LiveAccountDeleteError(
-            "Stop live trading before deleting this account.",
+            "Live execution or close-all is running for this account.",
             status_code=409,
-        )
-
-    await session.execute(
-        delete(TradingFill).where(
-            TradingFill.account_key == account.key,
-            TradingFill.account_type == "live",
-        )
-    )
-    await session.execute(
-        delete(TradingOrder).where(
-            TradingOrder.account_key == account.key,
-            TradingOrder.account_type == "live",
-        )
-    )
-    await session.execute(
-        delete(TradingPosition).where(
-            TradingPosition.account_key == account.key,
-            TradingPosition.account_type == "live",
-        )
-    )
-    await session.delete(account)
-    await session.flush()
+        ) from exc
 
 
 async def find_existing_live_account_for_route(
     session: AsyncSession,
     *,
+    network: str,
     wallet_address: str,
     vault_address: str | None,
     include_config_wallet_fallback: bool,
@@ -519,6 +603,8 @@ async def find_existing_live_account_for_route(
         wallet_conditions.append(TradingAccount.wallet_address.is_(None))
     query = select(TradingAccount).where(
         TradingAccount.account_type == "live",
+        TradingAccount.network == network,
+        TradingAccount.archived_at.is_(None),
         or_(*wallet_conditions),
     )
     if vault_address is None:
@@ -540,7 +626,15 @@ def resolve_live_account_wallet_address(
         raise LiveAccountCreateError(
             "Live account requires wallet address or HYPERLIQUID_WALLET_ADDRESS.",
         )
+    validate_evm_address(resolved, field_name="wallet address")
     return resolved
+
+
+def validate_evm_address(address: str, *, field_name: str) -> None:
+    if not EVM_ADDRESS_PATTERN.fullmatch(address):
+        raise LiveAccountCreateError(
+            f"Live account {field_name} must be a 20-byte 0x-prefixed EVM address."
+        )
 
 
 def live_account_key_for_route(
@@ -580,10 +674,339 @@ async def set_live_trading_account_status(
 ) -> TradingAccount:
     if status not in {"disabled", "enabled", "exit_only"}:
         raise LiveTradingServiceError("Unsupported live account status.")
+    if status != "exit_only":
+        raise LiveTradingServiceError(
+            "Use the guarded start or disable lifecycle operation for this transition.",
+            status_code=409,
+        )
     account = await load_live_account_for_update(session, account_key=account_key)
-    account.status = status
+    apply_live_account_status(
+        account,
+        status="exit_only",
+        reason="legacy_status_transition",
+    )
     await session.flush()
     return account
+
+
+async def start_live_trading_account(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    settings: Settings,
+    info_client: HyperliquidClient | None = None,
+    actor: str = "dashboard",
+) -> TradingAccount:
+    validate_live_trading_configuration(settings)
+    try:
+        await ensure_live_entries_enabled(session)
+        await session.commit()
+        async with job_lock(
+            session,
+            key=f"live_close_all:{account_key}",
+            ttl_seconds=300,
+        ):
+            async with job_lock(
+                session,
+                key=f"live_execution:{account_key}",
+                ttl_seconds=300,
+            ):
+                account = await load_live_account_for_update(
+                    session,
+                    account_key=account_key,
+                )
+                validate_live_account_identity(account, settings=settings)
+                result = await run_live_trading_account_reconciliation(
+                    session,
+                    account=account,
+                    settings=settings,
+                    info_client=info_client,
+                )
+                if result.status != "complete":
+                    raise LiveTradingServiceError(
+                        "Live account start requires complete exchange reconciliation.",
+                        status_code=409,
+                    )
+                start_lifecycle_version = account.lifecycle_version
+
+        async with live_entry_gate(session):
+            await ensure_live_entries_enabled(session)
+            async with job_lock(
+                session,
+                key=f"live_close_all:{account_key}",
+                ttl_seconds=300,
+            ):
+                async with job_lock(
+                    session,
+                    key=f"live_execution:{account_key}",
+                    ttl_seconds=300,
+                ):
+                    account = await load_live_account_for_update(
+                        session,
+                        account_key=account_key,
+                    )
+                    if account.lifecycle_version != start_lifecycle_version:
+                        raise LiveTradingServiceError(
+                            "Live account lifecycle changed during start reconciliation. "
+                            "Review the current state before retrying Start.",
+                            status_code=409,
+                        )
+                    validate_live_account_identity(account, settings=settings)
+                    validate_live_account_can_start(account, settings=settings)
+                    if await live_account_has_incomplete_close_operation(
+                        session,
+                        account_key=account.key,
+                    ):
+                        raise LiveTradingServiceError(
+                            "Resolve the active close-all operation before starting this account.",
+                            status_code=409,
+                        )
+                    apply_live_account_status(
+                        account,
+                        status="enabled",
+                        reason="start_after_complete_reconciliation",
+                    )
+                    record_audit_log(
+                        session,
+                        actor=actor,
+                        action="live_account.start",
+                        payload={
+                            "accountKey": account.key,
+                            "reconciliationRunId": str(result.run_id) if result.run_id else None,
+                            "lifecycleVersion": account.lifecycle_version,
+                        },
+                    )
+                    await session.flush()
+                    return account
+    except LiveEntrySafetyError as exc:
+        raise LiveTradingServiceError(str(exc), status_code=409) from exc
+    except JobLockAlreadyHeldError as exc:
+        raise LiveTradingServiceError(
+            "Live execution or close-all is already running for this account.",
+            status_code=409,
+        ) from exc
+
+
+async def stop_live_trading_account(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    reason: str = "stopped_by_dashboard",
+    actor: str = "dashboard",
+    force_exit_only: bool = False,
+) -> TradingAccount:
+    try:
+        async with job_lock(
+            session,
+            key=f"live_execution:{account_key}",
+            ttl_seconds=120,
+        ):
+            account = await load_live_account_for_update(session, account_key=account_key)
+            previous_status = account.status
+            if previous_status != "disabled" or force_exit_only:
+                apply_live_account_status(account, status="exit_only", reason=reason)
+            else:
+                apply_live_account_status(account, status="disabled", reason=reason)
+            canceled_orders = await cancel_unsent_live_entries(
+                session,
+                account_key=account.key,
+                reason="Entry canceled because the live account was stopped.",
+            )
+            record_audit_log(
+                session,
+                actor=actor,
+                action="live_account.stop",
+                payload={
+                    "accountKey": account.key,
+                    "previousStatus": previous_status,
+                    "status": account.status,
+                    "canceledOrders": canceled_orders,
+                    "lifecycleVersion": account.lifecycle_version,
+                },
+            )
+            await session.flush()
+            return account
+    except JobLockAlreadyHeldError as exc:
+        raise LiveTradingServiceError(
+            "Live execution is already running for this account.",
+            status_code=409,
+        ) from exc
+
+
+async def disable_live_trading_account(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    settings: Settings,
+    info_client: HyperliquidClient | None = None,
+    actor: str = "dashboard",
+) -> TradingAccount:
+    try:
+        async with job_lock(
+            session,
+            key=f"live_close_all:{account_key}",
+            ttl_seconds=300,
+        ):
+            async with job_lock(
+                session,
+                key=f"live_execution:{account_key}",
+                ttl_seconds=300,
+            ):
+                account = await load_live_account_for_update(session, account_key=account_key)
+                if account.status == "enabled":
+                    apply_live_account_status(
+                        account,
+                        status="exit_only",
+                        reason="disable_requested",
+                    )
+                    canceled_orders = await cancel_unsent_live_entries(
+                        session,
+                        account_key=account.key,
+                    )
+                    record_audit_log(
+                        session,
+                        actor=actor,
+                        action="live_account.disable_requested",
+                        payload={
+                            "accountKey": account.key,
+                            "canceledOrders": canceled_orders,
+                            "lifecycleVersion": account.lifecycle_version,
+                        },
+                    )
+                    await session.commit()
+                result = await run_live_trading_account_reconciliation(
+                    session,
+                    account=account,
+                    settings=settings,
+                    info_client=info_client,
+                )
+                if result.status != "complete" or result.open_positions != 0:
+                    raise LiveTradingServiceError(
+                        "Live account can only be disabled after a complete flat reconciliation.",
+                        status_code=409,
+                    )
+                account = await load_live_account_for_update(session, account_key=account_key)
+                await validate_live_account_has_no_pending_work(session, account_key=account.key)
+                apply_live_account_status(
+                    account,
+                    status="disabled",
+                    reason="disabled_after_complete_flat_reconciliation",
+                )
+                record_audit_log(
+                    session,
+                    actor=actor,
+                    action="live_account.disable",
+                    payload={
+                        "accountKey": account.key,
+                        "reconciliationRunId": str(result.run_id) if result.run_id else None,
+                        "lifecycleVersion": account.lifecycle_version,
+                    },
+                )
+                await session.flush()
+                return account
+    except JobLockAlreadyHeldError as exc:
+        raise LiveTradingServiceError(
+            "Live execution or close-all is already running for this account.",
+            status_code=409,
+        ) from exc
+
+
+def validate_live_account_identity(account: TradingAccount, *, settings: Settings) -> None:
+    if account.archived_at is not None:
+        raise LiveTradingServiceError("Live account is archived.", status_code=409)
+    if account.network != settings.hyperliquid_network:
+        raise LiveTradingServiceError(
+            "Live account network does not match the configured network.",
+            status_code=409,
+        )
+
+
+async def validate_live_account_has_no_pending_work(
+    session: AsyncSession,
+    *,
+    account_key: str,
+) -> None:
+    pending_orders = await live_account_nonterminal_order_count(
+        session,
+        account_key=account_key,
+    )
+    if pending_orders > 0:
+        raise LiveTradingServiceError(
+            "Live account still has non-terminal order work.",
+            status_code=409,
+        )
+    if await live_account_has_incomplete_close_operation(session, account_key=account_key):
+        raise LiveTradingServiceError(
+            "Live account still has an incomplete close-all operation.",
+            status_code=409,
+        )
+
+
+async def live_account_nonterminal_order_count(
+    session: AsyncSession,
+    *,
+    account_key: str,
+) -> int:
+    value = await session.scalar(
+        select(func.count(TradingOrder.id)).where(
+            TradingOrder.account_key == account_key,
+            TradingOrder.account_type == "live",
+            TradingOrder.status.not_in(TERMINAL_ORDER_STATUSES),
+        )
+    )
+    return int(value or 0)
+
+
+async def live_account_has_incomplete_close_operation(
+    session: AsyncSession,
+    *,
+    account_key: str,
+) -> bool:
+    value = await session.scalar(
+        select(func.count(TradingCloseAllOperation.id)).where(
+            TradingCloseAllOperation.account_key == account_key,
+            TradingCloseAllOperation.status.in_(
+                ["pending", "running", "partially_completed", "failed"]
+            ),
+        )
+    )
+    return int(value or 0) > 0
+
+
+async def validate_live_account_can_be_removed(
+    session: AsyncSession,
+    *,
+    account: TradingAccount,
+    settings: Settings,
+) -> None:
+    if account.status != "disabled":
+        raise LiveAccountDeleteError(
+            "Disable the live account after a complete flat reconciliation before archiving it.",
+            status_code=409,
+        )
+    if live_reconciliation_status(account) != "complete" or not live_reconciliation_is_fresh(
+        account,
+        settings=settings,
+    ):
+        raise LiveAccountDeleteError(
+            "Archive requires a fresh complete exchange reconciliation.",
+            status_code=409,
+        )
+    open_positions = await session.scalar(
+        select(func.count(TradingPosition.id)).where(
+            TradingPosition.account_key == account.key,
+            TradingPosition.account_type == "live",
+        )
+    )
+    if int(open_positions or 0) > 0:
+        raise LiveAccountDeleteError(
+            "Archive is blocked while live positions remain.",
+            status_code=409,
+        )
+    try:
+        await validate_live_account_has_no_pending_work(session, account_key=account.key)
+    except LiveTradingServiceError as exc:
+        raise LiveAccountDeleteError(exc.detail, status_code=exc.status_code) from exc
 
 
 async def close_all_live_account_positions(
@@ -602,6 +1025,27 @@ async def close_all_live_account_positions(
             key=f"live_close_all:{account.key}",
             ttl_seconds=300,
         ):
+            async with job_lock(
+                session,
+                key=f"live_execution:{account.key}",
+                ttl_seconds=120,
+            ):
+                account = await load_live_account_for_update(
+                    session,
+                    account_key=account.key,
+                )
+                if account.status != "exit_only":
+                    apply_live_account_status(
+                        account,
+                        status="exit_only",
+                        reason="close_all_requested",
+                    )
+                await cancel_unsent_live_entries(
+                    session,
+                    account_key=account.key,
+                    reason="Entry canceled because close-all was requested.",
+                )
+                await session.commit()
             return await run_live_close_all_operation(
                 session,
                 account=account,
@@ -628,7 +1072,12 @@ async def run_live_close_all_operation(
         session,
         account_key=account.key,
     )
-    account.status = "exit_only"
+    if account.status != "exit_only":
+        apply_live_account_status(
+            account,
+            status="exit_only",
+            reason="close_all_running",
+        )
     operation.status = "running"
     operation.last_error = None
     await session.commit()
@@ -638,7 +1087,7 @@ async def run_live_close_all_operation(
     if client_created:
         await client.__aenter__()
     try:
-        await reconcile_live_trading_account(
+        initial_reconciliation = await reconcile_live_trading_account(
             session,
             account=account,
             settings=settings,
@@ -649,12 +1098,27 @@ async def run_live_close_all_operation(
         await session.commit()
         positions = await load_live_exchange_positions(session, account_key=account.key)
         await session.commit()
-        if not positions:
+        if not positions and initial_reconciliation.status == "complete":
             return await complete_live_close_all_operation(
                 session,
                 account=account,
                 operation=operation,
                 submitted_orders=0,
+            )
+        if not positions:
+            operation.status = "partially_completed"
+            operation.last_error = (
+                "Close-all could not prove the exchange account is flat because "
+                "reconciliation was partial."
+            )
+            await session.commit()
+            return LiveCloseAllResult(
+                account_key=account.key,
+                operation_id=operation.id,
+                operation_status=operation.status,
+                submitted_orders=0,
+                failed_orders=1,
+                status=account.status,
             )
 
         mids = await load_live_close_mids(client, positions=positions)
@@ -685,9 +1149,7 @@ async def run_live_close_all_operation(
                 position=position,
                 mid_price=mid_price,
                 settings=settings,
-                source_fill_id=(
-                    f"close-all-{operation.id}-{item.id}-{item.attempt_count}"
-                ),
+                source_fill_id=(f"close-all-{operation.id}-{item.id}-{item.attempt_count}"),
             )
             try:
                 result = await submit_live_trade_intent(
@@ -722,7 +1184,7 @@ async def run_live_close_all_operation(
                 await session.commit()
             submitted += int(result.submitted)
 
-        await reconcile_live_trading_account(
+        final_reconciliation = await reconcile_live_trading_account(
             session,
             account=account,
             settings=settings,
@@ -731,7 +1193,7 @@ async def run_live_close_all_operation(
         await session.commit()
         remaining_positions = await load_live_exchange_positions(session, account_key=account.key)
         await refresh_live_close_all_items(session, operation_id=operation.id)
-        if not remaining_positions:
+        if not remaining_positions and final_reconciliation.status == "complete":
             return await complete_live_close_all_operation(
                 session,
                 account=account,
@@ -744,8 +1206,17 @@ async def run_live_close_all_operation(
             operation_id=operation.id,
         )
         operation.status = "partially_completed"
-        operation.last_error = f"{len(remaining_positions)} live positions remain open."
-        account.status = "exit_only"
+        operation.last_error = (
+            f"{len(remaining_positions)} live positions remain open."
+            if final_reconciliation.status == "complete"
+            else "Close-all cannot confirm flat exposure because reconciliation is partial."
+        )
+        if account.status != "exit_only":
+            apply_live_account_status(
+                account,
+                status="exit_only",
+                reason="close_all_incomplete",
+            )
         await session.commit()
         return LiveCloseAllResult(
             account_key=account.key,
@@ -888,10 +1359,47 @@ async def complete_live_close_all_operation(
     operation: TradingCloseAllOperation,
     submitted_orders: int,
 ) -> LiveCloseAllResult:
-    account.status = "disabled"
+    pending_orders = await live_account_nonterminal_order_count(
+        session,
+        account_key=account.key,
+    )
+    if pending_orders > 0:
+        if account.status != "exit_only":
+            apply_live_account_status(
+                account,
+                status="exit_only",
+                reason="close_all_pending_order_work",
+            )
+        operation.status = "partially_completed"
+        operation.last_error = f"{pending_orders} non-terminal live orders remain."
+        await session.commit()
+        return LiveCloseAllResult(
+            account_key=account.key,
+            operation_id=operation.id,
+            operation_status=operation.status,
+            submitted_orders=submitted_orders,
+            failed_orders=pending_orders,
+            status=account.status,
+        )
+    apply_live_account_status(
+        account,
+        status="disabled",
+        reason="close_all_complete_and_flat",
+    )
     operation.status = "completed"
     operation.completed_at = datetime.now(UTC)
     operation.last_error = None
+    record_audit_log(
+        session,
+        actor="execution_engine",
+        action="live_account.close_all_completed",
+        payload={
+            "accountKey": account.key,
+            "operationId": str(operation.id),
+            "submittedOrders": submitted_orders,
+            "lifecycleVersion": account.lifecycle_version,
+        },
+    )
     await session.commit()
     return LiveCloseAllResult(
         account_key=account.key,
@@ -913,7 +1421,7 @@ async def resume_live_close_all_operations(
         select(TradingCloseAllOperation.account_key)
         .where(
             TradingCloseAllOperation.status.in_(
-                ["pending", "running", "partially_completed"]
+                ["pending", "running", "partially_completed", "failed"]
             )
         )
         .distinct()
@@ -948,10 +1456,16 @@ async def close_live_account_position(
 ) -> LiveOrderLifecycleResult:
     position = await load_live_position(session, position_id=position_id)
     account = await load_live_account(session, account_key=position.account_key)
-    previous_status = account.status
     if account.status == "disabled":
-        account.status = "exit_only"
-    await session.commit()
+        account = await stop_live_trading_account(
+            session,
+            account_key=account.key,
+            reason="manual_close_detected_exposure",
+            actor="dashboard",
+            force_exit_only=True,
+        )
+    else:
+        await session.commit()
 
     client_created = info_client is None
     client = info_client or HyperliquidClient(settings)
@@ -972,9 +1486,7 @@ async def close_live_account_position(
         await session.commit()
 
         mids = await load_live_close_mids(client, positions=[position])
-        mid_price = decimal_or_none(mids.get(position.coin)) or live_position_mark_price(
-            position
-        )
+        mid_price = decimal_or_none(mids.get(position.coin)) or live_position_mark_price(position)
         if mid_price is None or mid_price <= ZERO:
             raise LiveTradingServiceError("Live close price is unavailable.", status_code=409)
 
@@ -1018,14 +1530,6 @@ async def close_live_account_position(
             if recovered is not None:
                 return recovered
             raise
-        finally:
-            if previous_status == "disabled":
-                remaining_position = await get_live_position(
-                    session,
-                    position_id=position_id,
-                )
-                account.status = "disabled" if remaining_position is None else "exit_only"
-                await session.commit()
     finally:
         if client_created:
             await client.__aexit__(None, None, None)
@@ -1163,6 +1667,7 @@ async def load_live_account_for_update(
             TradingAccount.key == account_key,
             TradingAccount.account_type == "live",
         )
+        .execution_options(populate_existing=True)
         .with_for_update()
     )
     if account is None:
@@ -1200,28 +1705,85 @@ async def submit_live_trade_intent(
         raise LiveOrderSubmitError("Trade intent must target a live account.")
 
     live_client = client or HyperliquidLiveTradingClient(settings=settings)
-    try:
-        live_client.validate_account_order(account=account, intent=intent)
-    except Exception as exc:
-        raise LiveOrderSubmitError(str(exc) or exc.__class__.__name__) from exc
+    return await submit_live_trade_intent_under_account_lock(
+        session,
+        account_key=account.key,
+        intent=intent,
+        settings=settings,
+        live_client=live_client,
+    )
 
+
+async def submit_live_trade_intent_under_account_lock(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    intent: TradeIntent,
+    settings: Settings,
+    live_client: HyperliquidLiveTradingClient,
+) -> LiveOrderLifecycleResult:
+    entry_gate_owner: str | None = None
+    if not intent.reduce_only:
+        entry_gate_owner = job_lock_owner()
+        acquired = await try_acquire_job_lock(
+            session,
+            key=LIVE_ENTRY_GATE_LOCK_KEY,
+            owner=entry_gate_owner,
+            ttl_seconds=300,
+        )
+        if not acquired:
+            raise LiveOrderSubmitError(
+                "Another live entry or safety transition is currently running.",
+                status_code=409,
+            )
     try:
         async with job_lock(
             session,
-            key=f"live_execution:{account.key}",
+            key=f"live_execution:{account_key}",
             ttl_seconds=120,
         ):
+            account = await load_live_account_for_update(session, account_key=account_key)
+            validate_live_account_identity(account, settings=settings)
+            if not intent.reduce_only and account.status != "enabled":
+                raise LiveOrderSubmitError(
+                    "Live account is not enabled for entry execution.",
+                    status_code=409,
+                )
             existing_order = await load_live_order_by_client_order_id(
                 session,
                 client_order_id=intent.client_order_id,
             )
-            if existing_order is None and not intent.reduce_only:
+            will_dispatch = (
+                existing_order is None
+                or existing_order.status == "ready"
+                or is_retryable_live_order_submit_failure(existing_order)
+            )
+
+            if not intent.reduce_only and will_dispatch:
+                await ensure_live_entry_intent_is_fresh(
+                    session,
+                    intent=intent,
+                    order=existing_order,
+                    settings=settings,
+                )
+                try:
+                    await ensure_live_entries_enabled(session)
+                except LiveEntrySafetyError as exc:
+                    raise LiveOrderSubmitError(str(exc), status_code=409) from exc
                 await validate_live_entry_state_guardrails(
                     session,
                     account=account,
                     intent=intent,
                     settings=settings,
+                    exclude_order_id=existing_order.id if existing_order is not None else None,
                 )
+
+            if will_dispatch:
+                try:
+                    live_client.validate_account_order(account=account, intent=intent)
+                except Exception as exc:
+                    raise LiveOrderSubmitError(str(exc) or exc.__class__.__name__) from exc
+
             order, dispatch, _ = await prepare_live_order_dispatch(
                 session,
                 intent=intent,
@@ -1262,6 +1824,13 @@ async def submit_live_trade_intent(
                 order=order,
                 dispatch=dispatch,
             )
+            if entry_gate_owner is not None:
+                await release_job_lock(
+                    session,
+                    key=LIVE_ENTRY_GATE_LOCK_KEY,
+                    owner=entry_gate_owner,
+                )
+                entry_gate_owner = None
             try:
                 result = await live_client.submit_order(account=account, intent=intent)
             except (
@@ -1296,6 +1865,49 @@ async def submit_live_trade_intent(
             "Another live order is already being dispatched for this account.",
             status_code=409,
         ) from exc
+    finally:
+        if entry_gate_owner is not None:
+            await release_job_lock_safely(
+                session,
+                key=LIVE_ENTRY_GATE_LOCK_KEY,
+                owner=entry_gate_owner,
+            )
+
+
+async def ensure_live_entry_intent_is_fresh(
+    session: AsyncSession,
+    *,
+    intent: TradeIntent,
+    order: TradingOrder | None,
+    settings: Settings,
+) -> None:
+    created_at = intent.created_at
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=UTC)
+    if datetime.now(UTC) - created_at.astimezone(UTC) <= timedelta(
+        seconds=settings.live_trading_entry_intent_ttl_seconds
+    ):
+        return
+
+    if order is not None and order.status in {"planned", "ready", "failed", "canceled"}:
+        dispatch = await load_live_order_dispatch(session, order_id=order.id)
+        order.status = "canceled"
+        order.error = "Live entry intent expired before exchange submission."
+        if dispatch is not None:
+            dispatch.status = "canceled"
+            dispatch.completed_at = datetime.now(UTC)
+            dispatch.last_error = order.error
+        record_audit_log(
+            session,
+            actor="execution_engine",
+            action="live_entry.expired",
+            payload={"accountKey": order.account_key, "orderId": str(order.id)},
+        )
+        await session.commit()
+    raise LiveOrderSubmitError(
+        "Live entry intent expired before exchange submission.",
+        status_code=409,
+    )
 
 
 async def recover_live_order_dispatches(
@@ -1306,6 +1918,7 @@ async def recover_live_order_dispatches(
     trading_client: HyperliquidLiveTradingClient | None = None,
     limit: int = 100,
 ) -> LiveDispatchRecoveryResult:
+    entry_control = await load_live_entry_safety_control(session)
     dispatch_ids_result = await session.scalars(
         select(TradingOrderDispatch.id)
         .where(
@@ -1356,6 +1969,32 @@ async def recover_live_order_dispatches(
 
             inspected += 1
             if dispatch.status == "pending" and order.status == "ready":
+                if not order.reduce_only and (
+                    not settings.live_trading_enabled or entry_control.entry_state != "enabled"
+                ):
+                    refreshed_order = await session.get(TradingOrder, order.id)
+                    refreshed_dispatch = await session.get(TradingOrderDispatch, dispatch.id)
+                    if refreshed_order is not None and refreshed_dispatch is not None:
+                        refreshed_order.status = "canceled"
+                        refreshed_order.error = (
+                            "Entry canceled while live entry execution is stopped."
+                        )
+                        refreshed_dispatch.status = "canceled"
+                        refreshed_dispatch.completed_at = datetime.now(UTC)
+                        refreshed_dispatch.last_error = refreshed_order.error
+                        record_audit_log(
+                            session,
+                            actor="recovery_engine",
+                            action="live_entry.canceled_while_stopped",
+                            payload={
+                                "accountKey": refreshed_order.account_key,
+                                "orderId": str(refreshed_order.id),
+                                "entryState": entry_control.entry_state,
+                            },
+                        )
+                        await session.commit()
+                    failed += 1
+                    continue
                 try:
                     result = await submit_live_trade_intent(
                         session,
@@ -1398,7 +2037,7 @@ async def recover_live_order_dispatches(
                 await session.rollback()
                 failed += 1
                 continue
-            if status_response.get("status") == "order":
+            if mapped_exchange_order_status(status_response) is not None:
                 apply_order_status_response(refreshed_order, status_response)
                 refreshed_dispatch.status = "completed"
                 refreshed_dispatch.completed_at = datetime.now(UTC)
@@ -1433,27 +2072,85 @@ async def validate_live_entry_state_guardrails(
     account: TradingAccount,
     intent: TradeIntent,
     settings: Settings,
+    exclude_order_id: UUID | None = None,
 ) -> None:
     now = datetime.now(UTC)
+
+    async def reject(
+        *,
+        rule: str,
+        message: str,
+        observed: str | int | float | None = None,
+        limit: str | int | float | None = None,
+    ) -> None:
+        await trip_live_account_risk(
+            session,
+            account=account,
+            rule=rule,
+            message=message,
+            observed=observed,
+            limit=limit,
+        )
+        await session.commit()
+        raise LiveOrderSubmitError(message, status_code=409)
+
     if live_reconciliation_status(account) != "complete":
-        raise LiveOrderSubmitError(
-            "Live entries require a complete exchange reconciliation snapshot."
+        await reject(
+            rule="reconciliation_incomplete",
+            message="Live entries require a complete exchange reconciliation snapshot.",
+        )
+    if not live_reconciliation_is_fresh(account, settings=settings, now=now):
+        await reject(
+            rule="reconciliation_stale",
+            message="Live entries require a fresh exchange reconciliation snapshot.",
+            observed=(
+                account.last_reconciled_at.isoformat() if account.last_reconciled_at else None
+            ),
+            limit=settings.live_trading_reconciliation_max_snapshot_age_seconds,
         )
     if settings.live_trading_max_account_open_notional_usd > ZERO:
-        open_notional = await live_account_open_notional(session, account_key=account.key)
-        if (
-            open_notional + intent.notional_usd
-            > settings.live_trading_max_account_open_notional_usd
-        ):
-            raise LiveOrderSubmitError("Live account open notional guard would be exceeded.")
+        open_notional = await live_account_open_notional(
+            session,
+            account_key=account.key,
+            exclude_order_id=exclude_order_id,
+            reconciled_at=account.last_reconciled_at,
+        )
+        reserved_notional = live_entry_reserved_notional(intent, settings=settings)
+        if open_notional + reserved_notional > settings.live_trading_max_account_open_notional_usd:
+            await reject(
+                rule="max_account_open_notional",
+                message="Live account open notional guard would be exceeded.",
+                observed=str(open_notional + reserved_notional),
+                limit=str(settings.live_trading_max_account_open_notional_usd),
+            )
 
     if settings.live_trading_max_open_positions > 0:
-        open_coins = await live_account_open_coins(session, account_key=account.key)
+        open_coins = await live_account_open_coins(
+            session,
+            account_key=account.key,
+            exclude_order_id=exclude_order_id,
+            reconciled_at=account.last_reconciled_at,
+        )
         if (
             intent.coin not in open_coins
             and len(open_coins) >= settings.live_trading_max_open_positions
         ):
-            raise LiveOrderSubmitError("Live account open position guard would be exceeded.")
+            await reject(
+                rule="max_open_positions",
+                message="Live account open position guard would be exceeded.",
+                observed=len(open_coins) + 1,
+                limit=settings.live_trading_max_open_positions,
+            )
+
+    current_unrealized_pnl = ZERO
+    if (
+        settings.live_trading_max_daily_loss_usd > ZERO
+        or settings.live_trading_max_weekly_loss_usd > ZERO
+    ):
+        current_unrealized_pnl = await live_account_current_unrealized_pnl(
+            session,
+            account_key=account.key,
+        )
 
     if settings.live_trading_max_daily_loss_usd > ZERO:
         daily_net_pnl = await live_account_daily_net_pnl(
@@ -1461,8 +2158,29 @@ async def validate_live_entry_state_guardrails(
             account_key=account.key,
             now=now,
         )
+        daily_net_pnl += current_unrealized_pnl
         if daily_net_pnl <= -settings.live_trading_max_daily_loss_usd:
-            raise LiveOrderSubmitError("Live account daily loss guard is active.")
+            await reject(
+                rule="max_daily_loss",
+                message="Live account daily loss guard is active.",
+                observed=str(daily_net_pnl),
+                limit=str(settings.live_trading_max_daily_loss_usd),
+            )
+
+    if settings.live_trading_max_weekly_loss_usd > ZERO:
+        weekly_net_pnl = await live_account_weekly_net_pnl(
+            session,
+            account_key=account.key,
+            now=now,
+        )
+        weekly_net_pnl += current_unrealized_pnl
+        if weekly_net_pnl <= -settings.live_trading_max_weekly_loss_usd:
+            await reject(
+                rule="max_weekly_loss",
+                message="Live account weekly loss guard is active.",
+                observed=str(weekly_net_pnl),
+                limit=str(settings.live_trading_max_weekly_loss_usd),
+            )
 
     if settings.live_trading_max_orders_per_minute > 0:
         recent_orders = await live_account_recent_order_count(
@@ -1471,13 +2189,31 @@ async def validate_live_entry_state_guardrails(
             now=now,
         )
         if recent_orders >= settings.live_trading_max_orders_per_minute:
-            raise LiveOrderSubmitError("Live account order rate guard is active.")
+            await reject(
+                rule="max_orders_per_minute",
+                message="Live account order rate guard is active.",
+                observed=recent_orders,
+                limit=settings.live_trading_max_orders_per_minute,
+            )
+
+
+def live_entry_reserved_notional(intent: TradeIntent, *, settings: Settings) -> Decimal:
+    minimum_wire_notional = (
+        max(
+            settings.trading_copy_min_order_notional_usd,
+            settings.live_trading_min_order_notional_usd,
+        )
+        + settings.live_trading_min_order_notional_buffer_usd
+    )
+    return max(intent.notional_usd, minimum_wire_notional)
 
 
 async def live_account_open_notional(
     session: AsyncSession,
     *,
     account_key: str,
+    exclude_order_id: UUID | None = None,
+    reconciled_at: datetime | None = None,
 ) -> Decimal:
     aggregate_value = await session.scalar(
         select(func.coalesce(func.sum(TradingPosition.notional_usd), ZERO)).where(
@@ -1497,23 +2233,53 @@ async def live_account_open_notional(
             )
         )
         position_notional = decimal_or_none(source_value) or ZERO
-    pending_value = await session.scalar(
-        select(func.coalesce(func.sum(TradingOrder.requested_notional_usd), ZERO)).where(
+    pending_statement = select(
+        func.coalesce(func.sum(TradingOrder.requested_notional_usd), ZERO)
+    ).where(
+        TradingOrder.account_key == account_key,
+        TradingOrder.account_type == "live",
+        TradingOrder.reduce_only.is_(False),
+        TradingOrder.status.in_(
+            ["ready", "submitting", "uncertain", "submitted", "accepted", "partially_filled"]
+        ),
+    )
+    if exclude_order_id is not None:
+        pending_statement = pending_statement.where(TradingOrder.id != exclude_order_id)
+    pending_value = await session.scalar(pending_statement)
+    recent_filled_notional = ZERO
+    if reconciled_at is not None:
+        recent_statement = select(
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            TradingOrder.filled_notional_usd > ZERO,
+                            TradingOrder.filled_notional_usd,
+                        ),
+                        else_=TradingOrder.requested_notional_usd,
+                    )
+                ),
+                ZERO,
+            )
+        ).where(
             TradingOrder.account_key == account_key,
             TradingOrder.account_type == "live",
             TradingOrder.reduce_only.is_(False),
-            TradingOrder.status.in_(
-                ["ready", "submitting", "uncertain", "submitted", "accepted", "partially_filled"]
-            ),
+            TradingOrder.status == "filled",
+            TradingOrder.filled_at > reconciled_at,
         )
-    )
-    return position_notional + (decimal_or_none(pending_value) or ZERO)
+        if exclude_order_id is not None:
+            recent_statement = recent_statement.where(TradingOrder.id != exclude_order_id)
+        recent_filled_notional = decimal_or_none(await session.scalar(recent_statement)) or ZERO
+    return position_notional + (decimal_or_none(pending_value) or ZERO) + recent_filled_notional
 
 
 async def live_account_open_coins(
     session: AsyncSession,
     *,
     account_key: str,
+    exclude_order_id: UUID | None = None,
+    reconciled_at: datetime | None = None,
 ) -> set[str]:
     aggregate_result = await session.scalars(
         select(TradingPosition.coin).where(
@@ -1533,17 +2299,31 @@ async def live_account_open_coins(
             )
         )
         position_coins = {coin for coin in source_result.all() if coin}
-    pending_result = await session.scalars(
-        select(TradingOrder.coin).where(
+    pending_statement = select(TradingOrder.coin).where(
+        TradingOrder.account_key == account_key,
+        TradingOrder.account_type == "live",
+        TradingOrder.reduce_only.is_(False),
+        TradingOrder.status.in_(
+            ["ready", "submitting", "uncertain", "submitted", "accepted", "partially_filled"]
+        ),
+    )
+    if exclude_order_id is not None:
+        pending_statement = pending_statement.where(TradingOrder.id != exclude_order_id)
+    pending_result = await session.scalars(pending_statement)
+    recent_filled_coins: set[str] = set()
+    if reconciled_at is not None:
+        recent_statement = select(TradingOrder.coin).where(
             TradingOrder.account_key == account_key,
             TradingOrder.account_type == "live",
             TradingOrder.reduce_only.is_(False),
-            TradingOrder.status.in_(
-                ["ready", "submitting", "uncertain", "submitted", "accepted", "partially_filled"]
-            ),
+            TradingOrder.status == "filled",
+            TradingOrder.filled_at > reconciled_at,
         )
-    )
-    return position_coins | {coin for coin in pending_result.all() if coin}
+        if exclude_order_id is not None:
+            recent_statement = recent_statement.where(TradingOrder.id != exclude_order_id)
+        recent_result = await session.scalars(recent_statement)
+        recent_filled_coins = {coin for coin in recent_result.all() if coin}
+    return position_coins | {coin for coin in pending_result.all() if coin} | recent_filled_coins
 
 
 async def live_account_daily_net_pnl(
@@ -1552,7 +2332,8 @@ async def live_account_daily_net_pnl(
     account_key: str,
     now: datetime,
 ) -> Decimal:
-    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    utc_now = now.replace(tzinfo=UTC) if now.tzinfo is None else now.astimezone(UTC)
+    day_start = utc_now.replace(hour=0, minute=0, second=0, microsecond=0)
     value = await session.scalar(
         select(
             func.coalesce(
@@ -1563,6 +2344,52 @@ async def live_account_daily_net_pnl(
             TradingFill.account_key == account_key,
             TradingFill.account_type == "live",
             TradingFill.filled_at >= day_start,
+        )
+    )
+    return decimal_or_none(value) or ZERO
+
+
+async def live_account_current_unrealized_pnl(
+    session: AsyncSession,
+    *,
+    account_key: str,
+) -> Decimal:
+    result = await session.scalars(
+        select(TradingPosition).where(
+            TradingPosition.account_key == account_key,
+            TradingPosition.account_type == "live",
+        )
+    )
+    positions = list(result.all())
+    exchange_positions = [
+        position for position in positions if position.source_wallet == LIVE_EXCHANGE_SOURCE
+    ]
+    effective_positions = exchange_positions or positions
+    return sum(
+        (live_position_unrealized_pnl(position) or ZERO for position in effective_positions),
+        ZERO,
+    )
+
+
+async def live_account_weekly_net_pnl(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    now: datetime,
+) -> Decimal:
+    utc_now = now.replace(tzinfo=UTC) if now.tzinfo is None else now.astimezone(UTC)
+    day_start = utc_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start = day_start - timedelta(days=day_start.weekday())
+    value = await session.scalar(
+        select(
+            func.coalesce(
+                func.sum(TradingFill.realized_pnl_usd - TradingFill.fee_usd),
+                ZERO,
+            )
+        ).where(
+            TradingFill.account_key == account_key,
+            TradingFill.account_type == "live",
+            TradingFill.filled_at >= week_start,
         )
     )
     return decimal_or_none(value) or ZERO
@@ -1579,7 +2406,7 @@ async def live_account_recent_order_count(
             TradingOrder.account_key == account_key,
             TradingOrder.account_type == "live",
             TradingOrder.submitted_at.is_not(None),
-            TradingOrder.created_at >= now - timedelta(minutes=1),
+            TradingOrder.submitted_at >= now - timedelta(minutes=1),
         )
     )
     return int(value or 0)
@@ -1789,6 +2616,17 @@ async def run_live_trading_account_reconciliation(
             user_abstraction=user_abstraction,
             position_result=position_result,
         )
+        await session.refresh(
+            account,
+            attribute_names=[
+                "status",
+                "lifecycle_version",
+                "status_changed_at",
+                "status_reason",
+            ],
+            with_for_update=True,
+        )
+        was_enabled = account.status == "enabled"
         update_live_account_from_state(
             account,
             perp_states=perp_snapshot,
@@ -1800,6 +2638,61 @@ async def run_live_trading_account_reconciliation(
             incomplete_components=incomplete_components,
             component_errors=component_errors,
         )
+        if reconciliation_status != "complete" and was_enabled:
+            apply_live_account_status(
+                account,
+                status="exit_only",
+                reason="reconciliation_partial",
+            )
+            payload = {
+                "accountKey": account.key,
+                "incompleteComponents": list(incomplete_components),
+                "componentErrors": component_errors,
+                "lifecycleVersion": account.lifecycle_version,
+            }
+            record_risk_event(
+                session,
+                event_type="live_reconciliation_partial",
+                severity="critical",
+                message="Live account entered exit-only after partial reconciliation.",
+                payload=payload,
+            )
+            record_audit_log(
+                session,
+                actor="reconciliation_engine",
+                action="live_account.reconciliation_partial",
+                payload=payload,
+            )
+        elif position_result.open_positions > 0 and account.status == "disabled":
+            apply_live_account_status(
+                account,
+                status="exit_only",
+                reason=(
+                    "external_exposure_detected"
+                    if reconciliation_status == "complete"
+                    else "external_exposure_detected_during_partial_reconciliation"
+                ),
+            )
+            payload = {
+                "accountKey": account.key,
+                "openPositions": position_result.open_positions,
+                "reconciliationStatus": reconciliation_status,
+                "incompleteComponents": list(incomplete_components),
+                "lifecycleVersion": account.lifecycle_version,
+            }
+            record_risk_event(
+                session,
+                event_type="live_external_exposure_detected",
+                severity="critical",
+                message="Disabled live account entered exit-only after exposure was detected.",
+                payload=payload,
+            )
+            record_audit_log(
+                session,
+                actor="reconciliation_engine",
+                action="live_account.external_exposure_detected",
+                payload=payload,
+            )
         run.status = reconciliation_status
         run.completed_at = datetime.now(UTC)
         run.components = components
@@ -1985,7 +2878,9 @@ async def mark_live_reconciliation_run_failed(
 ) -> None:
     await session.rollback()
     run = await session.get(TradingReconciliationRun, run_id)
-    account = await session.get(TradingAccount, account_key)
+    account = await session.scalar(
+        select(TradingAccount).where(TradingAccount.key == account_key).with_for_update()
+    )
     if run is not None:
         run.status = "failed"
         run.completed_at = datetime.now(UTC)
@@ -2008,6 +2903,30 @@ async def mark_live_reconciliation_run_failed(
                 }
             },
         )
+        if account.status == "enabled":
+            apply_live_account_status(
+                account,
+                status="exit_only",
+                reason="reconciliation_failed",
+            )
+            payload = {
+                "accountKey": account.key,
+                "error": error,
+                "lifecycleVersion": account.lifecycle_version,
+            }
+            record_risk_event(
+                session,
+                event_type="live_reconciliation_failed",
+                severity="critical",
+                message="Live account entered exit-only after reconciliation failed.",
+                payload=payload,
+            )
+            record_audit_log(
+                session,
+                actor="reconciliation_engine",
+                action="live_account.reconciliation_failed",
+                payload=payload,
+            )
     await prune_live_reconciliation_runs(session, account_key=account_key)
     await session.commit()
 
@@ -2018,9 +2937,7 @@ async def prune_live_reconciliation_runs(
     account_key: str,
     now: datetime | None = None,
 ) -> None:
-    cutoff = (now or datetime.now(UTC)) - timedelta(
-        days=LIVE_RECONCILIATION_RUN_RETENTION_DAYS
-    )
+    cutoff = (now or datetime.now(UTC)) - timedelta(days=LIVE_RECONCILIATION_RUN_RETENTION_DAYS)
     await session.execute(
         delete(TradingReconciliationRun).where(
             TradingReconciliationRun.account_key == account_key,
@@ -2065,8 +2982,9 @@ async def reconcile_live_order_statuses(
             errors[order.client_order_id] = message
             updated += 1
             continue
+        mapped_status = mapped_exchange_order_status(status_response)
         changed = apply_order_status_response(order, status_response)
-        if status_response.get("status") == "order":
+        if mapped_status is not None:
             dispatch = await load_live_order_dispatch(session, order_id=order.id)
             if dispatch is not None and dispatch.status != "completed":
                 dispatch.status = "completed"
@@ -2075,7 +2993,7 @@ async def reconcile_live_order_statuses(
                 changed = True
         else:
             unresolved_order_ids.append(order.id)
-            errors[order.client_order_id] = "Exchange order status is unknown."
+            errors[order.client_order_id] = "Exchange order status is missing or unrecognized."
         if changed:
             updated += 1
     await session.flush()
@@ -2292,6 +3210,15 @@ def apply_order_status_response(order: TradingOrder, response: dict[str, Any]) -
     return before_status != order.status or before_exchange_id != order.exchange_order_id
 
 
+def mapped_exchange_order_status(response: dict[str, Any]) -> str | None:
+    if response.get("status") != "order":
+        return None
+    payload = response.get("order")
+    if not isinstance(payload, dict):
+        return None
+    return map_exchange_order_status(string_or_none(payload.get("status")))
+
+
 async def reconcile_live_fills(
     session: AsyncSession,
     *,
@@ -2460,9 +3387,7 @@ def live_exchange_close_only_trade(fill: TradingFill) -> LiveClosedTrade | None:
     realized_pnl_usd = decimal_or_none(fill.realized_pnl_usd) or ZERO
     fee_usd = decimal_or_none(fill.fee_usd) or ZERO
     exit_price = (
-        exit_notional_usd / fill_size
-        if exit_notional_usd > ZERO
-        else decimal_or_none(fill.price)
+        exit_notional_usd / fill_size if exit_notional_usd > ZERO else decimal_or_none(fill.price)
     )
     entry_price = live_close_only_entry_price(
         side=fill.side,
@@ -2539,14 +3464,10 @@ def finish_live_closed_trade(trade: LiveTradeAccumulator) -> LiveClosedTrade:
         coin=trade.coin,
         side=trade.side,
         entry_price=(
-            trade.entry_notional_usd / trade.opened_size
-            if trade.opened_size > ZERO
-            else None
+            trade.entry_notional_usd / trade.opened_size if trade.opened_size > ZERO else None
         ),
         exit_price=(
-            trade.exit_notional_usd / trade.closed_size
-            if trade.closed_size > ZERO
-            else None
+            trade.exit_notional_usd / trade.closed_size if trade.closed_size > ZERO else None
         ),
         size=trade.closed_size,
         entry_notional_usd=trade.entry_notional_usd,
@@ -2891,11 +3812,7 @@ async def reconcile_live_positions(
     )
     existing_positions = list(existing_result.all())
     existing = {position.coin: position for position in existing_positions}
-    authoritative_dexes = {
-        state.dex
-        for state in perp_snapshot.states
-        if state.complete
-    }
+    authoritative_dexes = {state.dex for state in perp_snapshot.states if state.complete}
     requested_dexes = set(perp_snapshot.requested_dexes)
     exchange_positions: list[TradingPosition] = []
     for snapshot in snapshots:
@@ -3171,9 +4088,7 @@ def close_limit_price(
 def live_position_mark_price(position: TradingPosition) -> Decimal | None:
     raw_position = live_position_raw_position(position)
     position_value = (
-        decimal_or_none(raw_position.get("positionValue"))
-        if raw_position is not None
-        else None
+        decimal_or_none(raw_position.get("positionValue")) if raw_position is not None else None
     )
     position_value = position_value or position.notional_usd
     if position.size <= ZERO or position_value <= ZERO:

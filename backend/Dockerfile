@@ -9,8 +9,12 @@ COPY pyproject.toml constraints.txt ./
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -c constraints.txt .
 
-COPY app ./app
-COPY config ./config
-COPY alembic.ini ./
+RUN groupadd --system app && useradd --system --gid app --home-dir /app app
+
+COPY --chown=app:app app ./app
+COPY --chown=app:app config ./config
+COPY --chown=app:app alembic.ini ./
+
+USER app
 
 EXPOSE 8000

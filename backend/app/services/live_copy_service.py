@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 from typing import Any
 
 from sqlalchemy import func, or_, select
@@ -67,6 +67,7 @@ from app.services.trading_core import (
     margin_from_notional,
     trade_is_buy,
 )
+from app.services.trading_safety_service import load_live_entry_safety_control
 
 logger = logging.getLogger(__name__)
 ZERO = Decimal("0")
@@ -114,11 +115,7 @@ async def process_live_copy_fills(
     hide_stale_entry_skips: bool = False,
 ) -> PaperCopyBatchResult:
     resolved_settings = settings or get_settings()
-    if (
-        not resolved_settings.live_trading_enabled
-        or not resolved_settings.live_trading_copy_enabled
-        or not fills
-    ):
+    if not fills or not live_copy_processing_enabled(resolved_settings):
         return PaperCopyBatchResult()
 
     normalized_source_wallet = source_wallet.lower()
@@ -170,7 +167,7 @@ async def process_live_copy_fills(
     )
     if not accounts:
         return live_skip("live_no_enabled_accounts", len(fills))
-    await refresh_stale_live_copy_accounts(
+    failed_reconciliation_accounts = await refresh_stale_live_copy_accounts(
         session,
         accounts=accounts,
         settings=resolved_settings,
@@ -208,6 +205,11 @@ async def process_live_copy_fills(
             for part in parts:
                 if account.status != "enabled" and part_requires_source_equity(part):
                     add_skip("live_account_exit_only")
+                    continue
+                if account.key in failed_reconciliation_accounts and part_requires_source_equity(
+                    part
+                ):
+                    add_skip("live_reconciliation_failed")
                     continue
                 if source_state_skip_reason is not None and part_requires_source_equity(part):
                     add_skip(source_state_skip_reason)
@@ -262,10 +264,7 @@ async def process_live_copy_recovery(
     fill_limit_per_source: int = 1000,
 ) -> PaperCopyBatchResult:
     resolved_settings = settings or get_settings()
-    if (
-        not resolved_settings.live_trading_enabled
-        or not resolved_settings.live_trading_copy_enabled
-    ):
+    if not live_copy_processing_enabled(resolved_settings):
         return PaperCopyBatchResult()
 
     if client is None:
@@ -321,20 +320,35 @@ async def refresh_stale_live_copy_accounts(
     accounts: list[TradingAccount],
     settings: Settings,
     client: HyperliquidClient,
-) -> None:
+) -> set[str]:
     if not settings.live_trading_reconciliation_enabled:
-        return
+        return set()
     now = datetime.now(UTC)
+    failed_accounts: set[str] = set()
     for account in accounts:
         if not live_copy_account_snapshot_is_stale(account, settings=settings, now=now):
             continue
-        await reconcile_live_trading_account(
-            session,
-            account=account,
-            settings=settings,
-            info_client=client,
-        )
+        try:
+            await reconcile_live_trading_account(
+                session,
+                account=account,
+                settings=settings,
+                info_client=client,
+            )
+        except Exception:
+            failed_accounts.add(account.key)
+            logger.exception(
+                "live copy reconciliation failed; entries blocked and exits continue account=%s",
+                account.key,
+            )
     await session.flush()
+    return failed_accounts
+
+
+def live_copy_processing_enabled(settings: Settings) -> bool:
+    return (
+        settings.live_trading_enabled and settings.live_trading_copy_enabled
+    ) or settings.live_trading_reduce_only_when_stopped
 
 
 def live_copy_account_snapshot_is_stale(
@@ -435,7 +449,14 @@ async def apply_live_open_part(
     trading_client: HyperliquidLiveTradingClient,
     hide_stale_entry_skips: bool = False,
 ) -> PaperCopyBatchResult:
-    source_leverage = leverage_for_fill(fill=fill, source_leverages=source_leverages)
+    source_leverage = min(
+        leverage_for_fill(fill=fill, source_leverages=source_leverages),
+        settings.live_trading_max_leverage,
+    )
+    source_leverage = max(
+        source_leverage.to_integral_value(rounding=ROUND_DOWN),
+        Decimal("1"),
+    )
     if account.status != "enabled":
         return await record_live_skip(
             session,
@@ -472,6 +493,27 @@ async def apply_live_open_part(
             )
             or hide_stale_entry_skips,
             source_fill_age_seconds=fill_age_seconds,
+        )
+    if not settings.live_trading_enabled or not settings.live_trading_copy_enabled:
+        return await record_live_skip(
+            session,
+            account=account,
+            allocation=allocation,
+            fill=fill,
+            part=part,
+            reason="live_entry_execution_paused",
+            leverage=source_leverage,
+        )
+    safety_control = await load_live_entry_safety_control(session)
+    if safety_control.entry_state != "enabled":
+        return await record_live_skip(
+            session,
+            account=account,
+            allocation=allocation,
+            fill=fill,
+            part=part,
+            reason=f"live_entries_{safety_control.entry_state}",
+            leverage=source_leverage,
         )
     coin = str(fill.get("coin") or "")
     dex = dex_from_coin(coin)
@@ -882,9 +924,7 @@ async def apply_live_close_part(
         notional_usd = aggregate_notional_usd
         close_below_min_order = False
     order_notional_usd = (
-        max(notional_usd, min_order_notional)
-        if final_source_close
-        else notional_usd
+        max(notional_usd, min_order_notional) if final_source_close else notional_usd
     )
     intent = build_copy_trade_intent(
         account_key=account.key,
@@ -967,11 +1007,7 @@ def live_aggregated_below_min_close_size(
     available_size: Decimal,
 ) -> Decimal:
     previous_size = sum(
-        (
-            order.requested_size
-            for order in previous_skip_orders
-            if order.requested_size > ZERO
-        ),
+        (order.requested_size for order in previous_skip_orders if order.requested_size > ZERO),
         ZERO,
     )
     return min(max(close_size + previous_size, ZERO), available_size)
@@ -1220,9 +1256,7 @@ async def record_live_skip(
         created_at=fill_datetime(fill),
     )
     await session.execute(
-        stmt.on_conflict_do_nothing(
-            constraint="ux_trading_orders_account_source_fill_sequence"
-        )
+        stmt.on_conflict_do_nothing(constraint="ux_trading_orders_account_source_fill_sequence")
     )
     return live_skip(reason)
 
@@ -1282,22 +1316,12 @@ async def load_live_accounts_for_source_copy(
     *,
     source_wallet: str,
 ) -> list[TradingAccount]:
-    normalized_source = source_wallet.lower()
-    open_exposure_exists = (
-        select(TradingPosition.id)
-        .where(
-            TradingPosition.account_key == TradingAccount.key,
-            TradingPosition.account_type == "live",
-            TradingPosition.source_wallet == normalized_source,
-        )
-        .exists()
-    )
     query = (
         select(TradingAccount)
         .where(
             TradingAccount.account_type == "live",
-            (TradingAccount.status == "enabled")
-            | ((TradingAccount.status == "exit_only") & open_exposure_exists),
+            TradingAccount.archived_at.is_(None),
+            TradingAccount.status.in_(["enabled", "exit_only"]),
         )
         .order_by(TradingAccount.key.asc())
     )
@@ -1463,9 +1487,7 @@ def live_close_size_for_part(
     available_size: Decimal | None = None,
 ) -> Decimal | None:
     position_size = (
-        min(position.size, available_size)
-        if available_size is not None
-        else position.size
+        min(position.size, available_size) if available_size is not None else position.size
     )
     if live_source_position_is_final_close(
         source_account_state,

@@ -19,8 +19,10 @@ from app.schemas.ops import (
     OpsHealthResponse,
     OpsLoadStats,
     OpsMemoryStats,
+    OpsRealtimeQueueHealth,
     OpsServiceConfig,
     OpsWorkerHeartbeat,
+    OpsWorkerLoopState,
 )
 from app.services.database_stats_service import get_database_summary_stats
 from app.services.operation_status_service import list_operation_statuses
@@ -115,9 +117,7 @@ async def load_database_backed_ops(
     try:
         async with sessionmaker() as session:
             database = await load_database_summary(session)
-            operations = (
-                await list_operation_statuses(session, keys=OPS_OPERATION_KEYS)
-            ).items
+            operations = (await list_operation_statuses(session, keys=OPS_OPERATION_KEYS)).items
             workers = await load_worker_heartbeats(
                 session,
                 settings=settings,
@@ -164,7 +164,8 @@ async def load_worker_heartbeats(
     now: datetime,
 ) -> list[OpsWorkerHeartbeat]:
     raw_values = await load_worker_heartbeat_values(session)
-    heartbeats = [
+    expected_roles = set(expected_worker_roles(settings))
+    parsed_heartbeats = [
         parse_worker_heartbeat(
             value,
             now=now,
@@ -172,6 +173,21 @@ async def load_worker_heartbeats(
         )
         for value in raw_values
     ]
+    heartbeats: list[OpsWorkerHeartbeat] = []
+    for role in sorted(expected_roles):
+        role_heartbeats = [item for item in parsed_heartbeats if item.role == role]
+        active = [item for item in role_heartbeats if item.status != "stale"]
+        if active:
+            if len(active) > 1:
+                active = [item.model_copy(update={"status": "warning"}) for item in active]
+            heartbeats.extend(active)
+        elif role_heartbeats:
+            heartbeats.append(
+                max(
+                    role_heartbeats,
+                    key=lambda item: item.updated_at or datetime.min.replace(tzinfo=UTC),
+                )
+            )
     existing_roles = {heartbeat.role for heartbeat in heartbeats}
     for role in expected_worker_roles(settings):
         if role not in existing_roles:
@@ -190,7 +206,7 @@ async def load_worker_heartbeats(
                     started_at=None,
                 )
             )
-    return sorted(heartbeats, key=lambda item: item.role)
+    return sorted(heartbeats, key=lambda item: (item.role, item.instance_id or "", item.key))
 
 
 def parse_worker_heartbeat(
@@ -204,17 +220,32 @@ def parse_worker_heartbeat(
     age_seconds = (
         max(0, int((now - updated_at).total_seconds())) if updated_at is not None else None
     )
-    status = (
-        "ok"
-        if age_seconds is not None and age_seconds <= stale_after_seconds
-        else "stale"
+    key = string_value(value.get("key")) or ""
+    role = string_value(value.get("role")) or worker_role_from_key(key) or "unknown"
+    instance_id = string_value(value.get("instanceId")) or worker_instance_from_key(key)
+    capabilities = string_list(value.get("capabilities"))
+    trading_loops = bool(value.get("tradingLoops")) or "trading" in capabilities
+    maintenance_loops = bool(value.get("maintenanceLoops")) or "maintenance" in capabilities
+    if not capabilities:
+        capabilities = [
+            capability
+            for capability, enabled in (
+                ("trading", trading_loops),
+                ("maintenance", maintenance_loops),
+            )
+            if enabled
+        ]
+    loops = parse_worker_loop_states(value.get("loops"))
+    realtime_queue = parse_realtime_queue_health(value.get("realtimeQueue"))
+    status = worker_heartbeat_status(
+        age_seconds=age_seconds,
+        stale_after_seconds=stale_after_seconds,
+        loops=loops,
+        realtime_queue=realtime_queue,
     )
-    role = string_value(value.get("role")) or string_value(value.get("key")) or "unknown"
-    if role.startswith("worker_heartbeat:"):
-        role = role.removeprefix("worker_heartbeat:")
 
     return OpsWorkerHeartbeat(
-        key=string_value(value.get("key")) or f"worker_heartbeat:{role}",
+        key=key or f"worker_heartbeat:{role}",
         role=role,
         status=status,
         updated_at=updated_at,
@@ -222,10 +253,88 @@ def parse_worker_heartbeat(
         stale_after_seconds=stale_after_seconds,
         hostname=string_value(value.get("hostname")),
         pid=int_value(value.get("pid")),
-        trading_loops=bool(value.get("tradingLoops")),
-        maintenance_loops=bool(value.get("maintenanceLoops")),
+        trading_loops=trading_loops,
+        maintenance_loops=maintenance_loops,
         started_at=started_at,
+        instance_id=instance_id,
+        capabilities=capabilities,
+        loops=loops,
+        realtime_queue=realtime_queue,
     )
+
+
+def parse_worker_loop_states(value: object) -> list[OpsWorkerLoopState]:
+    if not isinstance(value, dict):
+        return []
+
+    loops = []
+    for name, raw_state in sorted(value.items(), key=lambda item: str(item[0])):
+        if not isinstance(name, str) or not isinstance(raw_state, dict):
+            continue
+        status = string_value(raw_state.get("status")) or "unknown"
+        loops.append(
+            OpsWorkerLoopState(
+                name=name,
+                status=status,
+                health=worker_loop_health(status),
+                restart_count=non_negative_int(raw_state.get("restartCount")),
+                consecutive_failures=non_negative_int(raw_state.get("consecutiveFailures")),
+                last_error=string_value(raw_state.get("lastError")),
+                last_started_at=parse_datetime(raw_state.get("lastStartedAt")),
+                last_progress_at=parse_datetime(raw_state.get("lastProgressAt")),
+                updated_at=parse_datetime(raw_state.get("updatedAt")),
+            )
+        )
+    return loops
+
+
+def parse_realtime_queue_health(value: object) -> OpsRealtimeQueueHealth | None:
+    if not isinstance(value, dict):
+        return None
+    depth = non_negative_int(value.get("depth"))
+    capacity = non_negative_int(value.get("capacity"))
+    dropped = non_negative_int(value.get("dropped"))
+    utilization = Decimal(depth) / Decimal(capacity) if capacity > 0 else None
+    if capacity <= 0:
+        status = "unknown"
+    elif dropped > 0 or utilization is not None and utilization >= Decimal("0.8"):
+        status = "warning"
+    else:
+        status = "ok"
+    return OpsRealtimeQueueHealth(
+        depth=depth,
+        capacity=capacity,
+        dropped=dropped,
+        utilization_pct=utilization,
+        status=status,
+    )
+
+
+def worker_heartbeat_status(
+    *,
+    age_seconds: int | None,
+    stale_after_seconds: int,
+    loops: list[OpsWorkerLoopState],
+    realtime_queue: OpsRealtimeQueueHealth | None,
+) -> str:
+    if age_seconds is None or age_seconds > stale_after_seconds:
+        return "stale"
+    if any(loop.health == "degraded" for loop in loops):
+        return "degraded"
+    if any(loop.health == "warning" for loop in loops):
+        return "warning"
+    if realtime_queue is not None and realtime_queue.status == "warning":
+        return "warning"
+    return "ok"
+
+
+def worker_loop_health(status: str) -> str:
+    normalized = status.strip().lower()
+    if normalized in {"failed", "error", "crashed"}:
+        return "degraded"
+    if normalized in {"restarting", "retrying", "stopped", "paused", "unknown"}:
+        return "warning"
+    return "ok"
 
 
 def get_disk_stats(path: str) -> OpsDiskStats:
@@ -430,6 +539,7 @@ def aggregate_status(
         or memory.status == "degraded"
         or load.status == "degraded"
         or database.status in {"error", "degraded", "not_configured"}
+        or any(worker.status in {"degraded", "error"} for worker in workers)
     ):
         return "degraded"
     if (
@@ -505,6 +615,33 @@ def string_value(value: object) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    values: list[str] = []
+    for item in value:
+        normalized = string_value(item)
+        if normalized and normalized not in values:
+            values.append(normalized)
+    return values
+
+
+def worker_role_from_key(key: str) -> str | None:
+    if not key.startswith("worker_heartbeat:"):
+        return None
+    role_and_instance = key.removeprefix("worker_heartbeat:")
+    role, _, _instance_id = role_and_instance.partition(":")
+    return role or None
+
+
+def worker_instance_from_key(key: str) -> str | None:
+    if not key.startswith("worker_heartbeat:"):
+        return None
+    role_and_instance = key.removeprefix("worker_heartbeat:")
+    _role, separator, instance_id = role_and_instance.partition(":")
+    return instance_id if separator and instance_id else None
+
+
 def int_value(value: object) -> int | None:
     if value is None:
         return None
@@ -512,6 +649,10 @@ def int_value(value: object) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def non_negative_int(value: object) -> int:
+    return max(int_value(value) or 0, 0)
 
 
 def safe_stat(path: Path) -> os.stat_result:

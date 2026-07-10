@@ -99,7 +99,9 @@ class HyperliquidLiveTradingClient:
         coin: str,
         client_order_id: str,
     ) -> dict[str, Any]:
-        self.validate_live_configuration()
+        self.validate_live_configuration(
+            allow_when_stopped=self.settings.live_trading_reduce_only_when_stopped
+        )
         if account.account_type != "live":
             raise HyperliquidLiveTradingConfigurationError(
                 "Only live accounts can cancel live orders."
@@ -120,7 +122,11 @@ class HyperliquidLiveTradingClient:
         account: TradingAccount,
         intent: TradeIntent,
     ) -> None:
-        self.validate_live_configuration()
+        self.validate_live_configuration(
+            allow_when_stopped=(
+                intent.reduce_only and self.settings.live_trading_reduce_only_when_stopped
+            )
+        )
         if account.account_type != "live":
             raise HyperliquidLiveTradingConfigurationError(
                 "Only live accounts can submit live orders."
@@ -137,7 +143,9 @@ class HyperliquidLiveTradingClient:
             raise HyperliquidLiveTradingConfigurationError(
                 "Live account network does not match the configured network."
             )
-        if account.status == "disabled":
+        if account.status == "disabled" and not (
+            intent.reduce_only and self.settings.live_trading_reduce_only_when_stopped
+        ):
             raise HyperliquidLiveTradingConfigurationError("Live account is disabled.")
         if account.status == "exit_only" and not intent.reduce_only:
             raise HyperliquidLiveTradingConfigurationError(
@@ -155,6 +163,11 @@ class HyperliquidLiveTradingClient:
         ):
             raise HyperliquidLiveTradingConfigurationError(
                 "Live order notional is below the Hyperliquid minimum."
+            )
+        if not intent.reduce_only:
+            validated_live_entry_leverage(
+                intent.leverage,
+                max_leverage=self.settings.live_trading_max_leverage,
             )
         if intent.observed_price is not None and intent.observed_price > Decimal("0"):
             slippage_bps = (
@@ -204,8 +217,8 @@ class HyperliquidLiveTradingClient:
                 "Live order notional exceeds the configured maximum."
             )
 
-    def validate_live_configuration(self) -> None:
-        if not self.settings.live_trading_enabled:
+    def validate_live_configuration(self, *, allow_when_stopped: bool = False) -> None:
+        if not self.settings.live_trading_enabled and not allow_when_stopped:
             raise HyperliquidLiveTradingConfigurationError("Live trading is disabled.")
         if not self.settings.live_trading_acknowledged:
             raise HyperliquidLiveTradingConfigurationError(
@@ -248,8 +261,7 @@ class HyperliquidLiveTradingClient:
                 self.settings.live_trading_min_order_notional_buffer_usd
             ),
             adjust_to_min_order=(
-                intent.reduce_only
-                or self.settings.trading_copy_adjust_small_orders_to_min_order
+                intent.reduce_only or self.settings.trading_copy_adjust_small_orders_to_min_order
             ),
         )
         if (
@@ -265,6 +277,17 @@ class HyperliquidLiveTradingClient:
         ):
             exchange.set_expires_after(
                 int(time.time() * 1000) + self.settings.live_trading_order_expires_after_ms
+            )
+        leverage_update: dict[str, Any] | None = None
+        if not intent.reduce_only:
+            exchange_leverage = validated_live_entry_leverage(
+                intent.leverage,
+                max_leverage=self.settings.live_trading_max_leverage,
+            )
+            leverage_update = apply_live_entry_exchange_leverage(
+                exchange,
+                coin=order_coin,
+                leverage=exchange_leverage,
             )
         cloid = self._build_cloid(intent.client_order_id)
         try:
@@ -287,6 +310,8 @@ class HyperliquidLiveTradingClient:
             )
         response_payload = dict(response)
         response_payload["clientOrderRequest"] = live_order_wire_payload(wire_values)
+        if leverage_update is not None:
+            response_payload["leverageUpdate"] = leverage_update
         result = parse_order_response(
             response_payload,
             client_order_id=intent.client_order_id,
@@ -316,6 +341,62 @@ class HyperliquidLiveTradingClient:
         if self._cloid_factory is not None:
             return self._cloid_factory(client_order_id)
         return load_hyperliquid_sdk().cloid.from_str(client_order_id)
+
+
+def validated_live_entry_leverage(
+    leverage: Decimal,
+    *,
+    max_leverage: Decimal,
+) -> int:
+    if not leverage.is_finite() or leverage <= Decimal("0"):
+        raise HyperliquidLiveTradingConfigurationError(
+            "Live order leverage must be a positive finite number."
+        )
+    integral_leverage = leverage.to_integral_value()
+    if leverage != integral_leverage:
+        raise HyperliquidLiveTradingConfigurationError(
+            "Live order leverage must be a whole number for exchange execution."
+        )
+    if leverage > max_leverage:
+        raise HyperliquidLiveTradingConfigurationError(
+            "Live order leverage exceeds the configured maximum."
+        )
+    return int(integral_leverage)
+
+
+def apply_live_entry_exchange_leverage(
+    exchange: Any,
+    *,
+    coin: str,
+    leverage: int,
+) -> dict[str, Any]:
+    update_leverage = getattr(exchange, "update_leverage", None)
+    if not callable(update_leverage):
+        raise HyperliquidLiveOrderRejectedError(
+            "Hyperliquid exchange client cannot enforce entry leverage."
+        )
+    try:
+        response = update_leverage(leverage, coin, is_cross=True)
+    except Exception as exc:
+        raise HyperliquidLiveOrderRejectedError(
+            "Hyperliquid leverage update failed before order submission."
+        ) from exc
+    if not isinstance(response, dict) or response.get("status") != "ok":
+        detail = (
+            response.get("response") or response.get("error")
+            if isinstance(response, dict)
+            else response
+        )
+        raise HyperliquidLiveOrderRejectedError(
+            f"Hyperliquid leverage update was rejected before order submission: "
+            f"{detail or 'invalid response'}."
+        )
+    return {
+        "coin": coin,
+        "leverage": leverage,
+        "isCross": True,
+        "response": response,
+    }
 
 
 def load_hyperliquid_sdk() -> HyperliquidSdkBindings:

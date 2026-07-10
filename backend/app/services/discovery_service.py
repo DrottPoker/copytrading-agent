@@ -68,9 +68,7 @@ HYPERDASH_URL_SETTINGS = {
     "hyperdash_copytrading": "discovery_hyperdash_copytrading_url",
     "hyperdash_cohorts": "discovery_hyperdash_cohorts_url",
     "hyperdash_cohorts_very_profitable": "discovery_hyperdash_very_profitable_url",
-    "hyperdash_cohorts_extremely_profitable": (
-        "discovery_hyperdash_extremely_profitable_url"
-    ),
+    "hyperdash_cohorts_extremely_profitable": ("discovery_hyperdash_extremely_profitable_url"),
     "hyperdash_tagged": "discovery_hyperdash_tagged_url",
 }
 HYPERDASH_PNL_COHORT_SOURCES = {
@@ -301,8 +299,7 @@ async def list_discovery_sources(
         if source in HYPERDASH_URL_SETTINGS and not configured:
             notes = "Set the matching discovery_hyperdash_*_url config before running this source."
         if (
-            source in HYPERTRACKER_SEGMENT_SOURCES
-            or source in HYPERTRACKER_LEADERBOARD_SOURCES
+            source in HYPERTRACKER_SEGMENT_SOURCES or source in HYPERTRACKER_LEADERBOARD_SOURCES
         ) and not configured:
             notes = "Set discovery_hypertracker_static_base_url before running this source."
         items.append(
@@ -1773,15 +1770,9 @@ async def upsert_discovery_candidates(
     add_count(skip_reasons, "already_in_pool", len(already_pool))
     add_count(skip_reasons, "already_in_candidates", len(already_candidate))
     add_count(skip_reasons, "ignored_wallet", len(ignored_candidates))
-    skipped_addresses = (
-        existing_candidate_addresses
-        | existing_pool_addresses
-        | ignored_candidates
-    )
+    skipped_addresses = existing_candidate_addresses | existing_pool_addresses | ignored_candidates
     new_candidates = [
-        candidate
-        for address, candidate in deduped.items()
-        if address not in skipped_addresses
+        candidate for address, candidate in deduped.items() if address not in skipped_addresses
     ]
     if not new_candidates:
         return DiscoveryUpsertResult(
@@ -1792,10 +1783,7 @@ async def upsert_discovery_candidates(
         )
     skipped = sum(skip_reasons.values())
 
-    records = [
-        discovery_candidate_record(candidate, run_id=run_id)
-        for candidate in new_candidates
-    ]
+    records = [discovery_candidate_record(candidate, run_id=run_id) for candidate in new_candidates]
     stmt = (
         insert(DiscoveryWalletCandidate)
         .values(records)
@@ -2071,8 +2059,7 @@ async def backfill_discovery_candidates(
                             "event": "candidate_failed",
                             "walletAddress": failed_item.wallet_address,
                             "label": (
-                                "Backfill paused because Hyperliquid rate limited "
-                                "the request."
+                                "Backfill paused because Hyperliquid rate limited the request."
                             ),
                         }
                     )
@@ -2444,9 +2431,7 @@ async def load_candidate_trade_metrics(
         else None
     )
     drawdown_base = max(trades.gross_profit_usd, abs(trades.net_pnl_usd), Decimal("1"))
-    max_drawdown_pct = (
-        trades.max_drawdown_usd / drawdown_base if closed_trade_count > 0 else None
-    )
+    max_drawdown_pct = trades.max_drawdown_usd / drawdown_base if closed_trade_count > 0 else None
     return CandidateTradeMetrics(
         fill_count=fill_count,
         closed_trade_count=closed_trade_count,
@@ -2600,20 +2585,13 @@ def evaluate_candidate_trade_quality(
         return PrefilterDecision(status="rejected", fail_reason="too_few_closed_trades")
     if settings.discovery_quality_require_positive_net_pnl and metrics.net_pnl_usd <= Decimal("0"):
         return PrefilterDecision(status="rejected", fail_reason="net_pnl_not_positive")
-    if (
-        settings.discovery_quality_min_profit_factor is not None
-        and (
-            metrics.profit_factor is None
-            or metrics.profit_factor < settings.discovery_quality_min_profit_factor
-        )
+    if settings.discovery_quality_min_profit_factor is not None and (
+        metrics.profit_factor is None
+        or metrics.profit_factor < settings.discovery_quality_min_profit_factor
     ):
         return PrefilterDecision(status="rejected", fail_reason="profit_factor_below_min")
-    if (
-        settings.discovery_quality_min_win_rate is not None
-        and (
-            metrics.win_rate is None
-            or metrics.win_rate < settings.discovery_quality_min_win_rate
-        )
+    if settings.discovery_quality_min_win_rate is not None and (
+        metrics.win_rate is None or metrics.win_rate < settings.discovery_quality_min_win_rate
     ):
         return PrefilterDecision(status="rejected", fail_reason="win_rate_below_min")
     if (
@@ -2797,12 +2775,9 @@ def evaluate_source_pnl(value: Decimal | None, *, settings: Settings) -> Prefilt
     if value is None:
         if settings.discovery_prefilter_reject_missing_source_pnl:
             return PrefilterDecision(status="rejected", fail_reason="missing_source_pnl")
-        if (
-            not settings.discovery_prefilter_accept_if_metrics_missing
-            and (
-                settings.discovery_prefilter_require_positive_source_pnl
-                or settings.discovery_prefilter_min_source_pnl_usd is not None
-            )
+        if not settings.discovery_prefilter_accept_if_metrics_missing and (
+            settings.discovery_prefilter_require_positive_source_pnl
+            or settings.discovery_prefilter_min_source_pnl_usd is not None
         ):
             return PrefilterDecision(status="rejected", fail_reason="missing_source_pnl")
         return None

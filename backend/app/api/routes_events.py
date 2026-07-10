@@ -7,7 +7,12 @@ from starlette.responses import StreamingResponse
 
 from app.integrations.redis_client import get_redis
 from app.schemas.event import LiveEvent, LiveEventListResponse
-from app.services.realtime_event_service import EVENTS_ALL_CHANNEL, list_recent_events
+from app.services.realtime_event_service import (
+    latest_event_stream_id,
+    list_recent_events,
+    normalize_stream_cursor,
+    read_event_stream,
+)
 
 router = APIRouter(tags=["events"])
 
@@ -44,27 +49,31 @@ async def events_route(request: Request) -> StreamingResponse:
 
 async def stream_events(request: Request) -> AsyncIterator[str]:
     redis = get_redis()
-    pubsub = redis.pubsub()
-    try:
-        await pubsub.subscribe(EVENTS_ALL_CHANNEL)
-        yield sse_event(
-            {
-                "type": "system",
-                "channel": "events:system",
-                "message": "SSE connected.",
-                "payload": {},
-            }
+    last_event_id = normalize_stream_cursor(request.headers.get("last-event-id"))
+    if last_event_id == "$":
+        last_event_id = await latest_event_stream_id(redis)
+    yield sse_event(
+        {
+            "type": "system",
+            "channel": "events:system",
+            "message": "SSE connected.",
+            "payload": {},
+        }
+    )
+    while not await request.is_disconnected():
+        events = await read_event_stream(
+            redis,
+            last_event_id=last_event_id,
+            block_ms=10_000,
         )
-        while not await request.is_disconnected():
-            message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=10)
-            if message and message.get("type") == "message":
-                yield f"event: message\ndata: {message['data']}\n\n"
-            else:
-                yield ": keepalive\n\n"
-    finally:
-        await pubsub.unsubscribe(EVENTS_ALL_CHANNEL)
-        await pubsub.aclose()
+        if not events:
+            yield ": keepalive\n\n"
+            continue
+        for event in events:
+            last_event_id = str(event["id"])
+            yield sse_event(event, event_id=last_event_id)
 
 
-def sse_event(payload: dict[str, object]) -> str:
-    return f"event: message\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
+def sse_event(payload: dict[str, object], *, event_id: str | None = None) -> str:
+    id_line = f"id: {event_id}\n" if event_id else ""
+    return f"{id_line}event: message\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"

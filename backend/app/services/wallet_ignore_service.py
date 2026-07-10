@@ -42,9 +42,7 @@ async def add_ignored_wallet_addresses(
                 str(address).lower() for address in raw_addresses if isinstance(address, str)
             ]
 
-    merged_addresses = sorted(
-        set(existing_addresses) | {address.lower() for address in addresses}
-    )
+    merged_addresses = sorted(set(existing_addresses) | {address.lower() for address in addresses})
     stmt = insert(Setting).values(
         key=DISCOVERY_IGNORED_WALLET_ADDRESSES_KEY,
         value={"addresses": merged_addresses, "reason": reason},

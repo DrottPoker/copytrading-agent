@@ -34,10 +34,13 @@ def test_source_trade_windows_use_reconstructed_trades_only() -> None:
         fee_usd=Decimal("1"),
     )
 
-    windows = {window.label: window for window in source_trade_windows(
-        [recent_closed, old_closed, open_trade],
-        now=now,
-    )}
+    windows = {
+        window.label: window
+        for window in source_trade_windows(
+            [recent_closed, old_closed, open_trade],
+            now=now,
+        )
+    }
 
     assert windows["60d score window"].closed_trade_count == 1
     assert windows["60d score window"].open_trade_count == 1

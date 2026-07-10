@@ -18,10 +18,38 @@ from app.services.trading_core import TradeIntent
 
 
 class FakeExchange:
-    def __init__(self, *, info: object | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        info: object | None = None,
+        leverage_update_response: dict[str, object] | None = None,
+    ) -> None:
         if info is not None:
             self.info = info
         self.orders: list[dict[str, object]] = []
+        self.leverage_updates: list[dict[str, object]] = []
+        self.events: list[str] = []
+        self.leverage_update_response = (
+            leverage_update_response
+            if leverage_update_response is not None
+            else {"status": "ok", "response": {"type": "default"}}
+        )
+
+    def update_leverage(
+        self,
+        leverage: int,
+        coin: str,
+        is_cross: bool = True,
+    ) -> dict[str, object]:
+        self.events.append("update_leverage")
+        self.leverage_updates.append(
+            {
+                "coin": coin,
+                "leverage": leverage,
+                "is_cross": is_cross,
+            }
+        )
+        return self.leverage_update_response
 
     def order(
         self,
@@ -34,6 +62,7 @@ class FakeExchange:
         reduce_only: bool,
         cloid: object,
     ) -> dict[str, object]:
+        self.events.append("order")
         self.orders.append(
             {
                 "coin": coin,
@@ -187,6 +216,44 @@ def test_expired_mainnet_arming_blocks_entries_but_not_reduce_only_exits() -> No
     )
 
 
+def test_live_client_rejects_entry_above_configured_max_leverage() -> None:
+    settings = live_test_settings()
+    settings.live_trading_max_leverage = Decimal("3")
+    client = HyperliquidLiveTradingClient(settings=settings)
+
+    with pytest.raises(
+        HyperliquidLiveTradingConfigurationError,
+        match="leverage exceeds",
+    ):
+        client.validate_account_order(
+            account=live_test_account(status="enabled"),
+            intent=live_test_intent(leverage=Decimal("4")),
+        )
+
+
+@pytest.mark.asyncio
+async def test_live_client_rejects_fractional_entry_leverage() -> None:
+    exchange = FakeExchange()
+    settings = live_test_settings()
+    client = HyperliquidLiveTradingClient(
+        settings=settings,
+        exchange_factory=lambda _account: exchange,
+        cloid_factory=lambda value: value,
+    )
+
+    with pytest.raises(
+        HyperliquidLiveTradingConfigurationError,
+        match="whole number",
+    ):
+        await client.submit_order(
+            account=live_test_account(status="enabled"),
+            intent=live_test_intent(leverage=Decimal("2.5")),
+        )
+
+    assert exchange.leverage_updates == []
+    assert exchange.orders == []
+
+
 @pytest.mark.asyncio
 async def test_live_client_submits_ioc_order_with_fake_exchange() -> None:
     exchange = FakeExchange()
@@ -235,6 +302,14 @@ async def test_live_client_submits_ioc_order_with_fake_exchange() -> None:
     result = await client.submit_order(account=account, intent=intent)
 
     assert result.status == "filled"
+    assert exchange.events == ["update_leverage", "order"]
+    assert exchange.leverage_updates == [
+        {
+            "coin": "BTC",
+            "leverage": 5,
+            "is_cross": True,
+        }
+    ]
     assert exchange.orders == [
         {
             "coin": "BTC",
@@ -246,6 +321,47 @@ async def test_live_client_submits_ioc_order_with_fake_exchange() -> None:
             "cloid": "0x" + "a" * 32,
         }
     ]
+    assert result.raw_response["leverageUpdate"] == {
+        "coin": "BTC",
+        "leverage": 5,
+        "isCross": True,
+        "response": {"status": "ok", "response": {"type": "default"}},
+    }
+
+
+@pytest.mark.asyncio
+async def test_live_client_does_not_submit_when_leverage_update_is_rejected() -> None:
+    exchange = FakeExchange(
+        leverage_update_response={
+            "status": "err",
+            "response": "Leverage update rejected",
+        }
+    )
+    settings = live_test_settings()
+    client = HyperliquidLiveTradingClient(
+        settings=settings,
+        exchange_factory=lambda _account: exchange,
+        cloid_factory=lambda value: value,
+    )
+
+    with pytest.raises(
+        HyperliquidLiveOrderRejectedError,
+        match="leverage update was rejected before order submission",
+    ):
+        await client.submit_order(
+            account=live_test_account(status="enabled"),
+            intent=live_test_intent(leverage=Decimal("3")),
+        )
+
+    assert exchange.events == ["update_leverage"]
+    assert exchange.leverage_updates == [
+        {
+            "coin": "BTC",
+            "leverage": 3,
+            "is_cross": True,
+        }
+    ]
+    assert exchange.orders == []
 
 
 def test_live_order_wire_price_rounds_without_worse_limit() -> None:
@@ -604,6 +720,7 @@ async def test_live_client_submits_reduce_only_dust_close_with_min_wire_size() -
             size_decimals={0: 0},
         )
     )
+    exchange.update_leverage = None  # type: ignore[method-assign]
     client = HyperliquidLiveTradingClient(
         settings=settings,
         exchange_factory=lambda _account: exchange,
@@ -626,6 +743,8 @@ async def test_live_client_submits_reduce_only_dust_close_with_min_wire_size() -
     result = await client.submit_order(account=account, intent=intent)
 
     assert result.status == "filled"
+    assert exchange.events == ["order"]
+    assert exchange.leverage_updates == []
     assert exchange.orders[0]["size"] == 322.0
     assert exchange.orders[0]["reduce_only"] is True
 
@@ -670,6 +789,7 @@ def live_test_intent(
     limit_price: Decimal = Decimal("100.25"),
     source_price: Decimal = Decimal("100"),
     observed_price: Decimal = Decimal("100"),
+    leverage: Decimal = Decimal("5"),
 ) -> TradeIntent:
     return TradeIntent(
         account_key="live_test",
@@ -686,7 +806,7 @@ def live_test_intent(
         size=size,
         notional_usd=notional_usd,
         margin_usd=Decimal("10"),
-        leverage=Decimal("5"),
+        leverage=leverage,
         limit_price=limit_price,
         source_price=source_price,
         observed_price=observed_price,

@@ -23,10 +23,11 @@ ports directly. Only Caddy is exposed publicly.
 
 - A Linux VPS with Docker and the Docker Compose plugin.
 - Recommended minimum for local Postgres: 2 vCPU, 4 GB RAM, and SSD storage.
-- A domain or subdomain pointing to the VPS public IP, or `DASHBOARD_DOMAIN=:80`
-  for HTTP by IP only.
-- Ports 80 and 443 open in the VPS firewall and cloud firewall when using a
-  domain. Port 80 is enough for IP-only HTTP.
+- A domain or subdomain pointing to the VPS public IP. Plain HTTP and IP-only
+  dashboard deployments are not supported because Basic Auth must be protected
+  by TLS.
+- Ports 80 and 443 open in the VPS firewall and cloud firewall. Caddy uses the
+  domain to provision TLS and redirect HTTP traffic to HTTPS.
 
 ## First Install
 
@@ -65,7 +66,7 @@ POSTGRES_PASSWORD=replace-with-openssl-rand-hex-24-output
 REDIS_URL=redis://redis:6379/0
 
 DASHBOARD_AUTH_USERNAME=admin
-DASHBOARD_AUTH_PASSWORD=replace-with-a-strong-password
+DASHBOARD_AUTH_PASSWORD=replace-with-a-unique-16-plus-character-password
 DASHBOARD_AUTH_ENABLED=true
 DASHBOARD_DOMAIN=dashboard.example.com
 SERVER_API_BASE_URL=http://backend:8000
@@ -73,6 +74,14 @@ BACKUP_STATUS_ENABLED=true
 BACKUP_INTERVAL_SECONDS=86400
 BACKUP_RETENTION_DAYS=7
 ```
+
+`DASHBOARD_DOMAIN` must be a DNS name that resolves to the VPS. Do not use
+`:80`, a raw IP address, or another plain HTTP listener. The dashboard uses
+Basic Auth, so it must only be exposed through Caddy with HTTPS.
+
+Production validation requires a non-empty dashboard username and a unique
+dashboard password of at least 16 characters. Invalid configuration errors
+redact input values so secrets are not written to validation logs.
 
 Use a URL-safe Postgres password because Docker Compose builds database URLs
 from `POSTGRES_*`. This is safe and simple:
@@ -251,6 +260,47 @@ Paper trading state is stored in local Postgres, not in the worker containers.
 After the trading worker restarts it reloads open paper positions, replays
 recent source fills, and checks source live perp state so paper positions can
 close if the source exited while the stack was down.
+
+## Phase 6 Safety Upgrade
+
+Use this sequence once when an existing VPS first receives migration
+`e5a1c7d9b3f2`. The migration creates the durable global live-entry control in
+`paused` state and changes enabled live accounts to `exit_only`. It stops for
+manual review if legacy account relationships or active live routes are
+ambiguous.
+
+Create and verify a pre-upgrade backup before building or migrating:
+
+```bash
+mkdir -p backups/postgres
+docker compose -f docker-compose.vps.yml exec -T postgres \
+  sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' \
+  > backups/postgres/pre-phase6.dump
+test -s backups/postgres/pre-phase6.dump
+```
+
+Build the Phase 6 images, run the migration, and restart the API, both worker
+roles, the dashboard, and Caddy:
+
+```bash
+docker compose -f docker-compose.vps.yml build backend trading-worker maintenance-worker frontend
+docker compose -f docker-compose.vps.yml run --rm backend python -m alembic upgrade head
+docker compose -f docker-compose.vps.yml up -d backend trading-worker maintenance-worker frontend caddy
+```
+
+After the services are healthy:
+
+1. Open Accounts in the dashboard.
+2. Run and confirm a complete fresh reconciliation for each live account.
+3. Review the effective risk limits shown in the Live Entry Safety panel.
+4. Confirm that any account intended for new exposure is in the expected
+   lifecycle state.
+5. Explicitly resume global live entries with a recorded reason only if live
+   execution is intended.
+6. Start individual live accounts only after the global entry state is enabled.
+
+Do not update `live_entry_safety_controls` directly in Postgres. Configuration
+flags and service restarts do not resume the durable entry gate.
 
 ## Backups
 

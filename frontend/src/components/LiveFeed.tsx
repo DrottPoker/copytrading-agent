@@ -18,6 +18,7 @@ export function LiveFeed({ initialEvents }: { initialEvents: LiveEvent[] }) {
   useEffect(() => {
     let isMounted = true;
     let pollInterval: number | null = null;
+    let pollingEnabled = false;
     const apiBaseUrl = getPublicApiBaseUrl();
 
     async function pollRecentEvents() {
@@ -25,12 +26,15 @@ export function LiveFeed({ initialEvents }: { initialEvents: LiveEvent[] }) {
         const response = await fetch(`${apiBaseUrl}/events/recent?limit=100`, {
           cache: "no-store",
         });
+        if (!isMounted || !pollingEnabled) {
+          return;
+        }
         if (!response.ok) {
           setConnectionState("offline");
           return;
         }
         const payload = (await response.json()) as { items?: LiveEvent[] };
-        if (!isMounted) {
+        if (!isMounted || !pollingEnabled) {
           return;
         }
         setEvents((currentEvents) =>
@@ -38,37 +42,52 @@ export function LiveFeed({ initialEvents }: { initialEvents: LiveEvent[] }) {
         );
         setConnectionState("live");
       } catch {
-        if (isMounted) {
+        if (isMounted && pollingEnabled) {
           setConnectionState("offline");
         }
       }
     }
 
     function startPolling() {
-      if (pollInterval !== null) {
+      if (pollingEnabled) {
         return;
       }
+      pollingEnabled = true;
       void pollRecentEvents();
       pollInterval = window.setInterval(() => {
         void pollRecentEvents();
       }, frontendConfig.liveFeedPollMs);
     }
 
+    function stopPolling() {
+      pollingEnabled = false;
+      if (pollInterval !== null) {
+        window.clearInterval(pollInterval);
+        pollInterval = null;
+      }
+    }
+
     if (typeof EventSource === "undefined") {
       startPolling();
       return () => {
         isMounted = false;
-        if (pollInterval !== null) {
-          window.clearInterval(pollInterval);
-        }
+        stopPolling();
       };
     }
 
     const source = new EventSource(`${apiBaseUrl}/events`);
-    source.onopen = () => setConnectionState("live");
+    source.onopen = () => {
+      if (!isMounted) {
+        return;
+      }
+      stopPolling();
+      setConnectionState("live");
+    };
     source.onerror = () => {
+      if (!isMounted) {
+        return;
+      }
       setConnectionState("offline");
-      source.close();
       startPolling();
     };
     source.onmessage = (message) => {
@@ -83,9 +102,7 @@ export function LiveFeed({ initialEvents }: { initialEvents: LiveEvent[] }) {
     return () => {
       isMounted = false;
       source.close();
-      if (pollInterval !== null) {
-        window.clearInterval(pollInterval);
-      }
+      stopPolling();
     };
   }, []);
 

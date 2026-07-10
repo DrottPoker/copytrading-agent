@@ -128,5 +128,9 @@ async def update_wallet(
 
 async def delete_wallet(session: AsyncSession, address: str) -> None:
     wallet = await get_wallet(session, address)
-    await delete_wallet_related_rows(session, addresses=[wallet.address])
+    await delete_wallet_related_rows(
+        session,
+        addresses=[wallet.address],
+        strict_protection=True,
+    )
     await session.commit()

@@ -137,7 +137,9 @@ async def renew_job_lock_loop(
             renewed = await renew_job_lock(key=key, owner=owner, ttl_seconds=ttl_seconds)
         except Exception:
             logger.exception("Failed to renew job lock %s.", key)
-            continue
+            if not stop_event.is_set() and owner_task is not None:
+                owner_task.cancel()
+            return
 
         if not renewed:
             logger.warning("Job lock %s is no longer owned by this worker.", key)

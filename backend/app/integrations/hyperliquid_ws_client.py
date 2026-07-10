@@ -42,10 +42,16 @@ async def stream_user_fills(
 
             while not stop_event.is_set():
                 try:
-                    raw_message = await asyncio.wait_for(websocket.recv(), timeout=30)
+                    raw_message = await receive_until_stop(
+                        websocket,
+                        stop_event=stop_event,
+                        timeout_seconds=30,
+                    )
                 except TimeoutError:
                     await websocket.send(json.dumps({"method": "ping"}))
                     continue
+                if raw_message is None:
+                    return
 
                 try:
                     message = json.loads(raw_message)
@@ -84,10 +90,16 @@ async def stream_all_mids(
 
             while not stop_event.is_set():
                 try:
-                    raw_message = await asyncio.wait_for(websocket.recv(), timeout=30)
+                    raw_message = await receive_until_stop(
+                        websocket,
+                        stop_event=stop_event,
+                        timeout_seconds=30,
+                    )
                 except TimeoutError:
                     await websocket.send(json.dumps({"method": "ping"}))
                     continue
+                if raw_message is None:
+                    return
 
                 try:
                     message = json.loads(raw_message)
@@ -100,3 +112,30 @@ async def stream_all_mids(
         raise
     except Exception as exc:
         raise HyperliquidWebSocketError(str(exc)) from exc
+
+
+async def receive_until_stop(
+    websocket: Any,
+    *,
+    stop_event: asyncio.Event,
+    timeout_seconds: float,
+) -> Any | None:
+    receive_task = asyncio.create_task(websocket.recv())
+    stop_task = asyncio.create_task(stop_event.wait())
+    tasks = (receive_task, stop_task)
+    try:
+        done, _pending = await asyncio.wait(
+            tasks,
+            timeout=timeout_seconds,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if receive_task in done:
+            return await receive_task
+        if stop_task in done:
+            return None
+        raise TimeoutError
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)

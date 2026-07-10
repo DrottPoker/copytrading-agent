@@ -9,9 +9,11 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Numeric,
+    SmallInteger,
     Text,
     UniqueConstraint,
 )
@@ -95,6 +97,45 @@ class WalletFill(Base, TimestampMixin):
     ingest_latency_ms: Mapped[int | None] = mapped_column(Integer)
     is_snapshot: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
     raw_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+
+
+class RealtimeExecutionInbox(Base, TimestampMixin, UpdatedAtMixin):
+    __tablename__ = "realtime_execution_inbox"
+    __table_args__ = (
+        CheckConstraint(
+            "status in ('pending', 'processing')",
+            name="ck_realtime_execution_inbox_status",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0",
+            name="ck_realtime_execution_inbox_attempt_count",
+        ),
+        Index(
+            "ix_realtime_execution_inbox_claim",
+            "status",
+            "available_at",
+            "created_at",
+        ),
+        Index(
+            "ix_realtime_execution_inbox_wallet_created",
+            "wallet_address",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    wallet_address: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    claimed_by: Mapped[str | None] = mapped_column(Text)
+    last_error: Mapped[str | None] = mapped_column(Text)
 
 
 class WalletPosition(Base):
@@ -218,9 +259,7 @@ class WalletMonitoringStat(Base, TimestampMixin, UpdatedAtMixin):
 
     wallet_address: Mapped[str] = mapped_column(Text, primary_key=True)
     first_monitored_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    current_monitoring_started_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True)
-    )
+    current_monitoring_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_monitored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     total_monitored_seconds: Mapped[int] = mapped_column(
         BigInteger, nullable=False, server_default=text("0")
@@ -328,8 +367,14 @@ class CopyTrade(Base, TimestampMixin, UpdatedAtMixin):
     risk_usd: Mapped[Decimal | None] = mapped_column(Numeric)
     pnl_usd: Mapped[Decimal | None] = mapped_column(Numeric)
     pnl_pct: Mapped[Decimal | None] = mapped_column(Numeric)
-    entry_signal_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
-    exit_signal_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    entry_signal_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("copy_signals.id", ondelete="SET NULL"),
+    )
+    exit_signal_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("copy_signals.id", ondelete="SET NULL"),
+    )
     opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -350,7 +395,11 @@ class SourceTradeLink(Base, TimestampMixin):
     )
     source_wallet: Mapped[str] = mapped_column(Text, nullable=False)
     source_fill_id: Mapped[str | None] = mapped_column(Text)
-    copy_trade_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    copy_trade_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("copy_trades.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     coin: Mapped[str] = mapped_column(Text, nullable=False)
     side: Mapped[str] = mapped_column(Text, nullable=False)
     link_type: Mapped[str] = mapped_column(Text, nullable=False)
@@ -484,9 +533,7 @@ class DiscoveryImportRun(Base):
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'running'"))
     requested_limit: Mapped[int] = mapped_column(Integer, nullable=False)
     fetched_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
-    candidate_count: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default=text("0")
-    )
+    candidate_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     inserted_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     updated_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     skipped_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
@@ -624,6 +671,48 @@ class JobLock(Base):
     )
 
 
+class LiveEntrySafetyControl(Base, TimestampMixin, UpdatedAtMixin):
+    __tablename__ = "live_entry_safety_controls"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_live_entry_safety_controls_singleton"),
+        CheckConstraint(
+            "entry_state in ('enabled', 'paused', 'killed')",
+            name="ck_live_entry_safety_controls_state",
+        ),
+        CheckConstraint(
+            "revision >= 0",
+            name="ck_live_entry_safety_controls_revision",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        SmallInteger,
+        primary_key=True,
+        server_default=text("1"),
+    )
+    entry_state: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        server_default=text("'paused'"),
+    )
+    revision: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+        server_default=text("0"),
+    )
+    reason: Mapped[str | None] = mapped_column(Text)
+    changed_by: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        server_default=text("'system'"),
+    )
+    changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
 class TradingAccount(Base, TimestampMixin, UpdatedAtMixin):
     __tablename__ = "trading_accounts"
     __table_args__ = (
@@ -635,6 +724,15 @@ class TradingAccount(Base, TimestampMixin, UpdatedAtMixin):
         CheckConstraint(
             "network in ('mainnet', 'testnet')",
             name="ck_trading_accounts_network",
+        ),
+        CheckConstraint(
+            "lifecycle_version >= 0",
+            name="ck_trading_accounts_lifecycle_version",
+        ),
+        UniqueConstraint(
+            "key",
+            "account_type",
+            name="ux_trading_accounts_key_type",
         ),
         Index("ix_trading_accounts_type_status", "account_type", "status"),
     )
@@ -654,7 +752,32 @@ class TradingAccount(Base, TimestampMixin, UpdatedAtMixin):
     )
     fee_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False, server_default=text("0"))
     last_reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lifecycle_version: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+        server_default=text("0"),
+    )
+    status_changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    status_reason: Mapped[str | None] = mapped_column(Text)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     config_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+
+
+Index(
+    "ux_trading_accounts_live_active_route",
+    TradingAccount.network,
+    func.lower(func.btrim(TradingAccount.wallet_address)),
+    func.coalesce(func.lower(func.btrim(TradingAccount.vault_address)), text("''")),
+    unique=True,
+    postgresql_where=text(
+        "account_type = 'live' and archived_at is null "
+        "and wallet_address is not null and btrim(wallet_address) <> ''"
+    ),
+)
 
 
 class TradingReconciliationRun(Base, TimestampMixin, UpdatedAtMixin):
@@ -707,6 +830,12 @@ class TradingPosition(Base, TimestampMixin, UpdatedAtMixin):
     __table_args__ = (
         CheckConstraint("account_type in ('paper', 'live')", name="ck_trading_positions_type"),
         CheckConstraint("side in ('long', 'short')", name="ck_trading_positions_side"),
+        ForeignKeyConstraint(
+            ["account_key", "account_type"],
+            ["trading_accounts.key", "trading_accounts.account_type"],
+            name="fk_trading_positions_account_key_type_trading_accounts",
+            ondelete="RESTRICT",
+        ),
         UniqueConstraint(
             "account_key",
             "source_wallet",
@@ -743,6 +872,12 @@ class TradingOrder(Base, TimestampMixin, UpdatedAtMixin):
     __tablename__ = "trading_orders"
     __table_args__ = (
         CheckConstraint("account_type in ('paper', 'live')", name="ck_trading_orders_type"),
+        ForeignKeyConstraint(
+            ["account_key", "account_type"],
+            ["trading_accounts.key", "trading_accounts.account_type"],
+            name="fk_trading_orders_account_key_type_trading_accounts",
+            ondelete="RESTRICT",
+        ),
         CheckConstraint(
             "action in ('open', 'add', 'reduce', 'close', 'flip_close', 'flip_open')",
             name="ck_trading_orders_action",
@@ -917,6 +1052,12 @@ class TradingFill(Base, TimestampMixin):
     __tablename__ = "trading_fills"
     __table_args__ = (
         CheckConstraint("account_type in ('paper', 'live')", name="ck_trading_fills_type"),
+        ForeignKeyConstraint(
+            ["account_key", "account_type"],
+            ["trading_accounts.key", "trading_accounts.account_type"],
+            name="fk_trading_fills_account_key_type_trading_accounts",
+            ondelete="RESTRICT",
+        ),
         CheckConstraint(
             "action in ('open', 'add', 'reduce', 'close', 'flip_close', 'flip_open')",
             name="ck_trading_fills_action",
@@ -930,7 +1071,10 @@ class TradingFill(Base, TimestampMixin):
     id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
-    order_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    order_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("trading_orders.id", ondelete="SET NULL"),
+    )
     account_key: Mapped[str] = mapped_column(Text, nullable=False)
     account_type: Mapped[str] = mapped_column(Text, nullable=False)
     source_wallet: Mapped[str] = mapped_column(Text, nullable=False)

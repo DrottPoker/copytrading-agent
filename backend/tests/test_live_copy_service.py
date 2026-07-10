@@ -232,10 +232,7 @@ def test_live_copy_allocation_equity_uses_unified_equity_not_available() -> None
         }
     }
 
-    assert (
-        live_copy_allocation_equity_usd(account, settings=settings)
-        == Decimal("200")
-    )
+    assert live_copy_allocation_equity_usd(account, settings=settings) == Decimal("200")
 
 
 def test_live_copy_allocation_equity_uses_standard_dex_equity() -> None:
@@ -251,10 +248,7 @@ def test_live_copy_allocation_equity_uses_standard_dex_equity() -> None:
         }
     }
 
-    assert (
-        live_copy_allocation_equity_usd(account, dex="xyz", settings=settings)
-        == Decimal("80")
-    )
+    assert live_copy_allocation_equity_usd(account, dex="xyz", settings=settings) == Decimal("80")
 
 
 def test_live_close_size_uses_ratio_while_source_position_remains_open() -> None:
@@ -341,14 +335,11 @@ def test_live_aggregated_below_min_close_size_caps_available_size() -> None:
         filled_size=Decimal("0"),
     )
 
-    assert (
-        live_aggregated_below_min_close_size(
-            close_size=Decimal("0.35"),
-            previous_skip_orders=[previous],
-            available_size=Decimal("0.70"),
-        )
-        == Decimal("0.70")
-    )
+    assert live_aggregated_below_min_close_size(
+        close_size=Decimal("0.35"),
+        previous_skip_orders=[previous],
+        available_size=Decimal("0.70"),
+    ) == Decimal("0.70")
 
 
 @pytest.mark.asyncio

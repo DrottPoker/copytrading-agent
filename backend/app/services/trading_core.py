@@ -139,7 +139,11 @@ def trade_is_buy(*, side: TradeSide, reduce_only: bool) -> bool:
 
 
 def safe_leverage(leverage: Decimal | None) -> Decimal:
-    return leverage if leverage is not None and leverage > ZERO else Decimal("1")
+    return (
+        leverage
+        if leverage is not None and leverage.is_finite() and leverage > ZERO
+        else Decimal("1")
+    )
 
 
 def margin_from_notional(notional_usd: Decimal, leverage: Decimal) -> Decimal:
@@ -244,9 +248,7 @@ def trade_intent_payload(intent: TradeIntent | None) -> dict[str, Any] | None:
             else None
         ),
         "sourceExposurePct": (
-            str(intent.source_exposure_pct)
-            if intent.source_exposure_pct is not None
-            else None
+            str(intent.source_exposure_pct) if intent.source_exposure_pct is not None else None
         ),
         "createdAt": intent.created_at.isoformat(),
     }

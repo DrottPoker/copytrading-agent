@@ -6,8 +6,9 @@ from decimal import Decimal
 from sqlalchemy import bindparam, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import PaperPosition, WalletScore, WatchedWallet
+from app.db.models import WalletScore, WatchedWallet
 from app.integrations.hyperliquid_client import HyperliquidClient
+from app.schemas.wallet import normalize_wallet_address
 from app.schemas.wallet_cleanup import (
     CurrentDrawdownPruneResponse,
     CurrentDrawdownWalletCandidate,
@@ -34,6 +35,11 @@ from app.services.wallet_current_state_service import (
     load_wallet_perp_clearinghouse_states,
     summarize_perp_clearinghouse_states,
 )
+from app.services.wallet_data_policy import (
+    protected_wallets_select_sql,
+    wallet_not_protected_sql,
+    wallet_owned_dependencies,
+)
 from app.services.wallet_ignore_service import add_ignored_wallet_addresses
 
 logger = logging.getLogger(__name__)
@@ -46,6 +52,32 @@ class CurrentDrawdownScanWallet:
     label: str | None
     score: Decimal | None
     perp_dexes: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class WalletDataDeleteResult:
+    requested_addresses: tuple[str, ...]
+    deleted_addresses: tuple[str, ...]
+    protected_reasons: dict[str, tuple[str, ...]]
+    deleted_rows: dict[str, int]
+    deleted_wallets: int = 0
+
+    @property
+    def deleted_fills(self) -> int:
+        return self.deleted_rows.get("wallet_fills", 0)
+
+
+class WalletDataProtectedError(ValueError):
+    def __init__(self, protected_reasons: dict[str, tuple[str, ...]]) -> None:
+        self.protected_reasons = protected_reasons
+        details = ", ".join(
+            f"{address} ({', '.join(reasons)})"
+            for address, reasons in sorted(protected_reasons.items())
+        )
+        super().__init__(
+            "Wallet deletion is blocked while active copy state, open exposure, "
+            f"or in-flight orders exist: {details}."
+        )
 
 
 async def prune_all_wallets(
@@ -269,10 +301,7 @@ def min_closed_trades_rule_result(
                 score=item.score,
                 last_polled_at=item.last_polled_at,
                 last_seen_fill_at=item.last_seen_fill_at,
-                detail=(
-                    f"{item.closed_trade_count} closed trades, "
-                    f"{item.fill_count} fills."
-                ),
+                detail=(f"{item.closed_trade_count} closed trades, {item.fill_count} fills."),
             )
             for item in result.items
         ],
@@ -301,10 +330,7 @@ def max_drawdown_rule_result(
                 max_drawdown_pct=item.max_drawdown_pct,
                 last_polled_at=item.last_polled_at,
                 last_seen_fill_at=item.last_seen_fill_at,
-                detail=(
-                    f"{item.closed_trade_count} closed trades, "
-                    f"{item.fill_count} fills."
-                ),
+                detail=(f"{item.closed_trade_count} closed trades, {item.fill_count} fills."),
             )
             for item in result.items
         ],
@@ -370,15 +396,18 @@ async def prune_zero_fill_wallets(
     deleted_wallets = 0
 
     if not dry_run and addresses:
-        deleted_fills, deleted_wallets = await delete_wallet_related_rows(
+        delete_result = await delete_wallet_related_rows_detailed(
             session,
             addresses=addresses,
         )
-        await add_ignored_wallet_addresses(
-            session,
-            addresses=addresses,
-            reason="zero_fill_prune",
-        )
+        deleted_fills = delete_result.deleted_fills
+        deleted_wallets = delete_result.deleted_wallets
+        if delete_result.deleted_addresses:
+            await add_ignored_wallet_addresses(
+                session,
+                addresses=list(delete_result.deleted_addresses),
+                reason="zero_fill_prune",
+            )
         await session.commit()
 
     return ZeroFillWalletPruneResponse(
@@ -423,15 +452,18 @@ async def prune_stale_fill_wallets(
     deleted_wallets = 0
 
     if not dry_run and addresses:
-        deleted_fills, deleted_wallets = await delete_wallet_related_rows(
+        delete_result = await delete_wallet_related_rows_detailed(
             session,
             addresses=addresses,
         )
-        await add_ignored_wallet_addresses(
-            session,
-            addresses=addresses,
-            reason="stale_fill_prune",
-        )
+        deleted_fills = delete_result.deleted_fills
+        deleted_wallets = delete_result.deleted_wallets
+        if delete_result.deleted_addresses:
+            await add_ignored_wallet_addresses(
+                session,
+                addresses=list(delete_result.deleted_addresses),
+                reason="stale_fill_prune",
+            )
         await session.commit()
 
     return StaleFillPruneResponse(
@@ -487,7 +519,7 @@ async def load_orphan_fill_wallet_candidates(
 ) -> list[OrphanFillWalletCandidate]:
     result = await session.execute(
         text(
-            """
+            f"""
             with orphan_fill_wallets as (
               select
                 wf.wallet_address as address,
@@ -496,11 +528,7 @@ async def load_orphan_fill_wallet_candidates(
               from wallet_fills wf
               left join watched_wallets ww on ww.address = wf.wallet_address
               where ww.address is null
-                and not exists (
-                  select 1
-                  from paper_positions pp
-                  where pp.source_wallet = wf.wallet_address
-                )
+                and {wallet_not_protected_sql("wf.wallet_address")}
               group by wf.wallet_address
             )
             select
@@ -529,9 +557,7 @@ async def load_orphan_fill_wallet_candidates(
             label=row["label"],
             fill_count=int(row["fill_count"] or 0),
             score=str(row["score"]) if row["score"] is not None else None,
-            last_seen_fill_at=(
-                str(row["last_seen_fill_at"]) if row["last_seen_fill_at"] else None
-            ),
+            last_seen_fill_at=(str(row["last_seen_fill_at"]) if row["last_seen_fill_at"] else None),
         )
         for row in result.mappings().all()
     ]
@@ -541,18 +567,14 @@ async def count_orphan_fill_wallets(session: AsyncSession) -> int:
     return int(
         await session.scalar(
             text(
-                """
+                f"""
                 select count(*)
                 from (
                   select wf.wallet_address
                   from wallet_fills wf
                   left join watched_wallets ww on ww.address = wf.wallet_address
                   where ww.address is null
-                    and not exists (
-                      select 1
-                      from paper_positions pp
-                      where pp.source_wallet = wf.wallet_address
-                    )
+                    and {wallet_not_protected_sql("wf.wallet_address")}
                   group by wf.wallet_address
                 ) orphan_wallets
                 """
@@ -591,15 +613,18 @@ async def prune_min_closed_trades_wallets(
     deleted_wallets = 0
 
     if not dry_run and addresses:
-        deleted_fills, deleted_wallets = await delete_wallet_related_rows(
+        delete_result = await delete_wallet_related_rows_detailed(
             session,
             addresses=addresses,
         )
-        await add_ignored_wallet_addresses(
-            session,
-            addresses=addresses,
-            reason="min_closed_trades_prune",
-        )
+        deleted_fills = delete_result.deleted_fills
+        deleted_wallets = delete_result.deleted_wallets
+        if delete_result.deleted_addresses:
+            await add_ignored_wallet_addresses(
+                session,
+                addresses=list(delete_result.deleted_addresses),
+                reason="min_closed_trades_prune",
+            )
         await session.commit()
 
     return MinClosedTradesPruneResponse(
@@ -621,7 +646,7 @@ async def load_min_closed_trades_wallet_candidates(
 ) -> list[MinClosedTradesWalletCandidate]:
     result = await session.execute(
         text(
-            """
+            f"""
             select
               ww.address,
               ww.label,
@@ -636,11 +661,7 @@ async def load_min_closed_trades_wallet_candidates(
             where ww.last_polled_at is not null
               and ww.copy_enabled is false
               and ww.polling_tier <> 'active'
-              and not exists (
-                select 1
-                from paper_positions pp
-                where pp.source_wallet = ww.address
-              )
+              and {wallet_not_protected_sql("ww.address")}
               and ws.trade_count < :min_closed_trades
             group by
               ww.address,
@@ -676,18 +697,14 @@ async def count_min_closed_trades_scan_wallets(session: AsyncSession) -> int:
     return int(
         await session.scalar(
             text(
-                """
+                f"""
                 select count(*)
                 from watched_wallets ww
                 join wallet_scores ws on ws.wallet_address = ww.address
                 where ww.last_polled_at is not null
                   and ww.copy_enabled is false
                   and ww.polling_tier <> 'active'
-                  and not exists (
-                    select 1
-                    from paper_positions pp
-                    where pp.source_wallet = ww.address
-                  )
+                  and {wallet_not_protected_sql("ww.address")}
                 """
             )
         )
@@ -724,15 +741,18 @@ async def prune_max_drawdown_wallets(
     deleted_wallets = 0
 
     if not dry_run and addresses:
-        deleted_fills, deleted_wallets = await delete_wallet_related_rows(
+        delete_result = await delete_wallet_related_rows_detailed(
             session,
             addresses=addresses,
         )
-        await add_ignored_wallet_addresses(
-            session,
-            addresses=addresses,
-            reason="max_drawdown_prune",
-        )
+        deleted_fills = delete_result.deleted_fills
+        deleted_wallets = delete_result.deleted_wallets
+        if delete_result.deleted_addresses:
+            await add_ignored_wallet_addresses(
+                session,
+                addresses=list(delete_result.deleted_addresses),
+                reason="max_drawdown_prune",
+            )
         await session.commit()
 
     return MaxDrawdownPruneResponse(
@@ -754,7 +774,7 @@ async def load_max_drawdown_wallet_candidates(
 ) -> list[MaxDrawdownWalletCandidate]:
     result = await session.execute(
         text(
-            """
+            f"""
             select
               ww.address,
               ww.label,
@@ -770,11 +790,7 @@ async def load_max_drawdown_wallet_candidates(
             where ww.last_polled_at is not null
               and ww.copy_enabled is false
               and ww.polling_tier <> 'active'
-              and not exists (
-                select 1
-                from paper_positions pp
-                where pp.source_wallet = ww.address
-              )
+              and {wallet_not_protected_sql("ww.address")}
               and ws.max_drawdown_pct is not null
               and ws.max_drawdown_pct >= :threshold_pct
             group by
@@ -813,18 +829,14 @@ async def count_max_drawdown_scan_wallets(session: AsyncSession) -> int:
     return int(
         await session.scalar(
             text(
-                """
+                f"""
                 select count(*)
                 from watched_wallets ww
                 join wallet_scores ws on ws.wallet_address = ww.address
                 where ww.last_polled_at is not null
                   and ww.copy_enabled is false
                   and ww.polling_tier <> 'active'
-                  and not exists (
-                    select 1
-                    from paper_positions pp
-                    where pp.source_wallet = ww.address
-                  )
+                  and {wallet_not_protected_sql("ww.address")}
                   and ws.max_drawdown_pct is not null
                 """
             )
@@ -840,7 +852,7 @@ async def load_zero_fill_wallet_candidates(
 ) -> list[ZeroFillWalletCandidate]:
     result = await session.execute(
         text(
-            """
+            f"""
             select
               ww.address,
               ww.label,
@@ -853,11 +865,7 @@ async def load_zero_fill_wallet_candidates(
             where ww.last_polled_at is not null
               and ww.copy_enabled is false
               and ww.polling_tier <> 'active'
-              and not exists (
-                select 1
-                from paper_positions pp
-                where pp.source_wallet = ww.address
-              )
+              and {wallet_not_protected_sql("ww.address")}
               and not exists (
                 select 1
                 from wallet_fills wf
@@ -886,17 +894,13 @@ async def count_zero_fill_scan_wallets(session: AsyncSession) -> int:
     return int(
         await session.scalar(
             text(
-                """
+                f"""
                 select count(*)
                 from watched_wallets ww
                 where ww.last_polled_at is not null
                   and ww.copy_enabled is false
                   and ww.polling_tier <> 'active'
-                  and not exists (
-                    select 1
-                    from paper_positions pp
-                    where pp.source_wallet = ww.address
-                  )
+                  and {wallet_not_protected_sql("ww.address")}
                 """
             )
         )
@@ -912,7 +916,7 @@ async def load_stale_fill_wallet_candidates(
 ) -> list[StaleFillWalletCandidate]:
     result = await session.execute(
         text(
-            """
+            f"""
             select
               ww.address,
               ww.label,
@@ -943,11 +947,7 @@ async def load_stale_fill_wallet_candidates(
                 from wallet_fills wf
                 where wf.wallet_address = ww.address
               )
-              and not exists (
-                select 1
-                from paper_positions pp
-                where pp.source_wallet = ww.address
-              )
+              and {wallet_not_protected_sql("ww.address")}
             order by ww.last_seen_fill_at asc, ww.address asc
             limit :limit
             """
@@ -975,7 +975,7 @@ async def count_stale_fill_scan_wallets(session: AsyncSession) -> int:
     return int(
         await session.scalar(
             text(
-                """
+                f"""
                 select count(*)
                 from watched_wallets ww
                 where ww.last_polled_at is not null
@@ -987,11 +987,7 @@ async def count_stale_fill_scan_wallets(session: AsyncSession) -> int:
                     from wallet_fills wf
                     where wf.wallet_address = ww.address
                   )
-                  and not exists (
-                    select 1
-                    from paper_positions pp
-                    where pp.source_wallet = ww.address
-                  )
+                  and {wallet_not_protected_sql("ww.address")}
                 """
             )
         )
@@ -1003,15 +999,60 @@ async def delete_wallet_related_rows(
     session: AsyncSession,
     *,
     addresses: list[str],
+    strict_protection: bool = False,
 ) -> tuple[int, int]:
-    parameters = {"addresses": addresses}
-    deleted_fills = await delete_wallet_data_rows(session, addresses=addresses)
+    result = await delete_wallet_related_rows_detailed(
+        session,
+        addresses=addresses,
+        strict_protection=strict_protection,
+    )
+    return result.deleted_fills, result.deleted_wallets
+
+
+async def delete_wallet_related_rows_detailed(
+    session: AsyncSession,
+    *,
+    addresses: list[str],
+    strict_protection: bool = False,
+) -> WalletDataDeleteResult:
+    normalized_addresses = normalize_wallet_addresses(addresses)
+    protected_reasons = await load_wallet_protection_reasons(
+        session,
+        addresses=normalized_addresses,
+    )
+    if strict_protection and protected_reasons:
+        raise WalletDataProtectedError(protected_reasons)
+
+    deletable_addresses = [
+        address for address in normalized_addresses if address not in protected_reasons
+    ]
+    data_result = await delete_wallet_data_rows_detailed(
+        session,
+        addresses=deletable_addresses,
+        check_protection=False,
+    )
+    if not data_result.deleted_addresses:
+        return WalletDataDeleteResult(
+            requested_addresses=tuple(normalized_addresses),
+            deleted_addresses=(),
+            protected_reasons=protected_reasons,
+            deleted_rows=data_result.deleted_rows,
+        )
 
     wallets_result = await session.execute(
-        address_list_statement("delete from watched_wallets where address in :addresses"),
-        parameters,
+        address_list_statement(
+            "delete from watched_wallets where address in :addresses returning address"
+        ),
+        {"addresses": list(data_result.deleted_addresses)},
     )
-    return deleted_fills, max(0, wallets_result.rowcount or 0)
+    deleted_addresses = tuple(str(address) for address in wallets_result.scalars().all())
+    return WalletDataDeleteResult(
+        requested_addresses=tuple(normalized_addresses),
+        deleted_addresses=deleted_addresses,
+        protected_reasons=protected_reasons,
+        deleted_rows=data_result.deleted_rows,
+        deleted_wallets=len(deleted_addresses),
+    )
 
 
 async def delete_wallet_data_rows(
@@ -1019,44 +1060,96 @@ async def delete_wallet_data_rows(
     *,
     addresses: list[str],
 ) -> int:
-    parameters = {"addresses": addresses}
-    fills_result = await session.execute(
-        address_list_statement("delete from wallet_fills where wallet_address in :addresses"),
-        parameters,
+    result = await delete_wallet_data_rows_detailed(
+        session,
+        addresses=addresses,
     )
-    await session.execute(
-        address_list_statement("delete from wallet_scores where wallet_address in :addresses"),
-        parameters,
+    return result.deleted_fills
+
+
+async def delete_wallet_data_rows_detailed(
+    session: AsyncSession,
+    *,
+    addresses: list[str],
+    check_protection: bool = True,
+) -> WalletDataDeleteResult:
+    normalized_addresses = normalize_wallet_addresses(addresses)
+    if not normalized_addresses:
+        return WalletDataDeleteResult((), (), {}, {})
+
+    protected_reasons = (
+        await load_wallet_protection_reasons(session, addresses=normalized_addresses)
+        if check_protection
+        else {}
     )
+    deletable_addresses = [
+        address for address in normalized_addresses if address not in protected_reasons
+    ]
+    if not deletable_addresses:
+        return WalletDataDeleteResult(
+            requested_addresses=tuple(normalized_addresses),
+            deleted_addresses=(),
+            protected_reasons=protected_reasons,
+            deleted_rows={},
+        )
+
+    parameters = {"addresses": deletable_addresses}
+    deleted_rows: dict[str, int] = {}
+    for dependency in wallet_owned_dependencies():
+        delete_result = await session.execute(
+            address_list_statement(
+                f"delete from {dependency.table_name} "
+                f"where {dependency.address_column} in :addresses"
+            ),
+            parameters,
+        )
+        deleted_rows[dependency.table_name] = max(0, delete_result.rowcount or 0)
+
     await session.execute(
         address_list_statement(
-            "delete from wallet_score_snapshots where wallet_address in :addresses"
+            "update active_copy_wallets set blocked_by_wallet_address = null "
+            "where blocked_by_wallet_address in :addresses"
         ),
         parameters,
     )
-    await session.execute(
-        address_list_statement("delete from wallet_positions where wallet_address in :addresses"),
-        parameters,
+    return WalletDataDeleteResult(
+        requested_addresses=tuple(normalized_addresses),
+        deleted_addresses=tuple(deletable_addresses),
+        protected_reasons=protected_reasons,
+        deleted_rows=deleted_rows,
     )
-    await session.execute(
+
+
+async def load_wallet_protection_reasons(
+    session: AsyncSession,
+    *,
+    addresses: list[str],
+) -> dict[str, tuple[str, ...]]:
+    normalized_addresses = normalize_wallet_addresses(addresses)
+    if not normalized_addresses:
+        return {}
+
+    result = await session.execute(
         address_list_statement(
-            "delete from active_copy_wallets where wallet_address in :addresses"
+            "select wallet_address, protection_reason from ("
+            f"{protected_wallets_select_sql(include_reasons=True)}"
+            ") protected_wallet_reasons "
+            "where wallet_address in :addresses "
+            "order by wallet_address, protection_reason"
         ),
-        parameters,
+        {"addresses": normalized_addresses},
     )
-    await session.execute(
-        address_list_statement("delete from copy_signals where source_wallet in :addresses"),
-        parameters,
-    )
-    await session.execute(
-        address_list_statement("delete from copy_trades where source_wallet in :addresses"),
-        parameters,
-    )
-    await session.execute(
-        address_list_statement("delete from source_trade_links where source_wallet in :addresses"),
-        parameters,
-    )
-    return max(0, fills_result.rowcount or 0)
+    reasons_by_address: dict[str, list[str]] = {}
+    for row in result.mappings().all():
+        address = str(row["wallet_address"])
+        reasons_by_address.setdefault(address, []).append(str(row["protection_reason"]))
+    return {
+        address: tuple(dict.fromkeys(reasons)) for address, reasons in reasons_by_address.items()
+    }
+
+
+def normalize_wallet_addresses(addresses: list[str]) -> list[str]:
+    return list(dict.fromkeys(normalize_wallet_address(address) for address in addresses))
 
 
 def address_list_statement(sql: str):
@@ -1100,9 +1193,7 @@ async def prune_current_drawdown_wallets(
                 threshold_ratio=threshold_ratio,
             )
 
-    checked_candidates = await asyncio.gather(
-        *(candidate_for_wallet(wallet) for wallet in wallets)
-    )
+    checked_candidates = await asyncio.gather(*(candidate_for_wallet(wallet) for wallet in wallets))
     candidates = [
         candidate
         for candidate in checked_candidates
@@ -1130,15 +1221,18 @@ async def prune_current_drawdown_wallets(
     deleted_wallets = 0
     addresses = [candidate.address for candidate in candidates]
     if not dry_run and addresses:
-        deleted_fills, deleted_wallets = await delete_wallet_related_rows(
+        delete_result = await delete_wallet_related_rows_detailed(
             session,
             addresses=addresses,
         )
-        await add_ignored_wallet_addresses(
-            session,
-            addresses=addresses,
-            reason="current_unrealized_loss_prune",
-        )
+        deleted_fills = delete_result.deleted_fills
+        deleted_wallets = delete_result.deleted_wallets
+        if delete_result.deleted_addresses:
+            await add_ignored_wallet_addresses(
+                session,
+                addresses=list(delete_result.deleted_addresses),
+                reason="current_unrealized_loss_prune",
+            )
         await session.commit()
 
     return CurrentDrawdownPruneResponse(
@@ -1189,15 +1283,18 @@ async def prune_low_score_wallets(
     deleted_wallets = 0
 
     if not dry_run and addresses:
-        deleted_fills, deleted_wallets = await delete_wallet_related_rows(
+        delete_result = await delete_wallet_related_rows_detailed(
             session,
             addresses=addresses,
         )
-        await add_ignored_wallet_addresses(
-            session,
-            addresses=addresses,
-            reason="low_score_prune",
-        )
+        deleted_fills = delete_result.deleted_fills
+        deleted_wallets = delete_result.deleted_wallets
+        if delete_result.deleted_addresses:
+            await add_ignored_wallet_addresses(
+                session,
+                addresses=list(delete_result.deleted_addresses),
+                reason="low_score_prune",
+            )
         await session.commit()
 
     return LowScorePruneResponse(
@@ -1374,9 +1471,7 @@ async def load_current_drawdown_scan_wallets(
             WatchedWallet.enabled.is_(True),
             WatchedWallet.copy_enabled.is_(False),
             WatchedWallet.polling_tier != "active",
-            ~select(PaperPosition.id)
-            .where(PaperPosition.source_wallet == WatchedWallet.address)
-            .exists(),
+            text(wallet_not_protected_sql("watched_wallets.address")),
         )
         .order_by(WatchedWallet.last_polled_at.asc().nulls_first(), WatchedWallet.address.asc())
         .limit(limit)
@@ -1429,11 +1524,7 @@ def low_score_statement(sql: str, *, score_operator: str):
           where ww.copy_enabled is false
             and ww.polling_tier <> 'active'
             and ww.last_polled_at is not null
-            and not exists (
-              select 1
-              from paper_positions pp
-              where pp.source_wallet = ww.address
-            )
+            and {wallet_not_protected_sql("ww.address")}
           group by
             ww.address,
             ww.label,

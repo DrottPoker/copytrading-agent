@@ -10,6 +10,7 @@ import {
   Play,
   Plus,
   RotateCw,
+  ShieldAlert,
   Square,
   Target,
   Trash2,
@@ -61,7 +62,8 @@ const SELECTED_ACCOUNT_STORAGE_KEY = "copyagent.accounts.selectedAccountKey";
 const CREATE_ACCOUNT_DRAFT_STORAGE_KEY = "copyagent.accounts.createAccountDraft";
 
 type Tone = "positive" | "warning" | "danger" | "neutral";
-type TradingAction = "start" | "stop" | "close-all-and-stop" | "delete";
+type TradingAction = "start" | "stop" | "disable" | "close-all-and-stop" | "delete";
+type SafetyAction = "resume" | "pause" | "kill";
 type CreateAccountType = "paper" | "live";
 type RefreshOptions = {
   skipIfCreateDialogOpen?: boolean;
@@ -261,6 +263,7 @@ export function AccountsDashboard({
     "live",
   );
   const [accountAction, setAccountAction] = useState<TradingAction | null>(null);
+  const [safetyAction, setSafetyAction] = useState<SafetyAction | null>(null);
   const [createDraft, setCreateDraft] = useState<CreateAccountDraft>(readCreateAccountDraft);
   const [createSubmitting, setCreateSubmitting] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -380,6 +383,14 @@ export function AccountsDashboard({
         return;
       }
       if (
+        selectedAccount.accountType === "live" &&
+        action === "start" &&
+        tradingAccounts.safety?.entryState !== "enabled"
+      ) {
+        setActionError("Resume global live entries before starting a live account.");
+        return;
+      }
+      if (
         selectedAccount.accountType === "paper" &&
         accountView &&
         action === "close-all-and-stop" &&
@@ -433,24 +444,23 @@ export function AccountsDashboard({
         setAccountAction(null);
       }
     },
-    [accountAction, accountView, refresh, selectedAccount],
+    [accountAction, accountView, refresh, selectedAccount, tradingAccounts.safety?.entryState],
   );
 
   const handleDeleteAccount = useCallback(async () => {
     if (!selectedAccount || accountAction) {
       return;
     }
-    if (selectedAccount.accountType === "live" && selectedAccount.live.status === "enabled") {
-      setActionError("Stop live trading before deleting this account.");
+    if (selectedAccount.accountType === "live" && selectedAccount.live.status !== "disabled") {
+      setActionError("Disable the live account after a fresh flat reconciliation before archiving it.");
       return;
     }
 
-    const warning =
-      selectedAccount.accountType === "live"
-        ? "This deletes local database state only. It does not close exchange positions."
-        : "This deletes local paper positions, fills, allocations, and account history.";
     const confirmed = window.confirm(
-      `Delete ${selectedAccount.label}? ${warning} This cannot be undone.`,
+      selectedAccount.accountType === "live"
+        ? `Archive ${selectedAccount.label}? Trading history is retained.`
+        : `Delete ${selectedAccount.label}? This deletes local paper positions, fills, ` +
+            "allocations, and account history. This cannot be undone.",
     );
     if (!confirmed) {
       return;
@@ -479,6 +489,54 @@ export function AccountsDashboard({
       setAccountAction(null);
     }
   }, [accountAction, refresh, selectedAccount]);
+
+  const handleSafetyAction = useCallback(
+    async (action: SafetyAction) => {
+      if (safetyAction) {
+        return;
+      }
+      if (
+        action === "kill" &&
+        !window.confirm(
+          "Kill all live entries now? Enabled live accounts become exit-only and unsent entries are canceled.",
+        )
+      ) {
+        return;
+      }
+      const defaultReason =
+        action === "resume"
+          ? "Dashboard operator resumed live entries."
+          : action === "pause"
+            ? "Dashboard operator paused live entries."
+            : "Dashboard operator activated the live entry kill switch.";
+      const reason = window.prompt("Reason for this safety action", defaultReason)?.trim();
+      if (!reason) {
+        return;
+      }
+
+      setSafetyAction(action);
+      setActionError(null);
+      try {
+        const response = await fetch(`${getPublicApiBaseUrl()}/trading/safety/${action}`, {
+          cache: "no-store",
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reason }),
+        });
+        if (!response.ok) {
+          setActionError(await responseError(response, `Live entry ${action} failed`));
+          return;
+        }
+        await refresh();
+      } catch {
+        setConnectionState("offline");
+        setActionError(`Live entry ${action} failed.`);
+      } finally {
+        setSafetyAction(null);
+      }
+    },
+    [refresh, safetyAction],
+  );
 
   const handleReconcileLiveAccount = useCallback(
     async (account: TradingAccount) => {
@@ -648,6 +706,57 @@ export function AccountsDashboard({
               <Plus className="h-4 w-4" aria-hidden="true" />
               Create account
             </button>
+            {tradingAccounts.safety ? (
+              <>
+                <StatusPill
+                  label={`entries ${tradingAccounts.safety.entryState}`}
+                  tone={
+                    tradingAccounts.safety.entryState === "enabled"
+                      ? "positive"
+                      : tradingAccounts.safety.entryState === "killed"
+                        ? "danger"
+                        : "warning"
+                  }
+                />
+                {tradingAccounts.safety.entryState === "enabled" ? (
+                  <button
+                    type="button"
+                    onClick={() => void handleSafetyAction("pause")}
+                    disabled={safetyAction !== null}
+                    className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[#f0c36d] bg-[#fff8e8] px-3 py-1.5 text-sm font-semibold text-warning shadow-sm hover:bg-[#fff2d2] disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <ShieldAlert className="h-4 w-4" aria-hidden="true" />
+                    Pause entries
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void handleSafetyAction("resume")}
+                    disabled={safetyAction !== null || !tradingAccounts.liveTradingEnabled}
+                    title={
+                      tradingAccounts.liveTradingEnabled
+                        ? "Resume the durable live entry gate"
+                        : "Enable live trading configuration before resuming entries"
+                    }
+                    className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[#9ccfc0] bg-[#f2fbf7] px-3 py-1.5 text-sm font-semibold text-positive shadow-sm hover:bg-[#e5f6ee] disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <Play className="h-4 w-4" aria-hidden="true" />
+                    Resume entries
+                  </button>
+                )}
+                {tradingAccounts.safety.entryState !== "killed" ? (
+                  <button
+                    type="button"
+                    onClick={() => void handleSafetyAction("kill")}
+                    disabled={safetyAction !== null}
+                    className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[#efb1aa] bg-[#fff5f3] px-3 py-1.5 text-sm font-semibold text-danger shadow-sm hover:bg-[#ffe9e6] disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <XCircle className="h-4 w-4" aria-hidden="true" />
+                    Kill entries
+                  </button>
+                ) : null}
+              </>
+            ) : null}
             <select
               aria-label="Select account"
               className="h-9 min-w-[190px] rounded-md border border-line bg-white px-3 text-sm font-medium text-ink shadow-sm"
@@ -665,6 +774,34 @@ export function AccountsDashboard({
                 label={accountTradingStatusLabel(selectedAccount)}
                 tone={accountTradingStatusTone(selectedAccount)}
               />
+            ) : null}
+            {selectedAccount?.accountType === "live" &&
+            selectedAccount.live.status === "exit_only" ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => void handleTradingAction("disable")}
+                  disabled={accountAction !== null}
+                  title="Reconcile the exchange account and disable only when it is flat"
+                  className="inline-flex min-h-9 items-center gap-2 rounded-md border border-line bg-white px-3 py-1.5 text-sm font-semibold text-ink shadow-sm hover:bg-[#f7f9fb] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {accountAction === "disable" ? (
+                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <Square className="h-4 w-4" aria-hidden="true" />
+                  )}
+                  Verify flat and disable
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleTradingAction("close-all-and-stop")}
+                  disabled={accountAction !== null}
+                  className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[#efb1aa] bg-[#fff5f3] px-3 py-1.5 text-sm font-semibold text-danger shadow-sm hover:bg-[#ffe9e6] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <XCircle className="h-4 w-4" aria-hidden="true" />
+                  Close all
+                </button>
+              </>
             ) : null}
             {selectedAccount ? (
               accountTradingEnabled(selectedAccount) ? (
@@ -700,7 +837,17 @@ export function AccountsDashboard({
                 <button
                   type="button"
                   onClick={() => void handleTradingAction("start")}
-                  disabled={accountAction !== null}
+                  disabled={
+                    accountAction !== null ||
+                    (selectedAccount.accountType === "live" &&
+                      tradingAccounts.safety?.entryState !== "enabled")
+                  }
+                  title={
+                    selectedAccount.accountType === "live" &&
+                    tradingAccounts.safety?.entryState !== "enabled"
+                      ? "Resume global live entries before starting this account"
+                      : "Start trading"
+                  }
                   className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[#9ccfc0] bg-[#f2fbf7] px-3 py-1.5 text-sm font-semibold text-positive shadow-sm hover:bg-[#e5f6ee] disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {accountAction === "start" ? (
@@ -719,12 +866,12 @@ export function AccountsDashboard({
                 disabled={
                   accountAction !== null ||
                   (selectedAccount.accountType === "live" &&
-                    selectedAccount.live.status === "enabled")
+                    selectedAccount.live.status !== "disabled")
                 }
                 title={
                   selectedAccount.accountType === "live" &&
-                  selectedAccount.live.status === "enabled"
-                    ? "Stop live trading before deleting this account"
+                  selectedAccount.live.status !== "disabled"
+                    ? "Disable the live account after a fresh flat reconciliation before archiving it"
                     : "Delete selected account"
                 }
                 className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[#efb1aa] bg-white px-3 py-1.5 text-sm font-semibold text-danger shadow-sm hover:bg-[#fff5f3] disabled:cursor-not-allowed disabled:opacity-60"
@@ -734,7 +881,7 @@ export function AccountsDashboard({
                 ) : (
                   <Trash2 className="h-4 w-4" aria-hidden="true" />
                 )}
-                Delete account
+                {selectedAccount.accountType === "live" ? "Archive account" : "Delete account"}
               </button>
             ) : null}
             {connectionState === "offline" ? <StatusPill label="offline" tone="danger" /> : null}
@@ -748,6 +895,8 @@ export function AccountsDashboard({
           />
         }
       />
+
+      {tradingAccounts.safety ? <LiveSafetyPanel safety={tradingAccounts.safety} /> : null}
 
       <CreateAccountDialog
         accountType={createAccountType}
@@ -1257,6 +1406,87 @@ function Panel({
         <h2 className="text-base font-semibold text-ink">{title}</h2>
       </div>
       <div className="p-4">{children}</div>
+    </section>
+  );
+}
+
+function LiveSafetyPanel({
+  safety,
+}: {
+  safety: NonNullable<TradingAccountsResponse["safety"]>;
+}) {
+  const tone =
+    safety.entryState === "enabled"
+      ? "positive"
+      : safety.entryState === "killed"
+        ? "danger"
+        : "warning";
+  const panelClass =
+    safety.entryState === "enabled"
+      ? "border-[#9ccfc0] bg-[#f2fbf7]"
+      : safety.entryState === "killed"
+        ? "border-[#efb1aa] bg-[#fff5f3]"
+        : "border-[#f0c36d] bg-[#fff8e8]";
+  const limits = safety.riskLimits;
+
+  return (
+    <section className={`mb-4 overflow-hidden rounded-lg border shadow-sm ${panelClass}`}>
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-black/10 px-4 py-3">
+        <div className="flex min-w-0 items-start gap-3">
+          <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0 text-[#5b6770]" aria-hidden="true" />
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-base font-semibold text-ink">Live Entry Safety</h2>
+              <StatusPill label={`entries ${safety.entryState}`} tone={tone} />
+            </div>
+            <p className="mt-1 text-sm text-[#526070]">
+              {safety.reason ?? "No reason recorded."}
+            </p>
+          </div>
+        </div>
+        <p className="text-xs font-medium text-[#526070]">
+          Revision {formatInteger(safety.revision)}, changed by {safety.changedBy} at{" "}
+          {formatDate(safety.changedAt)}
+        </p>
+      </div>
+
+      <div className="px-4 py-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-sm font-semibold text-ink">Effective risk limits</p>
+          <p className="text-xs font-medium text-[#526070]">
+            Review before resuming new exposure.
+          </p>
+        </div>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5">
+          <SmallMetric label="Max order" value={formatCurrency(limits.maxOrderNotionalUsd)} />
+          <SmallMetric
+            label="Max open notional"
+            value={formatCurrency(limits.maxAccountOpenNotionalUsd)}
+          />
+          <SmallMetric label="Open positions" value={formatInteger(limits.maxOpenPositions)} />
+          <SmallMetric label="Daily loss" value={formatCurrency(limits.maxDailyLossUsd)} />
+          <SmallMetric label="Weekly loss" value={formatCurrency(limits.maxWeeklyLossUsd)} />
+          <SmallMetric
+            label="Order rate"
+            value={`${formatInteger(limits.maxOrdersPerMinute)} / min`}
+          />
+          <SmallMetric label="Max leverage" value={`${formatScore(limits.maxLeverage)}x`} />
+          <SmallMetric
+            label="Reconciliation age"
+            value={`${formatInteger(limits.reconciliationMaxSnapshotAgeSeconds)} s`}
+          />
+          <SmallMetric
+            label="Entry intent TTL"
+            value={`${formatInteger(limits.entryIntentTtlSeconds)} s`}
+          />
+        </div>
+        <p className="mt-3 text-xs text-[#526070]">
+          Reduce-only exits
+          {safety.reduceOnlyExitsEnabledWhenStopped
+            ? " remain enabled while entries are stopped."
+            : " follow the global live configuration while entries are stopped."}
+        </p>
+      </div>
     </section>
   );
 }
@@ -2991,6 +3221,9 @@ function tradingActionLabel(action: TradingAction) {
   }
   if (action === "stop") {
     return "Stop trading";
+  }
+  if (action === "disable") {
+    return "Disable account";
   }
   if (action === "delete") {
     return "Delete account";

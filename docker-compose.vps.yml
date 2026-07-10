@@ -17,11 +17,18 @@ services:
       - "8000"
     volumes:
       - ./backups/postgres:/app/backups/postgres:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     depends_on:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
     healthcheck:
       test:
         [
@@ -45,11 +52,18 @@ services:
     environment:
       <<: *app_database_environment
       WORKER_ROLE: "trading"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     depends_on:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
     restart: unless-stopped
 
   maintenance-worker:
@@ -61,11 +75,18 @@ services:
     environment:
       <<: *app_database_environment
       WORKER_ROLE: "maintenance"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     depends_on:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
     restart: unless-stopped
 
   frontend:
@@ -73,11 +94,19 @@ services:
       context: ./frontend
     environment:
       SERVER_API_BASE_URL: http://backend:8000
-      DASHBOARD_AUTH_USERNAME: ${DASHBOARD_AUTH_USERNAME}
-      DASHBOARD_AUTH_PASSWORD: ${DASHBOARD_AUTH_PASSWORD}
+      DASHBOARD_AUTH_USERNAME: ${DASHBOARD_AUTH_USERNAME:?DASHBOARD_AUTH_USERNAME must be set}
+      DASHBOARD_AUTH_PASSWORD: ${DASHBOARD_AUTH_PASSWORD:?DASHBOARD_AUTH_PASSWORD must be set}
       DASHBOARD_AUTH_ENABLED: ${DASHBOARD_AUTH_ENABLED:-true}
     expose:
       - "3000"
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/.next/cache
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     depends_on:
       backend:
         condition: service_healthy
@@ -90,6 +119,12 @@ services:
       - redis_data:/data
     expose:
       - "6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
     restart: unless-stopped
 
   postgres:
@@ -156,7 +191,7 @@ services:
   caddy:
     image: caddy:2-alpine
     environment:
-      DASHBOARD_DOMAIN: ${DASHBOARD_DOMAIN}
+      DASHBOARD_DOMAIN: ${DASHBOARD_DOMAIN:?DASHBOARD_DOMAIN must be set}
     ports:
       - "80:80"
       - "443:443"

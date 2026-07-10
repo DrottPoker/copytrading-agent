@@ -400,6 +400,7 @@ function emptyTradingAccounts(): TradingAccountsResponse {
     accounts: [],
     liveCopyEnabled: false,
     liveTradingEnabled: false,
+    safety: null,
     positions: [],
     closedTrades: [],
     recentFills: [],

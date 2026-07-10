@@ -45,11 +45,15 @@ def test_live_trading_config_is_loaded_from_dedicated_file(
     assert settings.live_trading_max_account_open_notional_usd == Decimal("500")
     assert settings.live_trading_max_open_positions == 5
     assert settings.live_trading_max_daily_loss_usd == Decimal("50")
+    assert settings.live_trading_max_weekly_loss_usd == Decimal("150")
+    assert settings.live_trading_max_leverage == Decimal("5")
     assert settings.live_trading_max_orders_per_minute == 10
     assert settings.live_trading_reduce_only_when_stopped is True
     assert settings.live_trading_reconciliation_enabled is True
     assert settings.live_trading_reconciliation_interval_seconds == 30
     assert settings.live_trading_reconciliation_lookback_minutes == 120
+    assert settings.live_trading_reconciliation_max_snapshot_age_seconds == 90
+    assert settings.live_trading_entry_intent_ttl_seconds == 30
     assert settings.live_trading_allowed_coins == []
     assert settings.live_trading_blocked_coins == []
 
@@ -65,6 +69,25 @@ def test_repository_defaults_start_without_live_credentials(
     assert settings.live_trading_copy_enabled is False
     assert settings.hyperliquid_private_key is None
     assert settings.hyperliquid_wallet_address is None
+
+
+def test_live_trading_max_leverage_must_match_exchange_integer_semantics() -> None:
+    with pytest.raises(ValueError, match="live_trading_max_leverage must be a whole number"):
+        Settings(live_trading_max_leverage=Decimal("2.5"))
+
+
+def test_production_dashboard_auth_requires_nontrivial_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DASHBOARD_AUTH_PASSWORD", "too-short")
+    with pytest.raises(ValueError, match="at least 16 characters") as error:
+        Settings(app_env="production")
+    assert "too-short" not in str(error.value)
+
+    monkeypatch.setenv("DASHBOARD_AUTH_USERNAME", " ")
+    monkeypatch.setenv("DASHBOARD_AUTH_PASSWORD", "long-enough-password")
+    with pytest.raises(ValueError, match="DASHBOARD_AUTH_USERNAME must not be empty"):
+        Settings(app_env="production")
 
 
 def test_mainnet_entry_arming_window_is_limited_to_24_hours() -> None:
@@ -101,7 +124,7 @@ def test_shared_trading_config_is_loaded_from_dedicated_file(
     assert config["trading_copy_top_tier_wallet_count"] == 3
     assert Decimal(str(config["trading_copy_top_tier_allocation_pct"])) == Decimal("0.2")
     assert Decimal(str(config["trading_copy_standard_allocation_pct"])) == Decimal("0.2")
-    assert Decimal(str(config["trading_copy_max_total_allocation_pct"])) == Decimal("1.0")
+    assert Decimal(str(config["trading_copy_max_total_allocation_pct"])) == Decimal("0.8")
     assert Decimal(str(config["trading_copy_min_order_notional_usd"])) == Decimal("10")
     assert config["trading_copy_adjust_small_orders_to_min_order"] is True
     assert config["trading_copy_max_entry_age_seconds"] == 15

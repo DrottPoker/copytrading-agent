@@ -24,8 +24,9 @@ edge in monitor and paper mode before any live execution is activated.
 - Publishes system and fill events through Redis.
 - Shows wallet data, imported fills, and live events in the dashboard.
 - Shows paper accounts, allocations, positions, and recent paper fills.
-- Provides a live-ready trading account and order foundation while keeping the
-  trading worker on paper execution only.
+- Runs paper copy by default and supports guarded live copy, durable live order
+  recovery, and authoritative live reconciliation in the trading worker when
+  intentionally enabled.
 - Protects backend routes with dashboard Basic Auth by default.
 - Coordinates long-running jobs with database-backed locks.
 - Discovers new candidates from Hyperliquid leaderboards, leaderboard

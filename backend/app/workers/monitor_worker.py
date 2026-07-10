@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import signal
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -18,7 +19,11 @@ from app.integrations.hyperliquid_ws_client import (
 from app.integrations.redis_client import get_redis
 from app.services.discovery_service import run_discovery_import
 from app.services.job_lock_service import JobLockAlreadyHeldError, job_lock
-from app.services.live_copy_service import process_live_copy_fills, process_live_copy_recovery
+from app.services.live_copy_service import (
+    live_copy_processing_enabled,
+    process_live_copy_fills,
+    process_live_copy_recovery,
+)
 from app.services.live_trading_service import (
     LIVE_EXCHANGE_SOURCE,
     LiveReconciliationResult,
@@ -39,15 +44,103 @@ from app.services.paper_trading_service import (
     refresh_paper_copy_allocations,
 )
 from app.services.pool_fill_import_service import import_due_pool_wallet_fills
-from app.services.realtime_event_service import publish_event
-from app.services.realtime_fill_service import store_realtime_fills
+from app.services.realtime_event_service import publish_event as publish_realtime_event
+from app.services.realtime_execution_inbox_service import (
+    claim_next_realtime_execution,
+    complete_realtime_execution,
+    retry_realtime_execution,
+)
+from app.services.realtime_fill_service import StoredRealtimeFills, store_realtime_fills
 from app.services.wallet_cleanup_service import prune_all_wallets
 from app.services.wallet_score_service import recalculate_wallet_scores
-from app.services.worker_heartbeat_service import mark_worker_heartbeat
+from app.services.worker_heartbeat_service import delete_worker_heartbeat, mark_worker_heartbeat
+from app.services.worker_lease_service import worker_capability_leases
+from app.services.worker_runtime import WorkerRuntimeState, run_supervised_worker_loop
 
 logger = logging.getLogger(__name__)
 TRADING_WORKER_ROLES = {"all", "trading"}
 MAINTENANCE_WORKER_ROLES = {"all", "maintenance"}
+RUNTIME_EVENT_TIMEOUT_SECONDS = 2
+RUNTIME_EVENT_BATCH_CONCURRENCY = 16
+RUNTIME_EVENT_BATCH_TIMEOUT_SECONDS = RUNTIME_EVENT_TIMEOUT_SECONDS + 0.5
+
+
+@dataclass(frozen=True)
+class RealtimeExecutionWorkItem:
+    inbox_id: str
+
+
+class RealtimeExecutionProcessingError(RuntimeError):
+    pass
+
+
+async def publish_event(
+    redis: Any,
+    *,
+    event_type: str,
+    channel: str,
+    message: str,
+    payload: dict[str, Any],
+    producer: str = "monitor_worker",
+    severity: str = "info",
+    correlation_id: str | None = None,
+    dedupe_key: str | None = None,
+) -> dict[str, Any] | None:
+    """Publish a presentation event without affecting worker correctness."""
+    try:
+        return await asyncio.wait_for(
+            publish_realtime_event(
+                redis,
+                event_type=event_type,
+                channel=channel,
+                message=message,
+                payload=payload,
+                producer=producer,
+                severity=severity,
+                correlation_id=correlation_id,
+                dedupe_key=dedupe_key,
+            ),
+            timeout=RUNTIME_EVENT_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        logger.warning(
+            "runtime event publication failed type=%s channel=%s",
+            event_type,
+            channel,
+            exc_info=True,
+        )
+        return None
+
+
+async def publish_event_batch(redis: Any, events: list[dict[str, Any]]) -> None:
+    if not events:
+        return
+    semaphore = asyncio.Semaphore(RUNTIME_EVENT_BATCH_CONCURRENCY)
+
+    async def publish_one(event: dict[str, Any]) -> None:
+        async with semaphore:
+            await publish_event(redis, **event)
+
+    tasks = [
+        asyncio.create_task(publish_one(event), name="runtime-event-publication")
+        for event in events
+    ]
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*tasks),
+            timeout=RUNTIME_EVENT_BATCH_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        logger.warning(
+            "runtime event batch publication timed out events=%s timeout_seconds=%s",
+            len(events),
+            RUNTIME_EVENT_BATCH_TIMEOUT_SECONDS,
+        )
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def run_worker() -> None:
@@ -96,6 +189,35 @@ async def run_monitor_services(
     stop_event: asyncio.Event,
     settings: Any,
 ) -> None:
+    capabilities = worker_capabilities(settings)
+    runtime = WorkerRuntimeState(
+        role=settings.worker_role,
+        capabilities=capabilities,
+        realtime_queue_capacity=getattr(settings, "realtime_execution_queue_size", 1000),
+    )
+    async with worker_capability_leases(
+        sessionmaker,
+        capabilities=capabilities,
+        ttl_seconds=getattr(settings, "worker_capability_lease_ttl_seconds", 90),
+        runtime_stop_event=stop_event,
+    ):
+        await run_owned_monitor_services(
+            sessionmaker=sessionmaker,
+            redis=redis,
+            stop_event=stop_event,
+            settings=settings,
+            runtime=runtime,
+        )
+
+
+async def run_owned_monitor_services(
+    *,
+    sessionmaker: Any,
+    redis: Any,
+    stop_event: asyncio.Event,
+    settings: Any,
+    runtime: WorkerRuntimeState,
+) -> None:
     runs_trading = worker_runs_trading(settings)
     runs_maintenance = worker_runs_maintenance(settings)
     await publish_event(
@@ -113,12 +235,43 @@ async def run_monitor_services(
     )
     service_started_at = datetime.now(UTC)
     tasks: list[asyncio.Task[None]] = []
+
+    async def publish_loop_error(name: str, error: BaseException) -> None:
+        logger.error("worker loop failed and will restart loop=%s", name, exc_info=error)
+        await publish_event(
+            redis,
+            event_type="worker_loop_error",
+            channel="events:system",
+            message=f"Worker loop {name} failed and will restart.",
+            payload={"loop": name, "error": str(error)},
+            severity="error",
+        )
+
+    def add_supervised(name: str, loop_factory: Any) -> asyncio.Task[None]:
+        task = asyncio.create_task(
+            run_supervised_worker_loop(
+                name=name,
+                loop_factory=loop_factory,
+                stop_event=stop_event,
+                runtime=runtime,
+                restart_delay_seconds=getattr(
+                    settings,
+                    "worker_loop_restart_delay_seconds",
+                    5,
+                ),
+                on_error=publish_loop_error,
+            ),
+            name=f"worker-loop:{name}",
+        )
+        tasks.append(task)
+        return task
+
     price_cache = (
         MarketPriceCache()
         if runs_trading
         and (
             (settings.paper_trading_enabled and settings.paper_copy_enabled)
-            or (settings.live_trading_enabled and settings.live_trading_copy_enabled)
+            or live_copy_processing_enabled(settings)
         )
         and settings.trading_copy_use_live_mid_price
         and settings.trading_copy_market_price_cache_enabled
@@ -126,19 +279,18 @@ async def run_monitor_services(
     )
     if price_cache is not None:
         await price_cache.request_dexes(settings.trading_copy_market_price_cache_dexes)
-        tasks.append(
-            asyncio.create_task(
-                run_market_price_cache_loop(
-                    price_cache=price_cache,
-                    redis=redis,
-                    stop_event=stop_event,
-                    settings=settings,
-                )
-            )
+        add_supervised(
+            "market-price-cache",
+            lambda: run_market_price_cache_loop(
+                price_cache=price_cache,
+                redis=redis,
+                stop_event=stop_event,
+                settings=settings,
+            ),
         )
     if runs_trading and (
         (settings.paper_trading_enabled and settings.paper_copy_enabled)
-        or (settings.live_trading_enabled and settings.live_trading_copy_enabled)
+        or live_copy_processing_enabled(settings)
     ):
         tasks.append(
             asyncio.create_task(
@@ -147,115 +299,137 @@ async def run_monitor_services(
                     redis=redis,
                     settings=settings,
                     price_cache=price_cache,
-                )
+                ),
+                name="worker-once:startup-copy-recovery",
             )
         )
 
-    tasks.append(
-        asyncio.create_task(
-            run_worker_heartbeat_loop(
-                sessionmaker=sessionmaker,
-                stop_event=stop_event,
-                settings=settings,
-                service_started_at=service_started_at,
-                trading_loops=runs_trading,
-                maintenance_loops=runs_maintenance,
-            )
-        )
+    add_supervised(
+        "heartbeat",
+        lambda: run_worker_heartbeat_loop(
+            sessionmaker=sessionmaker,
+            stop_event=stop_event,
+            settings=settings,
+            service_started_at=service_started_at,
+            trading_loops=runs_trading,
+            maintenance_loops=runs_maintenance,
+            runtime=runtime,
+        ),
     )
     if runs_maintenance and settings.discovery_enabled:
-        tasks.append(
-            asyncio.create_task(
-                run_discovery_import_loop(
-                    sessionmaker=sessionmaker,
-                    redis=redis,
-                    stop_event=stop_event,
-                    settings=settings,
-                    interval_seconds=settings.discovery_import_interval_seconds,
-                    run_on_start=settings.discovery_import_on_worker_start,
-                )
-            )
+        add_supervised(
+            "discovery-import",
+            lambda: run_discovery_import_loop(
+                sessionmaker=sessionmaker,
+                redis=redis,
+                stop_event=stop_event,
+                settings=settings,
+                interval_seconds=settings.discovery_import_interval_seconds,
+                run_on_start=settings.discovery_import_on_worker_start,
+            ),
         )
 
     if runs_maintenance and settings.pool_fill_import_enabled:
-        tasks.append(
-            asyncio.create_task(
-                run_pool_fill_import_loop(
-                    sessionmaker=sessionmaker,
-                    redis=redis,
-                    stop_event=stop_event,
-                    settings=settings,
-                    price_cache=price_cache,
-                )
-            )
+        add_supervised(
+            "pool-fill-import",
+            lambda: run_pool_fill_import_loop(
+                sessionmaker=sessionmaker,
+                redis=redis,
+                stop_event=stop_event,
+                settings=settings,
+                price_cache=price_cache,
+            ),
         )
 
     if runs_maintenance and settings.scoring_enabled and not settings.pool_fill_import_enabled:
-        tasks.append(
-            asyncio.create_task(
-                run_scoring_loop(
-                    sessionmaker=sessionmaker,
-                    redis=redis,
-                    stop_event=stop_event,
-                    settings=settings,
-                )
-            )
+        add_supervised(
+            "wallet-scoring",
+            lambda: run_scoring_loop(
+                sessionmaker=sessionmaker,
+                redis=redis,
+                stop_event=stop_event,
+                settings=settings,
+            ),
         )
 
     if runs_trading and settings.paper_trading_enabled and settings.paper_copy_enabled:
-        tasks.append(
-            asyncio.create_task(
-                run_paper_copy_recovery_loop(
-                    sessionmaker=sessionmaker,
-                    redis=redis,
-                    stop_event=stop_event,
-                    settings=settings,
-                    price_cache=price_cache,
-                )
-            )
+        add_supervised(
+            "paper-copy-recovery",
+            lambda: run_paper_copy_recovery_loop(
+                sessionmaker=sessionmaker,
+                redis=redis,
+                stop_event=stop_event,
+                settings=settings,
+                price_cache=price_cache,
+            ),
         )
 
-    if runs_trading and settings.live_trading_enabled and settings.live_trading_copy_enabled:
-        tasks.append(
-            asyncio.create_task(
-                run_live_copy_recovery_loop(
-                    sessionmaker=sessionmaker,
-                    redis=redis,
-                    stop_event=stop_event,
-                    settings=settings,
-                    price_cache=price_cache,
-                )
-            )
+    if runs_trading and live_copy_processing_enabled(settings):
+        add_supervised(
+            "live-copy-recovery",
+            lambda: run_live_copy_recovery_loop(
+                sessionmaker=sessionmaker,
+                redis=redis,
+                stop_event=stop_event,
+                settings=settings,
+                price_cache=price_cache,
+            ),
         )
 
     if (
         runs_trading
-        and settings.live_trading_enabled
+        and (
+            settings.live_trading_enabled
+            or getattr(settings, "live_trading_reduce_only_when_stopped", False)
+        )
         and settings.live_trading_reconciliation_enabled
     ):
-        tasks.append(
-            asyncio.create_task(
-                run_live_trading_reconciliation_loop(
-                    sessionmaker=sessionmaker,
-                    redis=redis,
-                    stop_event=stop_event,
-                    settings=settings,
-                )
-            )
+        add_supervised(
+            "live-reconciliation",
+            lambda: run_live_trading_reconciliation_loop(
+                sessionmaker=sessionmaker,
+                redis=redis,
+                stop_event=stop_event,
+                settings=settings,
+            ),
         )
 
+    realtime_execution_queue: asyncio.Queue[RealtimeExecutionWorkItem] | None = None
     if runs_trading:
-        tasks.append(
-            asyncio.create_task(
-                run_realtime_monitor_loop(
-                    sessionmaker=sessionmaker,
-                    redis=redis,
-                    stop_event=stop_event,
-                    settings=settings,
-                    price_cache=price_cache,
-                )
-            )
+        realtime_intake_closed = asyncio.Event()
+        realtime_execution_queue = asyncio.Queue(
+            maxsize=getattr(settings, "realtime_execution_queue_size", 1000)
         )
+        runtime.mark_queue_state(
+            depth=0,
+            capacity=realtime_execution_queue.maxsize,
+        )
+        add_supervised(
+            "realtime-execution",
+            lambda: run_realtime_execution_loop(
+                execution_queue=realtime_execution_queue,
+                sessionmaker=sessionmaker,
+                redis=redis,
+                stop_event=stop_event,
+                intake_closed_event=realtime_intake_closed,
+                settings=settings,
+                price_cache=price_cache,
+                runtime=runtime,
+            ),
+        )
+        realtime_subscription_task = add_supervised(
+            "realtime-subscription",
+            lambda: run_realtime_monitor_loop(
+                sessionmaker=sessionmaker,
+                redis=redis,
+                stop_event=stop_event,
+                settings=settings,
+                price_cache=price_cache,
+                execution_queue=realtime_execution_queue,
+                runtime=runtime,
+            ),
+        )
+        realtime_subscription_task.add_done_callback(lambda _task: realtime_intake_closed.set())
 
     if not tasks:
         logger.warning("monitor worker role %s has no enabled loops", settings.worker_role)
@@ -263,9 +437,28 @@ async def run_monitor_services(
     try:
         await stop_event.wait()
     finally:
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+                timeout=getattr(settings, "worker_shutdown_drain_seconds", 30),
+            )
+        except TimeoutError:
+            logger.warning("worker shutdown drain timed out; canceling remaining loops")
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            try:
+                async with sessionmaker() as session:
+                    await delete_worker_heartbeat(
+                        session,
+                        role=settings.worker_role,
+                        instance_id=runtime.instance_id,
+                    )
+                    await session.commit()
+            except Exception:
+                logger.exception("failed to remove worker heartbeat during shutdown")
 
 
 async def run_realtime_monitor_loop(
@@ -275,6 +468,8 @@ async def run_realtime_monitor_loop(
     stop_event: asyncio.Event,
     settings: Any,
     price_cache: MarketPriceCache | None = None,
+    execution_queue: asyncio.Queue[RealtimeExecutionWorkItem] | None = None,
+    runtime: WorkerRuntimeState | None = None,
 ) -> None:
     while not stop_event.is_set():
         wallet_addresses = await load_realtime_wallets(
@@ -316,6 +511,8 @@ async def run_realtime_monitor_loop(
                 wallet_addresses=wallet_addresses_for_subscription,
                 settings=settings,
                 price_cache=price_cache,
+                execution_queue=execution_queue,
+                runtime=runtime,
             )
 
         stream_task = asyncio.create_task(
@@ -378,6 +575,7 @@ async def run_worker_heartbeat_loop(
     service_started_at: datetime,
     trading_loops: bool,
     maintenance_loops: bool,
+    runtime: WorkerRuntimeState | None = None,
 ) -> None:
     while not stop_event.is_set():
         try:
@@ -388,6 +586,7 @@ async def run_worker_heartbeat_loop(
                     trading_loops=trading_loops,
                     maintenance_loops=maintenance_loops,
                     started_at=service_started_at,
+                    runtime_payload=runtime.payload() if runtime is not None else None,
                 )
                 await session.commit()
         except Exception:
@@ -486,6 +685,15 @@ def worker_runs_maintenance(settings: Any) -> bool:
     return settings.worker_role in MAINTENANCE_WORKER_ROLES
 
 
+def worker_capabilities(settings: Any) -> tuple[str, ...]:
+    capabilities: list[str] = []
+    if worker_runs_trading(settings):
+        capabilities.append("trading")
+    if worker_runs_maintenance(settings):
+        capabilities.append("maintenance")
+    return tuple(capabilities)
+
+
 def main() -> None:
     asyncio.run(run_worker())
 
@@ -499,9 +707,9 @@ async def load_realtime_wallets(
     if max_wallets <= 0:
         return []
 
-    if (settings.paper_trading_enabled and settings.paper_copy_enabled) or (
-        settings.live_trading_enabled and settings.live_trading_copy_enabled
-    ):
+    if (
+        settings.paper_trading_enabled and settings.paper_copy_enabled
+    ) or live_copy_processing_enabled(settings):
         async with sessionmaker() as session:
             allocations = await refresh_paper_copy_allocations(session, settings=settings)
             await session.commit()
@@ -708,18 +916,21 @@ async def run_pool_fill_import_loop(
                     source_wallet=None,
                     price_cache=price_cache,
                 )
+            scoring_succeeded = True
             if settings.scoring_enabled:
-                await run_wallet_scoring_once(
+                scoring_succeeded = await run_wallet_scoring_once(
                     sessionmaker=sessionmaker,
                     redis=redis,
                     settings=settings,
                 )
-            if settings.wallet_prune_after_pool_import_enabled:
+            if settings.wallet_prune_after_pool_import_enabled and scoring_succeeded:
                 await run_wallet_prune_once(
                     sessionmaker=sessionmaker,
                     redis=redis,
                     settings=settings,
                 )
+            elif settings.wallet_prune_after_pool_import_enabled:
+                logger.warning("wallet prune skipped because scoring did not succeed")
         except JobLockAlreadyHeldError as exc:
             logger.info("pool fill import skipped: %s", exc)
         except Exception as exc:
@@ -759,7 +970,7 @@ async def run_wallet_scoring_once(
     sessionmaker: Any,
     redis: Any,
     settings: Any,
-) -> None:
+) -> bool:
     try:
         async with sessionmaker() as session:
             result = await recalculate_wallet_scores(session, settings=settings)
@@ -779,8 +990,10 @@ async def run_wallet_scoring_once(
             ),
             payload=result.model_dump(mode="json"),
         )
+        return True
     except JobLockAlreadyHeldError as exc:
         logger.info("wallet scoring skipped: %s", exc)
+        return False
     except Exception as exc:
         logger.exception("wallet scoring failed")
         await publish_event(
@@ -790,6 +1003,7 @@ async def run_wallet_scoring_once(
             message="Wallet scoring failed.",
             payload={"error": str(exc)},
         )
+        return False
 
 
 async def run_paper_copy_recovery_loop(
@@ -904,7 +1118,7 @@ async def run_startup_copy_recovery_once(
     settings: Any,
     price_cache: MarketPriceCache | None = None,
 ) -> None:
-    if settings.live_trading_enabled and settings.live_trading_copy_enabled:
+    if live_copy_processing_enabled(settings):
         await run_live_copy_recovery_once(
             sessionmaker=sessionmaker,
             redis=redis,
@@ -1045,15 +1259,14 @@ async def run_live_trading_reconciliation_once(
                     select(TradingAccount.key)
                     .where(
                         TradingAccount.account_type == "live",
-                        TradingAccount.status.in_(["enabled", "exit_only"]),
+                        TradingAccount.archived_at.is_(None),
                     )
                     .order_by(TradingAccount.key.asc())
                 )
                 account_keys = list(account_keys_result.all())
                 for account_key in account_keys:
                     account = await session.scalar(
-                        select(TradingAccount)
-                        .where(
+                        select(TradingAccount).where(
                             TradingAccount.key == account_key,
                             TradingAccount.account_type == "live",
                         )
@@ -1091,9 +1304,7 @@ async def run_live_trading_reconciliation_once(
         return results
 
     if results or failed_accounts:
-        partial_accounts = [
-            result.account_key for result in results if result.status == "partial"
-        ]
+        partial_accounts = [result.account_key for result in results if result.status == "partial"]
         logger.info(
             "live trading reconciliation completed accounts=%s partial=%s failed=%s "
             "fills=%s positions=%s",
@@ -1222,6 +1433,8 @@ async def handle_websocket_message(
     wallet_addresses: list[str],
     settings: Any,
     price_cache: MarketPriceCache | None = None,
+    execution_queue: asyncio.Queue[RealtimeExecutionWorkItem] | None = None,
+    runtime: WorkerRuntimeState | None = None,
 ) -> None:
     channel = message.get("channel")
     if channel in {"subscriptionResponse", "pong"}:
@@ -1258,8 +1471,189 @@ async def handle_websocket_message(
             received_at=received_at,
         )
 
-    if is_snapshot:
-        if settings.live_trading_enabled and settings.live_trading_copy_enabled:
+    if execution_queue is not None:
+        if stored.inbox_id is None:
+            return
+        try:
+            execution_queue.put_nowait(RealtimeExecutionWorkItem(inbox_id=stored.inbox_id))
+            if runtime is not None:
+                runtime.mark_queue_state(
+                    depth=execution_queue.qsize(),
+                    capacity=execution_queue.maxsize,
+                )
+        except asyncio.QueueFull:
+            if runtime is not None:
+                runtime.mark_queue_state(
+                    depth=execution_queue.qsize(),
+                    capacity=execution_queue.maxsize,
+                    dropped=True,
+                )
+            logger.error(
+                "realtime execution wakeup queue full; durable inbox will replay wallet=%s",
+                stored.wallet_address,
+            )
+            await publish_event(
+                redis,
+                event_type="realtime_execution_queue_full",
+                channel="events:system",
+                message="Realtime wakeup queue is full; the durable inbox will replay the work.",
+                payload={
+                    "walletAddress": stored.wallet_address,
+                    "inboxId": stored.inbox_id,
+                },
+                severity="error",
+            )
+        return
+
+    if stored.inbox_id is not None:
+        return
+
+    await process_stored_realtime_fills(
+        stored,
+        sessionmaker=sessionmaker,
+        redis=redis,
+        settings=settings,
+        price_cache=price_cache,
+    )
+
+
+async def run_realtime_execution_loop(
+    *,
+    execution_queue: asyncio.Queue[RealtimeExecutionWorkItem],
+    sessionmaker: Any,
+    redis: Any,
+    stop_event: asyncio.Event,
+    intake_closed_event: asyncio.Event,
+    settings: Any,
+    price_cache: MarketPriceCache | None,
+    runtime: WorkerRuntimeState,
+) -> None:
+    owner = runtime.instance_id
+    claim_timeout_seconds = getattr(
+        settings,
+        "realtime_execution_claim_timeout_seconds",
+        300,
+    )
+    retry_base_seconds = getattr(
+        settings,
+        "realtime_execution_retry_base_seconds",
+        5,
+    )
+    while True:
+        claimed = await claim_next_realtime_execution(
+            sessionmaker,
+            owner=owner,
+            claim_timeout_seconds=claim_timeout_seconds,
+            retry_base_seconds=retry_base_seconds,
+        )
+        if claimed is not None:
+            discard_realtime_wakeup(execution_queue, runtime=runtime)
+            try:
+                await process_stored_realtime_fills(
+                    claimed.stored,
+                    sessionmaker=sessionmaker,
+                    redis=redis,
+                    settings=settings,
+                    price_cache=price_cache,
+                )
+            except asyncio.CancelledError:
+                try:
+                    await retry_realtime_execution(
+                        sessionmaker,
+                        inbox_id=claimed.inbox_id,
+                        owner=owner,
+                        attempt_count=claimed.attempt_count,
+                        error="Realtime execution was interrupted by worker shutdown.",
+                        retry_base_seconds=retry_base_seconds,
+                        immediate=True,
+                    )
+                except Exception:
+                    logger.exception(
+                        "failed to release realtime execution claim during shutdown id=%s",
+                        claimed.inbox_id,
+                    )
+                raise
+            except Exception as exc:
+                await retry_realtime_execution(
+                    sessionmaker,
+                    inbox_id=claimed.inbox_id,
+                    owner=owner,
+                    attempt_count=claimed.attempt_count,
+                    error=exc,
+                    retry_base_seconds=retry_base_seconds,
+                )
+                logger.exception(
+                    "realtime execution failed and was returned to the durable inbox id=%s",
+                    claimed.inbox_id,
+                )
+                await publish_event(
+                    redis,
+                    event_type="realtime_execution_retry",
+                    channel="events:system",
+                    message="Realtime execution failed and was scheduled for durable retry.",
+                    payload={
+                        "inboxId": str(claimed.inbox_id),
+                        "walletAddress": claimed.stored.wallet_address,
+                        "attemptCount": claimed.attempt_count,
+                        "error": str(exc),
+                    },
+                    severity="error",
+                )
+            else:
+                completed = await complete_realtime_execution(
+                    sessionmaker,
+                    inbox_id=claimed.inbox_id,
+                    owner=owner,
+                )
+                if not completed:
+                    logger.warning(
+                        "realtime execution completed after its inbox claim was lost id=%s",
+                        claimed.inbox_id,
+                    )
+                runtime.mark_progress("realtime-execution")
+            continue
+
+        if stop_event.is_set() and intake_closed_event.is_set():
+            return
+
+        try:
+            await asyncio.wait_for(execution_queue.get(), timeout=1)
+        except TimeoutError:
+            continue
+        execution_queue.task_done()
+        runtime.mark_queue_state(
+            depth=execution_queue.qsize(),
+            capacity=execution_queue.maxsize,
+        )
+
+
+def discard_realtime_wakeup(
+    execution_queue: asyncio.Queue[RealtimeExecutionWorkItem],
+    *,
+    runtime: WorkerRuntimeState,
+) -> None:
+    try:
+        execution_queue.get_nowait()
+    except asyncio.QueueEmpty:
+        return
+    execution_queue.task_done()
+    runtime.mark_queue_state(
+        depth=execution_queue.qsize(),
+        capacity=execution_queue.maxsize,
+    )
+
+
+async def process_stored_realtime_fills(
+    stored: StoredRealtimeFills,
+    *,
+    sessionmaker: Any,
+    redis: Any,
+    settings: Any,
+    price_cache: MarketPriceCache | None = None,
+) -> None:
+    presentation_events: list[dict[str, Any]] = []
+    if stored.is_snapshot:
+        if live_copy_processing_enabled(settings):
             await run_live_copy_recovery_once(
                 sessionmaker=sessionmaker,
                 redis=redis,
@@ -1275,47 +1669,47 @@ async def handle_websocket_message(
                 source_wallet=stored.wallet_address,
                 price_cache=price_cache,
             )
-        await publish_event(
-            redis,
-            event_type="fill_snapshot",
-            channel="events:fills",
-            message=(
-                f"Snapshot processed for {short_address(stored.wallet_address)}: "
-                f"{stored.inserted} new, {stored.duplicate} duplicate."
-            ),
-            payload={
-                "walletAddress": stored.wallet_address,
-                "fetched": stored.fetched,
-                "inserted": stored.inserted,
-                "duplicate": stored.duplicate,
-            },
+        presentation_events.append(
+            {
+                "event_type": "fill_snapshot",
+                "channel": "events:fills",
+                "message": (
+                    f"Snapshot processed for {short_address(stored.wallet_address)}: "
+                    f"{stored.inserted} new, {stored.duplicate} duplicate."
+                ),
+                "payload": {
+                    "walletAddress": stored.wallet_address,
+                    "fetched": stored.fetched,
+                    "inserted": stored.inserted,
+                    "duplicate": stored.duplicate,
+                },
+            }
         )
+        await publish_event_batch(redis, presentation_events)
         return
 
     for fill in stored.inserted_rows:
-        await publish_event(
-            redis,
-            event_type="fill",
-            channel="events:fills",
-            message=(
-                f"{short_address(stored.wallet_address)} {fill['side']} "
-                f"{fill['coin']} @ {fill['price']}"
-            ),
-            payload={
-                "walletAddress": stored.wallet_address,
-                "fill": fill,
-            },
+        presentation_events.append(
+            {
+                "event_type": "fill",
+                "channel": "events:fills",
+                "message": (
+                    f"{short_address(stored.wallet_address)} {fill['side']} "
+                    f"{fill['coin']} @ {fill['price']}"
+                ),
+                "payload": {
+                    "walletAddress": stored.wallet_address,
+                    "fill": fill,
+                },
+            }
         )
 
-    if (
-        settings.live_trading_enabled
-        and settings.live_trading_copy_enabled
-        and stored.inserted_rows
-    ):
+    processing_errors: list[tuple[str, Exception]] = []
+    if live_copy_processing_enabled(settings) and stored.inserted_rows:
         try:
             if price_cache is not None:
                 await price_cache.request_dexes(
-                    dex_from_coin(fill.get("coin")) for fill in stored.inserted_rows
+                    dex_from_coin(stored_fill.get("coin")) for stored_fill in stored.inserted_rows
                 )
             async with sessionmaker() as session:
                 live_result = await process_live_copy_fills(
@@ -1326,38 +1720,45 @@ async def handle_websocket_message(
                     price_cache=price_cache,
                 )
             if live_result.processed_fills > 0 or live_result.skipped_fills > 0:
-                await publish_event(
-                    redis,
-                    event_type="live_copy",
-                    channel="events:fills",
-                    message=(
-                        f"Live copied {live_result.processed_fills} fills from "
-                        f"{short_address(stored.wallet_address)}"
-                        f"{skip_reason_suffix(live_result.skip_reasons)}."
-                    ),
-                    payload={
-                        "walletAddress": stored.wallet_address,
-                        "processedFills": live_result.processed_fills,
-                        "skippedFills": live_result.skipped_fills,
-                        "accountsUpdated": live_result.accounts_updated,
-                        "skipReasons": live_result.skip_reasons,
-                    },
+                presentation_events.append(
+                    {
+                        "event_type": "live_copy",
+                        "channel": "events:fills",
+                        "message": (
+                            f"Live copied {live_result.processed_fills} fills from "
+                            f"{short_address(stored.wallet_address)}"
+                            f"{skip_reason_suffix(live_result.skip_reasons)}."
+                        ),
+                        "payload": {
+                            "walletAddress": stored.wallet_address,
+                            "processedFills": live_result.processed_fills,
+                            "skippedFills": live_result.skipped_fills,
+                            "accountsUpdated": live_result.accounts_updated,
+                            "skipReasons": live_result.skip_reasons,
+                        },
+                    }
                 )
         except Exception as exc:
+            processing_errors.append(("live", exc))
             logger.exception("live copy processing failed wallet=%s", stored.wallet_address)
-            await publish_event(
-                redis,
-                event_type="live_copy_error",
-                channel="events:system",
-                message="Live copy processing failed.",
-                payload={"walletAddress": stored.wallet_address, "error": str(exc)},
+            presentation_events.append(
+                {
+                    "event_type": "live_copy_error",
+                    "channel": "events:system",
+                    "message": "Live copy processing failed.",
+                    "payload": {
+                        "walletAddress": stored.wallet_address,
+                        "error": str(exc),
+                    },
+                    "severity": "error",
+                }
             )
 
     if settings.paper_trading_enabled and settings.paper_copy_enabled and stored.inserted_rows:
         try:
             if price_cache is not None:
                 await price_cache.request_dexes(
-                    dex_from_coin(fill.get("coin")) for fill in stored.inserted_rows
+                    dex_from_coin(stored_fill.get("coin")) for stored_fill in stored.inserted_rows
                 )
             async with sessionmaker() as session:
                 paper_result = await process_paper_copy_fills(
@@ -1368,34 +1769,49 @@ async def handle_websocket_message(
                     price_cache=price_cache,
                 )
             if paper_result.processed_fills > 0 or paper_result.skipped_fills > 0:
-                await publish_event(
-                    redis,
-                    event_type="paper_copy",
-                    channel="events:fills",
-                    message=(
-                        f"Paper copied {paper_result.processed_fills} fills from "
-                        f"{short_address(stored.wallet_address)}"
-                        f"{skip_reason_suffix(paper_result.skip_reasons)}."
-                    ),
-                    payload={
-                        "walletAddress": stored.wallet_address,
-                        "processedFills": paper_result.processed_fills,
-                        "skippedFills": paper_result.skipped_fills,
-                        "accountsUpdated": paper_result.accounts_updated,
-                        "realizedPnlUsd": str(paper_result.realized_pnl_usd),
-                        "feeUsd": str(paper_result.fee_usd),
-                        "skipReasons": paper_result.skip_reasons,
-                    },
+                presentation_events.append(
+                    {
+                        "event_type": "paper_copy",
+                        "channel": "events:fills",
+                        "message": (
+                            f"Paper copied {paper_result.processed_fills} fills from "
+                            f"{short_address(stored.wallet_address)}"
+                            f"{skip_reason_suffix(paper_result.skip_reasons)}."
+                        ),
+                        "payload": {
+                            "walletAddress": stored.wallet_address,
+                            "processedFills": paper_result.processed_fills,
+                            "skippedFills": paper_result.skipped_fills,
+                            "accountsUpdated": paper_result.accounts_updated,
+                            "realizedPnlUsd": str(paper_result.realized_pnl_usd),
+                            "feeUsd": str(paper_result.fee_usd),
+                            "skipReasons": paper_result.skip_reasons,
+                        },
+                    }
                 )
         except Exception as exc:
+            processing_errors.append(("paper", exc))
             logger.exception("paper copy processing failed wallet=%s", stored.wallet_address)
-            await publish_event(
-                redis,
-                event_type="paper_copy_error",
-                channel="events:system",
-                message="Paper copy processing failed.",
-                payload={"walletAddress": stored.wallet_address, "error": str(exc)},
+            presentation_events.append(
+                {
+                    "event_type": "paper_copy_error",
+                    "channel": "events:system",
+                    "message": "Paper copy processing failed.",
+                    "payload": {
+                        "walletAddress": stored.wallet_address,
+                        "error": str(exc),
+                    },
+                    "severity": "error",
+                }
             )
+
+    await publish_event_batch(redis, presentation_events)
+    if processing_errors:
+        detail = "; ".join(
+            f"{pipeline}: {str(error) or error.__class__.__name__}"
+            for pipeline, error in processing_errors
+        )
+        raise RealtimeExecutionProcessingError(detail) from processing_errors[0][1]
 
 
 async def sleep_until_stop(stop_event: asyncio.Event, seconds: int) -> None:

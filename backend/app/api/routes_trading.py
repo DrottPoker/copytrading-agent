@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import and_, func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,6 +11,7 @@ from app.api.dependencies import db_session
 from app.core.config import Settings, get_settings
 from app.db.models import (
     DiscoveryWalletCandidate,
+    LiveEntrySafetyControl,
     TradingAccount,
     TradingFill,
     TradingOrder,
@@ -21,8 +22,11 @@ from app.db.models import (
 )
 from app.schemas.trading import (
     LiveCloseAllResponse,
+    LiveEntrySafetyChangeRequest,
+    LiveEntrySafetyRead,
     LiveOrderSubmitResponse,
     LiveReconciliationResponse,
+    LiveRiskLimitsRead,
     LiveTradingAccountCreateRequest,
     TestnetLiveOrderRequest,
     TradingAccountRead,
@@ -46,6 +50,7 @@ from app.services.live_trading_service import (
     create_live_trading_account,
     decimal_or_none,
     delete_live_trading_account,
+    disable_live_trading_account,
     live_capital_mode,
     live_perp_equity_usd,
     live_position_current_notional,
@@ -62,12 +67,17 @@ from app.services.live_trading_service import (
     load_live_closed_trades,
     normalize_user_abstraction,
     reconcile_live_trading_account,
-    set_live_trading_account_status,
+    start_live_trading_account,
+    stop_live_trading_account,
     submit_live_trade_intent,
-    validate_live_account_can_start,
     validate_live_trading_configuration,
 )
 from app.services.trading_account_service import list_trading_accounts
+from app.services.trading_safety_service import (
+    LiveEntrySafetyError,
+    load_live_entry_safety_control,
+    set_live_entry_safety_state,
+)
 from app.services.wallet_service import wallet_pool_rank_cte
 
 router = APIRouter(prefix="/trading", tags=["trading"])
@@ -77,6 +87,38 @@ TRADING_CLOSED_TRADE_LIMIT = 100
 TRADING_CLOSED_TRADE_FILL_SCAN_LIMIT = 5000
 POSITION_ADD_FILL_ACTIONS = frozenset({"open", "add", "flip_open"})
 POSITION_CLOSE_FILL_ACTIONS = frozenset({"reduce", "close", "flip_close"})
+
+
+def request_audit_actor(request: Request) -> str:
+    return str(getattr(request.state, "audit_actor", "dashboard"))
+
+
+def live_entry_safety_read(
+    control: LiveEntrySafetyControl,
+    *,
+    settings: Settings,
+) -> LiveEntrySafetyRead:
+    return LiveEntrySafetyRead(
+        entry_state=control.entry_state,
+        revision=control.revision,
+        reason=control.reason,
+        changed_by=control.changed_by,
+        changed_at=control.changed_at,
+        reduce_only_exits_enabled_when_stopped=(settings.live_trading_reduce_only_when_stopped),
+        risk_limits=LiveRiskLimitsRead(
+            max_order_notional_usd=settings.live_trading_max_order_notional_usd,
+            max_account_open_notional_usd=(settings.live_trading_max_account_open_notional_usd),
+            max_open_positions=settings.live_trading_max_open_positions,
+            max_daily_loss_usd=settings.live_trading_max_daily_loss_usd,
+            max_weekly_loss_usd=settings.live_trading_max_weekly_loss_usd,
+            max_orders_per_minute=settings.live_trading_max_orders_per_minute,
+            max_leverage=settings.live_trading_max_leverage,
+            reconciliation_max_snapshot_age_seconds=(
+                settings.live_trading_reconciliation_max_snapshot_age_seconds
+            ),
+            entry_intent_ttl_seconds=settings.live_trading_entry_intent_ttl_seconds,
+        ),
+    )
 
 
 def source_allocation_pct_for_rank(
@@ -266,9 +308,7 @@ def live_capital_balance_rows(
     last_reconciliation = account_last_reconciliation(account)
     last_attempt = account_last_reconciliation_attempt(account)
     incomplete_components = {
-        str(value)
-        for value in last_attempt.get("incompleteComponents", [])
-        if value is not None
+        str(value) for value in last_attempt.get("incompleteComponents", []) if value is not None
     }
     component_errors = last_attempt.get("componentErrors")
     errors = component_errors if isinstance(component_errors, dict) else {}
@@ -416,8 +456,12 @@ async def load_live_position_entry_execution_delays(
         if position.source_wallet == LIVE_EXCHANGE_SOURCE:
             matching_source_delays = [
                 delay_ms
-                for (account_key, _source_wallet, coin, side), delay_ms
-                in source_position_delays.items()
+                for (
+                    account_key,
+                    _source_wallet,
+                    coin,
+                    side,
+                ), delay_ms in source_position_delays.items()
                 if account_key == position.account_key
                 and coin == position.coin
                 and side == position.side
@@ -514,9 +558,7 @@ def trading_position_read(
     fill_metrics: tuple[int, int, Decimal] | None = None,
 ) -> TradingPositionRead:
     add_fill_count, close_fill_count, realized_pnl_usd = (
-        fill_metrics
-        if fill_metrics is not None
-        else (0, 0, position.realized_pnl_usd)
+        fill_metrics if fill_metrics is not None else (0, 0, position.realized_pnl_usd)
     )
     read = TradingPositionRead.model_validate(position)
     if position.account_type != "live":
@@ -548,6 +590,7 @@ async def list_trading_accounts_route(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> TradingAccountsResponse:
     accounts = await list_trading_accounts(session)
+    safety_control = await load_live_entry_safety_control(session)
     stale_skip_activity_cutoff = datetime.now(UTC) - timedelta(
         seconds=settings.trading_copy_stale_entry_skip_activity_seconds
     )
@@ -608,11 +651,11 @@ async def list_trading_accounts_route(
     )
     return TradingAccountsResponse(
         accounts=[
-            enriched_trading_account_read(account, settings=settings)
-            for account in accounts
+            enriched_trading_account_read(account, settings=settings) for account in accounts
         ],
         live_copy_enabled=settings.live_trading_copy_enabled,
         live_trading_enabled=settings.live_trading_enabled,
+        safety=live_entry_safety_read(safety_control, settings=settings),
         positions=[
             trading_position_read(
                 position,
@@ -624,20 +667,93 @@ async def list_trading_accounts_route(
             )
             for position in positions
         ],
-        recent_fills=[
-            TradingFillRead.model_validate(fill)
-            for fill in recent_fills
-        ],
-        recent_orders=[
-            TradingOrderRead.model_validate(order)
-            for order in recent_orders
-        ],
-        closed_trades=[
-            TradingClosedTradeRead.model_validate(trade)
-            for trade in closed_trades
-        ],
+        recent_fills=[TradingFillRead.model_validate(fill) for fill in recent_fills],
+        recent_orders=[TradingOrderRead.model_validate(order) for order in recent_orders],
+        closed_trades=[TradingClosedTradeRead.model_validate(trade) for trade in closed_trades],
         source_metadata=source_metadata,
         updated_at=datetime.now(UTC),
+    )
+
+
+@router.get("/safety", response_model=LiveEntrySafetyRead)
+async def get_live_entry_safety_route(
+    session: Annotated[AsyncSession, Depends(db_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> LiveEntrySafetyRead:
+    control = await load_live_entry_safety_control(session)
+    return live_entry_safety_read(control, settings=settings)
+
+
+async def change_live_entry_safety_state(
+    *,
+    entry_state: str,
+    payload: LiveEntrySafetyChangeRequest,
+    session: AsyncSession,
+    settings: Settings,
+    actor: str,
+) -> LiveEntrySafetyRead:
+    try:
+        if entry_state == "enabled":
+            validate_live_trading_configuration(settings)
+        control = await set_live_entry_safety_state(
+            session,
+            entry_state=entry_state,
+            reason=payload.reason,
+            actor=actor,
+        )
+        response = live_entry_safety_read(control, settings=settings)
+        await session.commit()
+        return response
+    except LiveEntrySafetyError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/safety/resume", response_model=LiveEntrySafetyRead)
+async def resume_live_entries_route(
+    payload: LiveEntrySafetyChangeRequest,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(db_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> LiveEntrySafetyRead:
+    return await change_live_entry_safety_state(
+        entry_state="enabled",
+        payload=payload,
+        session=session,
+        settings=settings,
+        actor=request_audit_actor(request),
+    )
+
+
+@router.post("/safety/pause", response_model=LiveEntrySafetyRead)
+async def pause_live_entries_route(
+    payload: LiveEntrySafetyChangeRequest,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(db_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> LiveEntrySafetyRead:
+    return await change_live_entry_safety_state(
+        entry_state="paused",
+        payload=payload,
+        session=session,
+        settings=settings,
+        actor=request_audit_actor(request),
+    )
+
+
+@router.post("/safety/kill", response_model=LiveEntrySafetyRead)
+async def kill_live_entries_route(
+    payload: LiveEntrySafetyChangeRequest,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(db_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> LiveEntrySafetyRead:
+    return await change_live_entry_safety_state(
+        entry_state="killed",
+        payload=payload,
+        session=session,
+        settings=settings,
+        actor=request_audit_actor(request),
     )
 
 
@@ -673,12 +789,16 @@ async def create_live_account_route(
 @router.delete("/accounts/{account_key}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_live_account_route(
     account_key: str,
+    request: Request,
     session: Annotated[AsyncSession, Depends(db_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> None:
     try:
         await delete_live_trading_account(
             session,
             account_key=account_key,
+            settings=settings,
+            actor=request_audit_actor(request),
         )
         await session.commit()
     except LiveTradingServiceError as exc:
@@ -690,24 +810,31 @@ async def delete_live_account_route(
 async def set_trading_account_status_route(
     account_key: str,
     payload: TradingAccountStatusRequest,
+    request: Request,
     session: Annotated[AsyncSession, Depends(db_session)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> TradingAccountRead:
     try:
         if payload.status == "enabled":
-            validate_live_trading_configuration(settings)
-        account = await set_live_trading_account_status(
-            session,
-            account_key=account_key,
-            status=payload.status,
-        )
-        if account.status == "enabled":
-            await reconcile_live_trading_account(
+            account = await start_live_trading_account(
                 session,
-                account=account,
+                account_key=account_key,
                 settings=settings,
+                actor=request_audit_actor(request),
             )
-            validate_live_account_can_start(account, settings=settings)
+        elif payload.status == "exit_only":
+            account = await stop_live_trading_account(
+                session,
+                account_key=account_key,
+                actor=request_audit_actor(request),
+            )
+        else:
+            account = await disable_live_trading_account(
+                session,
+                account_key=account_key,
+                settings=settings,
+                actor=request_audit_actor(request),
+            )
         response = await trading_account_read(session, account, settings)
         await session.commit()
         return response
@@ -719,22 +846,17 @@ async def set_trading_account_status_route(
 @router.post("/accounts/{account_key}/start", response_model=TradingAccountRead)
 async def start_live_account_route(
     account_key: str,
+    request: Request,
     session: Annotated[AsyncSession, Depends(db_session)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> TradingAccountRead:
     try:
-        validate_live_trading_configuration(settings)
-        account = await set_live_trading_account_status(
+        account = await start_live_trading_account(
             session,
             account_key=account_key,
-            status="enabled",
-        )
-        await reconcile_live_trading_account(
-            session,
-            account=account,
             settings=settings,
+            actor=request_audit_actor(request),
         )
-        validate_live_account_can_start(account, settings=settings)
         response = await trading_account_read(session, account, settings)
         await session.commit()
         return response
@@ -746,14 +868,37 @@ async def start_live_account_route(
 @router.post("/accounts/{account_key}/stop", response_model=TradingAccountRead)
 async def stop_live_account_route(
     account_key: str,
+    request: Request,
     session: Annotated[AsyncSession, Depends(db_session)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> TradingAccountRead:
     try:
-        account = await set_live_trading_account_status(
+        account = await stop_live_trading_account(
             session,
             account_key=account_key,
-            status="exit_only",
+            actor=request_audit_actor(request),
+        )
+        response = await trading_account_read(session, account, settings)
+        await session.commit()
+        return response
+    except LiveTradingServiceError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.post("/accounts/{account_key}/disable", response_model=TradingAccountRead)
+async def disable_live_account_route(
+    account_key: str,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(db_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> TradingAccountRead:
+    try:
+        account = await disable_live_trading_account(
+            session,
+            account_key=account_key,
+            settings=settings,
+            actor=request_audit_actor(request),
         )
         response = await trading_account_read(session, account, settings)
         await session.commit()

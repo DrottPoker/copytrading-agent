@@ -6,39 +6,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.database import FillRetentionCleanupResponse
 from app.services.job_lock_service import job_lock
+from app.services.wallet_data_policy import protected_wallets_cte
 
 RETENTION_LOCK_KEY = "fill_retention_cleanup"
 RETENTION_LOCK_TTL_SECONDS = 900
 
-PROTECTED_WALLETS_CTE = """
-protected_wallets as (
-  select address as wallet_address
-  from watched_wallets
-  where copy_enabled is true
-     or polling_tier = 'active'
-  union
-  select source_wallet as wallet_address
-  from paper_positions
-  union
-  select wallet_address
-  from wallet_positions
-  where side <> 'flat'
-  union
-  select wallet_address
-  from active_copy_wallets
-  where has_realtime_slot is true
-     or status = 'active'
-  union
-  select wallet_address
-  from (
-    select wallet_address
-    from wallet_scores
-    where score is not null
-    order by score desc, updated_at desc, wallet_address asc
-    limit :protect_top_score_wallets
-  ) top_scores
-)
-"""
+PROTECTED_WALLETS_CTE = protected_wallets_cte(include_top_scores=True)
 
 
 async def cleanup_wallet_fill_retention(
@@ -70,9 +43,7 @@ async def cleanup_wallet_fill_retention(
     retention_days = max(61, retention_days)
     batch_size = max(100, batch_size)
     max_rows = max(100, max_rows)
-    cutoff_time_ms = int(
-        (datetime.now(UTC) - timedelta(days=retention_days)).timestamp() * 1000
-    )
+    cutoff_time_ms = int((datetime.now(UTC) - timedelta(days=retention_days)).timestamp() * 1000)
     params = {
         "cutoff_time_ms": cutoff_time_ms,
         "protect_top_score_wallets": protect_top_score_wallets,

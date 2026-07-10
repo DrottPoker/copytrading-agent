@@ -17,11 +17,18 @@ services:
       - "8000:8000"
     volumes:
       - ./backups/postgres:/app/backups/postgres:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     depends_on:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
     healthcheck:
       test:
         [
@@ -45,11 +52,18 @@ services:
     environment:
       <<: *app_database_environment
       WORKER_ROLE: "trading"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     depends_on:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
 
   maintenance-worker:
     build:
@@ -61,11 +75,18 @@ services:
     environment:
       <<: *app_database_environment
       WORKER_ROLE: "maintenance"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     depends_on:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
 
   frontend:
     build:
@@ -77,6 +98,14 @@ services:
       DASHBOARD_AUTH_ENABLED: ${DASHBOARD_AUTH_ENABLED:-true}
     ports:
       - "3000:3000"
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/.next/cache
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     depends_on:
       backend:
         condition: service_healthy
@@ -86,6 +115,12 @@ services:
     command: redis-server --appendonly no --save ""
     expose:
       - "6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
 
   postgres:
     image: postgres:18-alpine

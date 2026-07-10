@@ -1,5 +1,6 @@
 import base64
 import binascii
+import re
 import secrets
 
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -10,6 +11,7 @@ from starlette.types import ASGIApp
 from app.core.config import get_settings
 
 AUTH_EXEMPT_PATHS = {"/health", "/ready"}
+UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 
 class DashboardAuthMiddleware(BaseHTTPMiddleware):
@@ -30,6 +32,16 @@ class DashboardAuthMiddleware(BaseHTTPMiddleware):
             expected_username=settings.dashboard_auth_username,
             expected_password=settings.dashboard_auth_password,
         ):
+            request.state.audit_actor = settings.dashboard_auth_username
+            if request.method in UNSAFE_METHODS and not mutation_origin_is_allowed(
+                request,
+                allowed_origins=settings.cors_origin_list,
+                allowed_origin_regex=settings.cors_origin_regex,
+            ):
+                return JSONResponse(
+                    {"detail": "Cross-origin mutation request rejected."},
+                    status_code=403,
+                )
             return await call_next(request)
 
         return JSONResponse(
@@ -65,3 +77,21 @@ def dashboard_basic_auth_is_valid(
         password,
         expected_password,
     )
+
+
+def mutation_origin_is_allowed(
+    request: Request,
+    *,
+    allowed_origins: list[str],
+    allowed_origin_regex: str | None,
+) -> bool:
+    origin = (request.headers.get("origin") or "").strip().rstrip("/")
+    if not origin:
+        return True
+
+    request_origin = f"{request.url.scheme}://{request.url.netloc}".rstrip("/")
+    if secrets.compare_digest(origin.casefold(), request_origin.casefold()):
+        return True
+    if any(origin.casefold() == value.rstrip("/").casefold() for value in allowed_origins):
+        return True
+    return bool(allowed_origin_regex and re.fullmatch(allowed_origin_regex, origin))

@@ -22,6 +22,10 @@ export type TradingAccount = {
   realizedPnlUsd: string;
   feeUsd: string;
   lastReconciledAt: string | null;
+  lifecycleVersion: number;
+  statusChangedAt: string | null;
+  statusReason: string | null;
+  archivedAt: string | null;
   capitalMode: "unified" | "standard_per_dex" | null;
   userAbstraction: string | null;
   tradableEquityUsd: string | null;
@@ -150,10 +154,33 @@ export type TradingSourceMetadata = {
   allocationPct: string | null;
 };
 
+export type LiveRiskLimits = {
+  maxOrderNotionalUsd: string;
+  maxAccountOpenNotionalUsd: string;
+  maxOpenPositions: number;
+  maxDailyLossUsd: string;
+  maxWeeklyLossUsd: string;
+  maxOrdersPerMinute: number;
+  maxLeverage: string;
+  reconciliationMaxSnapshotAgeSeconds: number;
+  entryIntentTtlSeconds: number;
+};
+
+export type LiveEntrySafety = {
+  entryState: "enabled" | "paused" | "killed";
+  revision: number;
+  reason: string | null;
+  changedBy: string;
+  changedAt: string;
+  reduceOnlyExitsEnabledWhenStopped: boolean;
+  riskLimits: LiveRiskLimits;
+};
+
 export type TradingAccountsResponse = {
   accounts: TradingAccount[];
   liveTradingEnabled: boolean;
   liveCopyEnabled: boolean;
+  safety: LiveEntrySafety | null;
   positions: TradingPosition[];
   recentFills: TradingFill[];
   recentOrders: TradingOrder[];

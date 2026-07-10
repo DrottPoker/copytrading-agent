@@ -206,8 +206,7 @@ class ReconstructedWalletTrades:
             return None
         hhi = sum(
             (
-                (profit_usd / self.gross_profit_usd)
-                * (profit_usd / self.gross_profit_usd)
+                (profit_usd / self.gross_profit_usd) * (profit_usd / self.gross_profit_usd)
                 for profit_usd in self.winning_trade_pnls
                 if profit_usd > ZERO
             ),
@@ -535,9 +534,7 @@ def source_trade_window_stats(
         net_pnl_usd=net_pnl_usd,
         roi_pct=net_pnl_usd / entry_notional_usd if entry_notional_usd > ZERO else None,
         win_rate=(
-            Decimal(winning_closed_count) / Decimal(len(closed_items))
-            if closed_items
-            else None
+            Decimal(winning_closed_count) / Decimal(len(closed_items)) if closed_items else None
         ),
     )
 
@@ -1275,9 +1272,7 @@ def get_wallet_trades(
     wallet_address: str,
 ) -> ReconstructedWalletTrades:
     if wallet_address not in trades_by_wallet:
-        trades_by_wallet[wallet_address] = ReconstructedWalletTrades(
-            wallet_address=wallet_address
-        )
+        trades_by_wallet[wallet_address] = ReconstructedWalletTrades(wallet_address=wallet_address)
     return trades_by_wallet[wallet_address]
 
 

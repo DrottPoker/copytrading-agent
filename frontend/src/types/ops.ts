@@ -70,6 +70,26 @@ export type OpsDatabaseSummary = {
   error: string | null;
 };
 
+export type OpsWorkerLoopState = {
+  name: string;
+  status: string;
+  health: OpsCheckStatus;
+  restartCount: number;
+  consecutiveFailures: number;
+  lastError: string | null;
+  lastStartedAt: string | null;
+  lastProgressAt: string | null;
+  updatedAt: string | null;
+};
+
+export type OpsRealtimeQueueHealth = {
+  depth: number;
+  capacity: number;
+  dropped: number;
+  utilizationPct: string | null;
+  status: OpsCheckStatus;
+};
+
 export type OpsWorkerHeartbeat = {
   key: string;
   role: string;
@@ -82,6 +102,10 @@ export type OpsWorkerHeartbeat = {
   tradingLoops: boolean;
   maintenanceLoops: boolean;
   startedAt: string | null;
+  instanceId: string | null;
+  capabilities: string[];
+  loops: OpsWorkerLoopState[];
+  realtimeQueue: OpsRealtimeQueueHealth | null;
 };
 
 export type OpsServiceConfig = {

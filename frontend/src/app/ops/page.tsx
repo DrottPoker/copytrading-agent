@@ -319,27 +319,72 @@ function DependencyList({
 }
 
 function WorkerRow({ worker }: { worker: OpsWorkerHeartbeat }) {
-  const loops = [
-    worker.tradingLoops ? "trading" : null,
-    worker.maintenanceLoops ? "maintenance" : null,
-  ].filter(Boolean);
+  const capabilities =
+    worker.capabilities.length > 0
+      ? worker.capabilities
+      : [worker.tradingLoops ? "trading" : null, worker.maintenanceLoops ? "maintenance" : null].filter(
+          (capability): capability is string => capability !== null,
+        );
 
   return (
-    <div className="grid gap-3 py-3 sm:grid-cols-[130px_1fr_120px] sm:items-center">
-      <div>
-        <p className="text-sm font-semibold">{worker.role}</p>
-        <p className="mt-1 text-xs text-[#5b6770]">{loops.join(", ") || "no loops"}</p>
+    <div className="grid gap-3 py-3">
+      <div className="grid gap-3 sm:grid-cols-[130px_1fr_120px] sm:items-center">
+        <div>
+          <p className="text-sm font-semibold">{worker.role}</p>
+          <p className="mt-1 text-xs text-[#5b6770]">
+            {capabilities.join(", ") || "no capabilities"}
+          </p>
+        </div>
+        <div className="min-w-0">
+          <p className="truncate text-sm">
+            {worker.hostname ?? "-"}
+            {worker.pid ? `, pid ${worker.pid}` : ""}
+            {worker.instanceId ? `, instance ${shortInstanceId(worker.instanceId)}` : ""}
+          </p>
+          <p className="mt-1 text-xs text-[#5b6770]">
+            Last heartbeat {formatAge(worker.ageSeconds)}, started {formatDate(worker.startedAt)}
+          </p>
+        </div>
+        <StatusPill label={worker.status} tone={toneForStatus(worker.status)} />
       </div>
-      <div className="min-w-0">
-        <p className="truncate text-sm">
-          {worker.hostname ?? "-"}
-          {worker.pid ? `, pid ${worker.pid}` : ""}
-        </p>
-        <p className="mt-1 text-xs text-[#5b6770]">
-          Last heartbeat {formatAge(worker.ageSeconds)}, started {formatDate(worker.startedAt)}
-        </p>
-      </div>
-      <StatusPill label={worker.status} tone={toneForStatus(worker.status)} />
+
+      {worker.loops.length > 0 ? (
+        <div className="grid gap-2 sm:grid-cols-2">
+          {worker.loops.map((loop) => (
+            <div key={loop.name} className="rounded-md border border-line bg-[#f8fafb] p-3">
+              <div className="flex items-center justify-between gap-3">
+                <p className="truncate text-sm font-semibold">{loop.name}</p>
+                <StatusPill label={loop.status} tone={toneForStatus(loop.health)} />
+              </div>
+              <p className="mt-2 text-xs text-[#5b6770]">
+                Progress {formatDate(loop.lastProgressAt)}, restarts {formatInteger(loop.restartCount)}
+              </p>
+              {loop.lastError ? <p className="mt-1 truncate text-xs text-danger">{loop.lastError}</p> : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {worker.realtimeQueue ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-line bg-[#f8fafb] px-3 py-2">
+          <div>
+            <p className="text-xs font-medium uppercase text-[#5b6770]">Realtime queue</p>
+            <p className="mt-1 text-sm">
+              {formatInteger(worker.realtimeQueue.depth)}/{formatInteger(worker.realtimeQueue.capacity)} queued,
+              {` ${formatInteger(worker.realtimeQueue.dropped)} dropped`}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-[#5b6770]">
+              {formatPercent(worker.realtimeQueue.utilizationPct)}
+            </span>
+            <StatusPill
+              label={worker.realtimeQueue.status}
+              tone={toneForStatus(worker.realtimeQueue.status)}
+            />
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -451,6 +496,10 @@ function formatAge(seconds: number | null | undefined) {
     return `${hours}h`;
   }
   return `${Math.floor(hours / 24)}d`;
+}
+
+function shortInstanceId(instanceId: string) {
+  return instanceId.length > 12 ? `${instanceId.slice(0, 12)}...` : instanceId;
 }
 
 function formatDecimal(value: string | number | null | undefined) {

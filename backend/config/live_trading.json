@@ -8,12 +8,14 @@
   "execution": {
     "limit_slippage_bps": 20,
     "max_slippage_bps": 50,
-    "order_expires_after_ms": 10000
+    "order_expires_after_ms": 10000,
+    "entry_intent_ttl_seconds": 30
   },
   "reconciliation": {
     "enabled": true,
     "interval_seconds": 30,
-    "lookback_minutes": 120
+    "lookback_minutes": 120,
+    "max_snapshot_age_seconds": 90
   },
   "copy_execution": {
     "enabled": false
@@ -25,7 +27,9 @@
     "max_account_open_notional_usd": 500,
     "max_open_positions": 5,
     "max_daily_loss_usd": 50,
+    "max_weekly_loss_usd": 150,
     "max_orders_per_minute": 10,
+    "max_leverage": 5,
     "reduce_only_when_stopped": true
   },
   "markets": {

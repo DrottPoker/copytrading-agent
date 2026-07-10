@@ -6,7 +6,7 @@ from sqlalchemy import Row, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import WalletFill, WatchedWallet
+from app.db.models import RealtimeExecutionInbox, WalletFill, WatchedWallet
 from app.schemas.wallet import normalize_wallet_address
 from app.services.fill_import_service import build_fill_record
 
@@ -20,6 +20,50 @@ class StoredRealtimeFills:
     is_snapshot: bool
     latest_fill_time_ms: int | None
     inserted_rows: list[dict[str, Any]]
+    inbox_id: str | None = None
+
+    def execution_payload(self) -> dict[str, Any]:
+        return {
+            "walletAddress": self.wallet_address,
+            "fetched": self.fetched,
+            "inserted": self.inserted,
+            "duplicate": self.duplicate,
+            "isSnapshot": self.is_snapshot,
+            "latestFillTimeMs": self.latest_fill_time_ms,
+            "insertedRows": self.inserted_rows,
+        }
+
+    @classmethod
+    def from_execution_payload(
+        cls,
+        payload: dict[str, Any],
+        *,
+        inbox_id: str,
+    ) -> "StoredRealtimeFills":
+        wallet_address = payload.get("walletAddress")
+        inserted_rows = payload.get("insertedRows")
+        is_snapshot = payload.get("isSnapshot")
+        latest_fill_time_ms = payload.get("latestFillTimeMs")
+        if not isinstance(wallet_address, str) or not wallet_address:
+            raise ValueError("Realtime execution payload is missing walletAddress.")
+        if not isinstance(inserted_rows, list) or not all(
+            isinstance(row, dict) for row in inserted_rows
+        ):
+            raise ValueError("Realtime execution payload has invalid insertedRows.")
+        if not isinstance(is_snapshot, bool):
+            raise ValueError("Realtime execution payload has invalid isSnapshot.")
+        if latest_fill_time_ms is not None and not isinstance(latest_fill_time_ms, int):
+            raise ValueError("Realtime execution payload has invalid latestFillTimeMs.")
+        return cls(
+            wallet_address=wallet_address,
+            fetched=payload_int(payload, "fetched"),
+            inserted=payload_int(payload, "inserted"),
+            duplicate=payload_int(payload, "duplicate"),
+            is_snapshot=is_snapshot,
+            latest_fill_time_ms=latest_fill_time_ms,
+            inserted_rows=inserted_rows,
+            inbox_id=inbox_id,
+        )
 
 
 async def store_realtime_fills(
@@ -81,9 +125,7 @@ async def store_realtime_fills(
         if latest_fill_time_ms is not None:
             wallet.last_seen_fill_at = datetime.fromtimestamp(latest_fill_time_ms / 1000, tz=UTC)
 
-    await session.commit()
-
-    return StoredRealtimeFills(
+    stored = StoredRealtimeFills(
         wallet_address=normalized_address,
         fetched=len(records),
         inserted=len(inserted_rows),
@@ -92,6 +134,17 @@ async def store_realtime_fills(
         latest_fill_time_ms=latest_fill_time_ms,
         inserted_rows=inserted_rows,
     )
+    if is_snapshot or inserted_rows:
+        inbox = RealtimeExecutionInbox(
+            wallet_address=normalized_address,
+            payload=stored.execution_payload(),
+        )
+        session.add(inbox)
+        await session.flush()
+        stored.inbox_id = str(inbox.id)
+
+    await session.commit()
+    return stored
 
 
 def _row_to_dict(row: Row[Any]) -> dict[str, Any]:
@@ -113,3 +166,10 @@ def _row_to_dict(row: Row[Any]) -> dict[str, Any]:
         "ingestLatencyMs": mapping["ingest_latency_ms"],
         "rawJson": mapping["raw_json"],
     }
+
+
+def payload_int(payload: dict[str, Any], key: str) -> int:
+    value = payload.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"Realtime execution payload has invalid {key}.")
+    return value

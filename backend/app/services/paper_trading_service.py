@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.db.models import (
+    AuditLog,
     PaperCopyAllocation,
     PaperCopyFill,
     PaperPosition,
@@ -65,9 +66,7 @@ MONITORING_MIN_SNAPSHOT_GAP_SECONDS = 60
 POSITION_ADD_FILL_ACTIONS = frozenset({"open", "add", "flip_open"})
 POSITION_CLOSE_FILL_ACTIONS = frozenset({"reduce", "close", "flip_close"})
 SOURCE_EQUITY_ACTIONS = frozenset({"open", "add", "flip_open"})
-SOURCE_CLOSE_DIRECTIONS = frozenset(
-    {"Close Long", "Close Short", "Long > Short", "Short > Long"}
-)
+SOURCE_CLOSE_DIRECTIONS = frozenset({"Close Long", "Close Short", "Long > Short", "Short > Long"})
 RETRIABLE_EXIT_SKIP_REASONS = frozenset(
     {
         "source_account_state_missing",
@@ -107,6 +106,10 @@ class PaperAccountResetError(Exception):
 
 class PaperAccountResetNotFoundError(PaperAccountResetError):
     status_code = 404
+
+
+class PaperAccountResetUnavailableError(PaperAccountResetError):
+    status_code = 409
 
 
 class PaperAccountControlError(Exception):
@@ -292,13 +295,10 @@ async def get_paper_trading_summary(
             func.count(PaperCopyFill.id)
             .filter(PaperCopyFill.action == "skip")
             .label("skipped_fill_count"),
-            func.coalesce(func.sum(PaperCopyFill.realized_pnl_usd), ZERO).label(
-                "realized_pnl_usd"
-            ),
+            func.coalesce(func.sum(PaperCopyFill.realized_pnl_usd), ZERO).label("realized_pnl_usd"),
             func.coalesce(func.sum(PaperCopyFill.fee_usd), ZERO).label("fee_usd"),
             func.max(PaperCopyFill.filled_at).label("last_fill_at"),
-        )
-        .group_by(PaperCopyFill.source_wallet)
+        ).group_by(PaperCopyFill.source_wallet)
     )
     accounts = list(accounts_result.scalars().all())
     allocations = list(allocations_result.scalars().all())
@@ -488,9 +488,7 @@ async def close_paper_position_manually(
         source_wallet=position_snapshot.source_wallet,
     )
     position = await session.scalar(
-        select(PaperPosition)
-        .where(PaperPosition.id == position_id)
-        .with_for_update()
+        select(PaperPosition).where(PaperPosition.id == position_id).with_for_update()
     )
     if position is None:
         raise PaperPositionNotFoundError("Paper position was not found or is already closed.")
@@ -744,9 +742,7 @@ def paper_position_read(
     fill_counts: tuple[int, int] = (0, 0),
 ) -> dict[str, Any]:
     current_notional = (
-        abs(position.size) * mark_price
-        if mark_price is not None and mark_price > ZERO
-        else None
+        abs(position.size) * mark_price if mark_price is not None and mark_price > ZERO else None
     )
     unrealized_pnl = paper_unrealized_pnl(position=position, mark_price=mark_price)
     return {
@@ -912,21 +908,15 @@ def paper_allocation_reads(
             else allocation.active
         )
         pool_rank = (
-            source_allocation.pool_rank
-            if source_allocation is not None
-            else allocation.rank
+            source_allocation.pool_rank if source_allocation is not None else allocation.rank
         )
         source_status_reason = (
-            source_allocation.status_reason
-            if source_allocation is not None
-            else "copy_candidate"
+            source_allocation.status_reason if source_allocation is not None else "copy_candidate"
         )
         open_position_count = open_position_count_by_source.get(source_wallet, 0)
         account_enabled = account_enabled_by_key.get(allocation.account_key)
         source_can_open_new_positions = (
-            source_allocation.active
-            if source_allocation is not None
-            else allocation.active
+            source_allocation.active if source_allocation is not None else allocation.active
         )
         can_open_new_positions = account_enabled is not False and source_can_open_new_positions
         source_status = paper_source_status(
@@ -1044,9 +1034,7 @@ def paper_wallet_performance_reads(
     monitoring_stats: dict[str, WalletMonitoringSummary],
 ) -> list[dict[str, Any]]:
     sources = {
-        allocation.source_wallet.lower()
-        for allocation in allocations
-        if allocation.source_wallet
+        allocation.source_wallet.lower() for allocation in allocations if allocation.source_wallet
     }
     sources.update(
         str(position["source_wallet"]).lower()
@@ -1054,9 +1042,7 @@ def paper_wallet_performance_reads(
         if position["source_wallet"]
     )
     sources.update(
-        str(row["source_wallet"]).lower()
-        for row in fill_performance_rows
-        if row["source_wallet"]
+        str(row["source_wallet"]).lower() for row in fill_performance_rows if row["source_wallet"]
     )
     sources.update(monitoring_stats.keys())
 
@@ -1090,9 +1076,7 @@ def paper_wallet_performance_reads(
         total_pnl = realized_pnl + unrealized_pnl
         monitoring = monitoring_stats.get(source)
         monitored_seconds = monitoring.monitored_seconds if monitoring is not None else 0
-        allocation_pct = first_decimal(
-            allocation.allocation_pct for allocation in allocation_rows
-        )
+        allocation_pct = first_decimal(allocation.allocation_pct for allocation in allocation_rows)
         rows.append(
             {
                 "source_wallet": source,
@@ -1128,9 +1112,7 @@ def paper_wallet_performance_reads(
                     monitoring.first_monitored_at if monitoring is not None else None
                 ),
                 "current_monitoring_started_at": (
-                    monitoring.current_monitoring_started_at
-                    if monitoring is not None
-                    else None
+                    monitoring.current_monitoring_started_at if monitoring is not None else None
                 ),
                 "last_monitored_at": (
                     monitoring.last_monitored_at if monitoring is not None else None
@@ -1276,9 +1258,7 @@ async def load_closed_trade_open_times(
             continue
         key = (fill.account_key, fill.source_wallet, fill.coin, fill.side)
         candidates = [
-            opened_at
-            for opened_at in open_times_by_key.get(key, [])
-            if opened_at <= fill.filled_at
+            opened_at for opened_at in open_times_by_key.get(key, []) if opened_at <= fill.filled_at
         ]
         if candidates:
             opened_at_by_closed_fill_id[fill.id] = candidates[-1]
@@ -1304,10 +1284,7 @@ async def load_liquidation_source_fill_ids(
             WalletFill.raw_json.has_key("liquidation"),
         )
     )
-    return {
-        (str(row.wallet_address).lower(), str(row.external_fill_id))
-        for row in result.all()
-    }
+    return {(str(row.wallet_address).lower(), str(row.external_fill_id)) for row in result.all()}
 
 
 def paper_copy_fill_reads(
@@ -1608,10 +1585,7 @@ async def process_paper_copy_recovery(
     fill_limit_per_source: int = 1000,
 ) -> PaperCopyBatchResult:
     resolved_settings = settings or get_settings()
-    if (
-        not resolved_settings.paper_trading_enabled
-        or not resolved_settings.paper_copy_enabled
-    ):
+    if not resolved_settings.paper_trading_enabled or not resolved_settings.paper_copy_enabled:
         return PaperCopyBatchResult()
 
     if client is None:
@@ -1668,11 +1642,7 @@ async def load_paper_copy_recovery_sources(
         )
         .limit(max_sources)
     )
-    sources = [
-        str(row.source_wallet).lower()
-        for row in position_result.all()
-        if row.source_wallet
-    ]
+    sources = [str(row.source_wallet).lower() for row in position_result.all() if row.source_wallet]
     remaining = max(max_sources - len(sources), 0)
     if remaining <= 0:
         return unique_strings(sources)
@@ -1694,9 +1664,7 @@ async def load_paper_copy_recovery_sources(
         .limit(remaining)
     )
     sources.extend(
-        str(row.source_wallet).lower()
-        for row in allocation_result.all()
-        if row.source_wallet
+        str(row.source_wallet).lower() for row in allocation_result.all() if row.source_wallet
     )
     return unique_strings(sources)
 
@@ -1785,10 +1753,7 @@ async def load_wallet_fills_for_paper_copy_recovery(
         .order_by(WalletFill.timestamp_ms.asc(), WalletFill.external_fill_id.asc())
         .limit(limit)
     )
-    return [
-        paper_source_fill_from_wallet_fill(fill)
-        for fill in result.scalars().all()
-    ]
+    return [paper_source_fill_from_wallet_fill(fill) for fill in result.scalars().all()]
 
 
 def paper_source_fill_from_wallet_fill(fill: WalletFill) -> dict[str, Any]:
@@ -1917,9 +1882,7 @@ def resolve_source_current_position(
             return position
 
     casefold_index = {
-        key.casefold(): position
-        for key, position in positions_by_coin.items()
-        if key.strip()
+        key.casefold(): position for key, position in positions_by_coin.items() if key.strip()
     }
     for candidate in candidates:
         position = casefold_index.get(candidate.casefold())
@@ -2252,15 +2215,11 @@ async def record_wallet_monitoring_snapshot(
     if monitored:
         conditions.append(WalletMonitoringStat.wallet_address.in_(monitored))
     result = await session.execute(
-        select(WalletMonitoringStat)
-        .where(or_(*conditions))
-        .with_for_update()
+        select(WalletMonitoringStat).where(or_(*conditions)).with_for_update()
     )
     existing_stats = list(result.scalars().all())
     stats_by_wallet = {
-        stat.wallet_address.lower(): stat
-        for stat in existing_stats
-        if stat.wallet_address
+        stat.wallet_address.lower(): stat for stat in existing_stats if stat.wallet_address
     }
     missing_wallets = sorted(monitored - set(stats_by_wallet))
     if missing_wallets:
@@ -2431,12 +2390,10 @@ async def ensure_open_paper_sources_watched(session: AsyncSession) -> None:
 
 
 def open_copy_source_select() -> Any:
-    paper_sources = select(
-        func.lower(PaperPosition.source_wallet).label("source_wallet")
-    ).where(PaperPosition.source_wallet != "")
-    live_sources = select(
-        func.lower(TradingPosition.source_wallet).label("source_wallet")
-    ).where(
+    paper_sources = select(func.lower(PaperPosition.source_wallet).label("source_wallet")).where(
+        PaperPosition.source_wallet != ""
+    )
+    live_sources = select(func.lower(TradingPosition.source_wallet).label("source_wallet")).where(
         TradingPosition.account_type == "live",
         TradingPosition.source_wallet != "",
         TradingPosition.source_wallet != LIVE_EXCHANGE_SOURCE,
@@ -2454,19 +2411,13 @@ async def sync_paper_trading_accounts(
     existing_result = await session.execute(
         select(PaperTradingAccount).where(PaperTradingAccount.key.in_(account_keys))
     )
-    existing_by_key = {
-        account.key: account
-        for account in existing_result.scalars().all()
-    }
+    existing_by_key = {account.key: account for account in existing_result.scalars().all()}
 
     for account_config in settings.paper_copy_accounts:
         config_payload = account_config.model_dump(mode="json")
         existing_account = existing_by_key.get(account_config.key)
         account_enabled = account_config.enabled
-        if (
-            existing_account is not None
-            and existing_account.config_payload == config_payload
-        ):
+        if existing_account is not None and existing_account.config_payload == config_payload:
             account_enabled = existing_account.enabled
 
         stmt = insert(PaperTradingAccount).values(
@@ -2554,9 +2505,7 @@ async def delete_paper_trading_account(
 ) -> None:
     await sync_paper_trading_accounts(session, settings=settings)
     account = await session.scalar(
-        select(PaperTradingAccount)
-        .where(PaperTradingAccount.key == account_key)
-        .with_for_update()
+        select(PaperTradingAccount).where(PaperTradingAccount.key == account_key).with_for_update()
     )
     if account is None:
         raise PaperAccountDeleteNotFoundError("Paper account was not found.")
@@ -2656,9 +2605,7 @@ async def load_paper_source_labels(
         )
     )
     return {
-        str(address).lower(): str(label)
-        for address, label in result.all()
-        if address and label
+        str(address).lower(): str(label) for address, label in result.all() if address and label
     }
 
 
@@ -2670,12 +2617,24 @@ async def reset_paper_trading_account_balance(
 ) -> PaperTradingAccount:
     await sync_paper_trading_accounts(session, settings=settings)
     account = await session.scalar(
-        select(PaperTradingAccount)
-        .where(PaperTradingAccount.key == account_key)
-        .with_for_update()
+        select(PaperTradingAccount).where(PaperTradingAccount.key == account_key).with_for_update()
     )
     if account is None:
         raise PaperAccountResetNotFoundError("Paper account was not found.")
+    if account.enabled:
+        raise PaperAccountResetUnavailableError(
+            "Stop the paper account before resetting its balance."
+        )
+    open_positions = await session.scalar(
+        select(func.count(PaperPosition.id)).where(PaperPosition.account_key == account.key)
+    )
+    if int(open_positions or 0) > 0:
+        raise PaperAccountResetUnavailableError(
+            "Close all paper positions before resetting the account balance."
+        )
+
+    previous_balance = account.cash_balance_usd
+    previous_equity = account.equity_usd
 
     account_config = next(
         (config for config in settings.paper_copy_accounts if config.key == account_key),
@@ -2685,13 +2644,24 @@ async def reset_paper_trading_account_balance(
         config_payload = account_config.model_dump(mode="json")
         account.label = account_config.label
         account.starting_balance_usd = account_config.starting_balance_usd
-        account.enabled = account_config.enabled
         account.config_payload = config_payload
 
     account.cash_balance_usd = account.starting_balance_usd
     account.equity_usd = account.starting_balance_usd
     account.realized_pnl_usd = ZERO
     account.fee_usd = ZERO
+    session.add(
+        AuditLog(
+            actor="dashboard",
+            action="paper_account.balance_reset",
+            payload={
+                "accountKey": account.key,
+                "previousCashBalanceUsd": str(previous_balance),
+                "previousEquityUsd": str(previous_equity),
+                "startingBalanceUsd": str(account.starting_balance_usd),
+            },
+        )
+    )
     await sync_paper_trading_account_mirrors(
         session,
         accounts=[account],
@@ -2709,9 +2679,7 @@ async def set_paper_trading_account_enabled(
 ) -> PaperTradingAccount:
     await sync_paper_trading_accounts(session, settings=settings)
     account = await session.scalar(
-        select(PaperTradingAccount)
-        .where(PaperTradingAccount.key == account_key)
-        .with_for_update()
+        select(PaperTradingAccount).where(PaperTradingAccount.key == account_key).with_for_update()
     )
     if account is None:
         raise PaperAccountControlNotFoundError("Paper account was not found.")
@@ -2842,9 +2810,7 @@ async def load_paper_source_allocations(
                 active=has_realtime_slot,
                 has_realtime_slot=has_realtime_slot,
                 status_reason=(
-                    "copy_candidate"
-                    if has_realtime_slot
-                    else "waiting_for_realtime_slot"
+                    "copy_candidate" if has_realtime_slot else "waiting_for_realtime_slot"
                 ),
             )
         )
@@ -2899,10 +2865,7 @@ def paper_retained_status_reason(
         return "score_unavailable"
     if score <= ZERO:
         return "score_not_positive"
-    if (
-        settings.scoring_current_drawdown_enabled
-        and row["current_drawdown_status"] != "ok"
-    ):
+    if settings.scoring_current_drawdown_enabled and row["current_drawdown_status"] != "ok":
         return "current_drawdown_blocked"
     if pool_rank is not None and pool_rank > settings.trading_copy_top_wallet_count:
         return "outside_copy_top_wallet_count"
@@ -4232,9 +4195,7 @@ def resolve_coin_decimal(values_by_coin: dict[str, Any], coin: str) -> Decimal |
             return value
 
     casefold_index = {
-        str(key).casefold(): value
-        for key, value in values_by_coin.items()
-        if str(key).strip()
+        str(key).casefold(): value for key, value in values_by_coin.items() if str(key).strip()
     }
     for candidate in candidates:
         value = decimal_or_none(casefold_index.get(candidate.casefold()))
@@ -4584,9 +4545,7 @@ def paper_fill_payload(
             "feeRate": str(settings.paper_copy_fee_rate),
             "maxTotalAllocationPct": str(settings.trading_copy_max_total_allocation_pct),
             "minOrderNotionalUsd": str(settings.trading_copy_min_order_notional_usd),
-            "adjustSmallOrdersToMinOrder": (
-                settings.trading_copy_adjust_small_orders_to_min_order
-            ),
+            "adjustSmallOrdersToMinOrder": (settings.trading_copy_adjust_small_orders_to_min_order),
             "slippageBps": str(settings.paper_copy_slippage_bps),
             "latencyMs": settings.paper_copy_latency_ms,
             "maxPriceDriftBps": str(settings.trading_copy_max_price_drift_bps),

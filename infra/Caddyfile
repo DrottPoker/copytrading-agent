@@ -4,11 +4,22 @@
 
 :8080 {
 	encode zstd gzip
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+	}
 	reverse_proxy frontend:3000
 }
 
 :8001 {
 	encode zstd gzip
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+	}
 	reverse_proxy backend:8000
 }
 

@@ -149,10 +149,6 @@ def downgrade() -> None:
     op.drop_index("ix_discovery_candidates_source_status", table_name="discovery_wallet_candidates")
     op.drop_index("ix_discovery_candidates_source_rank", table_name="discovery_wallet_candidates")
     op.drop_table("discovery_wallet_candidates")
-    op.drop_index(
-        "ix_discovery_import_runs_status_started", table_name="discovery_import_runs"
-    )
-    op.drop_index(
-        "ix_discovery_import_runs_source_started", table_name="discovery_import_runs"
-    )
+    op.drop_index("ix_discovery_import_runs_status_started", table_name="discovery_import_runs")
+    op.drop_index("ix_discovery_import_runs_source_started", table_name="discovery_import_runs")
     op.drop_table("discovery_import_runs")

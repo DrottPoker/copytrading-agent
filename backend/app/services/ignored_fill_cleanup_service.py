@@ -73,9 +73,7 @@ async def cleanup_ignored_wallet_fills(
 
     min_age_days = max(0, min_age_days)
     max_rows = max(100, max_rows)
-    cutoff_time_ms = int(
-        (datetime.now(UTC) - timedelta(days=min_age_days)).timestamp() * 1000
-    )
+    cutoff_time_ms = int((datetime.now(UTC) - timedelta(days=min_age_days)).timestamp() * 1000)
     params = {"cutoff_time_ms": cutoff_time_ms}
     candidates = await count_ignored_wallet_fill_candidates(session, params=params)
 
@@ -88,9 +86,7 @@ async def cleanup_ignored_wallet_fills(
             candidate_wallets=candidates["candidate_wallets"],
             candidate_preexisting_open_fills=candidates["candidate_preexisting_open_fills"],
             candidate_unmatched_close_fills=candidates["candidate_unmatched_close_fills"],
-            excluded_potential_trade_close_fills=candidates[
-                "excluded_potential_trade_close_fills"
-            ],
+            excluded_potential_trade_close_fills=candidates["excluded_potential_trade_close_fills"],
             deleted_fills=0,
             deleted_ignored_fill_markers=0,
             affected_wallets=0,
@@ -126,9 +122,7 @@ async def cleanup_ignored_wallet_fills(
         candidate_wallets=candidates["candidate_wallets"],
         candidate_preexisting_open_fills=candidates["candidate_preexisting_open_fills"],
         candidate_unmatched_close_fills=candidates["candidate_unmatched_close_fills"],
-        excluded_potential_trade_close_fills=candidates[
-            "excluded_potential_trade_close_fills"
-        ],
+        excluded_potential_trade_close_fills=candidates["excluded_potential_trade_close_fills"],
         deleted_fills=delete_result["deleted_fills"],
         deleted_ignored_fill_markers=delete_result["deleted_ignored_fill_markers"],
         affected_wallets=len(delete_result["affected_wallets"]),
