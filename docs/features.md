@@ -648,7 +648,8 @@ What it does:
   latest score has `current_drawdown_status = "ok"`.
 - Keeps source wallets with open paper or live source-attributed positions
   subscribed until all copied positions from that source are closed, even if the
-  source falls out of the top 10.
+  source falls out of the top 10. These sources are shown as `monitored` and
+  `retained`, with the open paper or live exposure stated in the row detail.
 - Makes newly promoted top 10 wallets wait when all realtime slots are occupied
   by retained open-position sources.
 - Allocation refresh follows the realtime slot model: open paper-position and
@@ -870,7 +871,9 @@ What it does:
 - Source rows show a primary monitor status and a source substatus. Primary
   status is `monitored` when the source has a realtime slot and `waiting` when
   it does not. Substatus is `trading`, `retained`, `waiting for trades`, or
-  `waiting for slot`.
+  `waiting for slot`. The current realtime slot is the only source for the
+  primary monitor status, and `waiting for slot` is never paired with
+  `monitored`.
 - Source row substatus is aggregated across all paper accounts. A source is
   `trading` if any enabled paper account can still open or manage that source
   and the source has open paper exposure.
@@ -880,6 +883,10 @@ What it does:
   cooldown, or missing score.
 - Source rows split source PnL into realized and unrealized values, with total
   PnL shown as supporting context.
+- The Sources summary and Copy Sources header derive their trading, monitored,
+  and waiting counts from the same current source-state rows used by the source
+  badges. Historical monitoring duration and exchange-only display positions do
+  not affect these counts.
 - The dashboard separates total, realized, and unrealized PnL and uses compact
   responsive list rows instead of wide tables or large cards.
 - Dashboard pages use a shared top panel with page context first, followed by a

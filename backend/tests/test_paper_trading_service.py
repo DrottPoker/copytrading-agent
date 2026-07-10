@@ -16,6 +16,7 @@ from app.services.paper_trading_service import (
     monitored_hours,
     open_copy_source_select,
     paper_position_read,
+    paper_source_status,
     pnl_per_monitored_hour,
     source_fill_age_exceeds_entry_limit,
     wallet_monitoring_summary,
@@ -50,6 +51,33 @@ def test_adjust_open_sizing_to_min_order_when_enabled() -> None:
     assert adjustment.original_notional_usd == Decimal("5")
     assert adjustment.adjusted_notional_usd == Decimal("10")
     assert adjustment.min_order_notional_usd == Decimal("10")
+
+
+@pytest.mark.parametrize(
+    ("has_realtime_slot", "can_open_new_positions", "open_position_count", "expected"),
+    [
+        (True, True, 1, "trading"),
+        (True, False, 1, "retained"),
+        (False, True, 1, "retained"),
+        (False, False, 0, "waiting_for_slot"),
+        (True, True, 0, "waiting_for_trades"),
+        (True, False, 0, "retained"),
+    ],
+)
+def test_paper_source_status_matches_current_slot_state(
+    has_realtime_slot: bool,
+    can_open_new_positions: bool,
+    open_position_count: int,
+    expected: str,
+) -> None:
+    assert (
+        paper_source_status(
+            has_realtime_slot=has_realtime_slot,
+            can_open_new_positions=can_open_new_positions,
+            open_position_count=open_position_count,
+        )
+        == expected
+    )
 
 
 def test_paper_position_read_exposes_position_pnl_and_fill_counts() -> None:

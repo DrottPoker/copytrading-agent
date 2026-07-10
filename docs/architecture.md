@@ -142,7 +142,10 @@ Trading worker responsibilities:
   the list is unchanged and reconnect only when selected wallets change.
 - A source with a realtime slot is exposed as `monitorStatus = "monitored"`. A
   top candidate without a free slot is exposed as `monitorStatus = "waiting"`
-  and `sourceStatus = "waiting_for_slot"`.
+  and `sourceStatus = "waiting_for_slot"`. `waiting_for_slot` is never emitted
+  for a source that currently owns a slot. An outside-top-10 source with open
+  paper or live exposure can retain its slot for exit management and is exposed
+  as `sourceStatus = "retained"` until that exposure is flat.
 - Allocation refresh writes `wallet_monitoring_stats` snapshots for wallets
   with realtime slots. Snapshot deltas are capped from the subscription refresh
   interval so downtime or a stuck worker does not overcount monitored time.
@@ -844,7 +847,12 @@ and can reduce or close them, but new entries are skipped with
 The paper summary reports slot state separately from trade state. Allocation rows
 use `monitorStatus` as `monitored` or `waiting`. Wallet PnL history rows use
 `monitorStatus` as `monitored` or `history`. `sourceStatus` is `trading`,
-`retained`, `waiting_for_trades`, or `waiting_for_slot`.
+`retained`, `waiting_for_trades`, or `waiting_for_slot`. Current slot ownership
+is authoritative for `monitorStatus`; accumulated monitoring duration is
+historical performance data only. Dashboard source counters are reduced from the
+same current source rows as the badges, so source-attributed open positions drive
+the trading count even when exchange aggregate positions are preferred in the
+separate open-position display.
 The dashboard aggregates allocation status across paper accounts when rendering
 source rows, so a source is shown as `trading` when at least one account can
 open or manage that source and the source has open paper exposure.

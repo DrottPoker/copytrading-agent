@@ -994,12 +994,12 @@ def paper_source_status(
     open_position_count: int,
 ) -> str:
     if not has_realtime_slot:
-        return "waiting_for_slot"
+        return "retained" if open_position_count > 0 else "waiting_for_slot"
     if open_position_count > 0 and can_open_new_positions:
         return "trading"
     if open_position_count > 0:
         return "retained"
-    return "waiting_for_trades"
+    return "waiting_for_trades" if can_open_new_positions else "retained"
 
 
 def paper_allocation_status_reason(

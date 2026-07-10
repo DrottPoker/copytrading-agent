@@ -483,9 +483,10 @@ export function TradingDashboard({
         : buildLiveClosedTradeRows(tradingAccounts.closedTrades, sourceLabels),
     [sourceLabels, summary.closedTrades, tradingAccounts.closedTrades, tradingMode],
   );
-  const tradingSourceCount = countSourcesWithDashboardOpenPositions(dashboardPositions);
-  const monitoredSlotCount = countSourcesByMonitorStatus(monitoredSources, "monitored");
-  const waitingSlotCount = countSourcesBySourceStatus(monitoredSources, "waiting_for_slot");
+  const sourceStatusCounts = summarizeCopySourceStatuses(monitoredSources);
+  const tradingSourceCount = sourceStatusCounts.trading;
+  const monitoredSlotCount = sourceStatusCounts.monitored;
+  const waitingSlotCount = sourceStatusCounts.waiting;
   const updatedAt = latestDateString(summary.updatedAt, tradingAccounts.updatedAt);
   const modeLabel = tradingMode === "paper" ? "Paper trading" : "Live trading";
   const executionStatus: { label: string; tone: Tone } =
@@ -2041,6 +2042,7 @@ function buildLiveMonitoredSources(
     allocationsBySource.set(source, [...(allocationsBySource.get(source) ?? []), allocation]);
   }
   const livePositionsBySource = groupLivePositionsBySource(livePositions);
+  const paperPositionsBySource = groupPaperPositionsBySource(summary.positions);
   const liveFillsBySource = groupLiveFillsBySource(tradingAccounts.recentFills);
   const liveOrdersBySource = groupLiveOrdersBySource(tradingAccounts.recentOrders);
   const liveVisibleAllocationSources = Array.from(allocationsBySource.entries())
@@ -2055,6 +2057,7 @@ function buildLiveMonitoredSources(
     .map((source) => {
       const allocations = allocationsBySource.get(source) ?? [];
       const liveOpenPositions = livePositionsBySource.get(source) ?? [];
+      const paperOpenPositions = paperPositionsBySource.get(source) ?? [];
       const liveFills = liveFillsBySource.get(source) ?? [];
       const liveOrders = liveOrdersBySource.get(source) ?? [];
       const metadata = metadataBySource.get(source);
@@ -2063,7 +2066,7 @@ function buildLiveMonitoredSources(
       const hasRealtimeSlot =
         allocations.some((allocation) => allocation.hasRealtimeSlot) ||
         (allocations.length === 0 && openPositionCount > 0);
-      const sourceStatus = resolveLiveSourceStatus({
+      const sourceStatus = resolveCurrentSourceStatus({
         canOpenNewPositions,
         hasRealtimeSlot,
         openPositionCount,
@@ -2109,7 +2112,7 @@ function buildLiveMonitoredSources(
         accountCount: accounts.size,
         enabledLiveAccountCount: liveCopyReady ? enabledLiveAccountCount : 0,
         openLivePositionCount: openPositionCount,
-        openPaperPositionCount: 0,
+        openPaperPositionCount: paperOpenPositions.length,
         openPositionCount,
         allocationPct: allocationPct > 0 ? allocationPct : null,
         allocationUsd,
@@ -2257,14 +2260,6 @@ function buildLiveClosedTradeRows(
     .sort((left, right) => dateMs(right.closedAt) - dateMs(left.closedAt));
 }
 
-function countSourcesWithDashboardOpenPositions(positions: DashboardPosition[]) {
-  return new Set(
-    positions
-      .filter((position) => !isLiveExchangeSource(position.sourceWallet))
-      .map((position) => position.sourceWallet.toLowerCase()),
-  ).size;
-}
-
 function buildSourceLabels(
   summary: PaperTradingSummaryResponse,
   tradingAccounts?: TradingAccountsResponse,
@@ -2362,6 +2357,15 @@ function groupLivePositionsBySource(positions: TradingPosition[]) {
   return grouped;
 }
 
+function groupPaperPositionsBySource(positions: PaperPosition[]) {
+  const grouped = new Map<string, PaperPosition[]>();
+  for (const position of positions) {
+    const source = position.sourceWallet.toLowerCase();
+    grouped.set(source, [...(grouped.get(source) ?? []), position]);
+  }
+  return grouped;
+}
+
 function groupLiveFillsBySource(fills: TradingFill[]) {
   const grouped = new Map<string, TradingFill[]>();
   for (const fill of fills) {
@@ -2414,16 +2418,20 @@ function liveAccountEquity(account: TradingAccount) {
 }
 
 export function displayLivePositions(positions: TradingPosition[]) {
-  const accountKeysWithExchangePositions = new Set(
+  const exchangePositionKeys = new Set(
     positions
       .filter((position) => isLiveExchangePosition(position))
-      .map((position) => position.accountKey),
+      .map((position) => livePositionKey(position)),
   );
   return positions.filter(
     (position) =>
       isLiveExchangePosition(position) ||
-      !accountKeysWithExchangePositions.has(position.accountKey),
+      !exchangePositionKeys.has(livePositionKey(position)),
   );
+}
+
+function livePositionKey(position: TradingPosition) {
+  return `${position.accountKey.toLowerCase()}:${position.coin.toUpperCase()}`;
 }
 
 function isLiveExchangePosition(position: TradingPosition) {
@@ -2463,18 +2471,14 @@ function dateMs(value: string | null | undefined) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function countSourcesByMonitorStatus(
-  sources: MonitoredSource[],
-  status: MonitoredSource["monitorStatus"],
+export function summarizeCopySourceStatuses(
+  sources: Array<Pick<MonitoredSource, "monitorStatus" | "sourceStatus">>,
 ) {
-  return sources.filter((source) => source.monitorStatus === status).length;
-}
-
-function countSourcesBySourceStatus(
-  sources: MonitoredSource[],
-  status: MonitoredSource["sourceStatus"],
-) {
-  return sources.filter((source) => source.sourceStatus === status).length;
+  return {
+    trading: sources.filter((source) => source.sourceStatus === "trading").length,
+    monitored: sources.filter((source) => source.monitorStatus === "monitored").length,
+    waiting: sources.filter((source) => source.monitorStatus === "waiting").length,
+  };
 }
 
 function resolveSourceStatus(
@@ -2483,16 +2487,11 @@ function resolveSourceStatus(
 ): MonitoredSource["sourceStatus"] {
   const hasRealtimeSlot = allocations.some((allocation) => allocation.hasRealtimeSlot);
   const canOpenNewPositions = allocations.some((allocation) => allocation.canOpenNewPositions);
-  if (openPositionCount > 0 && canOpenNewPositions) {
-    return "trading";
-  }
-  if (openPositionCount > 0) {
-    return "retained";
-  }
-  if (!hasRealtimeSlot) {
-    return "waiting_for_slot";
-  }
-  return "waiting_for_trades";
+  return resolveCurrentSourceStatus({
+    canOpenNewPositions,
+    hasRealtimeSlot,
+    openPositionCount,
+  });
 }
 
 function liveSourceCanOpenNewPositions(
@@ -2527,7 +2526,7 @@ function liveAllocationSourceVisible(
   );
 }
 
-function resolveLiveSourceStatus({
+export function resolveCurrentSourceStatus({
   canOpenNewPositions,
   hasRealtimeSlot,
   openPositionCount,
@@ -2536,16 +2535,16 @@ function resolveLiveSourceStatus({
   hasRealtimeSlot: boolean;
   openPositionCount: number;
 }): MonitoredSource["sourceStatus"] {
+  if (!hasRealtimeSlot) {
+    return openPositionCount > 0 ? "retained" : "waiting_for_slot";
+  }
   if (openPositionCount > 0 && canOpenNewPositions) {
     return "trading";
   }
   if (openPositionCount > 0) {
     return "retained";
   }
-  if (!hasRealtimeSlot) {
-    return "waiting_for_slot";
-  }
-  return canOpenNewPositions ? "waiting_for_trades" : "waiting_for_slot";
+  return canOpenNewPositions ? "waiting_for_trades" : "retained";
 }
 
 function resolveSourceStatusReason(allocations: PaperCopyAllocation[]) {
@@ -2603,9 +2602,20 @@ function sourceStatusDetail(source: MonitoredSource, mode: TradingMode) {
   }
   if (source.sourceStatus === "retained") {
     if (mode === "live") {
-      return reason === "live exposure only" ? reason : `${reason}, live exposure only`;
+      const retainedExposure = source.openLivePositionCount > 0
+        ? source.openPaperPositionCount > 0
+          ? "retained for open paper and live exposure"
+          : "retained for open live exposure"
+        : source.openPaperPositionCount > 0
+          ? "retained for open paper exposure"
+          : null;
+      return retainedExposure && reason !== "live exposure only"
+        ? `${reason}, ${retainedExposure}`
+        : retainedExposure ?? reason;
     }
-    return `${reason}, existing exposure only`;
+    return source.openPaperPositionCount > 0 && reason !== "existing exposure"
+      ? `${reason}, existing exposure only`
+      : reason;
   }
   if (source.sourceStatus === "waiting_for_trades") {
     return mode === "live" ? "ready for live entries" : "ready for new entries";

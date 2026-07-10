@@ -350,7 +350,8 @@ Notes:
   changes.
 - Allocation refresh records monitored time in `wallet_monitoring_stats` for
   wallets with realtime slots. The trading dashboard exposes monitored duration
-  and PnL per monitored hour for each source wallet.
+  and PnL per monitored hour for each source wallet. Historical monitored time
+  is a performance metric and never determines the source's current slot status.
 - Automated sourcing runs through Discovery using `backend/config/discovery.json`.
 - Discovery defaults to Hyperliquid 1D, 7D, and 30D leaderboard sources,
   Hyperliquid 7D and 30D vault leaders, leaderboard subaccounts, HyperTracker
@@ -655,10 +656,17 @@ Sizing policy:
 - Source rows show a primary monitor status and a source substatus. Primary
   status is `monitored` when the source has a realtime slot and `waiting` when
   it does not. Substatus is `trading`, `retained`, `waiting for trades`, or
-  `waiting for slot`.
+  `waiting for slot`. A monitored source can never have the `waiting for slot`
+  substatus. Sources outside the current top 10 remain monitored only while a
+  realtime slot is required to manage existing paper or live exposure, and are
+  then shown as `retained` with the exposure reason.
 - Source row substatus is aggregated across all paper accounts. A source is
   `trading` if any enabled paper account can still open or manage that source
   and the source has open paper exposure.
+- The Sources summary and Copy Sources header count `trading`, `monitored`, and
+  `waiting` from the same current source rows that render the badges. Exchange
+  aggregate display positions and historical monitoring duration are not used
+  for those counters.
 - Source rows display `pool #` from the wallet score pool rank, not the realtime
   monitor slot or retained-source order. Retained rows also show the blocking
   reason, such as outside copy top 10, drawdown blocked, paper account disabled,

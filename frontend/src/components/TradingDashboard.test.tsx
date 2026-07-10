@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import type { TradingPosition } from "@/types/trading";
 
-import { displayLivePositions } from "./TradingDashboard";
+import {
+  displayLivePositions,
+  resolveCurrentSourceStatus,
+  summarizeCopySourceStatuses,
+} from "./TradingDashboard";
 
 function position(overrides: Partial<TradingPosition>): TradingPosition {
   return {
@@ -36,7 +40,7 @@ function position(overrides: Partial<TradingPosition>): TradingPosition {
 }
 
 describe("displayLivePositions", () => {
-  it.fails("only hides a source position when the same exchange coin exists", () => {
+  it("only hides a source position when the same exchange coin exists", () => {
     const exchangeBtc = position({ id: "exchange-btc", sourceWallet: "__exchange__" });
     const sourceBtc = position({ id: "source-btc" });
     const sourceEth = position({ id: "source-eth", coin: "ETH" });
@@ -45,5 +49,49 @@ describe("displayLivePositions", () => {
       exchangeBtc,
       sourceEth,
     ]);
+  });
+});
+
+describe("resolveCurrentSourceStatus", () => {
+  it("never reports waiting for slot when the source owns a realtime slot", () => {
+    expect(
+      resolveCurrentSourceStatus({
+        canOpenNewPositions: false,
+        hasRealtimeSlot: true,
+        openPositionCount: 0,
+      }),
+    ).toBe("retained");
+  });
+
+  it("reports waiting for slot only when no realtime slot exists", () => {
+    expect(
+      resolveCurrentSourceStatus({
+        canOpenNewPositions: false,
+        hasRealtimeSlot: false,
+        openPositionCount: 0,
+      }),
+    ).toBe("waiting_for_slot");
+  });
+
+  it("retains open exposure instead of reporting it as ready without a slot", () => {
+    expect(
+      resolveCurrentSourceStatus({
+        canOpenNewPositions: true,
+        hasRealtimeSlot: false,
+        openPositionCount: 1,
+      }),
+    ).toBe("retained");
+  });
+});
+
+describe("summarizeCopySourceStatuses", () => {
+  it("counts the same current source states rendered by Copy Sources", () => {
+    expect(
+      summarizeCopySourceStatuses([
+        { monitorStatus: "monitored", sourceStatus: "trading" },
+        { monitorStatus: "monitored", sourceStatus: "waiting_for_trades" },
+        { monitorStatus: "waiting", sourceStatus: "waiting_for_slot" },
+      ]),
+    ).toEqual({ monitored: 2, trading: 1, waiting: 1 });
   });
 });
