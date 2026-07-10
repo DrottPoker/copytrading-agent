@@ -353,14 +353,21 @@ Validate Compose before changing running containers:
 docker compose -f docker-compose.vps.yml config --quiet
 ```
 
-Build, migrate, and restart in this order:
+Build, stop the application services, migrate, and restart in this order. Keep
+Postgres and Redis running. Stopping all database readers and writers prevents
+schema migrations from deadlocking with normal API or worker queries:
 
 ```bash
 docker compose -f docker-compose.vps.yml build backend trading-worker maintenance-worker frontend
 docker compose -f docker-compose.vps.yml up -d postgres redis
-docker compose -f docker-compose.vps.yml run --rm backend python -m alembic upgrade head
+docker compose -f docker-compose.vps.yml stop backend trading-worker maintenance-worker frontend caddy
+docker compose -f docker-compose.vps.yml run --rm --no-deps backend python -m alembic upgrade head
 docker compose -f docker-compose.vps.yml up -d --remove-orphans
 ```
+
+If an Alembic command reports a PostgreSQL deadlock, do not continue with the
+application restart. PostgreSQL rolls back the failed transactional migration.
+Keep the application services stopped and rerun the same `upgrade head` command.
 
 Verify migration, containers, dependencies, workers, and backups:
 
@@ -406,7 +413,8 @@ roles, the dashboard, and Caddy:
 
 ```bash
 docker compose -f docker-compose.vps.yml build backend trading-worker maintenance-worker frontend
-docker compose -f docker-compose.vps.yml run --rm backend python -m alembic upgrade head
+docker compose -f docker-compose.vps.yml stop backend trading-worker maintenance-worker frontend caddy
+docker compose -f docker-compose.vps.yml run --rm --no-deps backend python -m alembic upgrade head
 docker compose -f docker-compose.vps.yml up -d backend trading-worker maintenance-worker frontend caddy
 ```
 

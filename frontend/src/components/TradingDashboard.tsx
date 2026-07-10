@@ -63,7 +63,12 @@ type MonitoredSource = {
   poolRank: number | null;
   score: string | null;
   monitorStatus: "monitored" | "connecting" | "offline" | "waiting";
-  sourceStatus: "trading" | "retained" | "waiting_for_trades" | "waiting_for_slot";
+  sourceStatus:
+    | "trading"
+    | "retained"
+    | "entries_paused"
+    | "waiting_for_trades"
+    | "waiting_for_slot";
   sourceStatusReason: string | null;
   hasRealtimeSlot: boolean;
   canOpenNewPositions: boolean;
@@ -994,7 +999,7 @@ function SourceRow({
   const sourceTone =
     source.sourceStatus === "trading"
       ? "positive"
-      : source.sourceStatus === "retained"
+      : source.sourceStatus === "retained" || source.sourceStatus === "entries_paused"
         ? "warning"
         : "neutral";
   const sourceMetaParts = [
@@ -1002,7 +1007,7 @@ function SourceRow({
     `${formatScore(source.score)} score`,
     mode === "paper"
       ? `${formatInteger(source.accountCount)} paper accounts`
-      : `${formatInteger(source.enabledLiveAccountCount)} live accounts`,
+      : `${formatInteger(source.enabledLiveAccountCount)} entry-enabled live accounts`,
     mode === "live" && source.recentLiveFillCount > 0
       ? `${formatInteger(source.recentLiveFillCount)} live fills`
       : null,
@@ -2046,13 +2051,20 @@ function buildLiveMonitoredSources(
   const paperPositionsBySource = groupPaperPositionsBySource(summary.positions);
   const liveFillsBySource = groupLiveFillsBySource(tradingAccounts.recentFills);
   const liveOrdersBySource = groupLiveOrdersBySource(tradingAccounts.recentOrders);
-  const liveVisibleAllocationSources = Array.from(allocationsBySource.entries())
-    .filter(([, allocations]) => liveAllocationSourceVisible(allocations, liveCopyReady))
-    .map(([source]) => source);
-  const sources = new Set([
-    ...liveVisibleAllocationSources,
-    ...livePositionsBySource.keys(),
-  ]);
+  const realtimeSlotSources = new Set(
+    [
+      ...summary.realtimeMonitoring.desiredWallets,
+      ...summary.realtimeMonitoring.monitoredWallets,
+    ].map((source) => source.toLowerCase()),
+  );
+  const sources = new Set(
+    collectLiveCopySourceWallets({
+      allocations: summary.allocations,
+      liveCopyReady,
+      livePositionSources: livePositionsBySource.keys(),
+      realtimeMonitoring: summary.realtimeMonitoring,
+    }),
+  );
 
   return Array.from(sources)
     .map((source) => {
@@ -2066,6 +2078,7 @@ function buildLiveMonitoredSources(
       const openPositionCount = liveOpenPositions.length;
       const hasRealtimeSlot =
         allocations.some((allocation) => allocation.hasRealtimeSlot) ||
+        realtimeSlotSources.has(source) ||
         (allocations.length === 0 && openPositionCount > 0);
       const monitorStatus = resolveCurrentMonitorStatus({
         hasRealtimeSlot,
@@ -2579,6 +2592,49 @@ export function liveAllocationSourceVisible(
   );
 }
 
+export function collectLiveCopySourceWallets({
+  allocations,
+  liveCopyReady,
+  livePositionSources,
+  realtimeMonitoring,
+}: {
+  allocations: PaperCopyAllocation[];
+  liveCopyReady: boolean;
+  livePositionSources: Iterable<string>;
+  realtimeMonitoring: PaperTradingSummaryResponse["realtimeMonitoring"];
+}) {
+  const sources = new Set<string>();
+  const addSource = (source: string) => {
+    const normalized = source.trim().toLowerCase();
+    if (normalized) {
+      sources.add(normalized);
+    }
+  };
+
+  for (const source of realtimeMonitoring.desiredWallets) {
+    addSource(source);
+  }
+  for (const source of realtimeMonitoring.monitoredWallets) {
+    addSource(source);
+  }
+  for (const source of livePositionSources) {
+    addSource(source);
+  }
+
+  const allocationsBySource = new Map<string, PaperCopyAllocation[]>();
+  for (const allocation of allocations) {
+    const source = allocation.sourceWallet.toLowerCase();
+    allocationsBySource.set(source, [...(allocationsBySource.get(source) ?? []), allocation]);
+  }
+  for (const [source, sourceAllocations] of allocationsBySource) {
+    if (liveAllocationSourceVisible(sourceAllocations, liveCopyReady)) {
+      addSource(source);
+    }
+  }
+
+  return Array.from(sources);
+}
+
 export function resolveCurrentSourceStatus({
   canOpenNewPositions,
   hasRealtimeSlot,
@@ -2588,16 +2644,13 @@ export function resolveCurrentSourceStatus({
   hasRealtimeSlot: boolean;
   openPositionCount: number;
 }): MonitoredSource["sourceStatus"] {
-  if (!hasRealtimeSlot) {
-    return openPositionCount > 0 ? "retained" : "waiting_for_slot";
-  }
-  if (openPositionCount > 0 && canOpenNewPositions) {
-    return "trading";
-  }
   if (openPositionCount > 0) {
-    return "retained";
+    return hasRealtimeSlot ? "trading" : "retained";
   }
-  return canOpenNewPositions ? "waiting_for_trades" : "retained";
+  if (!hasRealtimeSlot) {
+    return "waiting_for_slot";
+  }
+  return canOpenNewPositions ? "waiting_for_trades" : "entries_paused";
 }
 
 function resolveSourceStatusReason(allocations: PaperCopyAllocation[]) {
@@ -2639,6 +2692,9 @@ function resolveLiveSourceStatusReason({
 }
 
 function formatSourceStatus(status: MonitoredSource["sourceStatus"]) {
+  if (status === "entries_paused") {
+    return "entries paused";
+  }
   if (status === "waiting_for_slot") {
     return "waiting for slot";
   }
@@ -2651,6 +2707,11 @@ function formatSourceStatus(status: MonitoredSource["sourceStatus"]) {
 function sourceStatusDetail(source: MonitoredSource, mode: TradingMode) {
   const reason = formatSourceStatusReasonForMode(source.sourceStatusReason, mode);
   if (source.sourceStatus === "trading") {
+    if (!source.canOpenNewPositions) {
+      return mode === "live"
+        ? "managing open live exposure, new entries paused"
+        : "managing open paper exposure, new entries paused";
+    }
     return mode === "live" ? "active live source" : "active slot";
   }
   if (source.sourceStatus === "retained") {
@@ -2672,6 +2733,9 @@ function sourceStatusDetail(source: MonitoredSource, mode: TradingMode) {
   }
   if (source.sourceStatus === "waiting_for_trades") {
     return mode === "live" ? "ready for live entries" : "ready for new entries";
+  }
+  if (source.sourceStatus === "entries_paused") {
+    return reason;
   }
   return reason;
 }
@@ -2790,7 +2854,10 @@ function statusOrder(status: MonitoredSource["sourceStatus"]) {
   if (status === "waiting_for_trades") {
     return 2;
   }
-  return 3;
+  if (status === "entries_paused") {
+    return 3;
+  }
+  return 4;
 }
 
 function clampPercent(value: number) {

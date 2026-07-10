@@ -905,10 +905,16 @@ What it does:
   confirmation and `offline` when no current worker connection exists. Sources
   without an assigned slot are `waiting`. `hasRealtimeSlot` remains allocation
   intent and `isRealtimeMonitored` is confirmed runtime truth. Substatus is
-  `trading`, `retained`, `waiting for trades`, or `waiting for slot`.
-- Source row substatus is aggregated across all paper accounts. A source is
-  `trading` if any enabled paper account can still open or manage that source
-  and the source has open paper exposure.
+  `trading`, `retained`, `entries paused`, `waiting for trades`, or `waiting for
+  slot`.
+- Live Copy Sources starts from the worker's authoritative desired and confirmed
+  realtime wallet sets. Those wallets remain visible even when no live account
+  currently accepts entries. Allocation and open-position sources supplement
+  that runtime set.
+- A source with open exposure and a current realtime slot is `trading`, even
+  when new entries are paused. `Retained` requires open exposure without a
+  current slot. A slotted source without exposure is `entries paused` when no
+  account accepts entries and `waiting for trades` when it is entry-ready.
 - Source rows display `pool #` from the wallet score pool rank, not the realtime
   monitor slot or retained-source order. Retained rows also show the blocking
   reason, such as outside copy top 10, drawdown blocked, paper account disabled,

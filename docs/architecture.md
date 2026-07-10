@@ -871,16 +871,20 @@ and can reduce or close them, but new entries are skipped with
 The paper summary reports slot state separately from trade state. Allocation rows
 use `monitorStatus` as `monitored`, `connecting`, `offline`, or `waiting`.
 Wallet PnL history rows use `monitorStatus` as `monitored` or `history`.
-`sourceStatus` is `trading`, `retained`, `waiting_for_trades`, or
-`waiting_for_slot`. Confirmed WebSocket subscription state is authoritative for
-the `monitored` label; accumulated monitoring duration is historical performance
-data only. Dashboard source counters are reduced from the same current source
-rows as the badges, so source-attributed open positions drive the trading count
+`sourceStatus` is `trading`, `retained`, `entries_paused`,
+`waiting_for_trades`, or `waiting_for_slot`. Confirmed WebSocket subscription
+state is authoritative for the `monitored` label; accumulated monitoring
+duration is historical performance data only. Live Copy Sources begins with
+the worker's desired and confirmed wallet sets even when live-account entries
+are paused, then supplements them with allocation and open-position sources.
+Dashboard source counters are reduced from the same current source rows as the
+badges, so source-attributed open positions drive the trading count
 even when exchange aggregate positions are preferred in the separate
 open-position display.
 The dashboard aggregates allocation status across paper accounts when rendering
-source rows, so a source is shown as `trading` when at least one account can
-open or manage that source and the source has open paper exposure.
+source rows. Open source-attributed exposure with a current realtime slot is
+`trading`; entry readiness separately determines whether an empty slotted source
+is `waiting_for_trades` or `entries_paused`.
 Paper account `enabled` is database runtime state after the account has been
 created through the dashboard or API. The Accounts page can create paper
 accounts with a selected USD starting balance and live accounts with a wallet

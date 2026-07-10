@@ -4,6 +4,7 @@ import type { PaperCopyAllocation } from "@/types/paper";
 import type { TradingPosition } from "@/types/trading";
 
 import {
+  collectLiveCopySourceWallets,
   displayLivePositions,
   liveAllocationSourceVisible,
   resolveCurrentMonitorStatus,
@@ -84,14 +85,14 @@ describe("displayLivePositions", () => {
 });
 
 describe("resolveCurrentSourceStatus", () => {
-  it("never reports waiting for slot when the source owns a realtime slot", () => {
+  it("reports entries paused when the source owns a slot but no account accepts entries", () => {
     expect(
       resolveCurrentSourceStatus({
         canOpenNewPositions: false,
         hasRealtimeSlot: true,
         openPositionCount: 0,
       }),
-    ).toBe("retained");
+    ).toBe("entries_paused");
   });
 
   it("reports waiting for slot only when no realtime slot exists", () => {
@@ -113,6 +114,16 @@ describe("resolveCurrentSourceStatus", () => {
       }),
     ).toBe("retained");
   });
+
+  it("reports a monitored open source as trading while new entries are paused", () => {
+    expect(
+      resolveCurrentSourceStatus({
+        canOpenNewPositions: false,
+        hasRealtimeSlot: true,
+        openPositionCount: 1,
+      }),
+    ).toBe("trading");
+  });
 });
 
 describe("summarizeCopySourceStatuses", () => {
@@ -124,6 +135,17 @@ describe("summarizeCopySourceStatuses", () => {
         { monitorStatus: "waiting", sourceStatus: "waiting_for_slot" },
       ]),
     ).toEqual({ connecting: 0, monitored: 2, offline: 0, trading: 1, waiting: 1 });
+  });
+
+  it("counts all monitored sources even when only two manage open exposure", () => {
+    expect(
+      summarizeCopySourceStatuses(
+        Array.from({ length: 10 }, (_, index) => ({
+          monitorStatus: "monitored" as const,
+          sourceStatus: index < 2 ? "trading" as const : "entries_paused" as const,
+        })),
+      ),
+    ).toEqual({ connecting: 0, monitored: 10, offline: 0, trading: 2, waiting: 0 });
   });
 });
 
@@ -184,5 +206,30 @@ describe("liveAllocationSourceVisible", () => {
         true,
       ),
     ).toBe(true);
+  });
+});
+
+describe("collectLiveCopySourceWallets", () => {
+  it("keeps authoritative realtime sources visible when live entries are paused", () => {
+    const monitoredWallets = Array.from(
+      { length: 10 },
+      (_, index) => `0xsource${index + 1}`,
+    );
+
+    expect(
+      collectLiveCopySourceWallets({
+        allocations: [],
+        liveCopyReady: false,
+        livePositionSources: monitoredWallets.slice(0, 2),
+        realtimeMonitoring: {
+          status: "connected",
+          desiredWallets: monitoredWallets,
+          monitoredWallets,
+          workerRole: "trading",
+          workerInstanceId: "worker-1",
+          updatedAt: "2026-01-01T00:00:00Z",
+        },
+      }),
+    ).toEqual(monitoredWallets);
   });
 });

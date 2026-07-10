@@ -78,10 +78,12 @@ Check current migration:
 .\.venv\Scripts\python.exe -m alembic -c backend\alembic.ini current
 ```
 
-When running with Docker Compose, use:
+When running with Docker Compose on an existing deployment, stop the API and
+workers before applying schema changes:
 
 ```bash
-docker compose -f docker-compose.vps.yml run --rm backend python -m alembic upgrade head
+docker compose -f docker-compose.vps.yml stop backend trading-worker maintenance-worker frontend caddy
+docker compose -f docker-compose.vps.yml run --rm --no-deps backend python -m alembic upgrade head
 ```
 
 Phase 6 migration `e5a1c7d9b3f2` adds account lifecycle and integrity controls:
@@ -113,7 +115,8 @@ docker compose -f docker-compose.vps.yml exec -T postgres \
   > backups/postgres/pre-phase6.dump
 test -s backups/postgres/pre-phase6.dump
 docker compose -f docker-compose.vps.yml build backend trading-worker maintenance-worker frontend
-docker compose -f docker-compose.vps.yml run --rm backend python -m alembic upgrade head
+docker compose -f docker-compose.vps.yml stop backend trading-worker maintenance-worker frontend caddy
+docker compose -f docker-compose.vps.yml run --rm --no-deps backend python -m alembic upgrade head
 docker compose -f docker-compose.vps.yml up -d backend trading-worker maintenance-worker frontend caddy
 ```
 
@@ -690,14 +693,19 @@ Sizing policy:
   an assigned source without a current worker connection is `offline`, and a
   source without an assigned slot is `waiting`. `hasRealtimeSlot` represents
   allocator intent while `isRealtimeMonitored` represents confirmed runtime
-  truth. Substatus is `trading`, `retained`, `waiting for trades`, or
-  `waiting for slot`. With live trading enabled, sources outside the current top 10
-  retain slot intent only while they have open live exposure. Paper-only
-  retained sources do not consume a live realtime slot or appear in Live Copy
-  Sources.
-- Source row substatus is aggregated across all paper accounts. A source is
-  `trading` if any enabled paper account can still open or manage that source
-  and the source has open paper exposure.
+  truth. Substatus is `trading`, `retained`, `entries paused`, `waiting for
+  trades`, or `waiting for slot`. With live trading enabled, sources outside the
+  current top 10 retain slot intent only while they have open live exposure.
+  Paper-only retained sources do not consume a live realtime slot or appear in
+  Live Copy Sources.
+- Live Copy Sources always includes the worker's current desired and confirmed
+  realtime wallets, independently of live-account entry readiness. Allocation
+  and open-position sources supplement that authoritative runtime set.
+- A source with open exposure and a current realtime slot is `trading`, even
+  when new entries are paused. `Retained` is reserved for open exposure that no
+  longer owns a current slot. A slotted source without exposure is `entries
+  paused` when no account accepts new entries and `waiting for trades` when it
+  is entry-ready.
 - The Sources summary and Copy Sources header count `trading`, `monitored`,
   `connecting`, `offline`, and `waiting for slot` from the same current source
   rows that render the badges. Exchange aggregate display positions and
