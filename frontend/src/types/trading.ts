@@ -154,6 +154,12 @@ export type TradingSourceMetadata = {
   poolRank: number | null;
   score: string | null;
   allocationPct: string | null;
+  liveRealizedPnlUsd: string;
+  liveFillCount: number;
+  monitoredSeconds: number;
+  firstMonitoredAt: string | null;
+  currentMonitoringStartedAt: string | null;
+  lastMonitoredAt: string | null;
 };
 
 export type LiveRiskLimits = {

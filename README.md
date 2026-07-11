@@ -371,7 +371,10 @@ Notes:
   from desired realtime slots. Allocation refresh records monitored time in
   `wallet_monitoring_stats` only for wallets with a confirmed subscription. The
   trading dashboard exposes monitored duration and PnL per monitored hour for
-  each source wallet. Historical monitored time never determines current state.
+  each source wallet. Paper rows use the paper fill ledger. Live rows use
+  all-time source-attributed `trading_fills`, divided by the same wallet's
+  accumulated monitored seconds. Historical monitored time never determines
+  current state.
 - Automated sourcing runs through Discovery using `backend/config/discovery.json`.
 - Discovery defaults to Hyperliquid 1D, 7D, and 30D leaderboard sources,
   Hyperliquid 7D and 30D vault leaders, leaderboard subaccounts, HyperTracker
@@ -714,6 +717,8 @@ Sizing policy:
   monitor slot or retained-source order. Retained rows also show the blocking
   reason, such as outside copy top 10, drawdown blocked, paper account disabled,
   cooldown, or missing score.
+- Copy Sources is sorted by realized PnL descending. Total PnL, source status,
+  pool rank, and wallet address provide deterministic tie-breakers.
 - Closed trade history comes from paper `close` and `flip_close` executions.
   Raw fills and skip rows remain available in the API for diagnostics, but they
   are not shown as trade history. Closed trade rows show a liquidation tag when

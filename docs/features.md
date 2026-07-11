@@ -807,6 +807,10 @@ What it does:
 - Paper summary wallet performance includes monitored seconds, monitored hours,
   and realized and total PnL per monitored hour. Trading dashboard source rows
   use those fields to show monitored efficiency beside allocation and PnL.
+- Live source performance uses all source-attributed live fills, not the recent
+  activity limit and not paper PnL. Realized and total PnL per monitored hour are
+  calculated from the exact PnL displayed in the live row and the same wallet's
+  accumulated monitored seconds.
 - Retains allocation records for source wallets with open paper positions so
   add, reduce, close, and flip fills can continue after the source falls out of
   the current top 10.
@@ -923,6 +927,8 @@ What it does:
   cooldown, or missing score.
 - Source rows split source PnL into realized and unrealized values, with total
   PnL shown as supporting context.
+- Copy Sources sorts by realized PnL descending, followed by total PnL, source
+  status, pool rank, and wallet address for deterministic ties.
 - The Sources summary and Copy Sources header derive their trading, monitored,
   connecting, offline, and waiting-for-slot counts from the same current
   source-state rows used by the source badges. Historical monitoring duration

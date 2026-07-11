@@ -198,6 +198,12 @@ class TradingSourceMetadataRead(CamelModel):
     pool_rank: int | None = None
     score: Decimal | None = None
     allocation_pct: Decimal | None = None
+    live_realized_pnl_usd: Decimal = Decimal("0")
+    live_fill_count: int = 0
+    monitored_seconds: int = 0
+    first_monitored_at: datetime | None = None
+    current_monitoring_started_at: datetime | None = None
+    last_monitored_at: datetime | None = None
 
 
 class LiveRiskLimitsRead(CamelModel):

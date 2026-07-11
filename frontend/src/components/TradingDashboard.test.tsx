@@ -5,12 +5,56 @@ import type { TradingPosition } from "@/types/trading";
 
 import {
   collectLiveCopySourceWallets,
+  compareCopySourcesByRealizedPnl,
   displayLivePositions,
   liveAllocationSourceVisible,
+  pnlPerMonitoredHour,
   resolveCurrentMonitorStatus,
   resolveCurrentSourceStatus,
   summarizeCopySourceStatuses,
 } from "./TradingDashboard";
+
+describe("copy source performance", () => {
+  it("calculates PnL per hour from the displayed PnL and monitored duration", () => {
+    expect(pnlPerMonitoredHour(0.79, 150 * 3600)).toBeCloseTo(0.0052666667, 10);
+    expect(pnlPerMonitoredHour(0.79, 0)).toBeNull();
+  });
+
+  it("sorts Copy Sources by realized PnL before status and pool rank", () => {
+    const sources = [
+      {
+        sourceWallet: "0xzero",
+        sourceStatus: "trading" as const,
+        poolRank: 1,
+        rank: 1,
+        realizedPnlUsd: "0",
+        totalPnlUsd: "0.29",
+      },
+      {
+        sourceWallet: "0xhighest",
+        sourceStatus: "waiting_for_trades" as const,
+        poolRank: 9,
+        rank: 9,
+        realizedPnlUsd: "7.17",
+        totalPnlUsd: "6.54",
+      },
+      {
+        sourceWallet: "0xmiddle",
+        sourceStatus: "waiting_for_trades" as const,
+        poolRank: 10,
+        rank: 10,
+        realizedPnlUsd: "0.79",
+        totalPnlUsd: "0.79",
+      },
+    ];
+
+    expect(sources.sort(compareCopySourcesByRealizedPnl).map((source) => source.sourceWallet)).toEqual([
+      "0xhighest",
+      "0xmiddle",
+      "0xzero",
+    ]);
+  });
+});
 
 function position(overrides: Partial<TradingPosition>): TradingPosition {
   return {

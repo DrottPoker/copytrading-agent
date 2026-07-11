@@ -176,6 +176,8 @@ type SourceMetadata = {
   poolRank: number | null;
   rank: number | null;
   score: string | null;
+  liveRealizedPnlUsd: string | null;
+  liveFillCount: number | null;
   monitoredSeconds: number;
   monitoredHours: string;
   realizedPnlPerMonitoredHourUsd: string | null;
@@ -2019,12 +2021,7 @@ function buildPaperMonitoredSources(summary: PaperTradingSummaryResponse): Monit
         lastMonitoredAt: wallet?.lastMonitoredAt ?? null,
       };
     })
-    .sort((left, right) => {
-      if (left.sourceStatus !== right.sourceStatus) {
-        return statusOrder(left.sourceStatus) - statusOrder(right.sourceStatus);
-      }
-      return (left.poolRank ?? left.rank ?? 9999) - (right.poolRank ?? right.rank ?? 9999);
-    });
+    .sort(compareCopySourcesByRealizedPnl);
 }
 
 function buildLiveMonitoredSources(
@@ -2090,8 +2087,14 @@ function buildLiveMonitoredSources(
         hasRealtimeSlot: hasRealtimeSlot || monitorStatus === "monitored",
         openPositionCount,
       });
-      const realizedPnl = sumNumbers(liveFills.map((fill) => fill.realizedPnlUsd));
+      const realizedPnl = metadata?.liveRealizedPnlUsd !== null && metadata?.liveRealizedPnlUsd !== undefined
+        ? numberValue(metadata.liveRealizedPnlUsd)
+        : sumNumbers(liveFills.map((fill) => fill.realizedPnlUsd));
       const unrealizedPnl = sumNumbers(liveOpenPositions.map((position) => position.unrealizedPnlUsd));
+      const totalPnl = realizedPnl + unrealizedPnl;
+      const monitoredSeconds = metadata?.monitoredSeconds ?? 0;
+      const realizedPnlPerHour = pnlPerMonitoredHour(realizedPnl, monitoredSeconds);
+      const totalPnlPerHour = pnlPerMonitoredHour(totalPnl, monitoredSeconds);
       const allocationPct =
         metadata?.allocationPct ??
         firstNumber(allocations.map((allocation) => allocation.allocationPct)) ??
@@ -2138,15 +2141,16 @@ function buildLiveMonitoredSources(
         ),
         remainingAllocationUsd: Math.max(allocationUsd - openMarginUsd, 0),
         pocketUsedPct: allocationUsd > 0 ? openMarginUsd / allocationUsd : null,
-        recentLiveFillCount: liveFills.length,
+        recentLiveFillCount: metadata?.liveFillCount ?? liveFills.length,
         recentLiveOrderCount: liveOrders.length,
         realizedPnlUsd: String(realizedPnl),
         unrealizedPnlUsd: String(unrealizedPnl),
-        totalPnlUsd: String(realizedPnl + unrealizedPnl),
-        monitoredSeconds: metadata?.monitoredSeconds ?? 0,
-        monitoredHours: metadata?.monitoredHours ?? "0",
-        realizedPnlPerMonitoredHourUsd: metadata?.realizedPnlPerMonitoredHourUsd ?? null,
-        totalPnlPerMonitoredHourUsd: metadata?.totalPnlPerMonitoredHourUsd ?? null,
+        totalPnlUsd: String(totalPnl),
+        monitoredSeconds,
+        monitoredHours: String(monitoredSeconds / 3600),
+        realizedPnlPerMonitoredHourUsd:
+          realizedPnlPerHour === null ? null : String(realizedPnlPerHour),
+        totalPnlPerMonitoredHourUsd: totalPnlPerHour === null ? null : String(totalPnlPerHour),
         firstMonitoredAt: metadata?.firstMonitoredAt ?? null,
         currentMonitoringStartedAt: metadata?.currentMonitoringStartedAt ?? null,
         lastMonitoredAt: metadata?.lastMonitoredAt ?? null,
@@ -2161,12 +2165,7 @@ function buildLiveMonitoredSources(
         source.recentLiveFillCount > 0 ||
         source.recentLiveOrderCount > 0,
     )
-    .sort((left, right) => {
-      if (left.sourceStatus !== right.sourceStatus) {
-        return statusOrder(left.sourceStatus) - statusOrder(right.sourceStatus);
-      }
-      return (left.poolRank ?? left.rank ?? 9999) - (right.poolRank ?? right.rank ?? 9999);
-    });
+    .sort(compareCopySourcesByRealizedPnl);
 }
 
 function buildWalletHistory(wallets: WalletPerformanceRow[]) {
@@ -2310,6 +2309,8 @@ function buildSourceMetadata(
       poolRank: null,
       rank: null,
       score: null,
+      liveRealizedPnlUsd: null,
+      liveFillCount: null,
       monitoredSeconds: 0,
       monitoredHours: "0",
       realizedPnlPerMonitoredHourUsd: null,
@@ -2361,6 +2362,15 @@ function buildSourceMetadata(
     item.poolRank = minNumber([item.poolRank, source.poolRank]);
     item.rank = minNumber([item.rank, source.rank]);
     item.score ??= source.score;
+    item.liveRealizedPnlUsd = source.liveRealizedPnlUsd;
+    item.liveFillCount = source.liveFillCount;
+    if (source.monitoredSeconds >= item.monitoredSeconds) {
+      item.monitoredSeconds = source.monitoredSeconds;
+      item.monitoredHours = String(source.monitoredSeconds / 3600);
+      item.firstMonitoredAt = source.firstMonitoredAt;
+      item.currentMonitoringStartedAt = source.currentMonitoringStartedAt;
+      item.lastMonitoredAt = source.lastMonitoredAt;
+    }
   }
   return metadata;
 }
@@ -2860,6 +2870,41 @@ function statusOrder(status: MonitoredSource["sourceStatus"]) {
   return 4;
 }
 
+type CopySourceSortValue = Pick<
+  MonitoredSource,
+  "poolRank" | "rank" | "realizedPnlUsd" | "sourceStatus" | "sourceWallet" | "totalPnlUsd"
+>;
+
+export function compareCopySourcesByRealizedPnl(
+  left: CopySourceSortValue,
+  right: CopySourceSortValue,
+) {
+  const realizedDiff = numberValue(right.realizedPnlUsd) - numberValue(left.realizedPnlUsd);
+  if (realizedDiff !== 0) {
+    return realizedDiff;
+  }
+  const totalDiff = numberValue(right.totalPnlUsd) - numberValue(left.totalPnlUsd);
+  if (totalDiff !== 0) {
+    return totalDiff;
+  }
+  const statusDiff = statusOrder(left.sourceStatus) - statusOrder(right.sourceStatus);
+  if (statusDiff !== 0) {
+    return statusDiff;
+  }
+  const rankDiff = (left.poolRank ?? left.rank ?? 9999) - (right.poolRank ?? right.rank ?? 9999);
+  if (rankDiff !== 0) {
+    return rankDiff;
+  }
+  return left.sourceWallet.localeCompare(right.sourceWallet);
+}
+
+export function pnlPerMonitoredHour(pnlUsd: number, monitoredSeconds: number): number | null {
+  if (!Number.isFinite(pnlUsd) || monitoredSeconds <= 0) {
+    return null;
+  }
+  return (pnlUsd * 3600) / monitoredSeconds;
+}
+
 function clampPercent(value: number) {
   if (!Number.isFinite(value)) {
     return 0;
@@ -2936,7 +2981,13 @@ function formatMonitoringPnlPerHour(value: string | number | null | undefined) {
   if (value === null || value === undefined) {
     return undefined;
   }
-  return `${formatCurrency(value)}/h`;
+  const amount = numberValue(value);
+  return `${new Intl.NumberFormat("sv-SE", {
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: Math.abs(amount) < 1 ? 4 : 2,
+    style: "currency",
+  }).format(amount)}/h`;
 }
 
 function monitoringTone(value: string | number | null | undefined): Tone {

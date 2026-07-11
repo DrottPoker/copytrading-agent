@@ -880,6 +880,12 @@ state is authoritative for the `monitored` label; accumulated monitoring
 duration is historical performance data only. Live Copy Sources begins with
 the worker's desired and confirmed wallet sets even when live-account entries
 are paused, then supplements them with allocation and open-position sources.
+Live source performance metadata aggregates realized PnL and fill count across
+the complete source-attributed `trading_fills` ledger. The dashboard divides
+that realized PnL, or realized plus current unrealized PnL, by the same wallet's
+accumulated monitored seconds. It never combines live PnL with a paper-derived
+per-hour rate. Copy Sources sorts by realized PnL descending before total PnL,
+status, pool rank, and wallet-address tie-breakers.
 Dashboard source counters are reduced from the same current source rows as the
 badges, so source-attributed open positions drive the trading count
 even when exchange aggregate positions are preferred in the separate

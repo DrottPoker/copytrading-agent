@@ -68,6 +68,7 @@ from app.services.live_trading_service import (
     stop_live_trading_account,
     submit_live_trade_intent,
 )
+from app.services.paper_trading_service import load_wallet_monitoring_stats
 from app.services.trading_account_service import list_trading_accounts
 from app.services.wallet_service import wallet_pool_rank_cte
 
@@ -156,17 +157,21 @@ async def load_trading_source_metadata(
         .where(func.lower(WalletScore.wallet_address).in_(normalized_sources))
     )
 
-    metadata: dict[str, TradingSourceMetadataRead] = {}
+    metadata = {
+        source: TradingSourceMetadataRead(source_wallet=source) for source in normalized_sources
+    }
     for row in result.mappings().all():
         source_wallet = str(row["source_wallet"]).lower()
         pool_rank = int(row["pool_rank"]) if row["pool_rank"] is not None else None
-        metadata[source_wallet] = TradingSourceMetadataRead(
-            source_wallet=source_wallet,
-            source_label=str(row["source_label"]) if row["source_label"] else None,
-            rank=pool_rank,
-            pool_rank=pool_rank,
-            score=row["score"],
-            allocation_pct=source_allocation_pct_for_rank(pool_rank, settings=settings),
+        existing = metadata[source_wallet]
+        metadata[source_wallet] = existing.model_copy(
+            update={
+                "source_label": str(row["source_label"]) if row["source_label"] else None,
+                "rank": pool_rank,
+                "pool_rank": pool_rank,
+                "score": row["score"],
+                "allocation_pct": source_allocation_pct_for_rank(pool_rank, settings=settings),
+            }
         )
 
     missing_label_sources = [
@@ -193,19 +198,54 @@ async def load_trading_source_metadata(
             source_wallet = str(wallet_address).lower()
             if not source_wallet or not source_label:
                 continue
-            existing = metadata.get(source_wallet)
-            if existing is None:
-                metadata[source_wallet] = TradingSourceMetadataRead(
-                    source_wallet=source_wallet,
-                    source_label=str(source_label),
-                )
-                continue
+            existing = metadata[source_wallet]
             if existing.source_label is None:
                 metadata[source_wallet] = existing.model_copy(
                     update={"source_label": str(source_label)}
                 )
 
-    return [metadata[source] for source in normalized_sources if source in metadata]
+    monitoring_stats = await load_wallet_monitoring_stats(
+        session,
+        source_wallets=normalized_sources,
+        settings=settings,
+        now=datetime.now(UTC),
+    )
+    for source_wallet, monitoring in monitoring_stats.items():
+        existing = metadata[source_wallet]
+        metadata[source_wallet] = existing.model_copy(
+            update={
+                "monitored_seconds": monitoring.monitored_seconds,
+                "first_monitored_at": monitoring.first_monitored_at,
+                "current_monitoring_started_at": monitoring.current_monitoring_started_at,
+                "last_monitored_at": monitoring.last_monitored_at,
+            }
+        )
+
+    performance_result = await session.execute(
+        select(
+            TradingFill.source_wallet.label("source_wallet"),
+            func.coalesce(func.sum(TradingFill.realized_pnl_usd), Decimal("0")).label(
+                "live_realized_pnl_usd"
+            ),
+            func.count(TradingFill.id).label("live_fill_count"),
+        )
+        .where(
+            TradingFill.account_type == "live",
+            TradingFill.source_wallet.in_(normalized_sources),
+        )
+        .group_by(TradingFill.source_wallet)
+    )
+    for row in performance_result.mappings().all():
+        source_wallet = str(row["source_wallet"]).lower()
+        existing = metadata[source_wallet]
+        metadata[source_wallet] = existing.model_copy(
+            update={
+                "live_realized_pnl_usd": row["live_realized_pnl_usd"] or Decimal("0"),
+                "live_fill_count": int(row["live_fill_count"] or 0),
+            }
+        )
+
+    return [metadata[source] for source in normalized_sources]
 
 
 async def trading_account_read(
@@ -613,14 +653,27 @@ async def list_trading_accounts_route(
     )
     recent_fills = list(fill_result.all())
     recent_orders = list(order_result.all())
-    source_metadata = await load_trading_source_metadata(
-        session,
-        source_wallets=collect_live_source_wallets(
+    historical_source_result = await session.scalars(
+        select(TradingFill.source_wallet)
+        .where(TradingFill.account_type == "live")
+        .distinct()
+    )
+    source_wallets = set(
+        collect_live_source_wallets(
             positions,
             recent_fills,
             recent_orders,
             closed_trades,
-        ),
+        )
+    )
+    source_wallets.update(
+        source
+        for source in (normalize_source_wallet(value) for value in historical_source_result.all())
+        if source is not None
+    )
+    source_metadata = await load_trading_source_metadata(
+        session,
+        source_wallets=sorted(source_wallets),
         settings=settings,
     )
     return TradingAccountsResponse(
