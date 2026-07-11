@@ -414,13 +414,16 @@ snapshot fills to retain their full source-to-ingest age without overflowing a
 ## Deployment Security Boundary
 
 The browser reaches the backend through the same-origin Next.js proxy. The proxy
-rejects cross-origin mutation requests before forwarding them, replaces client
-authorization with server-side Basic Auth, and sets the upstream origin to the
-backend origin. The backend independently validates `Origin` for authenticated
-`POST`, `PUT`, `PATCH`, and `DELETE` requests against same-origin and configured
-CORS origins. These paired origin checks form the CSRF boundary for browser
-mutations. Command-line clients without an `Origin` header still authenticate
-through Basic Auth.
+reconstructs the public request origin from Caddy's trusted
+`X-Forwarded-Host` and `X-Forwarded-Proto` headers, rejects cross-origin
+mutation requests before forwarding them, replaces client authorization with
+server-side Basic Auth, and sets the upstream origin to the backend origin. The
+VPS Compose file exposes only Caddy, so browsers cannot bypass this trusted
+proxy boundary and reach the frontend container directly. The backend
+independently validates `Origin` for authenticated `POST`, `PUT`, `PATCH`, and
+`DELETE` requests against same-origin and configured CORS origins. These paired
+origin checks form the CSRF boundary for browser mutations. Command-line clients
+without an `Origin` header still authenticate through Basic Auth.
 
 Backend and frontend images run as non-root users. Compose applies read-only root
 filesystems, explicit writable `tmpfs` mounts, `no-new-privileges`, and drops all

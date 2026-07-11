@@ -874,11 +874,14 @@ default `change-me`. Backend auth is enabled by default and protects every route
 except `/health` and `/ready`. The dashboard also enforces Basic Auth before serving pages or
 `/api/backend` proxy routes. Backend credentials are attached by the Next.js
 server, so they are not placed in the client bundle. Browser mutation requests
-must be same-origin or match the configured backend CORS origin allowlist. The
-frontend proxy performs the same-origin check before forwarding and the backend
-checks the forwarded origin again. Non-browser clients without an `Origin`
-header continue to use Basic Auth normally. These paired origin checks are the
-CSRF protection for authenticated mutation routes.
+must be same-origin or match the configured backend CORS origin allowlist.
+Behind Caddy, the frontend reconstructs the public request origin from Caddy's
+trusted `X-Forwarded-Host` and `X-Forwarded-Proto` headers instead of comparing
+the browser origin with the internal `frontend:3000` address. The frontend proxy
+performs the same-origin check before forwarding and the backend checks the
+forwarded origin again. Non-browser clients without an `Origin` header continue
+to use Basic Auth normally. These paired origin checks are the CSRF protection
+for authenticated mutation routes.
 
 For a fresh local Compose database, start Postgres and run migrations first:
 

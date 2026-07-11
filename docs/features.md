@@ -36,9 +36,11 @@ Behavior:
   backend auth on the server side.
 - Server-side dashboard data fetches also add backend auth from environment
   variables.
-- Browser mutations must be same-origin at the frontend proxy. The backend also
-  rejects authenticated mutation requests whose `Origin` is neither same-origin
-  nor in the configured CORS allowlist.
+- Browser mutations must be same-origin at the frontend proxy. Behind Caddy,
+  same-origin uses the trusted forwarded public host and protocol rather than
+  the internal frontend container address. The backend also rejects
+  authenticated mutation requests whose `Origin` is neither same-origin nor in
+  the configured CORS allowlist.
 - These paired origin checks provide CSRF protection for browser mutations.
 - Non-browser clients without an `Origin` header remain supported through Basic
   Auth.

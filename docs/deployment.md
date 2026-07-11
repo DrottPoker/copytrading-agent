@@ -520,5 +520,9 @@ docker compose -f docker-compose.vps.yml down -v
   `/ready`. The dashboard itself also requires the same Basic Auth.
 - The dashboard calls the backend through the Next.js server-side proxy, so the
   backend does not need a public domain.
+- Caddy supplies the trusted public `X-Forwarded-Host` and
+  `X-Forwarded-Proto` values used by the frontend's same-origin mutation check.
+  Keep the frontend container on the internal Docker network and expose only
+  Caddy, as defined by `docker-compose.vps.yml`.
 - Keep at least a few GB of free disk space for Postgres WAL, autovacuum, and
   backups.

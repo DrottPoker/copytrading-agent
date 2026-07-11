@@ -1,5 +1,7 @@
 import appConfig from "../../../../../config/app.json";
 
+import { browserMutationOriginIsAllowed } from "@/lib/mutation-origin";
+
 type FrontendAppConfig = {
   serverApiBaseUrl?: string;
 };
@@ -48,7 +50,7 @@ async function proxyBackendRequest(request: Request, context: RouteContext) {
   const params = await context.params;
   const path = (params.path ?? []).map(encodeURIComponent).join("/");
   const requestUrl = new URL(request.url);
-  if (!mutationOriginIsAllowed(request, requestUrl)) {
+  if (!browserMutationOriginIsAllowed(request)) {
     return Response.json({ detail: "Cross-origin mutation request rejected." }, { status: 403 });
   }
 
@@ -63,6 +65,8 @@ async function proxyBackendRequest(request: Request, context: RouteContext) {
   for (const upstreamUrl of backendUpstreamUrls(path, requestUrl.search)) {
     try {
       const upstreamHeaders = new Headers(headers);
+      upstreamHeaders.set("X-Forwarded-Host", upstreamUrl.host);
+      upstreamHeaders.set("X-Forwarded-Proto", upstreamUrl.protocol.replace(/:$/, ""));
       if (requestHasBody(request.method)) {
         upstreamHeaders.set("Origin", upstreamUrl.origin);
       }
@@ -90,14 +94,6 @@ async function proxyBackendRequest(request: Request, context: RouteContext) {
     },
     { status: 502 },
   );
-}
-
-function mutationOriginIsAllowed(request: Request, requestUrl: URL) {
-  if (!requestHasBody(request.method)) {
-    return true;
-  }
-  const origin = request.headers.get("origin");
-  return !origin || origin.replace(/\/+$/, "") === requestUrl.origin;
 }
 
 function backendUpstreamUrls(path: string, search: string) {
