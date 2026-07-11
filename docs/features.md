@@ -1048,9 +1048,11 @@ What it does:
   after reconciliation. This repairs drift in derived account totals.
 - Blocks new live entries after a partial or failed reconciliation until a
   complete attempt succeeds. Reduce-only exits continue to work.
-- Moves an enabled account to `exit_only` when reconciliation becomes partial,
-  or when reconciliation finds external exposure on a disabled account. Both
-  transitions produce durable risk and audit records.
+- Keeps an enabled account enabled when reconciliation becomes partial or fails.
+  The degraded reconciliation state blocks entries and clears automatically
+  after a complete fresh snapshot, without requiring another Start action.
+- Moves a disabled account to `exit_only` when reconciliation finds external
+  exposure. This lifecycle transition produces durable risk and audit records.
 - Reconciles live account equity and available cash from perp state plus
   Hyperliquid spot/core USDC balances, so wallets that hold deposited USDC
   outside perp margin still show their account value.
@@ -1117,10 +1119,13 @@ What it does:
   reserved source remain allowed.
 - Enforces live entry guardrails for reconciliation freshness, entry intent TTL,
   weekly account loss percentage, and max orders per minute.
-  Stale reconciliation or a breached stateful account limit moves the account to
-  `exit_only`, cancels unsent entries, and records a critical risk event. Expired
-  intents and invalid exchange leverage or slippage values are rejected
-  before submission.
+  Stale or incomplete reconciliation blocks only the entry without changing the
+  enabled account lifecycle. Transitions into partial or failed reconciliation
+  health record warning risk and audit entries without repeating them on every
+  worker pass. A complete fresh snapshot resumes entry eligibility automatically.
+  A breached weekly loss or order-rate limit moves the account to `exit_only`,
+  cancels unsent entries, and records a critical risk event. Expired intents and
+  invalid exchange leverage or slippage values are rejected before submission.
 - Calculates weekly loss usage from net realized PnL after fees plus current
   aggregate exchange unrealized PnL. The percentage base reconstructs account
   equity at the start of the UTC week. Current unrealized PnL is included once
@@ -1552,6 +1557,9 @@ What it does:
 - Exposes the `LIVE_TRADING_ENABLED` state and effective risk limits in Accounts.
 - Shows account lifecycle state and supports guarded start, stop, disable,
   close-all, reconciliation, and archive workflows.
+- Shows enabled accounts with degraded reconciliation as `entries paused`,
+  including the exact failed components and errors. Exit-only and disabled
+  accounts show their persisted lifecycle reason and change time.
 
 ### Live Small Mode
 

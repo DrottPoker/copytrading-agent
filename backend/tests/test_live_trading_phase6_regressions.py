@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import uuid4
@@ -14,8 +14,9 @@ from app.db.models import (
     TradingCloseAllOperation,
     TradingOrder,
     TradingPosition,
+    TradingReconciliationRun,
 )
-from app.services import live_trading_service, trading_safety_service
+from app.services import live_trading_service
 from app.services.live_trading_service import (
     LiveCloseAllResult,
     LiveFillFetchResult,
@@ -27,6 +28,7 @@ from app.services.live_trading_service import (
     LiveReconciliationResult,
     close_live_account_position,
     complete_live_close_all_operation,
+    mark_live_reconciliation_run_failed,
     resume_live_close_all_operations,
     run_live_trading_account_reconciliation,
     validate_live_entry_risk_guardrails,
@@ -62,6 +64,9 @@ class FakeSession:
 
     async def scalar(self, statement: Any) -> Any:
         self.scalar_statements.append(statement)
+        return self.scalar_values.pop(0) if self.scalar_values else None
+
+    async def get(self, _model: Any, _key: Any) -> Any:
         return self.scalar_values.pop(0) if self.scalar_values else None
 
     async def scalars(self, statement: Any) -> FakeScalarRows:
@@ -258,11 +263,57 @@ async def test_manual_close_from_disabled_keeps_exit_only_with_another_position(
     assert account.status_reason == "manual_close_detected_exposure"
 
 
+@pytest.mark.parametrize(
+    (
+        "initial_status",
+        "expected_status",
+        "expected_lifecycle_version",
+        "expected_reason",
+        "expected_event_type",
+        "previous_reconciliation_status",
+    ),
+    [
+        (
+            "disabled",
+            "exit_only",
+            8,
+            "external_exposure_detected_during_partial_reconciliation",
+            "live_external_exposure_detected",
+            None,
+        ),
+        (
+            "enabled",
+            "enabled",
+            7,
+            "initial_enabled",
+            "live_reconciliation_partial",
+            None,
+        ),
+        (
+            "enabled",
+            "enabled",
+            7,
+            "initial_enabled",
+            None,
+            "partial",
+        ),
+    ],
+)
 @pytest.mark.asyncio
-async def test_partial_reconciliation_promotes_disabled_account_with_exposure(
+async def test_partial_reconciliation_preserves_enabled_lifecycle_and_protects_external_exposure(
     monkeypatch: pytest.MonkeyPatch,
+    initial_status: str,
+    expected_status: str,
+    expected_lifecycle_version: int,
+    expected_reason: str,
+    expected_event_type: str | None,
+    previous_reconciliation_status: str | None,
 ) -> None:
-    account = live_account(status="disabled", lifecycle_version=7)
+    account = live_account(status=initial_status, lifecycle_version=7)
+    if previous_reconciliation_status is not None:
+        account.config_payload = {
+            "lastReconciliationAttempt": {"status": previous_reconciliation_status}
+        }
     session = FakeSession()
     order_result = LiveOrderReconciliationResult()
     fill_result = LiveFillFetchResult(
@@ -355,14 +406,27 @@ async def test_partial_reconciliation_promotes_disabled_account_with_exposure(
 
     assert result.status == "partial"
     assert result.open_positions == 1
-    assert account.status == "exit_only"
-    assert account.lifecycle_version == 8
-    assert account.status_reason == "external_exposure_detected_during_partial_reconciliation"
-    risk_event = next(value for value in session.added if isinstance(value, RiskEvent))
-    audit_log = next(value for value in session.added if isinstance(value, AuditLog))
-    assert risk_event.event_type == "live_external_exposure_detected"
-    assert risk_event.payload["reconciliationStatus"] == "partial"
-    assert audit_log.action == "live_account.external_exposure_detected"
+    assert account.status == expected_status
+    assert account.lifecycle_version == expected_lifecycle_version
+    assert account.status_reason == expected_reason
+    risk_events = [value for value in session.added if isinstance(value, RiskEvent)]
+    audit_logs = [value for value in session.added if isinstance(value, AuditLog)]
+    if expected_event_type is None:
+        assert risk_events == []
+        assert audit_logs == []
+    elif initial_status == "disabled":
+        risk_event = risk_events[0]
+        audit_log = audit_logs[0]
+        assert risk_event.event_type == expected_event_type
+        assert risk_event.payload["reconciliationStatus"] == "partial"
+        assert audit_log.action == "live_account.external_exposure_detected"
+    else:
+        risk_event = risk_events[0]
+        audit_log = audit_logs[0]
+        assert risk_event.event_type == expected_event_type
+        assert risk_event.severity == "warning"
+        assert risk_event.payload["accountStatus"] == "enabled"
+        assert audit_log.action == "live_account.reconciliation_partial"
 
 
 @pytest.mark.asyncio
@@ -439,26 +503,40 @@ async def test_failed_close_all_operation_is_selected_for_recovery(
     assert [result.operation_id for result in results] == [operation_id]
 
 
+@pytest.mark.parametrize(
+    ("reconciliation_status", "expected_message"),
+    [
+        (
+            "partial",
+            "complete exchange reconciliation snapshot",
+        ),
+        (
+            "stale",
+            "fresh exchange reconciliation snapshot",
+        ),
+    ],
+)
 @pytest.mark.asyncio
-async def test_risk_guard_does_not_transition_disabled_account(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_reconciliation_guard_blocks_entry_without_changing_enabled_lifecycle(
+    reconciliation_status: str,
+    expected_message: str,
 ) -> None:
-    account = live_account(status="disabled", lifecycle_version=9)
-    account.config_payload = {"lastReconciliationAttempt": {"status": "partial"}}
-    session = FakeSession()
-
-    async def fake_cancel(*_args: Any, **_kwargs: Any) -> int:
-        return 1
-
-    monkeypatch.setattr(
-        trading_safety_service,
-        "cancel_unsent_live_entries",
-        fake_cancel,
+    account = live_account(status="enabled", lifecycle_version=9)
+    account.config_payload = {
+        "lastReconciliationAttempt": {
+            "status": "partial" if reconciliation_status == "partial" else "complete"
+        }
+    }
+    account.last_reconciled_at = (
+        datetime.now(UTC)
+        if reconciliation_status == "partial"
+        else datetime.now(UTC) - timedelta(seconds=91)
     )
+    session = FakeSession()
 
     with pytest.raises(
         LiveOrderSubmitError,
-        match="complete exchange reconciliation snapshot",
+        match=expected_message,
     ):
         await validate_live_entry_risk_guardrails(  # type: ignore[arg-type]
             session,
@@ -466,10 +544,62 @@ async def test_risk_guard_does_not_transition_disabled_account(
             settings=Settings(),
         )
 
-    assert account.status == "disabled"
+    assert account.status == "enabled"
     assert account.lifecycle_version == 9
-    assert account.status_reason == "initial_disabled"
-    risk_event = next(value for value in session.added if isinstance(value, RiskEvent))
-    assert risk_event.event_type == "live_account_risk_trip"
-    assert risk_event.payload["rule"] == "reconciliation_incomplete"
-    assert risk_event.payload["lifecycleVersion"] == 9
+    assert account.status_reason == "initial_enabled"
+    assert session.added == []
+    assert session.commit_count == 1
+
+
+@pytest.mark.parametrize(
+    ("previous_reconciliation_status", "expects_event"),
+    [(None, True), ("failed", False)],
+)
+@pytest.mark.asyncio
+async def test_failed_reconciliation_blocks_entries_without_changing_enabled_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+    previous_reconciliation_status: str | None,
+    expects_event: bool,
+) -> None:
+    account = live_account(status="enabled", lifecycle_version=11)
+    if previous_reconciliation_status is not None:
+        account.config_payload = {
+            "lastReconciliationAttempt": {"status": previous_reconciliation_status}
+        }
+    run = TradingReconciliationRun(
+        account_key=account.key,
+        status="running",
+        components={},
+        started_at=datetime.now(UTC),
+    )
+    session = FakeSession(scalar_values=[run, account])
+
+    async def return_none(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(live_trading_service, "prune_live_reconciliation_runs", return_none)
+
+    await mark_live_reconciliation_run_failed(  # type: ignore[arg-type]
+        session,
+        run_id=run.id,
+        account_key=account.key,
+        attempted_at=datetime.now(UTC),
+        error="Temporary Hyperliquid timeout.",
+    )
+
+    assert run.status == "failed"
+    assert account.status == "enabled"
+    assert account.lifecycle_version == 11
+    assert account.status_reason == "initial_enabled"
+    risk_events = [value for value in session.added if isinstance(value, RiskEvent)]
+    audit_logs = [value for value in session.added if isinstance(value, AuditLog)]
+    if expects_event:
+        risk_event = risk_events[0]
+        audit_log = audit_logs[0]
+        assert risk_event.event_type == "live_reconciliation_failed"
+        assert risk_event.severity == "warning"
+        assert risk_event.payload["accountStatus"] == "enabled"
+        assert audit_log.action == "live_account.reconciliation_failed"
+    else:
+        assert risk_events == []
+        assert audit_logs == []

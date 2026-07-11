@@ -2139,15 +2139,17 @@ async def validate_live_entry_risk_guardrails(
         message: str,
         observed: str | int | float | None = None,
         limit: str | int | float | None = None,
+        trip_account: bool = True,
     ) -> None:
-        await trip_live_account_risk(
-            session,
-            account=account,
-            rule=rule,
-            message=message,
-            observed=observed,
-            limit=limit,
-        )
+        if trip_account:
+            await trip_live_account_risk(
+                session,
+                account=account,
+                rule=rule,
+                message=message,
+                observed=observed,
+                limit=limit,
+            )
         await session.commit()
         raise LiveOrderSubmitError(message, status_code=409)
 
@@ -2155,6 +2157,7 @@ async def validate_live_entry_risk_guardrails(
         await reject(
             rule="reconciliation_incomplete",
             message="Live entries require a complete exchange reconciliation snapshot.",
+            trip_account=False,
         )
     if not live_reconciliation_is_fresh(account, settings=settings, now=now):
         await reject(
@@ -2164,6 +2167,7 @@ async def validate_live_entry_risk_guardrails(
                 account.last_reconciled_at.isoformat() if account.last_reconciled_at else None
             ),
             limit=settings.live_trading_reconciliation_max_snapshot_age_seconds,
+            trip_account=False,
         )
     if settings.live_trading_max_weekly_loss_pct > ZERO:
         current_unrealized_pnl = await live_account_current_unrealized_pnl(
@@ -2495,7 +2499,7 @@ async def run_live_trading_account_reconciliation(
             ],
             with_for_update=True,
         )
-        was_enabled = account.status == "enabled"
+        previous_reconciliation_status = live_reconciliation_status(account)
         update_live_account_from_state(
             account,
             perp_states=perp_snapshot,
@@ -2507,23 +2511,26 @@ async def run_live_trading_account_reconciliation(
             incomplete_components=incomplete_components,
             component_errors=component_errors,
         )
-        if reconciliation_status != "complete" and was_enabled:
-            apply_live_account_status(
-                account,
-                status="exit_only",
-                reason="reconciliation_partial",
-            )
+        if (
+            reconciliation_status != "complete"
+            and account.status == "enabled"
+            and previous_reconciliation_status != reconciliation_status
+        ):
             payload = {
                 "accountKey": account.key,
                 "incompleteComponents": list(incomplete_components),
                 "componentErrors": component_errors,
+                "accountStatus": account.status,
                 "lifecycleVersion": account.lifecycle_version,
             }
             record_risk_event(
                 session,
                 event_type="live_reconciliation_partial",
-                severity="critical",
-                message="Live account entered exit-only after partial reconciliation.",
+                severity="warning",
+                message=(
+                    "Live account reconciliation is partial. New entries are blocked until "
+                    "a complete snapshot succeeds."
+                ),
                 payload=payload,
             )
             record_audit_log(
@@ -2761,6 +2768,7 @@ async def mark_live_reconciliation_run_failed(
             }
         }
     if account is not None:
+        previous_reconciliation_status = live_reconciliation_status(account)
         account.config_payload = merge_raw_payload(
             account.config_payload,
             {
@@ -2772,22 +2780,21 @@ async def mark_live_reconciliation_run_failed(
                 }
             },
         )
-        if account.status == "enabled":
-            apply_live_account_status(
-                account,
-                status="exit_only",
-                reason="reconciliation_failed",
-            )
+        if account.status == "enabled" and previous_reconciliation_status != "failed":
             payload = {
                 "accountKey": account.key,
                 "error": error,
+                "accountStatus": account.status,
                 "lifecycleVersion": account.lifecycle_version,
             }
             record_risk_event(
                 session,
                 event_type="live_reconciliation_failed",
-                severity="critical",
-                message="Live account entered exit-only after reconciliation failed.",
+                severity="warning",
+                message=(
+                    "Live account reconciliation failed. New entries are blocked until "
+                    "a complete snapshot succeeds."
+                ),
                 payload=payload,
             )
             record_audit_log(

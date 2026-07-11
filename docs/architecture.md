@@ -1025,10 +1025,14 @@ position owns that market.
 Automatic copied live entries also require a complete reconciliation snapshot no
 older than the configured maximum and an unexpired entry intent. They pass
 account-level guardrails for weekly loss percentage and max orders per minute.
-Stale or incomplete reconciliation and breached
-stateful account limits trip the account to `exit_only`, cancel unsent entries,
-and record a critical risk event and audit entry. Expired intents and static
-leverage or slippage violations are rejected before submission.
+Stale, partial, or failed reconciliation blocks new entries without changing the
+account lifecycle status. The account remains enabled, reconciliation continues,
+and entries resume automatically after a complete fresh snapshot. Reconciliation
+transitions into partial or failed health record warning risk and audit entries.
+Breached weekly loss or order-rate limits still trip the account to `exit_only`,
+cancel unsent entries, and record a critical risk event and audit entry. Expired
+intents and static leverage or slippage violations are rejected before
+submission.
 Weekly loss usage combines net realized PnL after fees with current aggregate
 exchange unrealized PnL. The percentage base is current account equity minus
 weekly net PnL, which reconstructs start-of-week equity. The exchange aggregate

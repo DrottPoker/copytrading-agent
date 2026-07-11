@@ -77,6 +77,12 @@ type CreateAccountDraft = {
   startingBalance: string;
 };
 
+type LiveAccountNotice = {
+  detail: string;
+  title: string;
+  tone: "danger" | "neutral" | "warning";
+};
+
 const DEFAULT_CREATE_ACCOUNT_DRAFT: CreateAccountDraft = {
   accountType: "paper",
   liveLabel: "Main wallet",
@@ -376,6 +382,14 @@ export function AccountsDashboard({
     () => buildSelectedAccountView(summary, tradingAccounts, selectedAccount),
     [selectedAccount, summary, tradingAccounts],
   );
+  const liveAccountNotice =
+    selectedAccount?.accountType === "live"
+      ? buildLiveAccountNotice(
+          selectedAccount.live,
+          tradingAccounts.riskLimits.reconciliationMaxSnapshotAgeSeconds,
+          tradingAccounts.updatedAt,
+        )
+      : null;
 
   const handleTradingAction = useCallback(
     async (action: TradingAction) => {
@@ -685,8 +699,20 @@ export function AccountsDashboard({
           </select>
           {selectedAccount ? (
             <StatusPill
-              label={accountTradingStatusLabel(selectedAccount)}
-              tone={accountTradingStatusTone(selectedAccount)}
+              label={
+                selectedAccount.accountType === "live" &&
+                selectedAccount.live.status === "enabled" &&
+                liveAccountNotice
+                  ? "entries paused"
+                  : accountTradingStatusLabel(selectedAccount)
+              }
+              tone={
+                selectedAccount.accountType === "live" &&
+                selectedAccount.live.status === "enabled" &&
+                liveAccountNotice
+                  ? "warning"
+                  : accountTradingStatusTone(selectedAccount)
+              }
             />
           ) : null}
         </div>
@@ -807,6 +833,8 @@ export function AccountsDashboard({
           ) : null}
         </div>
       </section>
+
+      {liveAccountNotice ? <LiveAccountHealthNotice notice={liveAccountNotice} /> : null}
 
       <LiveRiskPanel
         enabled={tradingAccounts.liveTradingEnabled}
@@ -1371,6 +1399,25 @@ function LiveRiskPanel({
   );
 }
 
+function LiveAccountHealthNotice({ notice }: { notice: LiveAccountNotice }) {
+  const classes =
+    notice.tone === "danger"
+      ? "border-danger/25 bg-danger-soft text-danger"
+      : notice.tone === "warning"
+        ? "border-warning/25 bg-warning-soft text-warning"
+        : "border-line bg-subtle text-secondary";
+
+  return (
+    <section className={`mb-4 flex items-start gap-3 rounded-md border px-3 py-2.5 ${classes}`}>
+      <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+      <div className="min-w-0">
+        <p className="text-sm font-semibold">{notice.title}</p>
+        <p className="mt-0.5 break-words text-xs leading-5 opacity-90">{notice.detail}</p>
+      </div>
+    </section>
+  );
+}
+
 function BalanceBreakdown({ rows }: { rows: MetricLineView[] }) {
   return (
     <div className="grid gap-3">
@@ -1886,14 +1933,104 @@ function accountTradingStatusLabel(account: AccountOption) {
   if (account.accountType === "paper") {
     return account.paper.enabled ? "trading enabled" : "trading stopped";
   }
+  if (account.live.status === "enabled" && account.live.reconciliationStatus !== "complete") {
+    return "entries paused";
+  }
   return `trading ${formatLiveAccountStatus(account.live.status)}`;
 }
 
 function accountTradingStatusTone(account: AccountOption): Tone {
+  if (
+    account.accountType === "live" &&
+    account.live.status === "enabled" &&
+    account.live.reconciliationStatus !== "complete"
+  ) {
+    return "warning";
+  }
   if (accountTradingEnabled(account)) {
     return "positive";
   }
   return account.accountType === "live" && account.live.status === "disabled" ? "neutral" : "warning";
+}
+
+function buildLiveAccountNotice(
+  account: TradingAccount,
+  maxSnapshotAgeSeconds: number,
+  observedAt: string,
+): LiveAccountNotice | null {
+  const reconciliationStale = liveReconciliationIsStale(
+    account,
+    maxSnapshotAgeSeconds,
+    observedAt,
+  );
+  const reconciliationIssue = liveReconciliationIssue(account, reconciliationStale);
+  if (
+    account.status === "enabled" &&
+    (account.reconciliationStatus !== "complete" || reconciliationStale)
+  ) {
+    return {
+      detail:
+        reconciliationIssue ??
+        "A complete exchange snapshot is required before new entries can resume.",
+      title:
+        reconciliationStale
+          ? "Entries paused: reconciliation snapshot is stale"
+          : account.reconciliationStatus === "failed"
+          ? "Entries paused: reconciliation failed"
+          : "Entries paused: reconciliation incomplete",
+      tone: account.reconciliationStatus === "failed" ? "danger" : "warning",
+    };
+  }
+  if (account.status === "exit_only") {
+    const reason = account.statusReason ?? "no lifecycle reason was recorded";
+    return {
+      detail: `Lifecycle reason: ${reason}.${reconciliationIssue ? ` ${reconciliationIssue}` : ""}`,
+      title: "New entries stopped, reduce-only exits remain available",
+      tone: "warning",
+    };
+  }
+  if (account.status === "disabled" && account.statusReason) {
+    return {
+      detail: `Lifecycle reason: ${account.statusReason}.`,
+      title: "Live account disabled",
+      tone: "neutral",
+    };
+  }
+  return null;
+}
+
+function liveReconciliationIssue(
+  account: TradingAccount,
+  reconciliationStale: boolean,
+): string | null {
+  if (reconciliationStale) {
+    return `The last complete snapshot is older than the configured limit. Last complete: ${formatDate(account.lastReconciledAt)}.`;
+  }
+  if (account.reconciliationStatus === "complete") {
+    return null;
+  }
+  const errors = Object.entries(account.reconciliationErrors)
+    .map(([component, message]) => `${component}: ${message}`)
+    .join(" ");
+  if (errors) {
+    return `Reconciliation ${account.reconciliationStatus}. ${errors}`;
+  }
+  if (account.incompleteReconciliationComponents.length > 0) {
+    return `Reconciliation ${account.reconciliationStatus}. Incomplete: ${account.incompleteReconciliationComponents.join(", ")}.`;
+  }
+  return `Reconciliation ${account.reconciliationStatus}.`;
+}
+
+function liveReconciliationIsStale(
+  account: TradingAccount,
+  maxSnapshotAgeSeconds: number,
+  observedAt: string,
+): boolean {
+  if (account.reconciliationStatus !== "complete" || !account.lastReconciledAt) {
+    return false;
+  }
+  const ageMs = dateMs(observedAt) - dateMs(account.lastReconciledAt);
+  return ageMs > maxSnapshotAgeSeconds * 1000;
 }
 
 function formatLiveAccountStatus(status: TradingAccount["status"]) {
@@ -2162,6 +2299,8 @@ function buildLiveAccountView(
         title: "Account Details",
         rows: [
           { label: "Status", value: formatLiveAccountStatus(account.status) },
+          { label: "Status reason", value: account.statusReason ?? "none" },
+          { label: "Status changed", value: formatDate(account.statusChangedAt) },
           { label: "Network", value: account.network },
           { label: "Capital mode", value: capitalMode },
           { label: "Abstraction", value: account.userAbstraction ?? "unknown" },
