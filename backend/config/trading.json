@@ -2,8 +2,8 @@
   "copy": {
     "top_wallet_count": 10,
     "top_tier_wallet_count": 3,
-    "top_tier_allocation_pct": 0.2,
-    "standard_allocation_pct": 0.2,
+    "top_tier_allocation_pct": 0.25,
+    "standard_allocation_pct": 0.25,
     "max_total_allocation_pct": 0.8,
     "min_order_notional_usd": 10,
     "adjust_small_orders_to_min_order": true,

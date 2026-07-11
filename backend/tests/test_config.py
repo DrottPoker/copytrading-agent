@@ -131,8 +131,8 @@ def test_shared_trading_config_is_loaded_from_dedicated_file(
 
     assert config["trading_copy_top_wallet_count"] == 10
     assert config["trading_copy_top_tier_wallet_count"] == 3
-    assert Decimal(str(config["trading_copy_top_tier_allocation_pct"])) == Decimal("0.2")
-    assert Decimal(str(config["trading_copy_standard_allocation_pct"])) == Decimal("0.2")
+    assert Decimal(str(config["trading_copy_top_tier_allocation_pct"])) == Decimal("0.25")
+    assert Decimal(str(config["trading_copy_standard_allocation_pct"])) == Decimal("0.25")
     assert Decimal(str(config["trading_copy_max_total_allocation_pct"])) == Decimal("0.8")
     assert Decimal(str(config["trading_copy_min_order_notional_usd"])) == Decimal("10")
     assert config["trading_copy_adjust_small_orders_to_min_order"] is True
