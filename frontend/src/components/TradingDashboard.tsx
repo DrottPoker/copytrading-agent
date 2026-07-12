@@ -2021,7 +2021,7 @@ function buildPaperMonitoredSources(summary: PaperTradingSummaryResponse): Monit
         lastMonitoredAt: wallet?.lastMonitoredAt ?? null,
       };
     })
-    .sort(compareCopySourcesByRealizedPnl);
+    .sort(compareCopySourcesByAllocationUsed);
 }
 
 function buildLiveMonitoredSources(
@@ -2165,7 +2165,7 @@ function buildLiveMonitoredSources(
         source.recentLiveFillCount > 0 ||
         source.recentLiveOrderCount > 0,
     )
-    .sort(compareCopySourcesByRealizedPnl);
+    .sort(compareCopySourcesByAllocationUsed);
 }
 
 function buildWalletHistory(wallets: WalletPerformanceRow[]) {
@@ -2178,17 +2178,7 @@ function buildWalletHistory(wallets: WalletPerformanceRow[]) {
         wallet.monitoredSeconds > 0 ||
         numberValue(wallet.totalPnlUsd) !== 0,
     )
-    .sort((left, right) => {
-      const realizedDiff = numberValue(right.realizedPnlUsd) - numberValue(left.realizedPnlUsd);
-      if (realizedDiff !== 0) {
-        return realizedDiff;
-      }
-      const totalDiff = numberValue(right.totalPnlUsd) - numberValue(left.totalPnlUsd);
-      if (totalDiff !== 0) {
-        return totalDiff;
-      }
-      return (left.poolRank ?? 9999) - (right.poolRank ?? 9999);
-    });
+    .sort(compareWalletHistoryByPnl);
 }
 
 function buildLiveWalletHistory(
@@ -2872,12 +2862,50 @@ function statusOrder(status: MonitoredSource["sourceStatus"]) {
 
 type CopySourceSortValue = Pick<
   MonitoredSource,
-  "poolRank" | "rank" | "realizedPnlUsd" | "sourceStatus" | "sourceWallet" | "totalPnlUsd"
+  | "openMarginUsd"
+  | "pocketUsedPct"
+  | "poolRank"
+  | "rank"
+  | "realizedPnlUsd"
+  | "sourceStatus"
+  | "sourceWallet"
 >;
 
-export function compareCopySourcesByRealizedPnl(
+export function compareCopySourcesByAllocationUsed(
   left: CopySourceSortValue,
   right: CopySourceSortValue,
+) {
+  const usedPctDiff = (right.pocketUsedPct ?? 0) - (left.pocketUsedPct ?? 0);
+  if (usedPctDiff !== 0) {
+    return usedPctDiff;
+  }
+  const usedUsdDiff = right.openMarginUsd - left.openMarginUsd;
+  if (usedUsdDiff !== 0) {
+    return usedUsdDiff;
+  }
+  const realizedDiff = numberValue(right.realizedPnlUsd) - numberValue(left.realizedPnlUsd);
+  if (realizedDiff !== 0) {
+    return realizedDiff;
+  }
+  const statusDiff = statusOrder(left.sourceStatus) - statusOrder(right.sourceStatus);
+  if (statusDiff !== 0) {
+    return statusDiff;
+  }
+  const rankDiff = (left.poolRank ?? left.rank ?? 9999) - (right.poolRank ?? right.rank ?? 9999);
+  if (rankDiff !== 0) {
+    return rankDiff;
+  }
+  return left.sourceWallet.localeCompare(right.sourceWallet);
+}
+
+type WalletHistorySortValue = Pick<
+  WalletPerformanceRow,
+  "poolRank" | "realizedPnlUsd" | "sourceWallet" | "totalPnlUsd"
+>;
+
+export function compareWalletHistoryByPnl(
+  left: WalletHistorySortValue,
+  right: WalletHistorySortValue,
 ) {
   const realizedDiff = numberValue(right.realizedPnlUsd) - numberValue(left.realizedPnlUsd);
   if (realizedDiff !== 0) {
@@ -2887,11 +2915,7 @@ export function compareCopySourcesByRealizedPnl(
   if (totalDiff !== 0) {
     return totalDiff;
   }
-  const statusDiff = statusOrder(left.sourceStatus) - statusOrder(right.sourceStatus);
-  if (statusDiff !== 0) {
-    return statusDiff;
-  }
-  const rankDiff = (left.poolRank ?? left.rank ?? 9999) - (right.poolRank ?? right.rank ?? 9999);
+  const rankDiff = (left.poolRank ?? 9999) - (right.poolRank ?? 9999);
   if (rankDiff !== 0) {
     return rankDiff;
   }

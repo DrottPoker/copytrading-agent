@@ -884,8 +884,9 @@ Live source performance metadata aggregates realized PnL and fill count across
 the complete source-attributed `trading_fills` ledger. The dashboard divides
 that realized PnL, or realized plus current unrealized PnL, by the same wallet's
 accumulated monitored seconds. It never combines live PnL with a paper-derived
-per-hour rate. Copy Sources sorts by realized PnL descending before total PnL,
-status, pool rank, and wallet-address tie-breakers.
+per-hour rate. Copy Sources sorts by allocation-used percentage descending,
+followed by used USD, realized PnL, status, pool rank, and wallet-address
+tie-breakers. Wallet PnL History sorts by realized PnL descending.
 Dashboard source counters are reduced from the same current source rows as the
 badges, so source-attributed open positions drive the trading count
 even when exchange aggregate positions are preferred in the separate

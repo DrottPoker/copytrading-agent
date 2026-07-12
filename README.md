@@ -717,8 +717,9 @@ Sizing policy:
   monitor slot or retained-source order. Retained rows also show the blocking
   reason, such as outside copy top 10, drawdown blocked, paper account disabled,
   cooldown, or missing score.
-- Copy Sources is sorted by realized PnL descending. Total PnL, source status,
-  pool rank, and wallet address provide deterministic tie-breakers.
+- Copy Sources is sorted by allocation-used percentage descending. Used USD,
+  realized PnL, source status, pool rank, and wallet address provide deterministic
+  tie-breakers. Wallet PnL History is sorted by realized PnL descending.
 - Closed trade history comes from paper `close` and `flip_close` executions.
   Raw fills and skip rows remain available in the API for diagnostics, but they
   are not shown as trade history. Closed trade rows show a liquidation tag when

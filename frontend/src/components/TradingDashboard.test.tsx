@@ -5,7 +5,8 @@ import type { TradingPosition } from "@/types/trading";
 
 import {
   collectLiveCopySourceWallets,
-  compareCopySourcesByRealizedPnl,
+  compareCopySourcesByAllocationUsed,
+  compareWalletHistoryByPnl,
   displayLivePositions,
   liveAllocationSourceVisible,
   pnlPerMonitoredHour,
@@ -20,38 +21,53 @@ describe("copy source performance", () => {
     expect(pnlPerMonitoredHour(0.79, 0)).toBeNull();
   });
 
-  it("sorts Copy Sources by realized PnL before status and pool rank", () => {
+  it("sorts Copy Sources by allocation used before PnL and status", () => {
     const sources = [
       {
         sourceWallet: "0xzero",
         sourceStatus: "trading" as const,
+        pocketUsedPct: 0.1,
+        openMarginUsd: 10,
         poolRank: 1,
         rank: 1,
         realizedPnlUsd: "0",
-        totalPnlUsd: "0.29",
       },
       {
         sourceWallet: "0xhighest",
         sourceStatus: "waiting_for_trades" as const,
+        pocketUsedPct: 0,
+        openMarginUsd: 0,
         poolRank: 9,
         rank: 9,
         realizedPnlUsd: "7.17",
-        totalPnlUsd: "6.54",
       },
       {
         sourceWallet: "0xmiddle",
         sourceStatus: "waiting_for_trades" as const,
+        pocketUsedPct: 0.25,
+        openMarginUsd: 25,
         poolRank: 10,
         rank: 10,
         realizedPnlUsd: "0.79",
-        totalPnlUsd: "0.79",
       },
     ];
 
-    expect(sources.sort(compareCopySourcesByRealizedPnl).map((source) => source.sourceWallet)).toEqual([
-      "0xhighest",
+    expect(sources.sort(compareCopySourcesByAllocationUsed).map((source) => source.sourceWallet)).toEqual([
       "0xmiddle",
       "0xzero",
+      "0xhighest",
+    ]);
+  });
+
+  it("sorts Wallet PnL History by realized PnL descending", () => {
+    const wallets = [
+      { sourceWallet: "0xlow", poolRank: 1, realizedPnlUsd: "0.79", totalPnlUsd: "5" },
+      { sourceWallet: "0xhigh", poolRank: 10, realizedPnlUsd: "7.17", totalPnlUsd: "6" },
+    ];
+
+    expect(wallets.sort(compareWalletHistoryByPnl).map((wallet) => wallet.sourceWallet)).toEqual([
+      "0xhigh",
+      "0xlow",
     ]);
   });
 });

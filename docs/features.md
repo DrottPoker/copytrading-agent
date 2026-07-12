@@ -927,8 +927,9 @@ What it does:
   cooldown, or missing score.
 - Source rows split source PnL into realized and unrealized values, with total
   PnL shown as supporting context.
-- Copy Sources sorts by realized PnL descending, followed by total PnL, source
-  status, pool rank, and wallet address for deterministic ties.
+- Copy Sources sorts by allocation-used percentage descending, followed by used
+  USD, realized PnL, source status, pool rank, and wallet address for deterministic
+  ties. Wallet PnL History sorts by realized PnL descending.
 - The Sources summary and Copy Sources header derive their trading, monitored,
   connecting, offline, and waiting-for-slot counts from the same current
   source-state rows used by the source badges. Historical monitoring duration
