@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Annotated
 from uuid import UUID
@@ -77,7 +77,7 @@ router = APIRouter(prefix="/trading", tags=["trading"])
 TRADING_ACTIVITY_LIMIT = 100
 TRADING_CLOSED_TRADE_LIMIT = 100
 TRADING_CLOSED_TRADE_FILL_SCAN_LIMIT = 5000
-POSITION_ADD_FILL_ACTIONS = frozenset({"open", "add", "flip_open"})
+POSITION_ADD_FILL_ACTIONS = frozenset({"add"})
 POSITION_CLOSE_FILL_ACTIONS = frozenset({"reduce", "close", "flip_close"})
 
 
@@ -605,9 +605,6 @@ async def list_trading_accounts_route(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> TradingAccountsResponse:
     accounts = await list_trading_accounts(session)
-    stale_skip_activity_cutoff = datetime.now(UTC) - timedelta(
-        seconds=settings.trading_copy_stale_entry_skip_activity_seconds
-    )
     position_result = await session.scalars(
         select(TradingPosition)
         .where(TradingPosition.account_type == "live")
@@ -627,11 +624,9 @@ async def list_trading_accounts_route(
         select(TradingOrder)
         .where(
             TradingOrder.account_type == "live",
-            TradingOrder.raw_payload["hiddenFromActivity"].as_boolean().is_not(true()),
             or_(
-                TradingOrder.error.is_(None),
-                TradingOrder.error != "skip:live_source_fill_too_old",
-                TradingOrder.created_at >= stale_skip_activity_cutoff,
+                TradingOrder.raw_payload["hiddenFromActivity"].as_boolean().is_not(true()),
+                TradingOrder.error == "skip:live_source_fill_too_old",
             ),
         )
         .order_by(TradingOrder.updated_at.desc(), TradingOrder.created_at.desc())
@@ -654,9 +649,7 @@ async def list_trading_accounts_route(
     recent_fills = list(fill_result.all())
     recent_orders = list(order_result.all())
     historical_source_result = await session.scalars(
-        select(TradingFill.source_wallet)
-        .where(TradingFill.account_type == "live")
-        .distinct()
+        select(TradingFill.source_wallet).where(TradingFill.account_type == "live").distinct()
     )
     source_wallets = set(
         collect_live_source_wallets(

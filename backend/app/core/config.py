@@ -281,9 +281,6 @@ TRADING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("copy", "min_order_notional_usd"): "trading_copy_min_order_notional_usd",
     ("copy", "adjust_small_orders_to_min_order"): ("trading_copy_adjust_small_orders_to_min_order"),
     ("copy", "max_entry_age_seconds"): "trading_copy_max_entry_age_seconds",
-    ("copy", "stale_entry_skip_activity_seconds"): (
-        "trading_copy_stale_entry_skip_activity_seconds"
-    ),
     ("copy", "max_price_drift_bps"): "trading_copy_max_price_drift_bps",
     ("copy", "use_live_mid_price"): "trading_copy_use_live_mid_price",
     ("copy", "market_price_cache_enabled"): "trading_copy_market_price_cache_enabled",
@@ -390,7 +387,6 @@ class Settings(BaseSettings):
     trading_copy_min_order_notional_usd: Decimal = Field(default=Decimal("10"), ge=0)
     trading_copy_adjust_small_orders_to_min_order: bool = True
     trading_copy_max_entry_age_seconds: int = Field(default=15, ge=0, le=3600)
-    trading_copy_stale_entry_skip_activity_seconds: int = Field(default=300, ge=0, le=86400)
     trading_copy_max_price_drift_bps: Decimal = Field(default=Decimal("50"), ge=0, le=10000)
     trading_copy_use_live_mid_price: bool = True
     trading_copy_market_price_cache_enabled: bool = True
@@ -1053,9 +1049,6 @@ def normalize_paper_trading_config(config: dict[str, Any]) -> dict[str, Any]:
             "trading_copy_adjust_small_orders_to_min_order"
         ),
         "paper_copy_max_entry_age_seconds": "trading_copy_max_entry_age_seconds",
-        "paper_copy_stale_entry_skip_activity_seconds": (
-            "trading_copy_stale_entry_skip_activity_seconds"
-        ),
         "paper_copy_max_price_drift_bps": "trading_copy_max_price_drift_bps",
         "paper_copy_use_live_mid_price": "trading_copy_use_live_mid_price",
         "paper_copy_market_price_cache_enabled": "trading_copy_market_price_cache_enabled",

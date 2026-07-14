@@ -618,6 +618,10 @@ What it does:
 - Commits each realtime fill batch and a matching execution payload to
   `realtime_execution_inbox` in one transaction. The bounded in-process queue is
   a wakeup accelerator, not the source of truth.
+- Keeps every valid non-snapshot WebSocket fill in the execution payload even
+  when polling inserted the same wallet fill first. Presentation events still
+  publish only newly inserted rows, while live and paper copy use their own
+  source-fill idempotency keys to process the duplicate delivery safely.
 - Claims due inbox rows in stable creation order with row locking. Live
   processing runs before paper processing. Failed work returns to pending with
   bounded backoff, stale claims are recoverable after a worker crash, and
@@ -725,9 +729,8 @@ What it does:
   `trading_copy_max_entry_age_seconds`. This prevents late snapshot or recovery
   entries from opening exposure minutes after the source traded. Older close and
   reduce fills can still be processed to catch up existing exposure. Live copy
-  still stores old stale-entry skips as idempotent markers, but hides them from
-  Recent Execution Activity after
-  `trading_copy_stale_entry_skip_activity_seconds`.
+  stores stale-entry skips as visible idempotent decisions with separate source
+  and decision timestamps.
 - Applies the configured paper fee rate to opens and closes. The default is
   0.045% to match Hyperliquid's base perp taker fee because paper fills model
   immediate taker-style execution.
@@ -855,7 +858,8 @@ What it does:
 - Open position rows include unrealized PnL, realized PnL, and add and close
   fill counts for the current position window. Live open position realized PnL
   is summed from the same close, reduce, and flip-close fills used by the
-  position fill counts. Live open position rows also include reconciled current
+  position fill counts. Add counts include actual `add` fills only, not the
+  initial open or the opening leg of a flip. Live open position rows also include reconciled current
   notional, mark price, and ROE when Hyperliquid supplies the fields. They
   expose an individual Close action that submits a reduce-only live close order
   for that position. Successful manual closes immediately reconcile the live
@@ -959,7 +963,6 @@ equity. The total concurrently used allocation remains capped at 80 percent.
 - `trading_copy_min_order_notional_usd`
 - `trading_copy_adjust_small_orders_to_min_order`
 - `trading_copy_max_entry_age_seconds`
-- `trading_copy_stale_entry_skip_activity_seconds`
 - `trading_copy_max_price_drift_bps`, defaults to 50 bps
 - `trading_copy_use_live_mid_price`
 - `trading_copy_market_price_cache_enabled`
@@ -1160,6 +1163,9 @@ What it does:
   source-to-exchange in the dashboard. Realtime live-copy execution runs before
   paper-copy simulation so live orders do not wait for paper latency or
   paper-only bookkeeping.
+- Anchors reconciled exchange position open time to the earliest matching copied
+  source position. This keeps fill counts and realized PnL scoped to the actual
+  current position lifecycle even when an exchange aggregate row is recreated.
 - Adds testnet-only manual order submission through `POST /trading/testnet/orders`
   so lifecycle and reconciliation can be tested before mainnet.
 

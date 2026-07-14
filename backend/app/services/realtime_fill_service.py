@@ -20,7 +20,14 @@ class StoredRealtimeFills:
     is_snapshot: bool
     latest_fill_time_ms: int | None
     inserted_rows: list[dict[str, Any]]
+    execution_rows: list[dict[str, Any]] | None = None
     inbox_id: str | None = None
+
+    @property
+    def rows_for_execution(self) -> list[dict[str, Any]]:
+        if self.execution_rows is not None:
+            return self.execution_rows
+        return self.inserted_rows
 
     def execution_payload(self) -> dict[str, Any]:
         return {
@@ -31,6 +38,7 @@ class StoredRealtimeFills:
             "isSnapshot": self.is_snapshot,
             "latestFillTimeMs": self.latest_fill_time_ms,
             "insertedRows": self.inserted_rows,
+            "executionRows": self.rows_for_execution,
         }
 
     @classmethod
@@ -42,6 +50,7 @@ class StoredRealtimeFills:
     ) -> "StoredRealtimeFills":
         wallet_address = payload.get("walletAddress")
         inserted_rows = payload.get("insertedRows")
+        execution_rows = payload.get("executionRows", inserted_rows)
         is_snapshot = payload.get("isSnapshot")
         latest_fill_time_ms = payload.get("latestFillTimeMs")
         if not isinstance(wallet_address, str) or not wallet_address:
@@ -50,6 +59,10 @@ class StoredRealtimeFills:
             isinstance(row, dict) for row in inserted_rows
         ):
             raise ValueError("Realtime execution payload has invalid insertedRows.")
+        if not isinstance(execution_rows, list) or not all(
+            isinstance(row, dict) for row in execution_rows
+        ):
+            raise ValueError("Realtime execution payload has invalid executionRows.")
         if not isinstance(is_snapshot, bool):
             raise ValueError("Realtime execution payload has invalid isSnapshot.")
         if latest_fill_time_ms is not None and not isinstance(latest_fill_time_ms, int):
@@ -62,6 +75,7 @@ class StoredRealtimeFills:
             is_snapshot=is_snapshot,
             latest_fill_time_ms=latest_fill_time_ms,
             inserted_rows=inserted_rows,
+            execution_rows=execution_rows,
             inbox_id=inbox_id,
         )
 
@@ -91,6 +105,7 @@ async def store_realtime_fills(
     ]
 
     inserted_rows: list[dict[str, Any]] = []
+    execution_rows = [_record_to_execution_dict(record) for record in records]
     latest_fill_time_ms = max((record["timestamp_ms"] for record in records), default=None)
 
     if records:
@@ -133,8 +148,9 @@ async def store_realtime_fills(
         is_snapshot=is_snapshot,
         latest_fill_time_ms=latest_fill_time_ms,
         inserted_rows=inserted_rows,
+        execution_rows=execution_rows,
     )
-    if is_snapshot or inserted_rows:
+    if is_snapshot or execution_rows:
         inbox = RealtimeExecutionInbox(
             wallet_address=normalized_address,
             payload=stored.execution_payload(),
@@ -165,6 +181,25 @@ def _row_to_dict(row: Row[Any]) -> dict[str, Any]:
         "sourceTimestampMs": mapping["source_timestamp_ms"],
         "ingestLatencyMs": mapping["ingest_latency_ms"],
         "rawJson": mapping["raw_json"],
+    }
+
+
+def _record_to_execution_dict(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "externalFillId": record["external_fill_id"],
+        "coin": record["coin"],
+        "side": record["side"],
+        "price": str(record["price"]),
+        "size": str(record["size"]),
+        "notionalUsd": (
+            str(record["notional_usd"]) if record["notional_usd"] is not None else None
+        ),
+        "feeUsd": str(record["fee_usd"]) if record["fee_usd"] is not None else None,
+        "pnlUsd": str(record["pnl_usd"]) if record["pnl_usd"] is not None else None,
+        "timestampMs": record["timestamp_ms"],
+        "sourceTimestampMs": record["source_timestamp_ms"],
+        "ingestLatencyMs": record.get("ingest_latency_ms"),
+        "rawJson": record["raw_json"],
     }
 
 

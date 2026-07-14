@@ -2302,14 +2302,32 @@ def is_retryable_live_order_submit_failure(order: TradingOrder) -> bool:
 
 
 def is_retryable_live_copy_skip(order: TradingOrder) -> bool:
-    return (
+    if (
         order.error == "skip:live_close_below_min_order_notional"
         and order.reduce_only
         and order.action in {"reduce", "close", "flip_close"}
-    )
+    ):
+        return True
+    return order.error in {
+        "skip:live_account_not_enabled",
+        "skip:live_account_exit_only",
+        "skip:live_execution_busy",
+        "skip:live_execution_price_unavailable",
+        "skip:live_reconciliation_failed",
+        "skip:live_reconciliation_incomplete",
+        "skip:live_reconciliation_stale",
+        "skip:live_source_leverage_missing",
+        "skip:live_source_margin_mode_missing",
+        "skip:source_account_margin_summary_missing",
+        "skip:source_account_state_fetch_failed",
+        "skip:source_account_state_missing",
+        "skip:source_perp_equity_missing",
+        "skip:source_perp_equity_zero",
+    }
 
 
 def reset_live_order_for_retry(order: TradingOrder, *, intent: TradeIntent) -> None:
+    retry_reason = live_order_retry_reason(order)
     order.status = "planned"
     order.error = None
     order.submitted_at = None
@@ -2329,11 +2347,17 @@ def reset_live_order_for_retry(order: TradingOrder, *, intent: TradeIntent) -> N
         order.raw_payload,
         {
             "retry": {
-                "reason": "market_metadata_available_after_previous_submit_failure",
+                "reason": retry_reason,
                 "requestedAt": datetime.now(UTC).isoformat(),
             }
         },
     )
+
+
+def live_order_retry_reason(order: TradingOrder) -> str:
+    if is_retryable_live_copy_skip(order):
+        return str(order.error or "retryable_live_copy_skip").removeprefix("skip:")
+    return "market_metadata_available_after_previous_submit_failure"
 
 
 def apply_live_order_result(
@@ -3695,11 +3719,26 @@ async def reconcile_live_positions(
     )
     existing_positions = list(existing_result.all())
     existing = {position.coin: position for position in existing_positions}
+    source_result = await session.scalars(
+        select(TradingPosition).where(
+            TradingPosition.account_key == account.key,
+            TradingPosition.account_type == "live",
+            TradingPosition.source_wallet != LIVE_EXCHANGE_SOURCE,
+        )
+    )
+    source_positions = list(source_result.all())
     authoritative_dexes = {state.dex for state in perp_snapshot.states if state.complete}
     requested_dexes = set(perp_snapshot.requested_dexes)
     exchange_positions: list[TradingPosition] = []
     for snapshot in snapshots:
         position = existing.get(snapshot.coin)
+        opened_at = live_exchange_position_opened_at(
+            coin=snapshot.coin,
+            side=snapshot.side,
+            existing_position=position,
+            source_positions=source_positions,
+            reconciled_at=reconciled_at,
+        )
         if position is None:
             position = TradingPosition(
                 account_key=account.key,
@@ -3716,7 +3755,7 @@ async def reconcile_live_positions(
                 realized_pnl_usd=ZERO,
                 fee_usd=ZERO,
                 raw_payload=snapshot.raw_payload,
-                opened_at=reconciled_at,
+                opened_at=opened_at,
                 last_reconciled_at=reconciled_at,
             )
             session.add(position)
@@ -3730,17 +3769,9 @@ async def reconcile_live_positions(
         position.margin_mode = snapshot.margin_mode
         position.margin_usd = snapshot.margin_usd
         position.raw_payload = snapshot.raw_payload
+        position.opened_at = opened_at
         position.last_reconciled_at = reconciled_at
         exchange_positions.append(position)
-
-    source_result = await session.scalars(
-        select(TradingPosition).where(
-            TradingPosition.account_key == account.key,
-            TradingPosition.account_type == "live",
-            TradingPosition.source_wallet != LIVE_EXCHANGE_SOURCE,
-        )
-    )
-    source_positions = list(source_result.all())
     if perp_snapshot.catalog_complete:
         stored_dexes = {
             live_dex_from_coin(position.coin)
@@ -3781,6 +3812,29 @@ async def reconcile_live_positions(
         complete=perp_snapshot.complete,
         authoritative_dexes=tuple(sorted(authoritative_dexes)),
     )
+
+
+def live_exchange_position_opened_at(
+    *,
+    coin: str,
+    side: str,
+    existing_position: TradingPosition | None,
+    source_positions: list[TradingPosition],
+    reconciled_at: datetime,
+) -> datetime:
+    source_opened_at = min(
+        (
+            position.opened_at
+            for position in source_positions
+            if position.coin == coin and position.side == side
+        ),
+        default=None,
+    )
+    if existing_position is None or existing_position.side != side:
+        return source_opened_at or reconciled_at
+    if source_opened_at is None:
+        return existing_position.opened_at
+    return min(existing_position.opened_at, source_opened_at)
 
 
 def normalize_live_perp_snapshot(

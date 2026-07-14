@@ -2637,7 +2637,7 @@ function liveOrderExecutionRow(
 ): DatedAccountExecutionRow {
   const isExchange = isLiveExchangeSource(order.sourceWallet);
   const error = order.error?.trim();
-  const sortAt = order.orderType === "skip" ? order.createdAt : order.filledAt ?? order.updatedAt ?? order.createdAt;
+  const sortAt = order.filledAt ?? order.updatedAt ?? order.createdAt;
   return {
     badges: [
       { label: order.orderType === "skip" ? "live skip" : "live order", tone: order.orderType === "skip" ? "warning" : "neutral" },

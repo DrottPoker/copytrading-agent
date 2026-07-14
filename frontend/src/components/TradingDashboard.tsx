@@ -1797,7 +1797,7 @@ function buildLiveOrderActivity(
       { label: order.action, tone: actionTone },
       { label: order.status, tone: liveOrderStatusTone(order.status) },
     ],
-    sortAt: order.orderType === "skip" ? order.createdAt : order.filledAt ?? order.updatedAt ?? order.createdAt,
+    sortAt: order.filledAt ?? order.updatedAt ?? order.createdAt,
     stats: [
       { label: "Market", value: order.coin, detail: formatDate(order.createdAt) },
       {

@@ -586,11 +586,9 @@ Sizing policy:
   before opening or adding exposure. This prevents snapshot or recovery fills
   from creating late entries minutes after the source traded. Close and reduce
   processing still runs for older fills so exits can catch up safely. Live copy
-  keeps old stale-entry skips as idempotent processing markers, but hides them
-  from Recent Execution Activity once they are older than
-  `trading_copy_stale_entry_skip_activity_seconds`. Live copy recovery hides
-  stale-entry skips immediately because those rows are replay markers, not
-  current execution attempts.
+  keeps stale-entry skips visible as durable decisions in Recent Execution
+  Activity. The decision timestamp is stored separately from the original
+  source fill timestamp so delayed recovery decisions remain understandable.
 - Paper execution starts the configured simulated latency immediately while
   source account state is fetched in parallel.
   It then reads live mids and applies adverse slippage to the execution price.
@@ -598,6 +596,10 @@ Sizing policy:
   `trading_copy_market_price_cache_enabled` is enabled. Fresh cached prices are
   used before HTTP, so realtime fills do not wait on a new `allMids` request per
   batch.
+- Realtime execution uses every valid non-snapshot WebSocket fill, even when a
+  concurrent poll inserted the same wallet fill first. Database insertion
+  counts remain deduplicated, while the source-fill order key keeps live and
+  paper execution idempotent.
 - If the cache is stale or missing a coin, paper copy falls back to HTTP
   `allMids`, then dex-specific `allMids`, then `metaAndAssetCtxs`.
 - Paper fills are skipped when adverse live mid price drift from the source fill

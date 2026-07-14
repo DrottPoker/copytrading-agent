@@ -62,6 +62,48 @@ async def test_realtime_fill_and_inbox_are_committed_together(
 
 
 @pytest.mark.asyncio
+async def test_poll_inserted_fill_still_creates_realtime_execution_inbox(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    address = "0x" + "2" * 40
+    fill_time_ms = int(datetime.now(UTC).timestamp() * 1000)
+    fill = {
+        "tid": "poll-before-websocket",
+        "coin": "HYPE",
+        "side": "B",
+        "dir": "Open Long",
+        "px": "40",
+        "sz": "1",
+        "time": fill_time_ms,
+    }
+    async with integration_sessionmaker() as session:
+        first = await store_realtime_fills(
+            session,
+            wallet_address=address,
+            fills=[fill],
+            is_snapshot=False,
+        )
+    async with integration_sessionmaker() as session:
+        duplicate = await store_realtime_fills(
+            session,
+            wallet_address=address,
+            fills=[fill],
+            is_snapshot=False,
+        )
+
+    assert first.inserted == 1
+    assert duplicate.inserted == 0
+    assert duplicate.duplicate == 1
+    assert duplicate.inbox_id is not None
+    assert duplicate.rows_for_execution[0]["externalFillId"] == "poll-before-websocket"
+    async with integration_sessionmaker() as session:
+        inbox = await session.get(RealtimeExecutionInbox, UUID(duplicate.inbox_id))
+    assert inbox is not None
+    assert inbox.payload["insertedRows"] == []
+    assert inbox.payload["executionRows"][0]["externalFillId"] == "poll-before-websocket"
+
+
+@pytest.mark.asyncio
 async def test_realtime_inbox_claims_first_fill_without_copy_history(
     integration_sessionmaker: async_sessionmaker[AsyncSession],
 ) -> None:

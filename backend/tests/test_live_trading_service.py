@@ -29,6 +29,7 @@ from app.services.live_trading_service import (
     is_retryable_live_order_submit_failure,
     live_account_key_for_route,
     live_closed_trades_from_fills,
+    live_exchange_position_opened_at,
     live_perp_equity_usd,
     live_position_current_notional,
     live_position_mark_price,
@@ -299,6 +300,80 @@ def test_retryable_live_order_submit_failure_matches_below_min_close_skip() -> N
     assert order.side == "short"
     assert order.reduce_only is True
     assert order.requested_notional_usd == Decimal("10")
+
+
+def test_retryable_live_order_submit_failure_matches_transient_copy_skip() -> None:
+    order = live_order(status="failed")
+    order.order_type = "skip"
+    order.error = "skip:live_execution_busy"
+
+    assert is_retryable_live_order_submit_failure(order) is True
+
+    reset_live_order_for_retry(
+        order,
+        intent=build_testnet_live_trade_intent(
+            account=TradingAccount(
+                key="live_test",
+                account_type="live",
+                label="Live Test",
+                status="enabled",
+                network="testnet",
+            ),
+            coin="HYPE",
+            side="long",
+            notional_usd=Decimal("10"),
+            limit_price=Decimal("100"),
+            leverage=Decimal("3"),
+            reduce_only=False,
+            source_fill_id="fill-1",
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        ),
+    )
+
+    assert order.status == "planned"
+    assert order.error is None
+    assert order.raw_payload["retry"]["reason"] == "live_execution_busy"
+
+
+def test_exchange_position_open_time_uses_earliest_matching_source_position() -> None:
+    reconciled_at = datetime(2026, 7, 14, 12, tzinfo=UTC)
+    source_opened_at = reconciled_at - timedelta(hours=4)
+    existing = live_position(raw_payload={})
+    existing.source_wallet = "exchange"
+    existing.opened_at = reconciled_at - timedelta(hours=1)
+    source = live_position(raw_payload={})
+    source.source_wallet = "0xsource"
+    source.opened_at = source_opened_at
+
+    assert (
+        live_exchange_position_opened_at(
+            coin="HYPE",
+            side="long",
+            existing_position=existing,
+            source_positions=[source],
+            reconciled_at=reconciled_at,
+        )
+        == source_opened_at
+    )
+
+
+def test_exchange_position_open_time_resets_when_side_changes() -> None:
+    reconciled_at = datetime(2026, 7, 14, 12, tzinfo=UTC)
+    existing = live_position(raw_payload={})
+    existing.source_wallet = "exchange"
+    existing.side = "short"
+    existing.opened_at = reconciled_at - timedelta(days=2)
+
+    assert (
+        live_exchange_position_opened_at(
+            coin="HYPE",
+            side="long",
+            existing_position=existing,
+            source_positions=[],
+            reconciled_at=reconciled_at,
+        )
+        == reconciled_at
+    )
 
 
 def test_retryable_live_order_submit_failure_ignores_exchange_rejection() -> None:

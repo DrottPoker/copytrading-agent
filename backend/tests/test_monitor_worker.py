@@ -168,6 +168,72 @@ async def test_execution_finishes_before_blocked_presentation_events(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_duplicate_realtime_fill_still_reaches_idempotent_copy_execution(monkeypatch) -> None:
+    copied_rows: list[tuple[str, list[dict[str, Any]]]] = []
+    published_events: list[str] = []
+    execution_row = {
+        "coin": "HYPE",
+        "externalFillId": "poll-inserted-fill",
+        "price": "60",
+        "side": "buy",
+        "size": "1",
+        "timestampMs": 1,
+        "rawJson": {"dir": "Open Long"},
+    }
+    stored = StoredRealtimeFills(
+        wallet_address="0xsource",
+        fetched=1,
+        inserted=0,
+        duplicate=1,
+        is_snapshot=False,
+        latest_fill_time_ms=1,
+        inserted_rows=[],
+        execution_rows=[execution_row],
+    )
+
+    async def fake_live(
+        *_args: object,
+        fills: list[dict[str, Any]],
+        **_kwargs: object,
+    ) -> PaperCopyBatchResult:
+        copied_rows.append(("live", fills))
+        return PaperCopyBatchResult(processed_fills=1)
+
+    async def fake_paper(
+        *_args: object,
+        fills: list[dict[str, Any]],
+        **_kwargs: object,
+    ) -> PaperCopyBatchResult:
+        copied_rows.append(("paper", fills))
+        return PaperCopyBatchResult(processed_fills=1)
+
+    async def fake_publish(
+        *_args: object,
+        event_type: str,
+        **_kwargs: object,
+    ) -> None:
+        published_events.append(event_type)
+
+    monkeypatch.setattr(monitor_worker, "process_live_copy_fills", fake_live)
+    monkeypatch.setattr(monitor_worker, "process_paper_copy_fills", fake_paper)
+    monkeypatch.setattr(monitor_worker, "publish_event", fake_publish)
+
+    await monitor_worker.process_stored_realtime_fills(
+        stored,
+        sessionmaker=dummy_sessionmaker,
+        redis=object(),
+        settings=SimpleNamespace(
+            live_trading_enabled=True,
+            paper_trading_enabled=True,
+            paper_copy_enabled=True,
+        ),
+    )
+
+    assert copied_rows == [("live", [execution_row]), ("paper", [execution_row])]
+    assert published_events == ["live_copy", "paper_copy"]
+
+
+@pytest.mark.asyncio
 async def test_presentation_event_batch_has_bounded_overall_timeout(monkeypatch) -> None:
     started = 0
 
@@ -546,18 +612,19 @@ async def test_realtime_queue_overflow_preserves_durable_inbox_work(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_realtime_execution_loop_replays_durable_first_fill_without_wakeup(
+async def test_realtime_execution_loop_replays_durable_duplicate_fill_without_wakeup(
     monkeypatch,
 ) -> None:
     inbox_id = uuid4()
     stored = StoredRealtimeFills(
         wallet_address="0xsource",
         fetched=1,
-        inserted=1,
-        duplicate=0,
+        inserted=0,
+        duplicate=1,
         is_snapshot=False,
         latest_fill_time_ms=2,
-        inserted_rows=[{"externalFillId": "first-fill"}],
+        inserted_rows=[],
+        execution_rows=[{"externalFillId": "duplicate-fill"}],
         inbox_id=str(inbox_id),
     )
     claims = [
@@ -575,7 +642,7 @@ async def test_realtime_execution_loop_replays_durable_first_fill_without_wakeup
         return claims.pop(0)
 
     async def fake_process(item: StoredRealtimeFills, **_kwargs: object) -> None:
-        processed.extend(str(row["externalFillId"]) for row in item.inserted_rows)
+        processed.extend(str(row["externalFillId"]) for row in item.rows_for_execution)
 
     async def fake_complete(*_args: object, inbox_id: object, **_kwargs: object) -> bool:
         completed.append(inbox_id)
@@ -604,7 +671,7 @@ async def test_realtime_execution_loop_replays_durable_first_fill_without_wakeup
         runtime=runtime,
     )
 
-    assert processed == ["first-fill"]
+    assert processed == ["duplicate-fill"]
     assert completed == [inbox_id]
 
 

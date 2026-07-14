@@ -20,7 +20,6 @@ from app.services.live_copy_service import (
     live_pending_close_size_from_orders,
     live_skip,
     live_source_position_is_final_close,
-    live_stale_entry_skip_hidden_from_activity,
     record_live_skip,
     submit_live_copy_intent,
 )
@@ -115,34 +114,8 @@ def test_live_skip_records_reason_count() -> None:
     assert result.skip_reasons == {"live_account_no_tradable_equity": 3}
 
 
-def test_old_live_stale_entry_skip_is_hidden_from_activity() -> None:
-    now = datetime(2026, 1, 1, 12, tzinfo=UTC)
-    fill = {
-        "timestampMs": int((now - timedelta(minutes=10)).timestamp() * 1000),
-    }
-
-    assert live_stale_entry_skip_hidden_from_activity(
-        fill,
-        settings=Settings(trading_copy_stale_entry_skip_activity_seconds=300),
-        now=now,
-    )
-
-
-def test_recent_live_stale_entry_skip_stays_visible_for_diagnostics() -> None:
-    now = datetime(2026, 1, 1, 12, tzinfo=UTC)
-    fill = {
-        "timestampMs": int((now - timedelta(seconds=30)).timestamp() * 1000),
-    }
-
-    assert not live_stale_entry_skip_hidden_from_activity(
-        fill,
-        settings=Settings(trading_copy_stale_entry_skip_activity_seconds=300),
-        now=now,
-    )
-
-
 @pytest.mark.asyncio
-async def test_recovery_stale_live_entry_skip_is_hidden_from_activity(monkeypatch) -> None:
+async def test_recovery_stale_live_entry_skip_is_visible_for_diagnostics(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     async def fake_record_live_skip(*_args, **kwargs):
@@ -190,17 +163,13 @@ async def test_recovery_stale_live_entry_skip_is_hidden_from_activity(monkeypatc
         source_perp_equity=Decimal("1000"),
         source_leverages={"HYPE": Decimal("25")},
         market_prices=ExecutionMarketPrices(prices={}, sources={}),
-        settings=Settings(
-            trading_copy_max_entry_age_seconds=15,
-            trading_copy_stale_entry_skip_activity_seconds=300,
-        ),
+        settings=Settings(trading_copy_max_entry_age_seconds=15),
         trading_client=object(),
-        hide_stale_entry_skips=True,
     )
 
     assert result.skipped_fills == 1
     assert captured["reason"] == "live_source_fill_too_old"
-    assert captured["hidden_from_activity"] is True
+    assert captured["hidden_from_activity"] is False
     assert captured["leverage"] == Decimal("25")
 
 
@@ -848,6 +817,12 @@ async def test_orphan_exchange_close_submits_when_source_position_is_missing(
 
 @pytest.mark.asyncio
 async def test_submit_live_copy_intent_reports_submit_error(monkeypatch) -> None:
+    class CaptureSession:
+        statement = None
+
+        async def execute(self, statement):
+            self.statement = statement
+
     async def fake_submit_live_trade_intent(*args, **kwargs):
         raise LiveOrderSubmitError("Rejected by exchange.")
 
@@ -857,8 +832,9 @@ async def test_submit_live_copy_intent_reports_submit_error(monkeypatch) -> None
         fake_submit_live_trade_intent,
     )
 
+    session = CaptureSession()
     result = await submit_live_copy_intent(
-        object(),
+        session,
         account=live_account(last_reconciled_at=datetime(2026, 1, 1, tzinfo=UTC)),
         intent=build_copy_trade_intent(
             account_key="live_test",
@@ -889,6 +865,13 @@ async def test_submit_live_copy_intent_reports_submit_error(monkeypatch) -> None
 
     assert result.skipped_fills == 1
     assert result.skip_reasons == {"live_order_submit_error": 1}
+    assert session.statement is not None
+    params = session.statement.compile(dialect=postgresql.dialect()).params
+    assert params["order_type"] == "skip"
+    assert params["status"] == "failed"
+    assert params["error"] == "skip:live_order_submit_error"
+    assert params["raw_payload"]["decisionAt"]
+    assert params["raw_payload"]["submitError"]["message"] == "Rejected by exchange."
 
 
 @pytest.mark.asyncio
@@ -989,6 +972,9 @@ async def test_record_live_skip_persists_diagnostic_order() -> None:
         margin_mode="cross",
         hidden_from_activity=True,
         source_fill_age_seconds=600.1234,
+        requested_notional_usd=Decimal("0"),
+        requested_size=Decimal("0"),
+        decision_context={"sourceRemainingMarginUsd": "0"},
     )
 
     assert result.skipped_fills == 1
@@ -1002,7 +988,11 @@ async def test_record_live_skip_persists_diagnostic_order() -> None:
     assert params["error"] == "skip:live_price_drift_too_high"
     assert params["raw_payload"]["hiddenFromActivity"] is True
     assert params["raw_payload"]["sourceFillAgeSeconds"] == 600.123
+    assert params["raw_payload"]["decisionAt"]
+    assert params["raw_payload"]["decisionContext"] == {"sourceRemainingMarginUsd": "0"}
     assert "submitted_at" not in params
+    assert params["requested_notional_usd"] == Decimal("0")
+    assert params["requested_size"] == Decimal("0")
     assert params["filled_size"] == Decimal("0")
 
 

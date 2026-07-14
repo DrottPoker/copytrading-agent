@@ -117,7 +117,6 @@ async def process_live_copy_fills(
     client: HyperliquidClient | None = None,
     trading_client: HyperliquidLiveTradingClient | None = None,
     price_cache: MarketPriceCache | None = None,
-    hide_stale_entry_skips: bool = False,
 ) -> PaperCopyBatchResult:
     resolved_settings = settings or get_settings()
     if not fills or not live_copy_processing_enabled(resolved_settings):
@@ -146,7 +145,6 @@ async def process_live_copy_fills(
                 client=hyperliquid_client,
                 trading_client=trading_client,
                 price_cache=price_cache,
-                hide_stale_entry_skips=hide_stale_entry_skips,
             )
 
     source_account_states_task = load_source_account_states(
@@ -209,15 +207,51 @@ async def process_live_copy_fills(
         for account in accounts:
             for part in parts:
                 if account.status != "enabled" and part_requires_source_equity(part):
-                    add_skip("live_account_exit_only")
+                    fill_result = await record_live_skip(
+                        session,
+                        account=account,
+                        allocation=allocation,
+                        fill=fill,
+                        part=part,
+                        reason="live_account_exit_only",
+                    )
+                    skipped += fill_result.skipped_fills
+                    skip_reasons = combine_skip_reasons(
+                        skip_reasons,
+                        fill_result.skip_reasons,
+                    )
                     continue
                 if account.key in failed_reconciliation_accounts and part_requires_source_equity(
                     part
                 ):
-                    add_skip("live_reconciliation_failed")
+                    fill_result = await record_live_skip(
+                        session,
+                        account=account,
+                        allocation=allocation,
+                        fill=fill,
+                        part=part,
+                        reason="live_reconciliation_failed",
+                    )
+                    skipped += fill_result.skipped_fills
+                    skip_reasons = combine_skip_reasons(
+                        skip_reasons,
+                        fill_result.skip_reasons,
+                    )
                     continue
                 if source_state_skip_reason is not None and part_requires_source_equity(part):
-                    add_skip(source_state_skip_reason)
+                    fill_result = await record_live_skip(
+                        session,
+                        account=account,
+                        allocation=allocation,
+                        fill=fill,
+                        part=part,
+                        reason=source_state_skip_reason,
+                    )
+                    skipped += fill_result.skipped_fills
+                    skip_reasons = combine_skip_reasons(
+                        skip_reasons,
+                        fill_result.skip_reasons,
+                    )
                     continue
 
                 fill_result = await apply_live_copy_part(
@@ -232,7 +266,6 @@ async def process_live_copy_fills(
                     market_prices=market_prices,
                     settings=resolved_settings,
                     trading_client=live_client,
-                    hide_stale_entry_skips=hide_stale_entry_skips,
                 )
                 processed += fill_result.processed_fills
                 skipped += fill_result.skipped_fills
@@ -324,7 +357,6 @@ async def process_live_copy_recovery(
             client=client,
             trading_client=live_client,
             price_cache=price_cache,
-            hide_stale_entry_skips=True,
         )
         total = combine_batch_results(total, result)
     return total
@@ -470,19 +502,6 @@ def live_copy_account_snapshot_is_stale(
     return (now - last_reconciled_at).total_seconds() >= max_age_seconds
 
 
-def live_stale_entry_skip_hidden_from_activity(
-    fill: dict[str, Any],
-    *,
-    settings: Settings,
-    now: datetime | None = None,
-) -> bool:
-    activity_seconds = settings.trading_copy_stale_entry_skip_activity_seconds
-    if activity_seconds <= 0:
-        return True
-    age_seconds = source_fill_age_seconds(fill, now=now)
-    return age_seconds is not None and age_seconds > activity_seconds
-
-
 async def apply_live_copy_part(
     session: AsyncSession,
     *,
@@ -496,7 +515,6 @@ async def apply_live_copy_part(
     market_prices: ExecutionMarketPrices,
     settings: Settings,
     trading_client: HyperliquidLiveTradingClient,
-    hide_stale_entry_skips: bool = False,
 ) -> PaperCopyBatchResult:
     source_fill_id = str(fill.get("externalFillId") or "")
     if not source_fill_id:
@@ -523,7 +541,6 @@ async def apply_live_copy_part(
             market_prices=market_prices,
             settings=settings,
             trading_client=trading_client,
-            hide_stale_entry_skips=hide_stale_entry_skips,
         )
     return await apply_live_close_part(
         session,
@@ -553,7 +570,6 @@ async def apply_live_open_part(
     market_prices: ExecutionMarketPrices,
     settings: Settings,
     trading_client: HyperliquidLiveTradingClient,
-    hide_stale_entry_skips: bool = False,
 ) -> PaperCopyBatchResult:
     coin = str(fill.get("coin") or "")
     raw_source_leverage = resolve_coin_decimal(source_leverages, coin)
@@ -625,11 +641,7 @@ async def apply_live_open_part(
             reason="live_source_fill_too_old",
             leverage=source_leverage,
             margin_mode=source_margin_mode,
-            hidden_from_activity=live_stale_entry_skip_hidden_from_activity(
-                fill,
-                settings=settings,
-            )
-            or hide_stale_entry_skips,
+            hidden_from_activity=False,
             source_fill_age_seconds=fill_age_seconds,
         )
     if not settings.live_trading_enabled:
@@ -807,6 +819,47 @@ async def apply_live_open_part(
         - await live_open_margin_for_account(session, account_key=account.key),
         ZERO,
     )
+    capacity_context = {
+        "allocationEquityUsd": str(allocation_equity_usd),
+        "allocationPct": str(allocation.allocation_pct),
+        "allocationUsd": str(allocation_usd),
+        "sourceRemainingMarginUsd": str(source_remaining),
+        "globalRemainingMarginUsd": str(global_remaining),
+        "targetMarginUsd": str(target_margin),
+        "targetNotionalUsd": str(target_notional),
+    }
+    if source_remaining <= ZERO:
+        return await record_live_skip(
+            session,
+            account=account,
+            allocation=allocation,
+            fill=fill,
+            part=part,
+            reason="live_source_allocation_exhausted",
+            leverage=source_leverage,
+            margin_mode=source_margin_mode,
+            limit_price=price,
+            margin_usd=ZERO,
+            requested_notional_usd=ZERO,
+            requested_size=ZERO,
+            decision_context=capacity_context,
+        )
+    if global_remaining <= ZERO:
+        return await record_live_skip(
+            session,
+            account=account,
+            allocation=allocation,
+            fill=fill,
+            part=part,
+            reason="live_total_allocation_exhausted",
+            leverage=source_leverage,
+            margin_mode=source_margin_mode,
+            limit_price=price,
+            margin_usd=ZERO,
+            requested_notional_usd=ZERO,
+            requested_size=ZERO,
+            decision_context=capacity_context,
+        )
     margin_usd = min(target_margin, source_remaining, global_remaining)
     notional_usd = margin_usd * source_leverage
     margin_usd, notional_usd, _ = adjust_open_sizing_to_min_order(
@@ -832,6 +885,7 @@ async def apply_live_open_part(
             margin_usd=margin_usd,
             requested_notional_usd=notional_usd,
             requested_size=notional_usd / price if price > ZERO else ZERO,
+            decision_context=capacity_context,
         )
 
     action = "add" if position is not None and part.action == "open" else part.action
@@ -1302,6 +1356,13 @@ async def submit_live_copy_intent(
             client=trading_client,
         )
     except LiveOrderSubmitError as exc:
+        reason = live_submit_failure_reason(exc)
+        await record_live_intent_failure(
+            session,
+            intent=intent,
+            reason=reason,
+            error=exc,
+        )
         logger.warning(
             "live copy order submit failed account=%s source=%s coin=%s reason=%s",
             account.key,
@@ -1309,12 +1370,79 @@ async def submit_live_copy_intent(
             intent.coin,
             str(exc) or exc.__class__.__name__,
         )
-        return live_skip("live_order_submit_error")
+        return live_skip(reason)
     if not result.submitted:
         return live_skip("live_order_not_submitted")
     if result.order.status in {"rejected", "failed", "canceled"}:
         return live_skip(f"live_order_{result.order.status}")
     return PaperCopyBatchResult(processed_fills=1 if result.submitted else 0)
+
+
+def live_submit_failure_reason(error: LiveOrderSubmitError) -> str:
+    message = str(error).casefold()
+    if "another live order is already being dispatched" in message:
+        return "live_execution_busy"
+    if "not enabled for entry execution" in message:
+        return "live_account_not_enabled"
+    if "complete exchange reconciliation snapshot" in message:
+        return "live_reconciliation_incomplete"
+    if "fresh exchange reconciliation snapshot" in message:
+        return "live_reconciliation_stale"
+    if "entry intent expired" in message:
+        return "live_entry_intent_expired"
+    if "weekly loss" in message:
+        return "live_weekly_loss_limit"
+    if "orders per minute" in message:
+        return "live_order_rate_limit"
+    return "live_order_submit_error"
+
+
+async def record_live_intent_failure(
+    session: AsyncSession,
+    *,
+    intent: TradeIntent,
+    reason: str,
+    error: LiveOrderSubmitError,
+) -> None:
+    message = str(error) or error.__class__.__name__
+    stmt = insert(TradingOrder).values(
+        account_key=intent.account_key,
+        account_type="live",
+        source_wallet=intent.source_wallet,
+        source_fill_id=intent.source_fill_id,
+        sequence_index=intent.sequence_index,
+        client_order_id=intent.client_order_id,
+        coin=intent.coin,
+        action=intent.action,
+        side=intent.side,
+        is_buy=intent.is_buy,
+        reduce_only=intent.reduce_only,
+        order_type="skip",
+        status="failed",
+        requested_size=intent.size,
+        requested_notional_usd=intent.notional_usd,
+        margin_usd=intent.margin_usd,
+        leverage=intent.leverage,
+        margin_mode=intent.margin_mode,
+        limit_price=intent.limit_price,
+        filled_size=ZERO,
+        filled_notional_usd=ZERO,
+        fee_usd=ZERO,
+        error=f"skip:{reason}",
+        raw_payload={
+            "decisionAt": datetime.now(UTC).isoformat(),
+            "skipReason": reason,
+            "submitError": {
+                "message": message,
+                "statusCode": error.status_code,
+                "type": error.__class__.__name__,
+            },
+        },
+        created_at=intent.created_at,
+    )
+    await session.execute(
+        stmt.on_conflict_do_nothing(constraint="ux_trading_orders_account_source_fill_sequence")
+    )
 
 
 async def record_live_skip(
@@ -1333,6 +1461,7 @@ async def record_live_skip(
     requested_size: Decimal | None = None,
     hidden_from_activity: bool = False,
     source_fill_age_seconds: float | None = None,
+    decision_context: dict[str, Any] | None = None,
 ) -> PaperCopyBatchResult:
     source_fill_id = str(fill.get("externalFillId") or "")
     if not source_fill_id:
@@ -1342,14 +1471,10 @@ async def record_live_skip(
     resolved_price = limit_price if limit_price is not None and limit_price > ZERO else source_price
     resolved_notional = (
         requested_notional_usd
-        if requested_notional_usd is not None and requested_notional_usd > ZERO
+        if requested_notional_usd is not None
         else max(part.source_notional_usd, ZERO)
     )
-    resolved_size = (
-        requested_size
-        if requested_size is not None and requested_size > ZERO
-        else max(part.source_size, ZERO)
-    )
+    resolved_size = requested_size if requested_size is not None else max(part.source_size, ZERO)
     if resolved_size <= ZERO and resolved_notional > ZERO and resolved_price > ZERO:
         resolved_size = resolved_notional / resolved_price
     if resolved_notional <= ZERO and resolved_size > ZERO and resolved_price > ZERO:
@@ -1357,6 +1482,7 @@ async def record_live_skip(
     resolved_leverage = leverage if leverage is not None and leverage > ZERO else Decimal("1")
     reduce_only = part.action in {"reduce", "close", "flip_close"}
     raw_payload: dict[str, Any] = {
+        "decisionAt": datetime.now(UTC).isoformat(),
         "marginMode": margin_mode,
         "skipReason": reason,
         "sourceFill": {
@@ -1370,6 +1496,8 @@ async def record_live_skip(
         raw_payload["hiddenFromActivity"] = True
     if source_fill_age_seconds is not None:
         raw_payload["sourceFillAgeSeconds"] = max(round(source_fill_age_seconds, 3), 0)
+    if decision_context:
+        raw_payload["decisionContext"] = decision_context
 
     stmt = insert(TradingOrder).values(
         account_key=account.key,

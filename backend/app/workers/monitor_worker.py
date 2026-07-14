@@ -1808,6 +1808,7 @@ async def process_stored_realtime_fills(
         await publish_event_batch(redis, presentation_events)
         return
 
+    execution_rows = stored.rows_for_execution
     for fill in stored.inserted_rows:
         presentation_events.append(
             {
@@ -1825,17 +1826,17 @@ async def process_stored_realtime_fills(
         )
 
     processing_errors: list[tuple[str, Exception]] = []
-    if live_copy_processing_enabled(settings) and stored.inserted_rows:
+    if live_copy_processing_enabled(settings) and execution_rows:
         try:
             if price_cache is not None:
                 await price_cache.request_dexes(
-                    dex_from_coin(stored_fill.get("coin")) for stored_fill in stored.inserted_rows
+                    dex_from_coin(stored_fill.get("coin")) for stored_fill in execution_rows
                 )
             async with sessionmaker() as session:
                 live_result = await process_live_copy_fills(
                     session,
                     source_wallet=stored.wallet_address,
-                    fills=stored.inserted_rows,
+                    fills=execution_rows,
                     settings=settings,
                     price_cache=price_cache,
                 )
@@ -1874,17 +1875,17 @@ async def process_stored_realtime_fills(
                 }
             )
 
-    if settings.paper_trading_enabled and settings.paper_copy_enabled and stored.inserted_rows:
+    if settings.paper_trading_enabled and settings.paper_copy_enabled and execution_rows:
         try:
             if price_cache is not None:
                 await price_cache.request_dexes(
-                    dex_from_coin(stored_fill.get("coin")) for stored_fill in stored.inserted_rows
+                    dex_from_coin(stored_fill.get("coin")) for stored_fill in execution_rows
                 )
             async with sessionmaker() as session:
                 paper_result = await process_paper_copy_fills(
                     session,
                     source_wallet=stored.wallet_address,
-                    fills=stored.inserted_rows,
+                    fills=execution_rows,
                     settings=settings,
                     price_cache=price_cache,
                 )

@@ -161,6 +161,10 @@ Trading worker responsibilities:
 - Subscribe to Hyperliquid `allMids` over WebSocket and maintain a short-lived
   price cache for copy execution.
 - Store snapshot and realtime fills in Postgres.
+- Persist every valid non-snapshot WebSocket fill in the durable execution
+  payload even when the same wallet fill was inserted first by polling. The
+  database inserted and duplicate counts stay accurate, while copy execution
+  remains idempotent through the account and source-fill order key.
 - Place committed fill batches on a bounded realtime execution queue. Live copy
   runs before paper copy in the queue consumer. If the queue is full, the fill
   remains in Postgres and periodic recovery replays it.
@@ -818,9 +822,11 @@ whose adverse observed drift exceeds the configured max drift limit. Favorable
 price drift is allowed and recorded as 0 bps. New open or add fills are also
 skipped when the source fill age exceeds
 `trading_copy_max_entry_age_seconds`, so snapshot or recovery entries cannot
-open exposure minutes after the source traded. Live copy persists old
-stale-entry skips as idempotent markers and hides them from Recent Execution
-Activity after `trading_copy_stale_entry_skip_activity_seconds`. Paper fees use
+open exposure minutes after the source traded. Live copy persists stale-entry
+skips as visible idempotent decisions. Each pre-submit decision stores its
+decision time and exact reason, including source or total allocation exhaustion,
+reconciliation state, source account state, and submit validation failures.
+Paper fees use
 Hyperliquid's base perp taker fee by default, 0.045%, because paper execution
 models immediate taker-style fills rather than resting maker orders.
 Stored paper position notional and margin represent simulated entry exposure.
@@ -836,6 +842,11 @@ matching source-position delay when available and the dashboard labels that
 aggregate-row value as source-to-exchange. Realtime live-copy execution runs
 before paper-copy simulation so live orders do not wait for paper latency or
 paper-only bookkeeping.
+Live reconciliation anchors an exchange aggregate position to the earliest
+matching copied source position. This prevents reconciliation from cutting off
+valid fills in the current position lifecycle. Open-position add counts include
+only actual `add` executions and exclude the initial open and a new position
+created by a flip.
 When multiple source fills have the same timestamp, paper-copy processing orders
 close and flip-close fills first by descending source `startPosition` before
 falling back to the fill id. This keeps large split exits deterministic.
@@ -850,9 +861,9 @@ entries, recovery obeys the same max entry age guard as realtime copy. For close
 and reduce fills, recovery can still catch up older source exits. For
 open-exposure sources, recovery scans fills from the oldest open paper position
 with overlap, then the copied-fill uniqueness constraint prevents duplicate
-simulation. Live-copy recovery hides stale entry skip rows from recent execution
-activity because those rows only mark old replayed entries as handled. Exit skip
-rows caused by unavailable source state or unavailable
+simulation. Live-copy recovery keeps stale entry skip rows visible with their
+decision time and original source fill time so every missed entry has an
+inspectable reason. Exit skip rows caused by unavailable source state or unavailable
 execution price are retriable during recovery so copied positions can still
 close after transient data issues.
 Paper-copy mutations also take a Postgres advisory transaction lock per source
@@ -1164,7 +1175,8 @@ execution status. Live-only sources from recent fills or orders are excluded
 from Copy Sources and remain visible through Wallet PnL history and Recent
 Execution Activity. Recent Execution Activity uses the same result-oriented row
 semantics in both modes, so filled, skipped, rejected, and failed attempts are
-visible without mixing paper and live rows. The frontend keeps mode-specific
+visible without mixing paper and live rows. Skip activity is sorted by its last
+decision update while retaining the source fill time as context. The frontend keeps mode-specific
 logic in paper and live view-model builders, while shared presentational
 components render the active mode. Live source allocation bars reuse the shared
 source allocation percentage against live account equity. Live account Equity
