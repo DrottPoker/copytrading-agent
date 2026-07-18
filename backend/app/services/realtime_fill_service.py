@@ -22,6 +22,7 @@ class StoredRealtimeFills:
     inserted_rows: list[dict[str, Any]]
     execution_rows: list[dict[str, Any]] | None = None
     inbox_id: str | None = None
+    observed_at: datetime | None = None
 
     @property
     def rows_for_execution(self) -> list[dict[str, Any]]:
@@ -39,6 +40,7 @@ class StoredRealtimeFills:
             "latestFillTimeMs": self.latest_fill_time_ms,
             "insertedRows": self.inserted_rows,
             "executionRows": self.rows_for_execution,
+            "observedAt": self.observed_at.isoformat() if self.observed_at is not None else None,
         }
 
     @classmethod
@@ -47,12 +49,17 @@ class StoredRealtimeFills:
         payload: dict[str, Any],
         *,
         inbox_id: str,
+        fallback_observed_at: datetime | None = None,
     ) -> "StoredRealtimeFills":
         wallet_address = payload.get("walletAddress")
         inserted_rows = payload.get("insertedRows")
         execution_rows = payload.get("executionRows", inserted_rows)
         is_snapshot = payload.get("isSnapshot")
         latest_fill_time_ms = payload.get("latestFillTimeMs")
+        observed_at = parse_execution_observed_at(
+            payload.get("observedAt"),
+            fallback=fallback_observed_at,
+        )
         if not isinstance(wallet_address, str) or not wallet_address:
             raise ValueError("Realtime execution payload is missing walletAddress.")
         if not isinstance(inserted_rows, list) or not all(
@@ -77,6 +84,7 @@ class StoredRealtimeFills:
             inserted_rows=inserted_rows,
             execution_rows=execution_rows,
             inbox_id=inbox_id,
+            observed_at=observed_at,
         )
 
 
@@ -149,6 +157,7 @@ async def store_realtime_fills(
         latest_fill_time_ms=latest_fill_time_ms,
         inserted_rows=inserted_rows,
         execution_rows=execution_rows,
+        observed_at=observed_at,
     )
     if is_snapshot or execution_rows:
         inbox = RealtimeExecutionInbox(
@@ -208,3 +217,22 @@ def payload_int(payload: dict[str, Any], key: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"Realtime execution payload has invalid {key}.")
     return value
+
+
+def parse_execution_observed_at(
+    value: object,
+    *,
+    fallback: datetime | None,
+) -> datetime | None:
+    if value is None:
+        return ensure_utc(fallback) if fallback is not None else None
+    if not isinstance(value, str) or not value:
+        raise ValueError("Realtime execution payload has invalid observedAt.")
+    try:
+        return ensure_utc(datetime.fromisoformat(value.replace("Z", "+00:00")))
+    except ValueError as exc:
+        raise ValueError("Realtime execution payload has invalid observedAt.") from exc
+
+
+def ensure_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)

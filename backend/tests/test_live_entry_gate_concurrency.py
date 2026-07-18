@@ -132,6 +132,9 @@ async def test_stop_on_disabled_account_advances_lifecycle_fence(
     async def fake_cancel(*_args: object, **_kwargs: object) -> int:
         return 0
 
+    async def fake_source_sync(*_args: object, **_kwargs: object) -> int:
+        return 0
+
     monkeypatch.setattr(live_trading_service, "job_lock", fake_job_lock)
     monkeypatch.setattr(
         live_trading_service,
@@ -139,6 +142,11 @@ async def test_stop_on_disabled_account_advances_lifecycle_fence(
         fake_load_account,
     )
     monkeypatch.setattr(live_trading_service, "cancel_unsent_live_entries", fake_cancel)
+    monkeypatch.setattr(
+        live_trading_service,
+        "synchronize_live_copy_account_source_activity",
+        fake_source_sync,
+    )
 
     stopped = await stop_live_trading_account(
         session,  # type: ignore[arg-type]
@@ -149,6 +157,112 @@ async def test_stop_on_disabled_account_advances_lifecycle_fence(
     assert stopped.status == "disabled"
     assert stopped.lifecycle_version == 1
     assert stopped.status_reason == "stopped_by_dashboard"
+
+
+@pytest.mark.asyncio
+async def test_start_captures_source_baselines_before_enabling_entries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account = live_account()
+    account.status = "disabled"
+    session = StartSession()
+    lifecycle_calls: list[tuple[str, set[str], str]] = []
+    activation_epochs: list[datetime] = []
+
+    @asynccontextmanager
+    async def fake_job_lock(*_args: object, **_kwargs: object) -> AsyncIterator[None]:
+        yield
+
+    async def fake_load_account(*_args: object, **_kwargs: object) -> TradingAccount:
+        return account
+
+    async def fake_reconciliation(*_args: object, **_kwargs: object) -> LiveReconciliationResult:
+        return LiveReconciliationResult(
+            account_key=account.key,
+            user_address=account.wallet_address or "",
+            status="complete",
+        )
+
+    async def no_incomplete_close(*_args: object, **_kwargs: object) -> bool:
+        return False
+
+    async def active_sources(*_args: object, **_kwargs: object) -> set[str]:
+        return {"0xsource"}
+
+    async def owned_sources(*_args: object, **_kwargs: object) -> set[str]:
+        return {"0xretained"}
+
+    async def sync_sources(*_args: object, **kwargs: object) -> int:
+        lifecycle_calls.append(("sync", set(kwargs["eligible_source_wallets"]), account.status))
+        return 0
+
+    async def activate_sources(*_args: object, **kwargs: object) -> list[object]:
+        lifecycle_calls.append(("activate", set(kwargs["source_wallets"]), account.status))
+        assert kwargs["entry_eligible_source_wallets"] == {"0xsource"}
+        activation_epochs.append(kwargs["now"])
+        return []
+
+    monkeypatch.setattr(
+        live_trading_service,
+        "validate_live_trading_configuration",
+        lambda *_: None,
+    )
+    monkeypatch.setattr(
+        live_trading_service,
+        "validate_live_account_can_start",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(live_trading_service, "job_lock", fake_job_lock)
+    monkeypatch.setattr(
+        live_trading_service,
+        "load_live_account_for_update",
+        fake_load_account,
+    )
+    monkeypatch.setattr(
+        live_trading_service,
+        "run_live_trading_account_reconciliation",
+        fake_reconciliation,
+    )
+    monkeypatch.setattr(
+        live_trading_service,
+        "live_account_has_incomplete_close_operation",
+        no_incomplete_close,
+    )
+    monkeypatch.setattr(
+        live_trading_service,
+        "load_active_live_copy_source_wallets",
+        active_sources,
+    )
+    monkeypatch.setattr(
+        live_trading_service,
+        "load_owned_live_copy_source_wallets",
+        owned_sources,
+    )
+    monkeypatch.setattr(
+        live_trading_service,
+        "synchronize_live_copy_account_source_activity",
+        sync_sources,
+    )
+    monkeypatch.setattr(
+        live_trading_service,
+        "activate_live_copy_account_sources",
+        activate_sources,
+    )
+
+    started = await start_live_trading_account(
+        session,  # type: ignore[arg-type]
+        account_key=account.key,
+        settings=make_testnet_settings(),
+        info_client=object(),  # type: ignore[arg-type]
+        actor="admin",
+    )
+
+    assert lifecycle_calls == [
+        ("sync", {"0xsource"}, "disabled"),
+        ("activate", {"0xsource", "0xretained"}, "disabled"),
+    ]
+    assert started.status == "enabled"
+    assert activation_epochs == [started.status_changed_at]
 
 
 @pytest.mark.asyncio

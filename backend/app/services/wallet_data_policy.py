@@ -88,6 +88,11 @@ WALLET_DATA_DEPENDENCIES = (
         "owned",
         delete_order=20,
     ),
+    WalletDataDependency(
+        "live_copy_source_states",
+        "source_wallet",
+        "audit",
+    ),
     WalletDataDependency("discovery_wallet_candidates", "wallet_address", "discovery"),
     WalletDataDependency("discovery_wallet_candidates", "parent_address", "discovery"),
     WalletDataDependency("trading_accounts", "wallet_address", "account"),
@@ -107,9 +112,22 @@ WALLET_DATA_DEPENDENCIES = (
             "status in ("
             "'planned', 'ready', 'submitting', 'uncertain', 'submitted', "
             "'accepted', 'partially_filled'"
-            ")"
+            ") or (status = 'filled' and ("
+            "not exists (select 1 from trading_fills "
+            "where trading_fills.order_id = trading_orders.id) "
+            "or coalesce((select sum(trading_fills.size) from trading_fills "
+            "where trading_fills.order_id = trading_orders.id), 0) + 0.000000000001 "
+            "< coalesce(filled_size, 0)"
+            "))"
         ),
         protection_reason="in_flight_trading_order",
+    ),
+    WalletDataDependency(
+        "live_copy_fill_states",
+        "source_wallet",
+        "audit",
+        protection_predicate="outcome in ('pending', 'retryable')",
+        protection_reason="pending_live_copy_disposition",
     ),
     WalletDataDependency("trading_fills", "source_wallet", "audit"),
     WalletDataDependency(

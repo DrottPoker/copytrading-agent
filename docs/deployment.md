@@ -362,6 +362,7 @@ docker compose -f docker-compose.vps.yml build backend trading-worker maintenanc
 docker compose -f docker-compose.vps.yml up -d postgres redis
 docker compose -f docker-compose.vps.yml stop backend trading-worker maintenance-worker frontend caddy
 docker compose -f docker-compose.vps.yml run --rm --no-deps backend python -m alembic upgrade head
+docker compose -f docker-compose.vps.yml run --rm --no-deps backend python -m alembic current
 docker compose -f docker-compose.vps.yml up -d --remove-orphans
 ```
 
@@ -379,12 +380,11 @@ docker compose -f docker-compose.vps.yml exec backend \
 docker compose -f docker-compose.vps.yml logs --tail=100 backend trading-worker maintenance-worker postgres-backup caddy
 ```
 
-The Alembic head for this update is `b8e4f0a2d6c1`. Migration `a7d3e9f1c5b2`
-removes the obsolete durable live-entry control and restores accounts that the
-earlier Phase 6 migration automatically moved to `exit_only`. Accounts changed
-for any other reason retain their current lifecycle state. The current head also
-expands wallet fill ingest latency to `BIGINT` so historical snapshots cannot
-overflow realtime ingestion.
+The Alembic head for this update is `d1f6a9e4c2b3`. The current chain removes
+the obsolete durable live-entry control, expands wallet fill ingest latency to
+`BIGINT`, persists live margin mode, and adds the authoritative live-copy source
+and fill lifecycle tables. The `current` command must show `d1f6a9e4c2b3` before
+the backend or workers are restarted.
 
 Paper trading state is stored in local Postgres, not in the worker containers.
 After the trading worker restarts it reloads open paper positions, replays
@@ -415,6 +415,7 @@ roles, the dashboard, and Caddy:
 docker compose -f docker-compose.vps.yml build backend trading-worker maintenance-worker frontend
 docker compose -f docker-compose.vps.yml stop backend trading-worker maintenance-worker frontend caddy
 docker compose -f docker-compose.vps.yml run --rm --no-deps backend python -m alembic upgrade head
+docker compose -f docker-compose.vps.yml run --rm --no-deps backend python -m alembic current
 docker compose -f docker-compose.vps.yml up -d backend trading-worker maintenance-worker frontend caddy
 ```
 

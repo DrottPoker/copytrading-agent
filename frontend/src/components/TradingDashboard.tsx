@@ -39,6 +39,7 @@ import type {
   TradingAccount,
   TradingAccountsResponse,
   TradingClosedTrade,
+  LiveCopyDecision,
   TradingFill,
   TradingOrder,
   TradingPosition,
@@ -443,6 +444,13 @@ export function TradingDashboard({
       tradingMode,
     ],
   );
+  const liveCopyDecisionRows = useMemo(
+    () =>
+      tradingMode === "live"
+        ? buildLiveCopyDecisionActivities(tradingAccounts.recentLiveCopyDecisions, sourceLabels)
+        : [],
+    [sourceLabels, tradingAccounts.recentLiveCopyDecisions, tradingMode],
+  );
   const metrics = useMemo(
     () =>
       tradingMode === "paper"
@@ -691,6 +699,19 @@ export function TradingDashboard({
           title="Recent Execution Activity"
         />
       </section>
+
+      {tradingMode === "live" ? (
+        <section>
+          <PaginatedListPanel
+            emptyText="No live copy decisions recorded yet."
+            getKey={(decision) => decision.id}
+            items={liveCopyDecisionRows}
+            meta={`${formatInteger(liveCopyDecisionRows.length)} recent decisions`}
+            renderItem={(decision) => <FillRow fill={decision} />}
+            title="Copy Decisions"
+          />
+        </section>
+      ) : null}
     </>
   );
 }
@@ -1723,6 +1744,97 @@ function buildLiveDashboardFills(
   return [...liveRows, ...liveOrderRows]
     .sort((left, right) => dateMs(right.sortAt) - dateMs(left.sortAt))
     .slice(0, 100);
+}
+
+export function buildLiveCopyDecisionActivities(
+  decisions: LiveCopyDecision[],
+  sourceLabels: Map<string, string>,
+): ExecutionActivityItem[] {
+  return decisions
+    .map<ExecutionActivityItem>((decision) => buildLiveCopyDecisionActivity(decision, sourceLabels))
+    .sort((left, right) => dateMs(right.sortAt) - dateMs(left.sortAt));
+}
+
+export function buildLiveCopyDecisionActivity(
+  decision: LiveCopyDecision,
+  sourceLabels: Map<string, string>,
+): ExecutionActivityItem {
+  const isExchange = isLiveExchangeSource(decision.sourceWallet);
+  const statusPills = liveCopyDecisionStatusPills(decision);
+  return {
+    identity: {
+      href: isExchange ? null : `/wallets/${decision.sourceWallet}`,
+      label: isExchange
+        ? "Copy decision"
+        : sourceDisplayName(sourceLabels.get(decision.sourceWallet.toLowerCase()), decision.sourceWallet),
+      meta: `${isExchange ? "exchange" : shortAddress(decision.sourceWallet)} | ${decision.accountKey} | source ${shortIdentifier(decision.sourceFillId)}`,
+    },
+    id: `copy-decision:${decision.accountKey}:${decision.sourceWallet}:${decision.sourceFillId}:${decision.sequenceIndex}`,
+    pills: [
+      { label: "copy decision", tone: "neutral" },
+      {
+        label: reasonLabel(decision.plannedAction),
+        tone: decision.plannedAction.includes("close") || decision.plannedAction === "reduce"
+          ? "neutral"
+          : "positive",
+      },
+      { label: decision.side, tone: decision.side === "long" ? "positive" : "warning" },
+      ...statusPills,
+    ],
+    sortAt: decision.updatedAt,
+    stats: [
+      {
+        label: "Market",
+        value: decision.coin,
+        detail: `sequence ${formatInteger(decision.sequenceIndex)}`,
+      },
+      {
+        label: "Reason",
+        value: decision.reason ? reasonLabel(decision.reason) : "-",
+        tone: decision.outcome === "terminal_skip" ? "danger" : "neutral",
+      },
+      {
+        label: "Attempts",
+        value: formatInteger(decision.attemptCount),
+        detail: decision.nextAttemptAt
+          ? `next ${formatShortDateTime(decision.nextAttemptAt)}`
+          : decision.lastAttemptAt
+            ? `last ${formatShortDateTime(decision.lastAttemptAt)}`
+            : "not attempted",
+      },
+      {
+        label: "Observed",
+        value: formatShortDateTime(decision.firstObservedAt),
+        detail: `updated ${formatShortDateTime(decision.updatedAt)}`,
+      },
+      {
+        label: "Pipeline",
+        value: decision.tradingOrderId ? "record created" : "not created",
+        detail: decision.tradingOrderId ? shortIdentifier(decision.tradingOrderId) : "no downstream record",
+        tone: decision.tradingOrderId ? "positive" : decision.outcome === "terminal_skip" ? "danger" : "neutral",
+      },
+    ],
+  };
+}
+
+export function liveCopyDecisionStatusPills(decision: LiveCopyDecision): RowPill[] {
+  const outcomePill: RowPill =
+    decision.outcome === "pending"
+      ? { label: "waiting/pending", tone: "warning" }
+      : decision.outcome === "retryable"
+        ? { label: decision.nextAttemptAt ? "retry scheduled" : "retry pending", tone: "warning" }
+        : decision.outcome === "baseline_ignored"
+          ? { label: "baseline ignored", tone: "neutral" }
+          : decision.outcome === "terminal_skip"
+            ? { label: "no-order blocked", tone: "danger" }
+            : decision.tradingOrderId
+              ? { label: "order created", tone: "positive" }
+              : { label: "record missing", tone: "danger" };
+
+  if (decision.outcome === "order" || !decision.tradingOrderId) {
+    return [outcomePill];
+  }
+  return [outcomePill, { label: "order created", tone: "positive" }];
 }
 
 function buildLiveFillActivity(

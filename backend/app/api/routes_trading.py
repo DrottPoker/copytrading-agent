@@ -4,13 +4,14 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import and_, func, or_, select, true
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import db_session
 from app.core.config import Settings, get_settings
 from app.db.models import (
     DiscoveryWalletCandidate,
+    LiveCopyFillState,
     TradingAccount,
     TradingFill,
     TradingOrder,
@@ -21,6 +22,7 @@ from app.db.models import (
 )
 from app.schemas.trading import (
     LiveCloseAllResponse,
+    LiveCopyDecisionRead,
     LiveOrderSubmitResponse,
     LiveReconciliationResponse,
     LiveRiskLimitsRead,
@@ -75,6 +77,7 @@ from app.services.wallet_service import wallet_pool_rank_cte
 router = APIRouter(prefix="/trading", tags=["trading"])
 
 TRADING_ACTIVITY_LIMIT = 100
+LIVE_COPY_DECISION_LIMIT = 50
 TRADING_CLOSED_TRADE_LIMIT = 100
 TRADING_CLOSED_TRADE_FILL_SCAN_LIMIT = 5000
 POSITION_ADD_FILL_ACTIONS = frozenset({"add"})
@@ -121,9 +124,10 @@ def collect_live_source_wallets(
     fills: list[TradingFill],
     orders: list[TradingOrder],
     closed_trades: list[object],
+    decisions: list[LiveCopyFillState],
 ) -> list[str]:
     sources: set[str] = set()
-    for item in [*positions, *fills, *orders, *closed_trades]:
+    for item in [*positions, *fills, *orders, *closed_trades, *decisions]:
         source = normalize_source_wallet(getattr(item, "source_wallet", None))
         if source is not None:
             sources.add(source)
@@ -622,15 +626,15 @@ async def list_trading_accounts_route(
     )
     order_result = await session.scalars(
         select(TradingOrder)
-        .where(
-            TradingOrder.account_type == "live",
-            or_(
-                TradingOrder.raw_payload["hiddenFromActivity"].as_boolean().is_not(true()),
-                TradingOrder.error == "skip:live_source_fill_too_old",
-            ),
-        )
+        .where(TradingOrder.account_type == "live")
         .order_by(TradingOrder.updated_at.desc(), TradingOrder.created_at.desc())
         .limit(TRADING_ACTIVITY_LIMIT)
+    )
+    decision_result = await session.scalars(
+        select(LiveCopyFillState)
+        .where(LiveCopyFillState.account_type == "live")
+        .order_by(LiveCopyFillState.updated_at.desc(), LiveCopyFillState.created_at.desc())
+        .limit(LIVE_COPY_DECISION_LIMIT)
     )
     closed_trades = await load_live_closed_trades(
         session,
@@ -648,6 +652,7 @@ async def list_trading_accounts_route(
     )
     recent_fills = list(fill_result.all())
     recent_orders = list(order_result.all())
+    recent_live_copy_decisions = list(decision_result.all())
     historical_source_result = await session.scalars(
         select(TradingFill.source_wallet).where(TradingFill.account_type == "live").distinct()
     )
@@ -657,6 +662,7 @@ async def list_trading_accounts_route(
             recent_fills,
             recent_orders,
             closed_trades,
+            recent_live_copy_decisions,
         )
     )
     source_wallets.update(
@@ -688,6 +694,26 @@ async def list_trading_accounts_route(
         ],
         recent_fills=[TradingFillRead.model_validate(fill) for fill in recent_fills],
         recent_orders=[TradingOrderRead.model_validate(order) for order in recent_orders],
+        recent_live_copy_decisions=[
+            LiveCopyDecisionRead(
+                account_key=decision.account_key,
+                source_wallet=decision.source_wallet,
+                source_fill_id=decision.source_fill_id,
+                sequence_index=decision.sequence_index,
+                coin=decision.coin,
+                planned_action=decision.action,
+                side=decision.side,
+                outcome=decision.outcome,
+                reason=decision.reason,
+                attempt_count=decision.attempt_count,
+                first_observed_at=decision.first_observed_at,
+                last_attempt_at=decision.last_attempt_at,
+                next_attempt_at=decision.next_attempt_at,
+                trading_order_id=decision.trading_order_id,
+                updated_at=decision.updated_at,
+            )
+            for decision in recent_live_copy_decisions
+        ],
         closed_trades=[TradingClosedTradeRead.model_validate(trade) for trade in closed_trades],
         source_metadata=source_metadata,
         updated_at=datetime.now(UTC),

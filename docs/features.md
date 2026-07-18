@@ -306,6 +306,9 @@ What it does:
   and realtime-slot wallets, copy-enabled wallets, active paper allocations,
   open source, paper, or live positions, non-terminal trading orders, legacy
   open copy trades, and the configured number of top scored wallets.
+- `live_copy_source_states` is audit state, not wallet-cleanup-owned research
+  data. Its lifecycle foreign keys use `RESTRICT`, so cleanup cannot remove the
+  source state or its fill-state history as part of wallet deletion.
 - Deleting old source-trade materialization clears sync state for affected
   wallets, so the next scoring or wallet detail refresh rebuilds source trades
   from the retained fills.
@@ -693,7 +696,7 @@ What it does:
   remaining slots go to highest scored candidates. Top candidates without a
   slot are marked as waiting and cannot open new copy positions until a realtime
   slot is available. Paper-only mode retains open paper-position sources first.
-- Gives all top 10 ranks a 20% account pocket each.
+- Gives all top 10 ranks a 25% account pocket each.
 - Caps total open copied margin at 80% of each paper account equity.
 - Converts new non-snapshot realtime source fills into simulated paper fills.
 - Sizes an open by `source fill notional / source perp equity`, scaled inside
@@ -729,8 +732,9 @@ What it does:
   `trading_copy_max_entry_age_seconds`. This prevents late snapshot or recovery
   entries from opening exposure minutes after the source traded. Older close and
   reduce fills can still be processed to catch up existing exposure. Live copy
-  stores stale-entry skips as visible idempotent decisions with separate source
-  and decision timestamps.
+  stores stale entries as terminal per-fill dispositions with separate source
+  and decision timestamps, linking a `TradingOrder` only for a terminal
+  order-level decision.
 - Applies the configured paper fee rate to opens and closes. The default is
   0.045% to match Hyperliquid's base perp taker fee because paper fills model
   immediate taker-style execution.
@@ -839,10 +843,10 @@ What it does:
   without mixing rows from the other mode. Paper mode shows paper accounts,
   paper positions, paper closed trades, and paper fills. Live mode shows live
   accounts, live positions, live source activity, reconstructed closed live
-  trades, live exchange fills, rejected live orders, and live pre-submit skips
-  with skip reasons. Recent Execution Activity uses the same result-oriented
-  row semantics in both modes, so filled, skipped, rejected, and failed attempts
-  are visible without mixing paper and live rows. Individual live reduce and
+  trades, live exchange fills, rejected live orders, and terminal live pre-submit
+  decisions with skip reasons. Recent Execution Activity uses the same
+  result-oriented row semantics in both modes, so filled, skipped, rejected, and
+  failed attempts are visible without mixing paper and live rows. Individual live reduce and
   close fills stay in Recent Execution Activity.
 - Closed live trade history includes copied source trades and manual exchange
   position closes. If only an exchange close fill is available locally, the
@@ -1097,11 +1101,74 @@ What it does:
 - Allows exit-only live accounts to submit reduce-only exits, but blocks new
   entries and adds.
 - Runs automatic live copy when `live_trading_enabled` is true. Realtime live
-  copy reuses the shared source allocation policy, live mid-price cache, price drift guard,
-  optional min-order adjustment, deterministic client order ids, and live risk
-  guardrails. Recovery-created stale entry skips are hidden from recent
-  execution activity because they are replay markers, not current execution
-  attempts.
+  copy reuses the shared source allocation policy, live mid-price cache, price
+  drift guard, optional min-order adjustment, deterministic client order ids,
+  and live risk guardrails. Live lifecycle state is persisted separately from
+  the raw fill and order ledgers, so recovery does not manufacture execution
+  attempts for historical or transient conditions.
+- Uses `watched_wallets.copy_eligibility_started_at` as the global source-
+  selection epoch and stores one `live_copy_source_states` row for each live
+  account/source pair. Normal entries require both an immutable first
+  observation at or after `activated_at` and an authoritative source timestamp
+  at or after activation. Baseline IDs only scope recovery candidates and never
+  grant entry permission. Same-timestamp late arrivals can be candidates but
+  are not automatically eligible. Start refreshes eligible baselines before
+  entries are enabled, and Stop deactivates flat lanes without dropping exit
+  management for nonzero positions or unresolved orders.
+- Uses `live_copy_source_states.entry_eligible` as the authoritative
+  per-account entry-routing flag. Current selection sets it to true. A retained
+  lane stays active with the flag false only while it owns exposure or
+  unresolved work, and reselection sets it back to true after a fresh baseline.
+- A fresh retained baseline can be crossed for an entry only by a narrowly
+  proven same-side continuation of an already owned position. Other
+  post-baseline entries still require the normal live guards.
+- Stores one `live_copy_fill_states` row for each account, source fill, and
+  planned part. Each row records its origin (`realtime`, `snapshot_recovery`,
+  `startup_recovery`, or `periodic_recovery`), disposition, attempts, backoff,
+  expected part count, plan version, and optional linked order. Every part is
+  committed before sequence zero can dispatch, closing the crash window between
+  flip-close and flip-open. The final gate takes the account lifecycle lock
+  before source-state and fill-state row locks and commits before exchange
+  submission. `WalletFill` remains the complete source audit record.
+- Records unowned preexisting add, reduce, close, and flip-close history as
+  `baseline_ignored`, without creating failed `TradingOrder` rows. A
+  post-baseline flip-open is a fresh lifecycle and remains eligible for normal
+  live copy guards.
+- Defers temporary reconciliation, source state, source equity, leverage,
+  margin-mode, and execution-price failures with bounded backoff. Realtime
+  inbox work remains pending for retry when the event came through the inbox.
+  Pre-order deferrals do not manufacture `TradingOrder` rows. Separate copy
+  pipeline decisions remain operationally visible, but are not called fills or
+  orders when no `tradingOrderId` exists.
+- Does not filter existing live `TradingOrder` history through a hidden payload
+  flag. Historical failures remain visible, while the corrected lifecycle
+  avoids creating new fake attempts for transient prerequisites.
+- Preserves canonical numeric source-fill order per account and coin, with close
+  and flip-close parts before opens. A deferred earlier fill blocks later fills
+  for the same source market across recovery and separate realtime inbox items,
+  while unrelated coins continue.
+- Restores a missing source-attributed position from matching aggregate exchange
+  exposure only when executed fills reconstruct the current lifecycle and its
+  aggregate matches the exchange side and size. Competing sources or unexplained
+  manual exposure remain retryable without an order. Recovery restores only the
+  proven source size.
+- Defers the new side of a flip until reconciliation confirms that the copied
+  old side has closed.
+- Marks a source lifecycle inactive after it loses both current allocation and
+  copied exposure. Re-entry captures a new baseline, so fills accumulated while
+  inactive cannot replay as live intent. Recovery retains nonzero owned
+  positions and unresolved orders, including filled orders whose exchange fills
+  are not fully materialized, so exits remain recoverable.
+- Bootstraps legacy attribution and lifecycle keys only from strict current
+  executed-fill proof, excluding exchange and manual-test reserved sources.
+  Historical existence alone never creates attribution or an active lane.
+- Converts entries older than `trading_copy_max_entry_age_seconds` into one
+  terminal stale decision. Recovery excludes completed dispositions before its
+  fill limit and includes owned-position overlap so older exits remain
+  recoverable without a fixed historical prefix starving new fills. It also
+  excludes later non-stale fills behind an unfinished same-market predecessor
+  before the limit. Only stale entries bypass that query barrier, and only so
+  they can become terminal no-order decisions.
 - Prices live entry IOC-limit orders with `live_trading_limit_slippage_bps`,
   which defaults to 20 bps. `live_trading_max_slippage_bps` remains the hard
   guard against overly aggressive prices. If the execution value is too tight,
@@ -1120,10 +1187,11 @@ What it does:
 - Retries older local `live_close_below_min_order_notional` skip rows during
   recovery so existing dust positions are not left open after the final-close
   check is available.
-- Can close orphan exchange exposure during recovery when source state is flat,
-  the same source has historical live open fills, and no other source position
-  owns that market.
-- Reserves one source per live account and market while exposure is open.
+- Never claims orphan exchange exposure from historical existence alone. A
+  missing attribution row is recovered only from a complete current-lifecycle
+  proof; ambiguous ownership cannot submit a close.
+- Reserves one source per live account and market while exposure or a
+  nonterminal entry order exists.
   Another source opening the same market is skipped until the market is free,
   even if it is the same side, because Hyperliquid nets exchange position and
   margin settings at account level. This prevents leverage or cross/isolated
@@ -1324,10 +1392,15 @@ What it does:
   middleware while preserving authenticated non-browser API access.
 - Adds HSTS on the VPS plus content-type, frame, referrer, and permissions
   headers through Caddy.
-- Requires Alembic upgrade `b8e4f0a2d6c1`. The Phase 6 migrations preserve
+- Requires Alembic head `d1f6a9e4c2b3`. This head adds the live-copy source and
+  fill-state tables, source lifecycle key columns, the global
+  `watched_wallets.copy_eligibility_started_at` selection epoch, and strict
+  restart/bootstrap handling. After upgrade, an operator must run
+  `python -m alembic current` and confirm it shows `d1f6a9e4c2b3` before
+  starting the backend or workers. Earlier Phase 6 migrations preserve
   financial history, enforce account lifecycle integrity, remove the obsolete
-  global entry-control table, expand wallet fill ingest latency to `BIGINT`, and
-  stop on ambiguous legacy account conflicts.
+  global entry-control table, and expand wallet fill ingest latency to
+  `BIGINT`.
 - Requires an operator to restart backend and workers after changing
   `LIVE_TRADING_ENABLED`.
 - Worker container handover waits for an unexpired capability lease instead of

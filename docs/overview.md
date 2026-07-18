@@ -27,6 +27,30 @@ edge in monitor and paper mode before any live execution is activated.
 - Runs paper copy by default and supports guarded live copy, durable live order
   recovery, and authoritative live reconciliation in the trading worker when
   intentionally enabled.
+- `watched_wallets.copy_eligibility_started_at` is the global source-selection
+  epoch. `LiveCopySourceState` is per live account/source. Normal entries need
+  both an immutable first observation at or after `activated_at` and an
+  authoritative source timestamp at or after activation. Baseline IDs only
+  scope recovery candidates, so same-timestamp late arrivals are not
+  automatically eligible. Only a narrowly proven same-side owned continuation
+  can cross a fresh retained baseline.
+- `LiveCopySourceState.entry_eligible` is the authoritative per-account routing
+  truth. Current selection sets it to true. Owned-only retention keeps the lane
+  active with the flag false, and reselection requires a fresh baseline before
+  setting it true again.
+- Temporary reconciliation and source-state prerequisites retry with bounded
+  backoff instead of producing fake live order failures. Recovery retains
+  nonzero positions and unresolved orders, including filled orders whose fills
+  are not fully materialized. Completed dispositions are excluded before limits.
+- Live source events use canonical numeric fill ordering with close-before-open
+  sequencing. Lost attribution can be restored only from strict current
+  executed-fill proof, excluding exchange and manual-test reserved sources.
+  Every multipart plan is committed before exchange submission, with the final
+  gate lock order preserved. Separate pipeline decisions remain visible without
+  being called fills or orders when no `tradingOrderId` exists.
+- Existing `TradingOrder` history is never hidden by lifecycle recovery, and
+  `live_copy_source_states` remains audit state protected by `RESTRICT`, outside
+  wallet cleanup ownership.
 - Protects backend routes with dashboard Basic Auth by default.
 - Coordinates long-running jobs with database-backed locks.
 - Discovers new candidates from Hyperliquid leaderboards, leaderboard
@@ -46,6 +70,9 @@ There are two separate data flows:
 
 - Historical polling is for scoring and research across the full wallet pool.
 - Realtime monitoring is for active wallets and open position management.
+- Raw `WalletFill` rows are the complete source audit record. Live execution
+  decisions are tracked separately per account, source fill, and lifecycle part
+  so retries, terminal decisions, and baseline history remain distinguishable.
 
 This separation matters because Hyperliquid limits user-specific realtime WebSocket
 subscriptions, while historical polling can cover many more wallets at a slower,

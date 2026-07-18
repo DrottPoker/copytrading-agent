@@ -89,6 +89,20 @@ def test_source_position_margin_setting_parses_leverage_and_mode() -> None:
     }
 
 
+def test_live_source_projection_retains_unresolved_orders_without_positions() -> None:
+    sql = str(
+        live_open_copy_source_select().compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+
+    assert "trading_positions" in sql
+    assert "trading_orders" in sql
+    assert "accepted" in sql
+    assert "partially_filled" in sql
+
+
 @pytest.mark.parametrize(
     ("has_realtime_slot", "can_open_new_positions", "open_position_count", "expected"),
     [

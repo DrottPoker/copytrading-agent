@@ -175,12 +175,18 @@ async def import_address_fills(
         if not page:
             break
 
+        page_observed_at = datetime.now(UTC)
         pages_fetched += 1
         raw_fetched_count += len(page)
         for fill in page:
             if len(records) >= payload.target_fills:
                 break
-            record = build_fill_record(normalized_address, fill, settings=settings)
+            record = build_fill_record(
+                normalized_address,
+                fill,
+                settings=settings,
+                received_at=page_observed_at,
+            )
             if record is not None:
                 records.append(record)
 

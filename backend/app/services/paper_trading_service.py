@@ -33,8 +33,15 @@ from app.schemas.paper_trading import (
     PaperTradingSummaryResponse,
 )
 from app.schemas.wallet import normalize_wallet_address
+from app.services.live_copy_state_service import (
+    POSITION_EPSILON as LIVE_POSITION_EPSILON,
+)
+from app.services.live_copy_state_service import (
+    live_copy_unresolved_order_predicate,
+)
 from app.services.live_trading_service import (
     LIVE_EXCHANGE_SOURCE,
+    LIVE_MANUAL_TEST_SOURCE,
     live_spot_usdc_available,
     live_spot_usdc_total,
     user_abstraction_is_unified,
@@ -45,6 +52,7 @@ from app.services.realtime_subscription_state_service import (
     load_realtime_subscription_state,
     realtime_subscription_stale_after_seconds,
 )
+from app.services.source_fill_ordering import source_fill_order_key
 from app.services.trading_account_service import sync_paper_trading_account_mirrors
 from app.services.trading_core import (
     MarginMode,
@@ -72,7 +80,6 @@ MONITORING_MIN_SNAPSHOT_GAP_SECONDS = 60
 POSITION_ADD_FILL_ACTIONS = frozenset({"add"})
 POSITION_CLOSE_FILL_ACTIONS = frozenset({"reduce", "close", "flip_close"})
 SOURCE_EQUITY_ACTIONS = frozenset({"open", "add", "flip_open"})
-SOURCE_CLOSE_DIRECTIONS = frozenset({"Close Long", "Close Short", "Long > Short", "Short > Long"})
 RETRIABLE_EXIT_SKIP_REASONS = frozenset(
     {
         "source_account_state_missing",
@@ -2354,14 +2361,43 @@ async def refresh_paper_copy_allocations(
     await ensure_open_paper_sources_watched(session)
     accounts = await sync_paper_trading_accounts(session, settings=settings)
     account_keys = [account.key for account in accounts]
-    if account_keys:
-        await session.execute(
-            update(PaperCopyAllocation)
-            .where(PaperCopyAllocation.account_key.in_(account_keys))
-            .values(active=False)
-        )
-
     source_allocations = await load_paper_source_allocations(session, settings=settings)
+    allocation_refresh_at = datetime.now(UTC)
+    active_source_wallets = {
+        allocation.source_wallet.lower()
+        for allocation in source_allocations
+        if allocation.active and allocation.source_wallet
+    }
+    for source_wallet in sorted(active_source_wallets):
+        await session.execute(
+            insert(WatchedWallet)
+            .values(
+                address=source_wallet,
+                enabled=True,
+                eligible=False,
+                copy_enabled=False,
+                polling_tier="pool",
+                notes="Created for the live-copy source eligibility epoch.",
+            )
+            .on_conflict_do_nothing(index_elements=["address"])
+        )
+    if active_source_wallets:
+        await session.execute(
+            update(WatchedWallet)
+            .where(
+                WatchedWallet.address.in_(active_source_wallets),
+                WatchedWallet.copy_eligibility_started_at.is_(None),
+            )
+            .values(copy_eligibility_started_at=allocation_refresh_at)
+        )
+    inactive_source_epoch_update = update(WatchedWallet).where(
+        WatchedWallet.copy_eligibility_started_at.is_not(None)
+    )
+    if active_source_wallets:
+        inactive_source_epoch_update = inactive_source_epoch_update.where(
+            WatchedWallet.address.not_in(active_source_wallets)
+        )
+    await session.execute(inactive_source_epoch_update.values(copy_eligibility_started_at=None))
     realtime_monitoring = await load_realtime_subscription_state(
         session,
         stale_after_seconds=realtime_subscription_stale_after_seconds(
@@ -2373,6 +2409,11 @@ async def refresh_paper_copy_allocations(
         monitored_wallets=realtime_monitoring.monitored_wallets,
         settings=settings,
     )
+    allocated_sources = {
+        allocation.source_wallet.lower()
+        for allocation in source_allocations
+        if allocation.source_wallet
+    }
     for account in accounts:
         for allocation in source_allocations:
             source_wallet = allocation.source_wallet.lower()
@@ -2400,6 +2441,16 @@ async def refresh_paper_copy_allocations(
                     },
                 )
             )
+
+    if account_keys:
+        no_longer_allocated = update(PaperCopyAllocation).where(
+            PaperCopyAllocation.account_key.in_(account_keys)
+        )
+        if allocated_sources:
+            no_longer_allocated = no_longer_allocated.where(
+                PaperCopyAllocation.source_wallet.not_in(allocated_sources)
+            )
+        await session.execute(no_longer_allocated.values(active=False))
 
     return {allocation.source_wallet.lower(): allocation for allocation in source_allocations}
 
@@ -2450,11 +2501,25 @@ def open_copy_source_select() -> Any:
 
 
 def live_open_copy_source_select() -> Any:
-    return select(func.lower(TradingPosition.source_wallet).label("source_wallet")).where(
+    position_sources = select(
+        func.lower(TradingPosition.source_wallet).label("source_wallet")
+    ).where(
         TradingPosition.account_type == "live",
         TradingPosition.source_wallet != "",
         TradingPosition.source_wallet != LIVE_EXCHANGE_SOURCE,
+        TradingPosition.source_wallet != LIVE_MANUAL_TEST_SOURCE,
+        TradingPosition.size > LIVE_POSITION_EPSILON,
     )
+    unresolved_order_sources = select(
+        func.lower(TradingOrder.source_wallet).label("source_wallet")
+    ).where(
+        TradingOrder.account_type == "live",
+        TradingOrder.source_wallet != "",
+        TradingOrder.source_wallet != LIVE_EXCHANGE_SOURCE,
+        TradingOrder.source_wallet != LIVE_MANUAL_TEST_SOURCE,
+        live_copy_unresolved_order_predicate(),
+    )
+    return position_sources.union_all(unresolved_order_sources)
 
 
 def select_realtime_slot_sources(
@@ -4439,22 +4504,12 @@ def sorted_paper_source_fills(fills: list[dict[str, Any]]) -> list[dict[str, Any
     return sorted(fills, key=paper_source_fill_sort_key)
 
 
-def paper_source_fill_sort_key(fill: dict[str, Any]) -> tuple[int, str, int, Decimal, str]:
-    raw_json = raw_json_from_fill(fill)
-    direction = str(raw_json.get("dir") or "")
-    start_position = decimal_or_none(raw_json.get("startPosition"))
-    source_position = start_position.copy_abs() if start_position is not None else ZERO
-    direction_order = 0 if direction in SOURCE_CLOSE_DIRECTIONS else 1
-    source_position_order = (
-        -source_position if direction in SOURCE_CLOSE_DIRECTIONS else source_position
-    )
-    return (
-        int(fill.get("timestampMs") or 0),
-        str(fill.get("coin") or ""),
-        direction_order,
-        source_position_order,
-        str(fill.get("externalFillId") or ""),
-    )
+def paper_source_fill_sort_key(
+    fill: dict[str, Any],
+) -> tuple[int, str, int, Decimal, int, Decimal, str]:
+    """Return the durable ordering used for every source fill lifecycle."""
+
+    return source_fill_order_key(fill)
 
 
 def part_requires_source_equity(part: SourceFillPart) -> bool:

@@ -62,6 +62,7 @@ async def claim_next_realtime_execution(
             stored = StoredRealtimeFills.from_execution_payload(
                 inbox.payload,
                 inbox_id=str(inbox.id),
+                fallback_observed_at=inbox.created_at,
             )
         except ValueError as exc:
             inbox.status = "pending"

@@ -28,6 +28,7 @@ async def prepare_live_order_dispatch(
     order = await session.scalar(
         select(TradingOrder)
         .where(TradingOrder.client_order_id == intent.client_order_id)
+        .execution_options(populate_existing=True)
         .with_for_update()
     )
     created = order is None
@@ -39,6 +40,7 @@ async def prepare_live_order_dispatch(
     dispatch = await session.scalar(
         select(TradingOrderDispatch)
         .where(TradingOrderDispatch.order_id == order.id)
+        .execution_options(populate_existing=True)
         .with_for_update()
     )
     if dispatch is None:

@@ -410,6 +410,7 @@ function emptyTradingAccounts(): TradingAccountsResponse {
     closedTrades: [],
     recentFills: [],
     recentOrders: [],
+    recentLiveCopyDecisions: [],
     sourceMetadata: [],
     updatedAt: new Date(0).toISOString(),
   };

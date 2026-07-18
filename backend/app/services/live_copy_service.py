@@ -1,15 +1,18 @@
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, inspect, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.db.models import (
+    LiveCopyFillState,
+    LiveCopySourceState,
     PaperCopyAllocation,
     TradingAccount,
     TradingFill,
@@ -20,10 +23,35 @@ from app.db.models import (
 )
 from app.integrations.hyperliquid_client import HyperliquidClient
 from app.integrations.hyperliquid_live_client import HyperliquidLiveTradingClient
+from app.services.live_copy_state_service import (
+    LIVE_COPY_ORIGIN_PERIODIC_RECOVERY,
+    LIVE_COPY_ORIGIN_REALTIME,
+    LIVE_COPY_OUTCOME_BASELINE_IGNORED,
+    LIVE_COPY_OUTCOME_TERMINAL_SKIP,
+    LiveCopyProcessingDeferred,
+    LiveCopyProcessingOrigin,
+    acquire_live_copy_source_lock,
+    claim_live_copy_fill_part,
+    ensure_live_copy_fill_plan_states,
+    ensure_live_copy_source_state,
+    link_live_copy_fill_state_to_order,
+    live_copy_entry_follows_owned_position_lifecycle,
+    live_copy_unresolved_order_predicate,
+    load_live_copy_recovery_candidate_fills,
+    load_live_copy_source_eligibility_epochs,
+    load_owned_live_copy_account_source_pairs,
+    mark_live_copy_fill_baseline_ignored,
+    mark_live_copy_fill_complete_if_durable,
+    mark_live_copy_fill_retryable,
+    preexisting_market_matches_part,
+    synchronize_live_copy_source_activity,
+)
 from app.services.live_trading_service import (
     LIVE_CAPITAL_MODE_UNIFIED,
     LIVE_EXCHANGE_SOURCE,
+    LIVE_MANUAL_TEST_SOURCE,
     POSITION_EPSILON,
+    LiveCopyEntryLifecycleDeferred,
     LiveOrderSubmitError,
     LiveReconciliationError,
     is_retryable_live_order_submit_failure,
@@ -64,6 +92,13 @@ from app.services.paper_trading_service import (
     source_fill_age_seconds,
     source_state_available_for_reconciliation,
 )
+from app.services.source_fill_ordering import (
+    decimal_or_none as source_order_decimal_or_none,
+)
+from app.services.source_fill_ordering import (
+    source_fill_order_components,
+    source_fill_order_key,
+)
 from app.services.trading_core import (
     MarginMode,
     TradeIntent,
@@ -76,7 +111,6 @@ from app.services.trading_core import (
 
 logger = logging.getLogger(__name__)
 ZERO = Decimal("0")
-LIVE_COPY_RECOVERY_OVERLAP_MS = 5 * 60 * 1000
 PENDING_CLOSE_ORDER_STATUSES = {
     "ready",
     "submitting",
@@ -87,6 +121,50 @@ PENDING_CLOSE_ORDER_STATUSES = {
     "filled",
 }
 LIVE_CLOSE_AGGREGATED_SKIP_REASON = "live_close_aggregated_into_later_order"
+LIVE_COPY_TERMINAL_SKIP_ERRORS = frozenset(
+    {
+        "skip:live_account_exit_only",
+        "skip:live_account_not_enabled",
+        "skip:live_close_below_min_order_notional",
+    }
+)
+LIVE_COPY_RETRYABLE_SKIP_REASONS = frozenset(
+    {
+        "live_execution_busy",
+        "live_execution_price_unavailable",
+        "live_reconciliation_failed",
+        "live_reconciliation_incomplete",
+        "live_reconciliation_stale",
+        "live_source_leverage_missing",
+        "live_source_attribution_ambiguous",
+        "live_source_margin_mode_missing",
+        "source_account_margin_summary_missing",
+        "source_account_state_fetch_failed",
+        "source_account_state_missing",
+        "source_perp_equity_missing",
+        "source_perp_equity_zero",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class LiveSourceLifecycleProof:
+    """Reconstructed ownership evidence for the currently open exchange lifecycle."""
+
+    aggregate_signed_size: Decimal
+    contributions: tuple[tuple[str, Decimal], ...]
+    lifecycle_opened_at: datetime | None
+    source_first_fill_at: datetime | None
+    last_fill_at: datetime | None
+    history_incomplete: bool
+    source_opening_fill_id: str | None = None
+    source_opening_sequence_index: int | None = None
+
+
+class LiveCopyPartDeferred(RuntimeError):
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 def live_skip(reason: str, count: int = 1) -> PaperCopyBatchResult:
@@ -108,6 +186,112 @@ def live_copy_allocation_equity_usd(
     return live_perp_equity_usd(account, dex=dex)
 
 
+async def synchronize_live_copy_lanes(
+    session: AsyncSession,
+    *,
+    accounts: list[TradingAccount],
+    active_source_wallets: set[str],
+    protected_account_keys: set[str] | None = None,
+) -> set[tuple[str, str]]:
+    """Synchronize live lanes before a live worker performs source I/O.
+
+    Paper allocation refresh intentionally does not own live lifecycle locks.
+    This coordinator is called only by live control and worker paths, then its
+    transaction is committed before Hyperliquid requests begin.
+    """
+
+    account_by_key = {account.key: account for account in accounts}
+    owned_pairs = await load_owned_live_copy_account_source_pairs(
+        session,
+        account_keys=set(account_by_key),
+    )
+    source_epochs = await load_live_copy_source_eligibility_epochs(session)
+    selected_pairs = {
+        (account.key, source_wallet)
+        for account in accounts
+        if account.status == "enabled"
+        for source_wallet in active_source_wallets
+    }
+    eligible_pairs = selected_pairs | owned_pairs
+    eligible_epochs = {
+        (account_key, source_wallet): max(
+            account_by_key[account_key].status_changed_at,
+            source_epochs.get(source_wallet, account_by_key[account_key].status_changed_at),
+        )
+        for account_key, source_wallet in selected_pairs
+        if account_key in account_by_key
+    }
+    await synchronize_live_copy_source_activity(
+        session,
+        eligible_account_source_pairs=eligible_pairs,
+        entry_eligible_account_source_pairs=selected_pairs,
+        eligible_account_source_epochs=eligible_epochs,
+        protected_account_keys=protected_account_keys,
+        target_account_keys=set(account_by_key),
+    )
+    return owned_pairs
+
+
+async def bootstrap_missing_live_source_attribution(
+    session: AsyncSession,
+    *,
+    accounts: list[TradingAccount],
+) -> int:
+    """Recover only proven source attribution for legacy exchange positions.
+
+    This runs before source lanes are synchronized.  It never creates a source
+    state or baseline for ambiguous, manual, incomplete, or historical data.
+    """
+
+    account_keys = {account.key for account in accounts}
+    if not account_keys or not callable(getattr(session, "execute", None)):
+        return 0
+    accounts_by_key = {account.key: account for account in accounts}
+    result = await session.execute(
+        select(
+            TradingPosition.account_key,
+            TradingPosition.coin,
+            TradingPosition.side,
+            TradingFill.source_wallet,
+        )
+        .join(
+            TradingFill,
+            and_(
+                TradingFill.account_key == TradingPosition.account_key,
+                TradingFill.account_type == TradingPosition.account_type,
+                TradingFill.coin == TradingPosition.coin,
+            ),
+        )
+        .where(
+            TradingPosition.account_key.in_(account_keys),
+            TradingPosition.account_type == "live",
+            TradingPosition.source_wallet == LIVE_EXCHANGE_SOURCE,
+            TradingPosition.size > POSITION_EPSILON,
+            TradingFill.source_wallet != "",
+            TradingFill.source_wallet != LIVE_EXCHANGE_SOURCE,
+            TradingFill.source_wallet != LIVE_MANUAL_TEST_SOURCE,
+        )
+        .distinct()
+    )
+    recovered = 0
+    for account_key, coin, side, source_wallet in result.all():
+        account = accounts_by_key.get(str(account_key))
+        if account is None or not coin or not side or not source_wallet:
+            continue
+        try:
+            position = await recover_live_source_position_attribution(
+                session,
+                account=account,
+                source_wallet=str(source_wallet).lower(),
+                coin=str(coin),
+                side=str(side),
+            )
+        except LiveCopyPartDeferred:
+            continue
+        recovered += int(position is not None)
+    return recovered
+
+
 async def process_live_copy_fills(
     session: AsyncSession,
     *,
@@ -117,6 +301,11 @@ async def process_live_copy_fills(
     client: HyperliquidClient | None = None,
     trading_client: HyperliquidLiveTradingClient | None = None,
     price_cache: MarketPriceCache | None = None,
+    origin: LiveCopyProcessingOrigin = LIVE_COPY_ORIGIN_REALTIME,
+    realtime_observed_at: datetime | None = None,
+    accounts_override: list[TradingAccount] | None = None,
+    prechecked_reconciliation_failures: set[str] | None = None,
+    lanes_synchronized: bool = False,
 ) -> PaperCopyBatchResult:
     resolved_settings = settings or get_settings()
     if not fills or not live_copy_processing_enabled(resolved_settings):
@@ -128,9 +317,35 @@ async def process_live_copy_fills(
     if allocation is None:
         return live_skip("live_allocation_missing", len(fills))
 
-    accounts = await load_live_accounts_for_source_copy(
+    candidate_accounts = (
+        accounts_override
+        if accounts_override is not None
+        else await load_live_accounts_for_source_copy(
+            session,
+            source_wallet=normalized_source_wallet,
+        )
+    )
+    if not lanes_synchronized:
+        if callable(getattr(session, "execute", None)):
+            await bootstrap_missing_live_source_attribution(
+                session,
+                accounts=candidate_accounts,
+            )
+            await synchronize_live_copy_lanes(
+                session,
+                accounts=candidate_accounts,
+                active_source_wallets={
+                    source for source, candidate in allocations.items() if candidate.active
+                },
+            )
+        await session.commit()
+        lanes_synchronized = True
+    accounts = candidate_accounts
+    accounts = await filter_live_accounts_for_source_allocation(
         session,
+        accounts=accounts,
         source_wallet=normalized_source_wallet,
+        allocation=allocation,
     )
     if not accounts:
         return live_skip("live_no_enabled_accounts", len(fills))
@@ -145,6 +360,11 @@ async def process_live_copy_fills(
                 client=hyperliquid_client,
                 trading_client=trading_client,
                 price_cache=price_cache,
+                origin=origin,
+                realtime_observed_at=realtime_observed_at,
+                accounts_override=candidate_accounts,
+                prechecked_reconciliation_failures=prechecked_reconciliation_failures,
+                lanes_synchronized=lanes_synchronized,
             )
 
     source_account_states_task = load_source_account_states(
@@ -164,36 +384,158 @@ async def process_live_copy_fills(
         market_prices_task,
     )
 
-    accounts = await load_live_accounts_for_source_copy(
+    accounts = (
+        accounts_override
+        if accounts_override is not None
+        else await load_live_accounts_for_source_copy(
+            session,
+            source_wallet=normalized_source_wallet,
+        )
+    )
+    accounts = await filter_live_accounts_for_source_allocation(
         session,
+        accounts=accounts,
         source_wallet=normalized_source_wallet,
+        allocation=allocation,
     )
     if not accounts:
         return live_skip("live_no_enabled_accounts", len(fills))
-    failed_reconciliation_accounts = await refresh_stale_live_copy_accounts(
-        session,
-        accounts=accounts,
-        settings=resolved_settings,
-        client=client,
-    )
+    failed_reconciliation_accounts = prechecked_reconciliation_failures
+    if failed_reconciliation_accounts is None:
+        failed_reconciliation_accounts = await refresh_stale_live_copy_accounts(
+            session,
+            accounts=accounts,
+            settings=resolved_settings,
+            client=client,
+        )
 
     processed = 0
     skipped = 0
     skip_reasons: dict[str, int] = {}
     touched_accounts: dict[str, TradingAccount] = {}
+    deferred_reasons: set[str] = set()
+    blocked_market_lanes: set[tuple[str, str]] = set()
     live_client = trading_client or HyperliquidLiveTradingClient(settings=resolved_settings)
+    source_lifecycle_states = {
+        account.key: await ensure_live_copy_source_state(
+            session,
+            account_key=account.key,
+            source_wallet=normalized_source_wallet,
+            reactivate=False,
+        )
+        for account in accounts
+    }
+    execution_fill_ids = {
+        str(fill.get("externalFillId") or "") for fill in fills if fill.get("externalFillId")
+    }
+    first_observed_at_by_fill_id: dict[str, datetime] = {}
+    if execution_fill_ids and callable(getattr(session, "execute", None)):
+        first_observed_result = await session.execute(
+            select(WalletFill.external_fill_id, WalletFill.received_at).where(
+                WalletFill.wallet_address == normalized_source_wallet,
+                WalletFill.external_fill_id.in_(execution_fill_ids),
+            )
+        )
+        first_observed_at_by_fill_id = {
+            str(source_fill_id): received_at
+            for source_fill_id, received_at in first_observed_result.all()
+            if source_fill_id and received_at is not None
+        }
 
     def add_skip(reason: str, count: int = 1) -> None:
         nonlocal skipped
         skipped += count
         skip_reasons[reason] = skip_reasons.get(reason, 0) + count
 
-    for fill in sorted_paper_source_fills(fills):
+    sorted_fills = sorted_paper_source_fills(fills)
+    planned_fills: list[tuple[dict[str, Any], list[SourceFillPart]]] = []
+    for fill in sorted_fills:
+        if not str(fill.get("externalFillId") or ""):
+            add_skip("live_source_fill_id_missing", len(accounts))
+            continue
         parts = plan_source_fill(fill)
         if not parts:
             add_skip("live_no_planned_source_parts", len(accounts))
             continue
+        planned_fills.append((fill, parts))
+        for account in accounts:
+            lifecycle_state = source_lifecycle_states[account.key]
+            await ensure_live_copy_fill_plan_states(
+                session,
+                source_state=lifecycle_state,
+                fill=fill,
+                planned_parts=parts,
+                origin=origin,
+                observed_at=realtime_observed_at,
+                first_observed_at=first_observed_at_by_fill_id.get(
+                    str(fill.get("externalFillId") or "")
+                ),
+            )
 
+    # Terminal entry decisions are independent of execution ordering.  Make
+    # them before an unresolved earlier order can hide stale or baseline work.
+    for fill, parts in planned_fills:
+        for account in accounts:
+            lifecycle_state = source_lifecycle_states[account.key]
+            pre_barrier_terminalized = False
+            for part in parts:
+                if part.action not in {"open", "add", "flip_open"}:
+                    continue
+                stale_entry = source_fill_age_exceeds_entry_limit(
+                    fill,
+                    settings=resolved_settings,
+                )
+                claim = await claim_live_copy_fill_part(
+                    session,
+                    source_state=lifecycle_state,
+                    fill=fill,
+                    part=part,
+                    origin=origin,
+                    entry_is_stale=stale_entry,
+                )
+                if claim.state is None or claim.reason in {"complete", "blocked", "missing_plan"}:
+                    continue
+                if claim.reason == "baseline":
+                    await mark_live_copy_fill_baseline_ignored(
+                        session,
+                        source_state=lifecycle_state,
+                        fill_state=claim.state,
+                        part=part,
+                        reason="live_copy_baseline_entry",
+                        record_preexisting_market=False,
+                    )
+                    pre_barrier_terminalized = True
+                    continue
+                if not stale_entry or not claim.claimed:
+                    continue
+                fill_result = await record_live_skip(
+                    session,
+                    account=account,
+                    allocation=allocation,
+                    fill=fill,
+                    part=part,
+                    reason="live_source_fill_too_old",
+                )
+                if not await finalize_live_copy_fill_disposition(
+                    session,
+                    fill_state=claim.state,
+                ):
+                    deferred_reasons.add(claim.state.reason or "live_copy_decision_deferred")
+                    continue
+                processed += fill_result.processed_fills
+                skipped += fill_result.skipped_fills
+                skip_reasons = combine_skip_reasons(skip_reasons, fill_result.skip_reasons)
+                pre_barrier_terminalized = True
+            if pre_barrier_terminalized:
+                await mark_live_copy_fill_complete_if_durable(
+                    session,
+                    source_state=lifecycle_state,
+                    source_fill_id=str(fill.get("externalFillId") or ""),
+                    planned_parts=parts,
+                )
+    await session.commit()
+
+    for fill, parts in planned_fills:
         source_account_state = source_account_states.get(dex_from_coin(fill.get("coin")))
         if source_account_state is None:
             source_perp_equity = ZERO
@@ -205,74 +547,203 @@ async def process_live_copy_fills(
             source_state_skip_reason = source_account_state.skip_reason
 
         for account in accounts:
+            market_lane = (account.key, str(fill.get("coin") or ""))
+            if market_lane in blocked_market_lanes:
+                continue
+            lifecycle_state = source_lifecycle_states[account.key]
+            account_fill_deferred = False
             for part in parts:
-                if account.status != "enabled" and part_requires_source_equity(part):
-                    fill_result = await record_live_skip(
-                        session,
-                        account=account,
-                        allocation=allocation,
-                        fill=fill,
-                        part=part,
-                        reason="live_account_exit_only",
-                    )
-                    skipped += fill_result.skipped_fills
-                    skip_reasons = combine_skip_reasons(
-                        skip_reasons,
-                        fill_result.skip_reasons,
-                    )
-                    continue
-                if account.key in failed_reconciliation_accounts and part_requires_source_equity(
+                if account_fill_deferred:
+                    break
+                stale_entry = part_requires_source_equity(
                     part
-                ):
-                    fill_result = await record_live_skip(
-                        session,
-                        account=account,
-                        allocation=allocation,
-                        fill=fill,
-                        part=part,
-                        reason="live_reconciliation_failed",
-                    )
-                    skipped += fill_result.skipped_fills
-                    skip_reasons = combine_skip_reasons(
-                        skip_reasons,
-                        fill_result.skip_reasons,
-                    )
+                ) and source_fill_age_exceeds_entry_limit(fill, settings=resolved_settings)
+                claim = await claim_live_copy_fill_part(
+                    session,
+                    source_state=lifecycle_state,
+                    fill=fill,
+                    part=part,
+                    origin=origin,
+                    entry_is_stale=stale_entry,
+                )
+                fill_state = claim.state
+                if claim.reason == "blocked":
+                    deferred_reasons.add("live_prior_source_fill_pending")
+                    account_fill_deferred = True
                     continue
-                if source_state_skip_reason is not None and part_requires_source_equity(part):
-                    fill_result = await record_live_skip(
+                if claim.reason == "missing_plan":
+                    deferred_reasons.add("live_copy_plan_missing")
+                    account_fill_deferred = True
+                    continue
+                if fill_state is None:
+                    continue
+                if claim.reason == "complete":
+                    continue
+                if claim.reason == "not_due":
+                    deferred_reasons.add(fill_state.reason or "live_copy_retry_not_due")
+                    account_fill_deferred = True
+                    continue
+
+                baseline_part = claim.reason == "baseline"
+                if baseline_part and part_requires_source_equity(part):
+                    await mark_live_copy_fill_baseline_ignored(
                         session,
-                        account=account,
-                        allocation=allocation,
-                        fill=fill,
+                        source_state=lifecycle_state,
+                        fill_state=fill_state,
                         part=part,
-                        reason=source_state_skip_reason,
-                    )
-                    skipped += fill_result.skipped_fills
-                    skip_reasons = combine_skip_reasons(
-                        skip_reasons,
-                        fill_result.skip_reasons,
+                        reason="live_copy_baseline_entry",
                     )
                     continue
 
-                fill_result = await apply_live_copy_part(
+                if stale_entry:
+                    fill_result = await record_live_skip(
+                        session,
+                        account=account,
+                        allocation=allocation,
+                        fill=fill,
+                        part=part,
+                        reason="live_source_fill_too_old",
+                    )
+                else:
+                    if not lifecycle_state.entry_eligible and part.action in {
+                        "open",
+                        "add",
+                        "flip_open",
+                    }:
+                        raw_json = fill.get("rawJson")
+                        retained_continuation = (
+                            await live_copy_entry_follows_owned_position_lifecycle(
+                                session,
+                                source_state=lifecycle_state,
+                                fill=fill,
+                                action=part.action,
+                                side=part.side,
+                                start_position=(
+                                    raw_json.get("startPosition")
+                                    if isinstance(raw_json, dict)
+                                    else None
+                                ),
+                            )
+                        )
+                        if not retained_continuation:
+                            await mark_live_copy_fill_baseline_ignored(
+                                session,
+                                source_state=lifecycle_state,
+                                fill_state=fill_state,
+                                part=part,
+                                reason="live_retained_source_new_market",
+                                record_preexisting_market=False,
+                            )
+                            continue
+                    try:
+                        unowned_source_lifecycle = await live_copy_part_is_unowned_source_lifecycle(
+                            session,
+                            account=account,
+                            source_state=lifecycle_state,
+                            fill=fill,
+                            part=part,
+                            baseline_part=baseline_part,
+                        )
+                    except LiveCopyPartDeferred as exc:
+                        await mark_live_copy_fill_retryable(
+                            session,
+                            fill_state=fill_state,
+                            reason=exc.reason,
+                        )
+                        deferred_reasons.add(exc.reason)
+                        account_fill_deferred = True
+                        continue
+                    if unowned_source_lifecycle:
+                        await mark_live_copy_fill_baseline_ignored(
+                            session,
+                            source_state=lifecycle_state,
+                            fill_state=fill_state,
+                            part=part,
+                            reason="unowned_preexisting_lifecycle",
+                        )
+                        continue
+
+                if (
+                    account.key in failed_reconciliation_accounts
+                    and part_requires_source_equity(part)
+                    and not stale_entry
+                ):
+                    reason = "live_reconciliation_deferred"
+                    await mark_live_copy_fill_retryable(
+                        session,
+                        fill_state=fill_state,
+                        reason=reason,
+                    )
+                    deferred_reasons.add(reason)
+                    account_fill_deferred = True
+                    continue
+                elif (
+                    source_state_skip_reason is not None
+                    and part_requires_source_equity(part)
+                    and not stale_entry
+                ):
+                    await mark_live_copy_fill_retryable(
+                        session,
+                        fill_state=fill_state,
+                        reason=source_state_skip_reason,
+                    )
+                    deferred_reasons.add(source_state_skip_reason)
+                    account_fill_deferred = True
+                    continue
+                elif not stale_entry:
+                    # Claims and any source-lifecycle repair hold transaction
+                    # advisory locks.  Persist that work before submission so
+                    # the execution gate can lock account then lifecycle.
+                    await session.commit()
+                    try:
+                        fill_result = await apply_live_copy_part(
+                            session,
+                            account=account,
+                            allocation=allocation,
+                            fill=fill,
+                            part=part,
+                            source_account_state=source_account_state,
+                            source_perp_equity=source_perp_equity,
+                            source_leverages=source_leverages,
+                            market_prices=market_prices,
+                            settings=resolved_settings,
+                            trading_client=live_client,
+                        )
+                    except LiveCopyPartDeferred as exc:
+                        await mark_live_copy_fill_retryable(
+                            session,
+                            fill_state=fill_state,
+                            reason=exc.reason,
+                        )
+                        deferred_reasons.add(exc.reason)
+                        account_fill_deferred = True
+                        continue
+
+                disposition_is_durable = await finalize_live_copy_fill_disposition(
                     session,
-                    account=account,
-                    allocation=allocation,
-                    fill=fill,
-                    part=part,
-                    source_account_state=source_account_state,
-                    source_perp_equity=source_perp_equity,
-                    source_leverages=source_leverages,
-                    market_prices=market_prices,
-                    settings=resolved_settings,
-                    trading_client=live_client,
+                    fill_state=fill_state,
                 )
+                if not disposition_is_durable:
+                    deferred_reasons.add(fill_state.reason or "live_copy_decision_deferred")
+                    account_fill_deferred = True
+                    continue
+
                 processed += fill_result.processed_fills
                 skipped += fill_result.skipped_fills
                 skip_reasons = combine_skip_reasons(skip_reasons, fill_result.skip_reasons)
                 if fill_result.processed_fills > 0:
                     touched_accounts[account.key] = account
                     await session.commit()
+
+            if not account_fill_deferred:
+                await mark_live_copy_fill_complete_if_durable(
+                    session,
+                    source_state=lifecycle_state,
+                    source_fill_id=str(fill.get("externalFillId") or ""),
+                    planned_parts=parts,
+                )
+            else:
+                blocked_market_lanes.add(market_lane)
 
     for account in touched_accounts.values():
         await reconcile_live_trading_account(
@@ -283,12 +754,934 @@ async def process_live_copy_fills(
         )
 
     await session.commit()
+    if deferred_reasons:
+        reasons = ", ".join(sorted(deferred_reasons))
+        raise LiveCopyProcessingDeferred(
+            "live_copy_parts_deferred",
+            f"Live copy processing deferred: {reasons}",
+        )
     return PaperCopyBatchResult(
         processed_fills=processed,
         skipped_fills=skipped,
         accounts_updated=len(touched_accounts),
         skip_reasons=skip_reasons,
     )
+
+
+async def live_copy_part_is_unowned_source_lifecycle(
+    session: AsyncSession,
+    *,
+    account: TradingAccount,
+    source_state: LiveCopySourceState,
+    fill: dict[str, Any],
+    part: SourceFillPart,
+    baseline_part: bool,
+) -> bool:
+    if baseline_part and part.action in {"open", "add", "flip_open"}:
+        return True
+    coin = str(fill.get("coin") or "")
+    position = await load_live_source_position(
+        session,
+        account_key=account.key,
+        source_wallet=source_state.source_wallet,
+        coin=coin,
+    )
+    if position is not None and position.side == part.side:
+        if part.action in {"open", "add", "reduce", "close", "flip_close"}:
+            position = await repair_live_source_position_lifecycle_key(
+                session,
+                account=account,
+                source_wallet=source_state.source_wallet,
+                position=position,
+            )
+            if live_copy_fill_predates_position_lifecycle(fill, position=position):
+                return True
+        return False
+    if preexisting_market_matches_part(source_state, coin=coin, part=part):
+        return True
+    continuation_part = part.action in {"reduce", "close", "flip_close"} or (
+        part.action in {"open", "add"}
+        and is_preexisting_source_add(part.start_position, side=part.side)
+    )
+    if position is None and not baseline_part and continuation_part:
+        position = await recover_live_source_position_attribution(
+            session,
+            account=account,
+            source_wallet=source_state.source_wallet,
+            coin=coin,
+            side=part.side,
+        )
+        if position is not None:
+            return False
+    if part.action == "flip_open":
+        return baseline_part and position is None
+    if part.action in {"open", "add"}:
+        if position is None:
+            if part.start_position is None:
+                return True
+            if is_preexisting_source_add(part.start_position, side=part.side):
+                return True
+        return baseline_part and position is None
+    if part.action not in {"reduce", "close", "flip_close"}:
+        return baseline_part and position is None
+    if position is not None:
+        return True
+    if baseline_part:
+        return True
+    return True
+
+
+def live_copy_fill_predates_position_lifecycle(
+    fill: dict[str, Any],
+    *,
+    position: TradingPosition,
+) -> bool:
+    position_lifecycle_key = live_copy_position_lifecycle_order_key(position)
+    if position_lifecycle_key is None:
+        return True
+    return source_fill_order_key(fill) <= position_lifecycle_key
+
+
+async def repair_live_source_position_lifecycle_key(
+    session: AsyncSession,
+    *,
+    account: TradingAccount,
+    source_wallet: str,
+    position: TradingPosition,
+) -> TradingPosition:
+    """Repair a legacy position key only from its proven copied source lifecycle."""
+
+    if live_copy_position_lifecycle_order_key(position) is not None:
+        return position
+    await acquire_live_copy_source_lock(
+        session,
+        account_key=account.key,
+        source_wallet=source_wallet,
+    )
+    position_result = await session.scalars(
+        select(TradingPosition)
+        .where(
+            TradingPosition.account_key == account.key,
+            TradingPosition.account_type == "live",
+            TradingPosition.coin == position.coin,
+            TradingPosition.source_wallet.in_((source_wallet, LIVE_EXCHANGE_SOURCE)),
+        )
+        .with_for_update()
+    )
+    locked_positions = list(position_result.all())
+    locked_position = next((item for item in locked_positions if item.id == position.id), None)
+    exchange_position = next(
+        (item for item in locked_positions if item.source_wallet == LIVE_EXCHANGE_SOURCE),
+        None,
+    )
+    if locked_position is None or exchange_position is None:
+        raise LiveCopyPartDeferred("live_source_lifecycle_key_unavailable")
+    if live_copy_position_lifecycle_order_key(locked_position) is not None:
+        return locked_position
+
+    proof = await load_live_source_lifecycle_proof(
+        session,
+        account_key=account.key,
+        source_wallet=source_wallet,
+        coin=locked_position.coin,
+    )
+    normalized_source = source_wallet.lower()
+    source_signed_size = dict(proof.contributions).get(normalized_source, ZERO)
+    expected_sign = Decimal("1") if locked_position.side == "long" else Decimal("-1")
+    locked_signed_size = locked_position.size * expected_sign
+    exchange_sign = Decimal("1") if exchange_position.side == "long" else Decimal("-1")
+    exchange_signed_size = exchange_position.size * exchange_sign
+    manual_signed_size = dict(proof.contributions).get(LIVE_EXCHANGE_SOURCE, ZERO)
+    competing_source_exposure = any(
+        wallet not in {normalized_source, LIVE_EXCHANGE_SOURCE}
+        and abs(signed_size) > POSITION_EPSILON
+        for wallet, signed_size in proof.contributions
+    )
+    expected_source_size = min(abs(source_signed_size), exchange_position.size)
+    other_position = await session.scalar(
+        select(TradingPosition.id)
+        .where(
+            TradingPosition.account_key == account.key,
+            TradingPosition.account_type == "live",
+            TradingPosition.coin == locked_position.coin,
+            TradingPosition.source_wallet.not_in((source_wallet, LIVE_EXCHANGE_SOURCE)),
+            TradingPosition.size > POSITION_EPSILON,
+        )
+        .with_for_update()
+        .limit(1)
+    )
+    unresolved_order = await session.scalar(
+        select(TradingOrder.id)
+        .where(
+            TradingOrder.account_key == account.key,
+            TradingOrder.account_type == "live",
+            TradingOrder.coin == locked_position.coin,
+            live_copy_unresolved_order_predicate(),
+        )
+        .with_for_update()
+        .limit(1)
+    )
+    if (
+        proof.history_incomplete
+        or proof.source_opening_fill_id is None
+        or proof.source_opening_sequence_index is None
+        or exchange_position.size <= POSITION_EPSILON
+        or exchange_position.side != locked_position.side
+        or abs(locked_position.size - expected_source_size) > POSITION_EPSILON
+        or abs(proof.aggregate_signed_size - exchange_signed_size) > POSITION_EPSILON
+        or source_signed_size * expected_sign <= POSITION_EPSILON
+        or locked_signed_size * expected_sign <= POSITION_EPSILON
+        or manual_signed_size * expected_sign > POSITION_EPSILON
+        or competing_source_exposure
+        or other_position is not None
+        or unresolved_order is not None
+    ):
+        raise LiveCopyPartDeferred("live_source_lifecycle_key_unavailable")
+    lifecycle_order = await load_recovered_live_copy_lifecycle_order(
+        session,
+        account_key=account.key,
+        source_wallet=source_wallet,
+        source_fill_id=proof.source_opening_fill_id,
+        sequence_index=proof.source_opening_sequence_index,
+        coin=locked_position.coin,
+    )
+    if lifecycle_order is None:
+        raise LiveCopyPartDeferred("live_source_lifecycle_key_unavailable")
+    locked_position.raw_payload = {
+        **(locked_position.raw_payload if isinstance(locked_position.raw_payload, dict) else {}),
+        "sourceLifecycleOrder": lifecycle_order["raw"],
+    }
+    for field, value in lifecycle_order["columns"].items():
+        setattr(locked_position, field, value)
+    await session.flush()
+    return locked_position
+
+
+async def repair_owned_live_source_positions_for_recovery(
+    session: AsyncSession,
+    *,
+    account: TradingAccount,
+    source_wallet: str,
+) -> int:
+    """Repair every retained legacy source position before recovery selection."""
+
+    await acquire_live_copy_source_lock(
+        session,
+        account_key=account.key,
+        source_wallet=source_wallet,
+    )
+    result = await session.scalars(
+        select(TradingPosition)
+        .where(
+            TradingPosition.account_key == account.key,
+            TradingPosition.account_type == "live",
+            TradingPosition.source_wallet == source_wallet,
+            TradingPosition.size > POSITION_EPSILON,
+        )
+        .with_for_update()
+    )
+    repaired = 0
+    for position in result.all():
+        if live_copy_position_lifecycle_order_key(position) is not None:
+            continue
+        try:
+            await repair_live_source_position_lifecycle_key(
+                session,
+                account=account,
+                source_wallet=source_wallet,
+                position=position,
+            )
+        except LiveCopyPartDeferred:
+            logger.warning(
+                "deferred legacy lifecycle repair account=%s source=%s coin=%s",
+                account.key,
+                source_wallet,
+                position.coin,
+            )
+            continue
+        repaired += 1
+    return repaired
+
+
+def live_copy_position_lifecycle_order_key(
+    position: TradingPosition,
+) -> tuple[int, str, int, Decimal, int, Decimal, str] | None:
+    if (
+        position.source_lifecycle_timestamp_ms is None
+        or position.source_lifecycle_direction_rank is None
+        or position.source_lifecycle_position is None
+        or position.source_lifecycle_fill_id is None
+    ):
+        return None
+    numeric_fill_id = position.source_lifecycle_fill_id_numeric
+    return (
+        int(position.source_lifecycle_timestamp_ms),
+        position.coin,
+        int(position.source_lifecycle_direction_rank),
+        source_order_decimal_or_none(position.source_lifecycle_position) or ZERO,
+        0 if numeric_fill_id is not None else 1,
+        source_order_decimal_or_none(numeric_fill_id) or ZERO,
+        position.source_lifecycle_fill_id,
+    )
+
+
+async def recover_live_source_position_attribution(
+    session: AsyncSession,
+    *,
+    account: TradingAccount,
+    source_wallet: str,
+    coin: str,
+    side: str,
+) -> TradingPosition | None:
+    """Restore source attribution only from the current executed market lifecycle."""
+
+    await acquire_live_copy_source_lock(
+        session,
+        account_key=account.key,
+        source_wallet=source_wallet,
+    )
+
+    scalar = getattr(session, "scalar", None)
+    existing_position = None
+    if callable(scalar):
+        existing_position = await scalar(
+            select(TradingPosition)
+            .where(
+                TradingPosition.account_key == account.key,
+                TradingPosition.account_type == "live",
+                TradingPosition.source_wallet == source_wallet,
+                TradingPosition.coin == coin,
+            )
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
+    if existing_position is not None and existing_position.size > POSITION_EPSILON:
+        return existing_position
+
+    if await live_market_is_reserved_by_other_source(
+        session,
+        account_key=account.key,
+        source_wallet=source_wallet,
+        coin=coin,
+    ):
+        raise LiveCopyPartDeferred("live_source_attribution_ambiguous")
+    if callable(scalar):
+        exchange_position = await scalar(
+            select(TradingPosition)
+            .where(
+                TradingPosition.account_key == account.key,
+                TradingPosition.account_type == "live",
+                TradingPosition.source_wallet == LIVE_EXCHANGE_SOURCE,
+                TradingPosition.coin == coin,
+            )
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
+    else:
+        exchange_position = await load_live_source_position(
+            session,
+            account_key=account.key,
+            source_wallet=LIVE_EXCHANGE_SOURCE,
+            coin=coin,
+        )
+    if (
+        exchange_position is None
+        or exchange_position.side != side
+        or exchange_position.size <= POSITION_EPSILON
+    ):
+        return None
+
+    proof = await load_live_source_lifecycle_proof(
+        session,
+        account_key=account.key,
+        source_wallet=source_wallet,
+        coin=coin,
+    )
+    lifecycle_order = await load_recovered_live_copy_lifecycle_order(
+        session,
+        account_key=account.key,
+        source_wallet=source_wallet,
+        source_fill_id=proof.source_opening_fill_id,
+        sequence_index=proof.source_opening_sequence_index,
+        coin=coin,
+    )
+    contribution_by_source = dict(proof.contributions)
+    normalized_source = source_wallet.lower()
+    source_signed_size = contribution_by_source.get(normalized_source, ZERO)
+    if abs(source_signed_size) <= POSITION_EPSILON:
+        return None
+    exchange_signed_size = (
+        exchange_position.size if exchange_position.side == "long" else -exchange_position.size
+    )
+    competing_source_exposure = any(
+        wallet not in {normalized_source, LIVE_EXCHANGE_SOURCE}
+        and abs(signed_size) > POSITION_EPSILON
+        for wallet, signed_size in proof.contributions
+    )
+    manual_signed_size = contribution_by_source.get(LIVE_EXCHANGE_SOURCE, ZERO)
+    manual_adds_exposure = (
+        manual_signed_size > POSITION_EPSILON
+        if side == "long"
+        else manual_signed_size < -POSITION_EPSILON
+    )
+    source_side_matches = (
+        source_signed_size > POSITION_EPSILON
+        if side == "long"
+        else source_signed_size < -POSITION_EPSILON
+    )
+    source_size = abs(source_signed_size)
+    aggregate_matches_exchange = (
+        abs(proof.aggregate_signed_size - exchange_signed_size) <= POSITION_EPSILON
+    )
+    source_explains_exchange = source_size + POSITION_EPSILON >= exchange_position.size
+    if (
+        proof.history_incomplete
+        or competing_source_exposure
+        or manual_adds_exposure
+        or not source_side_matches
+        or not aggregate_matches_exchange
+        or not source_explains_exchange
+        or lifecycle_order is None
+    ):
+        raise LiveCopyPartDeferred("live_source_attribution_ambiguous")
+
+    recovered_at = datetime.now(UTC)
+    recovered_size = min(source_size, exchange_position.size)
+    exchange_size = max(exchange_position.size, POSITION_EPSILON)
+    recovered_ratio = recovered_size / exchange_size
+    exchange_payload = (
+        dict(exchange_position.raw_payload)
+        if isinstance(exchange_position.raw_payload, dict)
+        else {}
+    )
+    position = TradingPosition(
+        account_key=account.key,
+        account_type="live",
+        source_wallet=source_wallet,
+        coin=coin,
+        side=side,
+        size=recovered_size,
+        entry_price=exchange_position.entry_price,
+        notional_usd=exchange_position.notional_usd * recovered_ratio,
+        leverage=exchange_position.leverage,
+        margin_mode=exchange_position.margin_mode,
+        margin_usd=exchange_position.margin_usd * recovered_ratio,
+        realized_pnl_usd=ZERO,
+        fee_usd=ZERO,
+        raw_payload={
+            **exchange_payload,
+            "sourceLifecycleOrder": lifecycle_order["raw"],
+            "sourceAttributionRecovery": {
+                "exchangePositionId": str(exchange_position.id),
+                "lifecycleOpenedAt": (
+                    proof.lifecycle_opened_at.isoformat()
+                    if proof.lifecycle_opened_at is not None
+                    else None
+                ),
+                "recoveredAt": recovered_at.isoformat(),
+                "recoveredSize": str(recovered_size),
+                "sourceWallet": source_wallet,
+            },
+        },
+        **lifecycle_order["columns"],
+        opened_at=exchange_position.opened_at,
+        last_reconciled_at=exchange_position.last_reconciled_at or recovered_at,
+    )
+    session.add(position)
+    await session.flush()
+    logger.warning(
+        "restored live source position attribution account=%s source=%s coin=%s side=%s",
+        account.key,
+        source_wallet,
+        coin,
+        side,
+    )
+    return position
+
+
+async def load_live_source_lifecycle_proof(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    source_wallet: str,
+    coin: str,
+) -> LiveSourceLifecycleProof:
+    """Load and reconstruct the current exchange lifecycle from executed fills."""
+
+    result = await session.scalars(
+        select(TradingFill)
+        .where(
+            TradingFill.account_key == account_key,
+            TradingFill.account_type == "live",
+            TradingFill.coin == coin,
+        )
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
+    fills = list(result.all())
+    normalized_source = source_wallet.lower()
+    source_fill_keys = {
+        (str(fill.source_fill_id), int(fill.sequence_index))
+        for fill in fills
+        if str(fill.source_wallet or "").lower() == normalized_source
+        and fill.source_fill_id
+        and fill.sequence_index is not None
+    }
+    if any(
+        str(fill.source_wallet or "").lower() == normalized_source
+        and (not fill.source_fill_id or fill.sequence_index is None)
+        for fill in fills
+    ):
+        raise LiveCopyPartDeferred("live_source_attribution_ambiguous")
+
+    source_fill_ids = sorted({source_fill_id for source_fill_id, _ in source_fill_keys})
+    source_states_by_key: dict[tuple[str, int], LiveCopyFillState] = {}
+    wallet_fills_by_id: dict[str, WalletFill] = {}
+    if source_fill_ids:
+        state_result = await session.scalars(
+            select(LiveCopyFillState)
+            .where(
+                LiveCopyFillState.account_key == account_key,
+                LiveCopyFillState.account_type == "live",
+                LiveCopyFillState.source_wallet == normalized_source,
+                LiveCopyFillState.source_fill_id.in_(source_fill_ids),
+            )
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
+        source_states_by_key = {
+            (str(state.source_fill_id), int(state.sequence_index)): state
+            for state in state_result.all()
+        }
+        wallet_result = await session.scalars(
+            select(WalletFill)
+            .where(
+                WalletFill.wallet_address == normalized_source,
+                WalletFill.external_fill_id.in_(source_fill_ids),
+            )
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
+        wallet_fills_by_id = {
+            str(wallet_fill.external_fill_id): wallet_fill for wallet_fill in wallet_result.all()
+        }
+    return reconstruct_live_source_lifecycle(
+        order_live_source_lifecycle_fills(
+            fills,
+            source_wallet=normalized_source,
+            source_states_by_key=source_states_by_key,
+            wallet_fills_by_id=wallet_fills_by_id,
+        ),
+        source_wallet=source_wallet,
+    )
+
+
+def order_live_source_lifecycle_fills(
+    fills: list[TradingFill],
+    *,
+    source_wallet: str,
+    source_states_by_key: dict[tuple[str, int], LiveCopyFillState],
+    wallet_fills_by_id: dict[str, WalletFill],
+) -> list[TradingFill]:
+    """Order lifecycle history from durable source order keys where available.
+
+    Attribution and legacy-key repair cannot safely infer source ownership from
+    exchange insertion order.  Copied fills use their durable source plan key
+    and sequence index.  Internal and manual fills retain exchange chronology,
+    with reductions before openings at the same exchange timestamp.
+    """
+
+    normalized_source = source_wallet.lower()
+
+    def sort_key(fill: TradingFill) -> tuple[Any, ...]:
+        wallet = str(fill.source_wallet or "").lower()
+        fallback_filled_at = live_copy_datetime_utc(fill.filled_at)
+        fallback_created_at = (
+            live_copy_datetime_utc(fill.created_at)
+            if fill.created_at is not None
+            else datetime.min.replace(tzinfo=UTC)
+        )
+        fallback_identifier = str(fill.exchange_fill_id or fill.source_fill_id or fill.id or "")
+        if wallet != normalized_source:
+            action_rank = 0 if fill.action in {"close", "reduce", "flip_close"} else 1
+            return (
+                int(fallback_filled_at.timestamp() * 1000),
+                action_rank,
+                str(fill.coin or ""),
+                ZERO,
+                1,
+                ZERO,
+                fallback_identifier,
+                int(fill.sequence_index or 0),
+                fallback_filled_at,
+                fallback_created_at,
+                str(fill.id or ""),
+            )
+
+        if not fill.source_fill_id or fill.sequence_index is None:
+            raise LiveCopyPartDeferred("live_source_attribution_ambiguous")
+        source_fill_id = str(fill.source_fill_id)
+        sequence_index = int(fill.sequence_index)
+        source_state = source_states_by_key.get((source_fill_id, sequence_index))
+        if source_state is not None:
+            if (
+                source_state.coin != fill.coin
+                or source_state.action != fill.action
+                or source_state.side != fill.side
+            ):
+                raise LiveCopyPartDeferred("live_source_attribution_ambiguous")
+            source_timestamp_ms = int(source_state.source_timestamp_ms)
+            direction_rank = int(source_state.source_order_direction_rank)
+            position_rank = source_order_decimal_or_none(source_state.source_order_position) or ZERO
+            numeric_fill_id = source_order_decimal_or_none(
+                source_state.source_order_fill_id_numeric
+            )
+            ordered_fill_id = str(source_state.source_fill_id)
+        else:
+            wallet_fill = wallet_fills_by_id.get(source_fill_id)
+            if wallet_fill is None or wallet_fill.coin != fill.coin:
+                raise LiveCopyPartDeferred("live_source_attribution_ambiguous")
+            canonical_key = source_fill_order_key(paper_source_fill_from_wallet_fill(wallet_fill))
+            (
+                source_timestamp_ms,
+                _coin,
+                direction_rank,
+                position_rank,
+                numeric_rank,
+                numeric_fill_id,
+                ordered_fill_id,
+            ) = canonical_key
+            return (
+                int(source_timestamp_ms),
+                int(direction_rank),
+                str(fill.coin or ""),
+                position_rank,
+                int(numeric_rank),
+                numeric_fill_id,
+                ordered_fill_id,
+                sequence_index,
+                fallback_filled_at,
+                fallback_created_at,
+                str(fill.id or ""),
+            )
+
+        return (
+            source_timestamp_ms,
+            direction_rank,
+            str(fill.coin or ""),
+            position_rank,
+            0 if numeric_fill_id is not None else 1,
+            numeric_fill_id or ZERO,
+            ordered_fill_id,
+            sequence_index,
+            fallback_filled_at,
+            fallback_created_at,
+            str(fill.id or ""),
+        )
+
+    return sorted(fills, key=sort_key)
+
+
+async def load_recovered_live_copy_lifecycle_order(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    source_wallet: str,
+    source_fill_id: str | None,
+    sequence_index: int | None,
+    coin: str,
+) -> dict[str, Any] | None:
+    if not source_fill_id or sequence_index is None:
+        return None
+    opening_fills = await session.scalars(
+        select(TradingFill)
+        .where(
+            TradingFill.account_key == account_key,
+            TradingFill.account_type == "live",
+            TradingFill.source_wallet == source_wallet,
+            TradingFill.source_fill_id == source_fill_id,
+            TradingFill.sequence_index == sequence_index,
+            TradingFill.coin == coin,
+        )
+        .with_for_update()
+    )
+    opening_fill_rows = list(opening_fills.all())
+    opening_order_ids = {fill.order_id for fill in opening_fill_rows if fill.order_id is not None}
+    if (
+        not opening_fill_rows
+        or any(fill.order_id is None for fill in opening_fill_rows)
+        or len(opening_order_ids) != 1
+    ):
+        return None
+    opening_order_id = next(iter(opening_order_ids))
+    state = await session.scalar(
+        select(LiveCopyFillState)
+        .where(
+            LiveCopyFillState.account_key == account_key,
+            LiveCopyFillState.source_wallet == source_wallet,
+            LiveCopyFillState.source_fill_id == source_fill_id,
+            LiveCopyFillState.sequence_index == sequence_index,
+        )
+        .with_for_update()
+    )
+    order = await session.scalar(
+        select(TradingOrder)
+        .where(
+            TradingOrder.id == opening_order_id,
+            TradingOrder.account_key == account_key,
+            TradingOrder.account_type == "live",
+            TradingOrder.source_wallet == source_wallet,
+            TradingOrder.source_fill_id == source_fill_id,
+            TradingOrder.sequence_index == sequence_index,
+            TradingOrder.coin == coin,
+        )
+        .with_for_update()
+    )
+    if (
+        order is None
+        or order.action not in {"open", "add", "flip_open"}
+        or order.reduce_only
+        or any(fill.action != order.action or fill.side != order.side for fill in opening_fill_rows)
+    ):
+        return None
+    wallet_fill = await session.scalar(
+        select(WalletFill)
+        .where(
+            WalletFill.wallet_address == source_wallet,
+            WalletFill.external_fill_id == source_fill_id,
+            WalletFill.coin == coin,
+        )
+        .with_for_update()
+    )
+    wallet_lifecycle_order = live_copy_position_lifecycle_order_from_wallet_fill(wallet_fill)
+    if wallet_lifecycle_order is None:
+        return None
+    state_lifecycle_order = live_copy_position_lifecycle_order_from_state(state)
+    if state_lifecycle_order is None:
+        return wallet_lifecycle_order
+    state_key = (
+        state_lifecycle_order["columns"]["source_lifecycle_timestamp_ms"],
+        state.coin,
+        state_lifecycle_order["columns"]["source_lifecycle_direction_rank"],
+        state_lifecycle_order["columns"]["source_lifecycle_position"],
+        0
+        if state_lifecycle_order["columns"]["source_lifecycle_fill_id_numeric"] is not None
+        else 1,
+        state_lifecycle_order["columns"]["source_lifecycle_fill_id_numeric"] or ZERO,
+        state_lifecycle_order["columns"]["source_lifecycle_fill_id"],
+    )
+    if state_key != source_fill_order_key(paper_source_fill_from_wallet_fill(wallet_fill)):
+        return None
+    return state_lifecycle_order
+
+
+def live_copy_position_lifecycle_order_from_state(
+    state: LiveCopyFillState | None,
+) -> dict[str, Any] | None:
+    if state is None:
+        return None
+    numeric_fill_id = state.source_order_fill_id_numeric
+    raw = {
+        "timestampMs": int(state.source_timestamp_ms),
+        "coin": state.coin,
+        "directionRank": int(state.source_order_direction_rank),
+        "positionRank": str(state.source_order_position),
+        "fillIdNumeric": str(numeric_fill_id) if numeric_fill_id is not None else None,
+        "fillId": state.source_fill_id,
+    }
+    return {
+        "raw": raw,
+        "columns": {
+            "source_lifecycle_timestamp_ms": int(state.source_timestamp_ms),
+            "source_lifecycle_direction_rank": int(state.source_order_direction_rank),
+            "source_lifecycle_position": state.source_order_position,
+            "source_lifecycle_fill_id_numeric": numeric_fill_id,
+            "source_lifecycle_fill_id": state.source_fill_id,
+        },
+    }
+
+
+def live_copy_position_lifecycle_order_from_wallet_fill(
+    fill: WalletFill | None,
+) -> dict[str, Any] | None:
+    if fill is None:
+        return None
+    source_fill = paper_source_fill_from_wallet_fill(fill)
+    direction_rank, position_rank, numeric_fill_id = source_fill_order_components(source_fill)
+    return {
+        "raw": {
+            "timestampMs": int(fill.timestamp_ms),
+            "coin": fill.coin,
+            "directionRank": int(direction_rank),
+            "positionRank": str(position_rank),
+            "fillIdNumeric": str(numeric_fill_id) if numeric_fill_id is not None else None,
+            "fillId": fill.external_fill_id,
+        },
+        "columns": {
+            "source_lifecycle_timestamp_ms": int(fill.timestamp_ms),
+            "source_lifecycle_direction_rank": int(direction_rank),
+            "source_lifecycle_position": position_rank,
+            "source_lifecycle_fill_id_numeric": numeric_fill_id,
+            "source_lifecycle_fill_id": fill.external_fill_id,
+        },
+    }
+
+
+def reconstruct_live_source_lifecycle(
+    fills: list[TradingFill],
+    *,
+    source_wallet: str,
+) -> LiveSourceLifecycleProof:
+    """Reconstruct current per-source exposure since the latest proven flat state."""
+
+    normalized_source = source_wallet.lower()
+    contributions: dict[str, Decimal] = {}
+    aggregate_signed_size = ZERO
+    lifecycle_opened_at: datetime | None = None
+    source_first_fill_at: datetime | None = None
+    source_opening_fill_id: str | None = None
+    source_opening_sequence_index: int | None = None
+    last_fill_at: datetime | None = None
+    history_incomplete = False
+
+    for fill in fills:
+        fill_size = abs(fill.size or ZERO)
+        if fill_size <= POSITION_EPSILON:
+            continue
+        wallet = str(fill.source_wallet or "").lower()
+        side_sign = Decimal("1") if fill.side == "long" else Decimal("-1")
+        opens_exposure = fill.action in {"open", "add", "flip_open"}
+        delta = side_sign * fill_size * (Decimal("1") if opens_exposure else Decimal("-1"))
+        filled_at = live_copy_datetime_utc(fill.filled_at)
+
+        if abs(aggregate_signed_size) <= POSITION_EPSILON:
+            contributions = {}
+            aggregate_signed_size = ZERO
+            lifecycle_opened_at = filled_at
+            source_first_fill_at = filled_at if wallet == normalized_source else None
+            source_opening_fill_id = fill.source_fill_id if wallet == normalized_source else None
+            source_opening_sequence_index = (
+                fill.sequence_index if wallet == normalized_source else None
+            )
+            history_incomplete = fill.action not in {"open", "flip_open"}
+        elif wallet == normalized_source and source_first_fill_at is None:
+            source_first_fill_at = filled_at
+            source_opening_fill_id = fill.source_fill_id
+            source_opening_sequence_index = fill.sequence_index
+
+        previous_signed_size = aggregate_signed_size
+        contributions[wallet] = contributions.get(wallet, ZERO) + delta
+        if abs(contributions[wallet]) <= POSITION_EPSILON:
+            contributions.pop(wallet, None)
+        aggregate_signed_size = sum(contributions.values(), ZERO)
+        last_fill_at = filled_at
+
+        if (
+            abs(previous_signed_size) > POSITION_EPSILON
+            and abs(aggregate_signed_size) > POSITION_EPSILON
+            and (previous_signed_size > ZERO) != (aggregate_signed_size > ZERO)
+        ):
+            history_incomplete = True
+        if abs(aggregate_signed_size) <= POSITION_EPSILON:
+            contributions = {}
+            aggregate_signed_size = ZERO
+            lifecycle_opened_at = None
+            source_first_fill_at = None
+            source_opening_fill_id = None
+            source_opening_sequence_index = None
+            history_incomplete = False
+
+    return LiveSourceLifecycleProof(
+        aggregate_signed_size=aggregate_signed_size,
+        contributions=tuple(sorted(contributions.items())),
+        lifecycle_opened_at=lifecycle_opened_at,
+        source_first_fill_at=source_first_fill_at,
+        last_fill_at=last_fill_at,
+        history_incomplete=history_incomplete,
+        source_opening_fill_id=source_opening_fill_id,
+        source_opening_sequence_index=source_opening_sequence_index,
+    )
+
+
+def live_copy_datetime_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+async def finalize_live_copy_fill_disposition(
+    session: AsyncSession,
+    *,
+    fill_state: LiveCopyFillState,
+) -> bool:
+    state_identity = inspect(fill_state).identity
+    state_lookup = (
+        LiveCopyFillState.id == state_identity[0]
+        if state_identity is not None
+        else and_(
+            LiveCopyFillState.account_key == fill_state.account_key,
+            LiveCopyFillState.source_wallet == fill_state.source_wallet,
+            LiveCopyFillState.source_fill_id == fill_state.source_fill_id,
+            LiveCopyFillState.sequence_index == fill_state.sequence_index,
+        )
+    )
+    refreshed_state = await session.scalar(
+        select(LiveCopyFillState)
+        .where(state_lookup)
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
+    if refreshed_state is not None:
+        fill_state = refreshed_state
+    if fill_state.outcome in {
+        LIVE_COPY_OUTCOME_TERMINAL_SKIP,
+        LIVE_COPY_OUTCOME_BASELINE_IGNORED,
+    }:
+        return True
+    order = await session.scalar(
+        select(TradingOrder).where(
+            TradingOrder.account_key == fill_state.account_key,
+            TradingOrder.account_type == "live",
+            TradingOrder.source_wallet == fill_state.source_wallet,
+            TradingOrder.source_fill_id == fill_state.source_fill_id,
+            TradingOrder.sequence_index == fill_state.sequence_index,
+        )
+    )
+    if order is None:
+        await mark_live_copy_fill_retryable(
+            session,
+            fill_state=fill_state,
+            reason="live_copy_decision_missing",
+        )
+        return False
+    if (
+        is_retryable_live_order_submit_failure(order)
+        and order.error not in LIVE_COPY_TERMINAL_SKIP_ERRORS
+    ):
+        await mark_live_copy_fill_retryable(
+            session,
+            fill_state=fill_state,
+            reason=order.error or "live_order_retryable_failure",
+        )
+        return False
+    if order.order_type == "skip":
+        reason = order.error.removeprefix("skip:") if order.error else None
+        await link_live_copy_fill_state_to_order(
+            session,
+            fill_state=fill_state,
+            order=order,
+            terminal_skip=True,
+            reason=reason,
+        )
+        return True
+    await link_live_copy_fill_state_to_order(
+        session,
+        fill_state=fill_state,
+        order=order,
+        terminal_skip=False,
+        reason=order.error,
+    )
+    return True
 
 
 async def process_live_copy_recovery(
@@ -301,6 +1694,7 @@ async def process_live_copy_recovery(
     price_cache: MarketPriceCache | None = None,
     max_sources: int = 100,
     fill_limit_per_source: int = 1000,
+    origin: LiveCopyProcessingOrigin = LIVE_COPY_ORIGIN_PERIODIC_RECOVERY,
 ) -> PaperCopyBatchResult:
     resolved_settings = settings or get_settings()
     if not live_copy_processing_enabled(resolved_settings):
@@ -317,20 +1711,53 @@ async def process_live_copy_recovery(
                 price_cache=price_cache,
                 max_sources=max_sources,
                 fill_limit_per_source=fill_limit_per_source,
+                origin=origin,
             )
 
+    allocations = await refresh_paper_copy_allocations(session, settings=resolved_settings)
+    active_source_wallets = {
+        source for source, allocation in allocations.items() if allocation.active
+    }
+
+    total = PaperCopyBatchResult()
+    live_client = trading_client or HyperliquidLiveTradingClient(settings=resolved_settings)
+    accounts = await load_live_accounts_for_source_copy(session, source_wallet="")
+    await bootstrap_missing_live_source_attribution(session, accounts=accounts)
+    await synchronize_live_copy_lanes(
+        session,
+        accounts=accounts,
+        active_source_wallets=active_source_wallets,
+    )
+    await session.commit()
     if source_wallet:
         source_wallets = [source_wallet.lower()]
     else:
-        await refresh_paper_copy_allocations(session, settings=resolved_settings)
         source_wallets = await load_live_copy_recovery_sources(
             session,
             max_sources=max_sources,
         )
-
-    total = PaperCopyBatchResult()
-    live_client = trading_client or HyperliquidLiveTradingClient(settings=resolved_settings)
+    failed_reconciliation_accounts = await refresh_stale_live_copy_accounts(
+        session,
+        accounts=accounts,
+        settings=resolved_settings,
+        client=client,
+    )
+    await synchronize_live_copy_lanes(
+        session,
+        accounts=accounts,
+        active_source_wallets=active_source_wallets,
+        protected_account_keys=failed_reconciliation_accounts,
+    )
+    await session.commit()
     for wallet in source_wallets:
+        wallet_accounts = await filter_live_accounts_for_source_allocation(
+            session,
+            accounts=accounts,
+            source_wallet=wallet,
+            allocation=allocations.get(wallet),
+        )
+        if not wallet_accounts:
+            continue
         await sync_live_source_margin_settings(
             session,
             source_wallet=wallet,
@@ -338,27 +1765,53 @@ async def process_live_copy_recovery(
             info_client=client,
             trading_client=live_client,
         )
-        start_time_ms = await live_copy_recovery_start_time_ms(session, source_wallet=wallet)
-        if start_time_ms is None:
-            continue
-        fills = await load_wallet_fills_for_live_copy_recovery(
-            session,
-            source_wallet=wallet,
-            start_time_ms=start_time_ms,
-            limit=fill_limit_per_source,
-        )
-        if not fills:
-            continue
-        result = await process_live_copy_fills(
-            session,
-            source_wallet=wallet,
-            fills=fills,
-            settings=resolved_settings,
-            client=client,
-            trading_client=live_client,
-            price_cache=price_cache,
-        )
-        total = combine_batch_results(total, result)
+        for account in wallet_accounts:
+            source_state = await ensure_live_copy_source_state(
+                session,
+                account_key=account.key,
+                source_wallet=wallet,
+                reactivate=False,
+            )
+            await repair_owned_live_source_positions_for_recovery(
+                session,
+                account=account,
+                source_wallet=wallet,
+            )
+            candidate_rows = await load_live_copy_recovery_candidate_fills(
+                session,
+                account_key=account.key,
+                source_wallet=wallet,
+                source_state=source_state,
+                limit=fill_limit_per_source,
+                max_entry_age_seconds=(resolved_settings.trading_copy_max_entry_age_seconds),
+            )
+            if not candidate_rows:
+                continue
+            fills = [paper_source_fill_from_wallet_fill(fill) for fill in candidate_rows]
+            try:
+                result = await process_live_copy_fills(
+                    session,
+                    source_wallet=wallet,
+                    fills=fills,
+                    settings=resolved_settings,
+                    client=client,
+                    trading_client=live_client,
+                    price_cache=price_cache,
+                    origin=origin,
+                    accounts_override=[account],
+                    prechecked_reconciliation_failures=failed_reconciliation_accounts,
+                    lanes_synchronized=True,
+                )
+            except LiveCopyProcessingDeferred as exc:
+                logger.info(
+                    "live copy recovery deferred account=%s source=%s reason=%s",
+                    account.key,
+                    wallet,
+                    exc,
+                )
+                continue
+            total = combine_batch_results(total, result)
+    await session.commit()
     return total
 
 
@@ -574,16 +2027,24 @@ async def apply_live_open_part(
     coin = str(fill.get("coin") or "")
     raw_source_leverage = resolve_coin_decimal(source_leverages, coin)
     source_leverage = raw_source_leverage or Decimal("1")
-    if raw_source_leverage is None or raw_source_leverage <= ZERO:
+    source_margin_mode = resolve_coin_margin_mode(
+        source_account_state.margin_mode_by_coin if source_account_state is not None else {},
+        coin,
+    )
+    if source_fill_age_exceeds_entry_limit(fill, settings=settings):
         return await record_live_skip(
             session,
             account=account,
             allocation=allocation,
             fill=fill,
             part=part,
-            reason="live_source_leverage_missing",
+            reason="live_source_fill_too_old",
             leverage=source_leverage,
+            margin_mode=source_margin_mode or "cross",
+            source_fill_age_seconds=source_fill_age_seconds(fill),
         )
+    if raw_source_leverage is None or raw_source_leverage <= ZERO:
+        raise LiveCopyPartDeferred("live_source_leverage_missing")
     if raw_source_leverage != raw_source_leverage.to_integral_value():
         return await record_live_skip(
             session,
@@ -594,20 +2055,8 @@ async def apply_live_open_part(
             reason="live_source_leverage_invalid",
             leverage=source_leverage,
         )
-    source_margin_mode = resolve_coin_margin_mode(
-        source_account_state.margin_mode_by_coin if source_account_state is not None else {},
-        coin,
-    )
     if source_margin_mode is None:
-        return await record_live_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            reason="live_source_margin_mode_missing",
-            leverage=source_leverage,
-        )
+        raise LiveCopyPartDeferred("live_source_margin_mode_missing")
     if account.status != "enabled":
         return await record_live_skip(
             session,
@@ -620,30 +2069,7 @@ async def apply_live_open_part(
             margin_mode=source_margin_mode,
         )
     if source_perp_equity <= ZERO:
-        return await record_live_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            reason="live_source_equity_missing",
-            leverage=source_leverage,
-            margin_mode=source_margin_mode,
-        )
-    if source_fill_age_exceeds_entry_limit(fill, settings=settings):
-        fill_age_seconds = source_fill_age_seconds(fill)
-        return await record_live_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            reason="live_source_fill_too_old",
-            leverage=source_leverage,
-            margin_mode=source_margin_mode,
-            hidden_from_activity=False,
-            source_fill_age_seconds=fill_age_seconds,
-        )
+        raise LiveCopyPartDeferred("live_source_equity_missing")
     if not settings.live_trading_enabled:
         return await record_live_skip(
             session,
@@ -708,6 +2134,8 @@ async def apply_live_open_part(
             margin_mode=source_margin_mode,
         )
     if position is not None and position.side != part.side:
+        if part.action == "flip_open":
+            raise LiveCopyPartDeferred("live_flip_close_pending")
         return await record_live_skip(
             session,
             account=account,
@@ -777,16 +2205,7 @@ async def apply_live_open_part(
         latency_ms=0,
     )
     if execution_context is None:
-        return await record_live_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            reason="live_execution_price_unavailable",
-            leverage=source_leverage,
-            margin_mode=source_margin_mode,
-        )
+        raise LiveCopyPartDeferred("live_execution_price_unavailable")
     if execution_context.price_drift_bps > settings.trading_copy_max_price_drift_bps:
         return await record_live_skip(
             session,
@@ -945,21 +2364,14 @@ async def apply_live_close_part(
         coin=coin,
     )
     if position is None:
-        orphan_result = await apply_live_orphan_exchange_close_part(
+        position = await recover_live_source_position_attribution(
             session,
             account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            source_account_state=source_account_state,
-            source_perp_equity=source_perp_equity,
-            source_leverages=source_leverages,
-            market_prices=market_prices,
-            settings=settings,
-            trading_client=trading_client,
+            source_wallet=allocation.source_wallet,
+            coin=coin,
+            side=part.side,
         )
-        if orphan_result is not None:
-            return orphan_result
+    if position is None:
         source_leverage = leverage_for_fill(fill=fill, source_leverages=source_leverages)
         return await record_live_skip(
             session,
@@ -1009,15 +2421,7 @@ async def apply_live_close_part(
         latency_ms=0,
     )
     if execution_context is None:
-        return await record_live_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            reason="live_execution_price_unavailable",
-            leverage=position.leverage,
-        )
+        raise LiveCopyPartDeferred("live_execution_price_unavailable")
     if execution_context.price_drift_bps > settings.trading_copy_max_price_drift_bps:
         return await record_live_skip(
             session,
@@ -1217,11 +2621,11 @@ async def mark_live_close_skips_aggregated(
     if not orders:
         return
     for order in orders:
-        payload = order.raw_payload if isinstance(order.raw_payload, dict) else {}
+        payload = dict(order.raw_payload) if isinstance(order.raw_payload, dict) else {}
+        payload.pop("hiddenFromActivity", None)
         order.error = f"skip:{LIVE_CLOSE_AGGREGATED_SKIP_REASON}"
         order.raw_payload = {
             **payload,
-            "hiddenFromActivity": True,
             "aggregatedInto": {
                 "clientOrderId": intent.client_order_id,
                 "sourceFillId": intent.source_fill_id,
@@ -1229,114 +2633,6 @@ async def mark_live_close_skips_aggregated(
             },
         }
     await session.flush()
-
-
-async def apply_live_orphan_exchange_close_part(
-    session: AsyncSession,
-    *,
-    account: TradingAccount,
-    allocation: PaperSourceAllocation,
-    fill: dict[str, Any],
-    part: SourceFillPart,
-    source_account_state: PaperSourceAccountState | None,
-    source_perp_equity: Decimal,
-    source_leverages: dict[str, Decimal],
-    market_prices: ExecutionMarketPrices,
-    settings: Settings,
-    trading_client: HyperliquidLiveTradingClient,
-) -> PaperCopyBatchResult | None:
-    coin = str(fill.get("coin") or "")
-    if not live_source_position_is_final_close(
-        source_account_state,
-        coin=coin,
-        side=part.side,
-    ):
-        return None
-    if not await live_source_has_open_fill_history(
-        session,
-        account_key=account.key,
-        source_wallet=allocation.source_wallet,
-        coin=coin,
-        side=part.side,
-    ):
-        return None
-    if await live_any_source_position_exists_for_market(
-        session,
-        account_key=account.key,
-        coin=coin,
-        side=part.side,
-    ):
-        return None
-    exchange_position = await load_live_source_position(
-        session,
-        account_key=account.key,
-        source_wallet=LIVE_EXCHANGE_SOURCE,
-        coin=coin,
-    )
-    if exchange_position is None or exchange_position.side != part.side:
-        return None
-
-    execution_context = build_execution_context(
-        fill=fill,
-        part=part,
-        market_prices=market_prices,
-        settings=settings,
-        slippage_bps=settings.live_trading_limit_slippage_bps,
-        latency_ms=0,
-    )
-    if execution_context is None:
-        return None
-    if execution_context.price_drift_bps > settings.trading_copy_max_price_drift_bps:
-        return None
-
-    close_size = exchange_position.size
-    if close_size <= ZERO:
-        return None
-    price = execution_context.execution_price
-    notional_usd = close_size * price
-    leverage = (
-        exchange_position.leverage
-        if exchange_position.leverage > ZERO
-        else leverage_for_fill(fill=fill, source_leverages=source_leverages)
-    )
-    min_order_notional = live_min_order_notional_usd(settings)
-    order_notional_usd = max(notional_usd, min_order_notional)
-    intent = build_copy_trade_intent(
-        account_key=account.key,
-        account_type="live",
-        source_wallet=allocation.source_wallet,
-        source_fill_id=str(fill.get("externalFillId") or ""),
-        sequence_index=part.sequence_index,
-        coin=coin,
-        action=part.action,
-        side=part.side,
-        size=close_size,
-        notional_usd=order_notional_usd,
-        margin_usd=margin_from_notional(order_notional_usd, leverage),
-        leverage=leverage,
-        margin_mode=(
-            exchange_position.margin_mode
-            if exchange_position.margin_mode in {"cross", "isolated"}
-            else "cross"
-        ),
-        limit_price=price,
-        source_price=execution_context.source_price,
-        observed_price=execution_context.observed_price,
-        price_drift_bps=execution_context.price_drift_bps,
-        price_source="orphan_exchange_close",
-        allocation_pct=allocation.allocation_pct,
-        allocation_usd=None,
-        source_perp_equity_usd=source_perp_equity if source_perp_equity > ZERO else None,
-        source_exposure_pct=None,
-        created_at=fill_datetime(fill),
-    )
-    return await submit_live_copy_intent(
-        session,
-        account=account,
-        intent=intent,
-        settings=settings,
-        trading_client=trading_client,
-    )
 
 
 async def submit_live_copy_intent(
@@ -1355,6 +2651,10 @@ async def submit_live_copy_intent(
             settings=settings,
             client=trading_client,
         )
+    except LiveCopyEntryLifecycleDeferred as exc:
+        if exc.state_reclassified:
+            return live_skip(exc.reason)
+        raise LiveCopyPartDeferred(exc.reason) from exc
     except LiveOrderSubmitError as exc:
         reason = live_submit_failure_reason(exc)
         await record_live_intent_failure(
@@ -1459,7 +2759,6 @@ async def record_live_skip(
     margin_usd: Decimal | None = None,
     requested_notional_usd: Decimal | None = None,
     requested_size: Decimal | None = None,
-    hidden_from_activity: bool = False,
     source_fill_age_seconds: float | None = None,
     decision_context: dict[str, Any] | None = None,
 ) -> PaperCopyBatchResult:
@@ -1492,8 +2791,6 @@ async def record_live_skip(
             "time": fill.get("time"),
         },
     }
-    if hidden_from_activity:
-        raw_payload["hiddenFromActivity"] = True
     if source_fill_age_seconds is not None:
         raw_payload["sourceFillAgeSeconds"] = max(round(source_fill_age_seconds, 3), 0)
     if decision_context:
@@ -1532,9 +2829,58 @@ async def record_live_skip(
         raw_payload=raw_payload,
         created_at=fill_datetime(fill),
     )
-    await session.execute(
-        stmt.on_conflict_do_nothing(constraint="ux_trading_orders_account_source_fill_sequence")
+    result = await session.execute(
+        stmt.on_conflict_do_nothing(
+            constraint="ux_trading_orders_account_source_fill_sequence"
+        ).returning(TradingOrder.id)
     )
+    inserted_order_id = result.scalar_one_or_none()
+    if inserted_order_id is not None:
+        return live_skip(reason)
+    if reason in LIVE_COPY_RETRYABLE_SKIP_REASONS:
+        return PaperCopyBatchResult()
+
+    existing = await session.scalar(
+        select(TradingOrder)
+        .where(
+            TradingOrder.account_key == account.key,
+            TradingOrder.account_type == "live",
+            TradingOrder.source_wallet == allocation.source_wallet,
+            TradingOrder.source_fill_id == source_fill_id,
+            TradingOrder.sequence_index == part.sequence_index,
+        )
+        .with_for_update()
+    )
+    if (
+        existing is None
+        or existing.error == f"skip:{reason}"
+        or not is_retryable_live_order_submit_failure(existing)
+    ):
+        return PaperCopyBatchResult()
+
+    existing.coin = coin
+    existing.action = part.action
+    existing.side = part.side
+    existing.is_buy = trade_is_buy(side=part.side, reduce_only=reduce_only)
+    existing.reduce_only = reduce_only
+    existing.order_type = "skip"
+    existing.status = "failed"
+    existing.requested_size = resolved_size
+    existing.requested_notional_usd = resolved_notional
+    existing.margin_usd = margin_usd
+    existing.leverage = resolved_leverage
+    existing.margin_mode = margin_mode
+    existing.limit_price = resolved_price if resolved_price > ZERO else None
+    existing.average_fill_price = None
+    existing.filled_size = ZERO
+    existing.filled_notional_usd = ZERO
+    existing.fee_usd = ZERO
+    existing.error = f"skip:{reason}"
+    existing.raw_payload = raw_payload
+    existing.submitted_at = None
+    existing.accepted_at = None
+    existing.filled_at = None
+    await session.flush()
     return live_skip(reason)
 
 
@@ -1543,49 +2889,86 @@ async def load_live_copy_recovery_sources(
     *,
     max_sources: int,
 ) -> list[str]:
-    position_result = await session.execute(
+    if max_sources <= 0:
+        return []
+    unresolved_order_result = await session.execute(
+        select(func.lower(TradingOrder.source_wallet).label("source_wallet"))
+        .where(
+            TradingOrder.account_type == "live",
+            TradingOrder.source_wallet != "",
+            TradingOrder.source_wallet.not_in((LIVE_EXCHANGE_SOURCE, LIVE_MANUAL_TEST_SOURCE)),
+            live_copy_unresolved_order_predicate(),
+        )
+        .distinct()
+        .order_by(func.lower(TradingOrder.source_wallet).asc())
+        .limit(max_sources)
+    )
+    sources = [
+        str(row.source_wallet).lower() for row in unresolved_order_result.all() if row.source_wallet
+    ]
+    remaining = max(max_sources - len(sources), 0)
+    if remaining <= 0:
+        return unique_strings(sources)[:max_sources]
+    position_query = (
         select(
-            TradingPosition.source_wallet,
+            func.lower(TradingPosition.source_wallet).label("source_wallet"),
             func.max(WalletScore.score).label("score"),
         )
-        .outerjoin(WalletScore, WalletScore.wallet_address == TradingPosition.source_wallet)
+        .outerjoin(
+            WalletScore,
+            WalletScore.wallet_address == func.lower(TradingPosition.source_wallet),
+        )
         .where(
             TradingPosition.account_type == "live",
             TradingPosition.source_wallet != "",
-            TradingPosition.source_wallet != LIVE_EXCHANGE_SOURCE,
+            TradingPosition.source_wallet.not_in((LIVE_EXCHANGE_SOURCE, LIVE_MANUAL_TEST_SOURCE)),
+            TradingPosition.size > POSITION_EPSILON,
         )
-        .group_by(TradingPosition.source_wallet)
+        .group_by(func.lower(TradingPosition.source_wallet))
         .order_by(
             func.max(WalletScore.score).desc().nulls_last(),
-            TradingPosition.source_wallet.asc(),
+            func.lower(TradingPosition.source_wallet).asc(),
         )
-        .limit(max_sources)
     )
-    sources = [str(row.source_wallet).lower() for row in position_result.all() if row.source_wallet]
+    if sources:
+        position_query = position_query.where(
+            func.lower(TradingPosition.source_wallet).not_in(sources)
+        )
+    position_result = await session.execute(position_query.limit(remaining))
+    sources.extend(
+        str(row.source_wallet).lower() for row in position_result.all() if row.source_wallet
+    )
+    sources = unique_strings(sources)
+    if len(sources) >= max_sources:
+        return sources[:max_sources]
     remaining = max(max_sources - len(sources), 0)
     if remaining <= 0:
         return unique_strings(sources)
 
-    allocation_result = await session.execute(
+    allocation_query = (
         select(
-            PaperCopyAllocation.source_wallet,
+            func.lower(PaperCopyAllocation.source_wallet).label("source_wallet"),
             func.min(PaperCopyAllocation.rank).label("first_rank"),
         )
         .where(
             PaperCopyAllocation.active.is_(True),
             PaperCopyAllocation.source_wallet != "",
         )
-        .group_by(PaperCopyAllocation.source_wallet)
+        .group_by(func.lower(PaperCopyAllocation.source_wallet))
         .order_by(
             func.min(PaperCopyAllocation.rank).asc(),
-            PaperCopyAllocation.source_wallet.asc(),
+            func.lower(PaperCopyAllocation.source_wallet).asc(),
         )
-        .limit(remaining)
     )
+    if sources:
+        allocation_query = allocation_query.where(
+            func.lower(PaperCopyAllocation.source_wallet).not_in(sources)
+        )
+    allocation_result = await session.execute(allocation_query.limit(remaining))
     sources.extend(
         str(row.source_wallet).lower() for row in allocation_result.all() if row.source_wallet
     )
-    return unique_strings(sources)
+    return unique_strings(sources)[:max_sources]
 
 
 async def load_live_accounts_for_source_copy(
@@ -1604,6 +2987,48 @@ async def load_live_accounts_for_source_copy(
     )
     result = await session.scalars(query)
     return list(result.all())
+
+
+async def filter_live_accounts_for_source_allocation(
+    session: AsyncSession,
+    *,
+    accounts: list[TradingAccount],
+    source_wallet: str,
+    allocation: PaperSourceAllocation | None,
+) -> list[TradingAccount]:
+    """Keep entry-eligible accounts plus accounts with copied exposure to manage."""
+
+    if not accounts:
+        return []
+    entry_enabled_account_keys = {
+        account.key
+        for account in accounts
+        if account.status == "enabled" and allocation is not None and allocation.active
+    }
+    exposure_candidate_keys = [
+        account.key for account in accounts if account.key not in entry_enabled_account_keys
+    ]
+    if not exposure_candidate_keys:
+        return accounts
+    position_accounts = await session.scalars(
+        select(TradingPosition.account_key).where(
+            TradingPosition.account_key.in_(exposure_candidate_keys),
+            TradingPosition.account_type == "live",
+            TradingPosition.source_wallet == source_wallet,
+            TradingPosition.size > POSITION_EPSILON,
+        )
+    )
+    unresolved_order_accounts = await session.scalars(
+        select(TradingOrder.account_key).where(
+            TradingOrder.account_key.in_(exposure_candidate_keys),
+            TradingOrder.account_type == "live",
+            TradingOrder.source_wallet == source_wallet,
+            live_copy_unresolved_order_predicate(),
+        )
+    )
+    owned_account_keys = set(position_accounts.all()) | set(unresolved_order_accounts.all())
+    retained_account_keys = entry_enabled_account_keys | owned_account_keys
+    return [account for account in accounts if account.key in retained_account_keys]
 
 
 async def live_order_exists(
@@ -1675,54 +3100,26 @@ async def live_market_is_reserved_by_other_source(
             TradingPosition.coin == coin,
             TradingPosition.source_wallet != source_wallet,
             TradingPosition.source_wallet != LIVE_EXCHANGE_SOURCE,
+            TradingPosition.size > POSITION_EPSILON,
         )
         .limit(1)
     )
-    return existing_position_id is not None
-
-
-async def live_any_source_position_exists_for_market(
-    session: AsyncSession,
-    *,
-    account_key: str,
-    coin: str,
-    side: str,
-) -> bool:
-    existing_position_id = await session.scalar(
-        select(TradingPosition.id)
+    if existing_position_id is not None:
+        return True
+    existing_entry_order_id = await session.scalar(
+        select(TradingOrder.id)
         .where(
-            TradingPosition.account_key == account_key,
-            TradingPosition.account_type == "live",
-            TradingPosition.coin == coin,
-            TradingPosition.side == side,
-            TradingPosition.source_wallet != LIVE_EXCHANGE_SOURCE,
+            TradingOrder.account_key == account_key,
+            TradingOrder.account_type == "live",
+            TradingOrder.coin == coin,
+            TradingOrder.source_wallet != source_wallet,
+            TradingOrder.source_wallet != LIVE_EXCHANGE_SOURCE,
+            TradingOrder.reduce_only.is_(False),
+            live_copy_unresolved_order_predicate(),
         )
         .limit(1)
     )
-    return existing_position_id is not None
-
-
-async def live_source_has_open_fill_history(
-    session: AsyncSession,
-    *,
-    account_key: str,
-    source_wallet: str,
-    coin: str,
-    side: str,
-) -> bool:
-    fill_id = await session.scalar(
-        select(TradingFill.id)
-        .where(
-            TradingFill.account_key == account_key,
-            TradingFill.account_type == "live",
-            TradingFill.source_wallet == source_wallet,
-            TradingFill.coin == coin,
-            TradingFill.side == side,
-            TradingFill.action.in_(("open", "add", "flip_open")),
-        )
-        .limit(1)
-    )
-    return fill_id is not None
+    return existing_entry_order_id is not None
 
 
 def live_exchange_position_conflict(
@@ -1790,48 +3187,6 @@ def live_source_position_is_final_close(
         coin,
     )
     return source_position is None or source_position.side != side
-
-
-async def live_copy_recovery_start_time_ms(
-    session: AsyncSession,
-    *,
-    source_wallet: str,
-) -> int | None:
-    latest_order_at = await session.scalar(
-        select(func.max(TradingOrder.created_at)).where(
-            TradingOrder.account_type == "live",
-            TradingOrder.source_wallet == source_wallet,
-        )
-    )
-    earliest_opened_at = await session.scalar(
-        select(func.min(TradingPosition.opened_at)).where(
-            TradingPosition.account_type == "live",
-            TradingPosition.source_wallet == source_wallet,
-        )
-    )
-    anchor = earliest_opened_at or latest_order_at
-    if anchor is None:
-        return None
-    return max(0, int(anchor.timestamp() * 1000) - LIVE_COPY_RECOVERY_OVERLAP_MS)
-
-
-async def load_wallet_fills_for_live_copy_recovery(
-    session: AsyncSession,
-    *,
-    source_wallet: str,
-    start_time_ms: int,
-    limit: int,
-) -> list[dict[str, Any]]:
-    result = await session.execute(
-        select(WalletFill)
-        .where(
-            WalletFill.wallet_address == source_wallet,
-            WalletFill.timestamp_ms >= start_time_ms,
-        )
-        .order_by(WalletFill.timestamp_ms.asc(), WalletFill.external_fill_id.asc())
-        .limit(limit)
-    )
-    return [paper_source_fill_from_wallet_fill(fill) for fill in result.scalars().all()]
 
 
 async def live_open_margin_for_source(

@@ -1,19 +1,42 @@
 import { describe, expect, it } from "vitest";
 
 import type { PaperCopyAllocation } from "@/types/paper";
-import type { TradingPosition } from "@/types/trading";
+import type { LiveCopyDecision, TradingPosition } from "@/types/trading";
 
 import {
+  buildLiveCopyDecisionActivities,
   collectLiveCopySourceWallets,
   compareCopySourcesByAllocationUsed,
   compareWalletHistoryByPnl,
   displayLivePositions,
   liveAllocationSourceVisible,
+  liveCopyDecisionStatusPills,
   pnlPerMonitoredHour,
   resolveCurrentMonitorStatus,
   resolveCurrentSourceStatus,
   summarizeCopySourceStatuses,
 } from "./TradingDashboard";
+
+function copyDecision(overrides: Partial<LiveCopyDecision>): LiveCopyDecision {
+  return {
+    accountKey: "live-test",
+    sourceWallet: "0xsource",
+    sourceFillId: "fill-1",
+    sequenceIndex: 0,
+    coin: "BTC",
+    plannedAction: "open",
+    side: "long",
+    outcome: "pending",
+    reason: null,
+    attemptCount: 0,
+    firstObservedAt: "2026-01-01T00:00:00Z",
+    lastAttemptAt: null,
+    nextAttemptAt: null,
+    tradingOrderId: null,
+    updatedAt: "2026-01-01T00:00:00Z",
+    ...overrides,
+  };
+}
 
 describe("copy source performance", () => {
   it("calculates PnL per hour from the displayed PnL and monitored duration", () => {
@@ -68,6 +91,40 @@ describe("copy source performance", () => {
     expect(wallets.sort(compareWalletHistoryByPnl).map((wallet) => wallet.sourceWallet)).toEqual([
       "0xhigh",
       "0xlow",
+    ]);
+  });
+});
+
+describe("live copy decisions", () => {
+  it("keeps a terminal no-order decision out of fill and order language", () => {
+    const decision = copyDecision({
+      outcome: "terminal_skip",
+      reason: "entry_blocked",
+    });
+
+    expect(liveCopyDecisionStatusPills(decision)).toEqual([
+      { label: "no-order blocked", tone: "danger" },
+    ]);
+    const activity = buildLiveCopyDecisionActivities([decision], new Map())[0];
+    expect(activity.pills.map((pill) => pill.label)).not.toContain("order created");
+    expect(activity.stats.find((stat) => stat.label === "Pipeline")?.value).toBe("not created");
+  });
+
+  it("shows retry scheduling and order creation only when a record exists", () => {
+    const retry = copyDecision({
+      outcome: "retryable",
+      nextAttemptAt: "2026-01-01T00:01:00Z",
+    });
+    const created = copyDecision({
+      outcome: "order",
+      tradingOrderId: "order-1",
+    });
+
+    expect(liveCopyDecisionStatusPills(retry)).toEqual([
+      { label: "retry scheduled", tone: "warning" },
+    ]);
+    expect(liveCopyDecisionStatusPills(created)).toEqual([
+      { label: "order created", tone: "positive" },
     ]);
   });
 });

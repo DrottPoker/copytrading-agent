@@ -21,8 +21,17 @@ from app.services.discovery_service import run_discovery_import
 from app.services.job_lock_service import JobLockAlreadyHeldError, job_lock
 from app.services.live_copy_service import (
     live_copy_processing_enabled,
+    load_live_accounts_for_source_copy,
     process_live_copy_fills,
     process_live_copy_recovery,
+    synchronize_live_copy_lanes,
+)
+from app.services.live_copy_state_service import (
+    LIVE_COPY_ORIGIN_PERIODIC_RECOVERY,
+    LIVE_COPY_ORIGIN_SNAPSHOT_RECOVERY,
+    LIVE_COPY_ORIGIN_STARTUP_RECOVERY,
+    LiveCopyProcessingDeferred,
+    LiveCopyProcessingOrigin,
 )
 from app.services.live_trading_service import (
     LIVE_EXCHANGE_SOURCE,
@@ -808,12 +817,29 @@ async def load_realtime_wallets(
     ) or live_copy_processing_enabled(settings):
         async with sessionmaker() as session:
             allocations = await refresh_paper_copy_allocations(session, settings=settings)
+            live_accounts = await load_live_accounts_for_source_copy(session, source_wallet="")
+            owned_account_source_pairs = await synchronize_live_copy_lanes(
+                session,
+                accounts=live_accounts,
+                active_source_wallets={
+                    source_wallet
+                    for source_wallet, allocation in allocations.items()
+                    if allocation.active
+                },
+            )
             await session.commit()
-        return [
-            allocation.source_wallet
-            for allocation in allocations.values()
-            if allocation.has_realtime_slot
-        ][:max_wallets]
+        owned_source_wallets = sorted(
+            {source_wallet for _, source_wallet in owned_account_source_pairs}
+        )
+        return (
+            owned_source_wallets
+            + [
+                allocation.source_wallet
+                for allocation in allocations.values()
+                if allocation.has_realtime_slot
+                and allocation.source_wallet not in owned_source_wallets
+            ]
+        )[:max_wallets]
 
     tier_priority = case(
         (WatchedWallet.polling_tier == "active", 0),
@@ -1206,6 +1232,7 @@ async def run_live_copy_recovery_loop(
             settings=settings,
             source_wallet=None,
             price_cache=price_cache,
+            origin=LIVE_COPY_ORIGIN_PERIODIC_RECOVERY,
         )
 
 
@@ -1223,6 +1250,7 @@ async def run_startup_copy_recovery_once(
             settings=settings,
             source_wallet=None,
             price_cache=price_cache,
+            origin=LIVE_COPY_ORIGIN_STARTUP_RECOVERY,
         )
     if settings.paper_trading_enabled and settings.paper_copy_enabled:
         await run_paper_copy_recovery_once(
@@ -1242,6 +1270,7 @@ async def run_live_copy_recovery_once(
     source_wallet: str | None,
     price_cache: MarketPriceCache | None = None,
     log_lock_contention: bool = True,
+    origin: LiveCopyProcessingOrigin = LIVE_COPY_ORIGIN_PERIODIC_RECOVERY,
 ) -> PaperCopyBatchResult:
     try:
         async with sessionmaker() as session:
@@ -1255,6 +1284,7 @@ async def run_live_copy_recovery_once(
                     source_wallet=source_wallet,
                     settings=settings,
                     price_cache=price_cache,
+                    origin=origin,
                 )
         if result.processed_fills > 0 or result.skipped_fills > 0:
             logger.info(
@@ -1779,6 +1809,7 @@ async def process_stored_realtime_fills(
                 source_wallet=stored.wallet_address,
                 price_cache=price_cache,
                 log_lock_contention=False,
+                origin=LIVE_COPY_ORIGIN_SNAPSHOT_RECOVERY,
             )
         if settings.paper_trading_enabled and settings.paper_copy_enabled:
             await run_paper_copy_recovery_once(
@@ -1839,6 +1870,7 @@ async def process_stored_realtime_fills(
                     fills=execution_rows,
                     settings=settings,
                     price_cache=price_cache,
+                    realtime_observed_at=stored.observed_at,
                 )
             if live_result.processed_fills > 0 or live_result.skipped_fills > 0:
                 presentation_events.append(
@@ -1859,6 +1891,26 @@ async def process_stored_realtime_fills(
                         },
                     }
                 )
+        except LiveCopyProcessingDeferred as exc:
+            processing_errors.append(("live", exc))
+            logger.info(
+                "live copy processing deferred wallet=%s reason=%s",
+                stored.wallet_address,
+                exc,
+            )
+            presentation_events.append(
+                {
+                    "event_type": "live_copy_deferred",
+                    "channel": "events:system",
+                    "message": "Live copy is waiting for a transient prerequisite.",
+                    "payload": {
+                        "walletAddress": stored.wallet_address,
+                        "reason": exc.reason,
+                        "detail": str(exc),
+                    },
+                    "severity": "warning",
+                }
+            )
         except Exception as exc:
             processing_errors.append(("live", exc))
             logger.exception("live copy processing failed wallet=%s", stored.wallet_address)

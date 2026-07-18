@@ -170,6 +170,24 @@ export type LiveRiskLimits = {
   reduceOnlyWhenStopped: boolean;
 };
 
+export type LiveCopyDecision = {
+  accountKey: string;
+  sourceWallet: string;
+  sourceFillId: string;
+  sequenceIndex: number;
+  coin: string;
+  plannedAction: "open" | "add" | "reduce" | "close" | "flip_close" | "flip_open";
+  side: "long" | "short";
+  outcome: "pending" | "retryable" | "order" | "terminal_skip" | "baseline_ignored";
+  reason: string | null;
+  attemptCount: number;
+  firstObservedAt: string | null;
+  lastAttemptAt: string | null;
+  nextAttemptAt: string | null;
+  tradingOrderId: string | null;
+  updatedAt: string;
+};
+
 export type TradingAccountsResponse = {
   accounts: TradingAccount[];
   liveTradingEnabled: boolean;
@@ -177,6 +195,7 @@ export type TradingAccountsResponse = {
   positions: TradingPosition[];
   recentFills: TradingFill[];
   recentOrders: TradingOrder[];
+  recentLiveCopyDecisions: LiveCopyDecision[];
   closedTrades: TradingClosedTrade[];
   sourceMetadata: TradingSourceMetadata[];
   updatedAt: string;

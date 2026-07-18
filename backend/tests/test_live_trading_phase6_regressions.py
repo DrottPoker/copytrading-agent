@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -9,16 +10,20 @@ from sqlalchemy.dialects import postgresql
 from app.core.config import Settings
 from app.db.models import (
     AuditLog,
+    LiveCopyFillState,
+    LiveCopySourceState,
     RiskEvent,
     TradingAccount,
     TradingCloseAllOperation,
     TradingOrder,
     TradingPosition,
     TradingReconciliationRun,
+    WalletFill,
 )
 from app.services import live_trading_service
 from app.services.live_trading_service import (
     LiveCloseAllResult,
+    LiveCopyEntryLifecycleDeferred,
     LiveFillFetchResult,
     LiveOrderLifecycleResult,
     LiveOrderReconciliationResult,
@@ -28,9 +33,12 @@ from app.services.live_trading_service import (
     LiveReconciliationResult,
     close_live_account_position,
     complete_live_close_all_operation,
+    live_copy_capacity_order_reservation,
     mark_live_reconciliation_run_failed,
     resume_live_close_all_operations,
     run_live_trading_account_reconciliation,
+    validate_live_copy_entry_capacity_gate,
+    validate_live_copy_entry_lifecycle_gate,
     validate_live_entry_risk_guardrails,
 )
 from app.services.trading_core import TradeIntent
@@ -149,7 +157,7 @@ def live_order(*, reduce_only: bool = True, status: str = "filled") -> TradingOr
     )
 
 
-def live_intent(*, reduce_only: bool = False) -> TradeIntent:
+def live_intent(*, reduce_only: bool = False, action: str | None = None) -> TradeIntent:
     return TradeIntent(
         account_key="live_test",
         account_type="live",
@@ -158,7 +166,7 @@ def live_intent(*, reduce_only: bool = False) -> TradeIntent:
         sequence_index=0,
         client_order_id="0x" + "a" * 32,
         coin="BTC",
-        action="close" if reduce_only else "open",
+        action=action or ("close" if reduce_only else "open"),
         side="long",
         is_buy=not reduce_only,
         reduce_only=reduce_only,
@@ -177,6 +185,358 @@ def live_intent(*, reduce_only: bool = False) -> TradeIntent:
         source_exposure_pct=Decimal("0.1"),
         created_at=datetime.now(UTC),
     )
+
+
+def live_copy_source_state(
+    *,
+    activated_at: datetime,
+    entry_eligible: bool = True,
+) -> LiveCopySourceState:
+    return LiveCopySourceState(
+        account_key="live_test",
+        account_type="live",
+        source_wallet="0xsource",
+        status="active",
+        entry_eligible=entry_eligible,
+        activated_at=activated_at,
+        baseline_completed_at=activated_at,
+        baseline_fill_ids=[],
+        preexisting_markets={},
+    )
+
+
+def planned_live_copy_state(
+    *,
+    activated_at: datetime,
+    action: str = "open",
+) -> LiveCopyFillState:
+    return LiveCopyFillState(
+        account_key="live_test",
+        account_type="live",
+        source_wallet="0xsource",
+        source_fill_id="fill-1",
+        sequence_index=0,
+        expected_part_count=1,
+        plan_version=1,
+        coin="BTC",
+        action=action,
+        side="long",
+        source_timestamp_ms=int(activated_at.timestamp() * 1000),
+        source_order_direction_rank=1,
+        source_order_position=Decimal("0"),
+        source_order_fill_id_numeric=None,
+        origin="realtime",
+        outcome="retryable",
+        reason="processing",
+        attempt_count=1,
+        first_seen_at=activated_at,
+        first_observed_at=activated_at,
+        fill_complete=False,
+    )
+
+
+def source_wallet_fill(*, activated_at: datetime, start_position: str = "0") -> WalletFill:
+    return WalletFill(
+        wallet_address="0xsource",
+        external_fill_id="fill-1",
+        coin="BTC",
+        side="buy",
+        price=Decimal("100"),
+        size=Decimal("1"),
+        timestamp_ms=int(activated_at.timestamp() * 1000),
+        received_at=activated_at,
+        raw_json={"dir": "Open Long", "startPosition": start_position},
+    )
+
+
+def attributed_live_position(
+    *, source_wallet: str, size: Decimal = Decimal("1")
+) -> TradingPosition:
+    return TradingPosition(
+        id=uuid4(),
+        account_key="live_test",
+        account_type="live",
+        source_wallet=source_wallet,
+        coin="BTC",
+        side="long",
+        size=size,
+        entry_price=Decimal("100"),
+        notional_usd=Decimal("100"),
+        leverage=Decimal("2"),
+        margin_usd=Decimal("50"),
+        realized_pnl_usd=Decimal("0"),
+        fee_usd=Decimal("0"),
+        opened_at=datetime.now(UTC),
+        source_lifecycle_timestamp_ms=1,
+        source_lifecycle_direction_rank=1,
+        source_lifecycle_position=Decimal("0"),
+        source_lifecycle_fill_id="opening",
+    )
+
+
+@pytest.mark.asyncio
+async def test_final_gate_allows_planned_open_to_dispatch_as_owned_add() -> None:
+    activated_at = datetime.now(UTC)
+    source_state = live_copy_source_state(activated_at=activated_at)
+    plan_state = planned_live_copy_state(activated_at=activated_at, action="open")
+    source_position = attributed_live_position(source_wallet="0xsource")
+    exchange_position = attributed_live_position(
+        source_wallet=live_trading_service.LIVE_EXCHANGE_SOURCE
+    )
+    session = FakeSession(
+        scalar_values=[
+            source_state,
+            source_wallet_fill(activated_at=activated_at),
+            None,
+            None,
+            None,
+            None,
+            None,
+        ],
+        scalars_values=[[plan_state], [source_position, exchange_position], []],
+    )
+    intent = live_intent(action="add")
+
+    await validate_live_copy_entry_lifecycle_gate(
+        session,  # type: ignore[arg-type]
+        account=live_account(status="enabled"),
+        intent=intent,
+    )
+
+    assert plan_state.outcome == "retryable"
+    assert plan_state.reason == "processing"
+
+
+@pytest.mark.asyncio
+async def test_final_gate_allows_retained_same_market_add() -> None:
+    activated_at = datetime.now(UTC)
+    source_state = live_copy_source_state(
+        activated_at=activated_at,
+        entry_eligible=False,
+    )
+    plan_state = planned_live_copy_state(activated_at=activated_at, action="open")
+    plan_state.source_order_position = Decimal("1")
+    source_position = attributed_live_position(source_wallet="0xsource")
+    exchange_position = attributed_live_position(
+        source_wallet=live_trading_service.LIVE_EXCHANGE_SOURCE
+    )
+    session = FakeSession(
+        scalar_values=[
+            source_state,
+            source_wallet_fill(activated_at=activated_at, start_position="1"),
+            None,
+            None,
+            None,
+            None,
+            None,
+        ],
+        scalars_values=[
+            [plan_state],
+            [source_position, exchange_position],
+            [source_position],
+        ],
+    )
+
+    await validate_live_copy_entry_lifecycle_gate(
+        session,  # type: ignore[arg-type]
+        account=live_account(status="enabled"),
+        intent=live_intent(action="add"),
+    )
+
+    assert plan_state.outcome == "retryable"
+    assert plan_state.reason == "processing"
+    assert session.commit_count == 0
+
+
+@pytest.mark.asyncio
+async def test_final_gate_blocks_retained_flip_open_without_order() -> None:
+    activated_at = datetime.now(UTC)
+    source_state = live_copy_source_state(
+        activated_at=activated_at,
+        entry_eligible=False,
+    )
+    plan_state = planned_live_copy_state(activated_at=activated_at, action="flip_open")
+    plan_state.side = "short"
+    plan_state.source_order_direction_rank = 0
+    plan_state.source_order_position = Decimal("-1")
+    source_position = attributed_live_position(source_wallet="0xsource")
+    exchange_position = attributed_live_position(
+        source_wallet=live_trading_service.LIVE_EXCHANGE_SOURCE
+    )
+    wallet_fill = source_wallet_fill(activated_at=activated_at, start_position="1")
+    wallet_fill.side = "sell"
+    wallet_fill.raw_json = {"dir": "Long > Short", "startPosition": "1"}
+    session = FakeSession(
+        scalar_values=[
+            source_state,
+            wallet_fill,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ],
+        scalars_values=[[plan_state], [source_position, exchange_position]],
+    )
+
+    with pytest.raises(
+        LiveCopyEntryLifecycleDeferred,
+        match="live_source_lifecycle_reclassified",
+    ):
+        await validate_live_copy_entry_lifecycle_gate(
+            session,  # type: ignore[arg-type]
+            account=live_account(status="enabled"),
+            intent=replace(
+                live_intent(action="flip_open"),
+                side="short",
+                is_buy=False,
+            ),
+        )
+
+    assert plan_state.outcome == "baseline_ignored"
+    assert plan_state.reason == "live_retained_source_new_market"
+    assert plan_state.trading_order_id is None
+    assert session.commit_count == 1
+
+
+@pytest.mark.asyncio
+async def test_final_gate_blocks_materialized_canonical_predecessor() -> None:
+    activated_at = datetime.now(UTC)
+    source_state = live_copy_source_state(activated_at=activated_at)
+    plan_state = planned_live_copy_state(activated_at=activated_at)
+    predecessor = planned_live_copy_state(activated_at=activated_at)
+    predecessor.source_fill_id = "earlier-fill"
+    predecessor.source_timestamp_ms -= 1
+    session = FakeSession(
+        scalar_values=[
+            source_state,
+            source_wallet_fill(activated_at=activated_at),
+            None,
+            predecessor,
+        ],
+        scalars_values=[[plan_state]],
+    )
+
+    with pytest.raises(LiveCopyEntryLifecycleDeferred, match="live_prior_source_fill_pending"):
+        await validate_live_copy_entry_lifecycle_gate(
+            session,  # type: ignore[arg-type]
+            account=live_account(status="enabled"),
+            intent=live_intent(),
+        )
+
+    assert session.added == []
+
+
+@pytest.mark.asyncio
+async def test_final_gate_terminalizes_unattributed_same_side_exchange_exposure() -> None:
+    activated_at = datetime.now(UTC)
+    source_state = live_copy_source_state(activated_at=activated_at)
+    plan_state = planned_live_copy_state(activated_at=activated_at)
+    exchange_position = attributed_live_position(
+        source_wallet=live_trading_service.LIVE_EXCHANGE_SOURCE
+    )
+    session = FakeSession(
+        scalar_values=[
+            source_state,
+            source_wallet_fill(activated_at=activated_at),
+            None,
+            None,
+            None,
+            None,
+            None,
+        ],
+        scalars_values=[[plan_state], [exchange_position], []],
+    )
+
+    with pytest.raises(LiveCopyEntryLifecycleDeferred, match="live_exchange_position_conflict"):
+        await validate_live_copy_entry_lifecycle_gate(
+            session,  # type: ignore[arg-type]
+            account=live_account(status="enabled"),
+            intent=live_intent(),
+        )
+
+    assert plan_state.outcome == "terminal_skip"
+    assert plan_state.reason == "live_exchange_position_conflict"
+    assert plan_state.trading_order_id is None
+
+
+def test_capacity_reserves_partial_and_unmaterialized_filled_order_remainders() -> None:
+    partial = live_order(reduce_only=False, status="accepted")
+    partial.requested_size = Decimal("1")
+    partial.margin_usd = Decimal("100")
+    filled_without_rows = live_order(reduce_only=False, status="filled")
+    filled_without_rows.requested_size = Decimal("1")
+    filled_without_rows.filled_size = Decimal("0")
+    filled_without_rows.margin_usd = Decimal("100")
+
+    assert live_copy_capacity_order_reservation(
+        partial,
+        materialized_size=Decimal("0.4"),
+    ) == Decimal("60")
+    assert live_copy_capacity_order_reservation(
+        filled_without_rows,
+        materialized_size=Decimal("0"),
+    ) == Decimal("100")
+
+
+@pytest.mark.asyncio
+async def test_capacity_gate_rejects_stale_second_entry_and_ignores_dust_positions() -> None:
+    account = live_account(status="enabled")
+    account.equity_usd = Decimal("1000")
+    account.config_payload = {"lastReconciliation": {"unifiedEquityUsd": "1000"}}
+    held_position = attributed_live_position(source_wallet="0xsource", size=Decimal("1"))
+    held_position.coin = "ETH"
+    held_position.margin_usd = Decimal("100")
+    dust_position = attributed_live_position(
+        source_wallet="0xsource",
+        size=live_trading_service.POSITION_EPSILON,
+    )
+    dust_position.margin_usd = Decimal("1000")
+    intent = replace(live_intent(), margin_usd=Decimal("150"))
+    session = FakeSession(scalars_values=[[held_position, dust_position], []])
+
+    with pytest.raises(LiveCopyEntryLifecycleDeferred, match="live_allocation_capacity_changed"):
+        await validate_live_copy_entry_capacity_gate(
+            session,  # type: ignore[arg-type]
+            account=account,
+            intent=intent,
+            settings=Settings(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_capacity_gate_excludes_current_client_order_and_bypasses_reductions() -> None:
+    account = live_account(status="enabled")
+    account.equity_usd = Decimal("1000")
+    account.config_payload = {"lastReconciliation": {"unifiedEquityUsd": "1000"}}
+    current_order = live_order(reduce_only=False, status="accepted")
+    current_order.margin_usd = Decimal("1000")
+    session = FakeSession(scalars_values=[[], [current_order], []])
+
+    await validate_live_copy_entry_capacity_gate(
+        session,  # type: ignore[arg-type]
+        account=account,
+        intent=live_intent(),
+        settings=Settings(),
+    )
+
+    sql = str(
+        session.scalars_statements[1].compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    assert "client_order_id != '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'" in sql
+    assert "sum(trading_fills.size)" in sql
+
+    reduced_session = FakeSession()
+    await validate_live_copy_entry_capacity_gate(
+        reduced_session,  # type: ignore[arg-type]
+        account=account,
+        intent=live_intent(reduce_only=True),
+        settings=Settings(),
+    )
+    assert reduced_session.scalars_statements == []
 
 
 @pytest.mark.asyncio

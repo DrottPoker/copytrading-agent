@@ -6,12 +6,14 @@ from hashlib import blake2s
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, exists, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.db.models import (
+    LiveCopyFillState,
+    PaperCopyAllocation,
     TradingAccount,
     TradingCloseAllItem,
     TradingCloseAllOperation,
@@ -20,6 +22,7 @@ from app.db.models import (
     TradingOrderDispatch,
     TradingPosition,
     TradingReconciliationRun,
+    WalletFill,
 )
 from app.integrations.hyperliquid_client import HyperliquidClient
 from app.integrations.hyperliquid_live_client import (
@@ -31,6 +34,23 @@ from app.integrations.hyperliquid_live_client import (
 from app.services.job_lock_service import (
     JobLockAlreadyHeldError,
     job_lock,
+)
+from app.services.live_copy_state_service import (
+    LIVE_COPY_FILL_PLAN_VERSION,
+    LIVE_COPY_OUTCOME_BASELINE_IGNORED,
+    LIVE_COPY_OUTCOME_ORDER,
+    LIVE_COPY_OUTCOME_PENDING,
+    LIVE_COPY_OUTCOME_RETRYABLE,
+    LIVE_COPY_OUTCOME_TERMINAL_SKIP,
+    acquire_live_copy_lifecycle_lock,
+    activate_live_copy_account_sources,
+    get_live_copy_source_state,
+    get_prior_live_copy_fill_blocker,
+    is_live_copy_fill_post_baseline,
+    live_copy_entry_follows_owned_position_lifecycle,
+    live_copy_unresolved_order_predicate,
+    load_owned_live_copy_account_source_pairs,
+    synchronize_live_copy_account_source_activity,
 )
 from app.services.live_execution_state import (
     RECONCILABLE_ORDER_STATUSES,
@@ -44,6 +64,7 @@ from app.services.live_execution_state import (
     prepare_live_order_dispatch,
     trade_intent_from_order,
 )
+from app.services.source_fill_ordering import source_fill_order_components
 from app.services.trading_core import (
     MarginMode,
     TradeIntent,
@@ -114,6 +135,15 @@ class LiveAccountDeleteError(LiveTradingServiceError):
 
 class LiveOrderSubmitError(LiveTradingServiceError):
     detail = "Live order could not be submitted."
+
+
+class LiveCopyEntryLifecycleDeferred(LiveOrderSubmitError):
+    """A copied entry changed lifecycle state before its order was materialized."""
+
+    def __init__(self, reason: str, *, state_reclassified: bool = False) -> None:
+        super().__init__(reason, status_code=409)
+        self.reason = reason
+        self.state_reclassified = state_reclassified
 
 
 class LiveReconciliationError(LiveTradingServiceError):
@@ -677,6 +707,34 @@ async def set_live_trading_account_status(
     return account
 
 
+async def load_active_live_copy_source_wallets(session: AsyncSession) -> set[str]:
+    """Return the current allocation sources that may open live-copy exposure."""
+
+    result = await session.scalars(
+        select(PaperCopyAllocation.source_wallet)
+        .where(
+            PaperCopyAllocation.active.is_(True),
+            PaperCopyAllocation.source_wallet != "",
+        )
+        .distinct()
+    )
+    return {str(source_wallet).lower() for source_wallet in result.all() if source_wallet}
+
+
+async def load_owned_live_copy_source_wallets(
+    session: AsyncSession,
+    *,
+    account_key: str,
+) -> set[str]:
+    """Return sources whose existing exposure or order lifecycle must be retained."""
+
+    owned_pairs = await load_owned_live_copy_account_source_pairs(
+        session,
+        account_keys={account_key},
+    )
+    return {str(source_wallet).lower() for _, source_wallet in owned_pairs if source_wallet}
+
+
 async def start_live_trading_account(
     session: AsyncSession,
     *,
@@ -737,6 +795,8 @@ async def start_live_trading_account(
                     )
                 validate_live_account_identity(account, settings=settings)
                 validate_live_account_can_start(account, settings=settings)
+                if account.status == "enabled":
+                    return account
                 if await live_account_has_incomplete_close_operation(
                     session,
                     account_key=account.key,
@@ -745,10 +805,29 @@ async def start_live_trading_account(
                         "Resolve the active close-all operation before starting this account.",
                         status_code=409,
                     )
+                active_source_wallets = await load_active_live_copy_source_wallets(session)
+                owned_source_wallets = await load_owned_live_copy_source_wallets(
+                    session,
+                    account_key=account.key,
+                )
+                await synchronize_live_copy_account_source_activity(
+                    session,
+                    account_key=account.key,
+                    eligible_source_wallets=active_source_wallets,
+                )
+                start_epoch = datetime.now(UTC)
+                await activate_live_copy_account_sources(
+                    session,
+                    account_key=account.key,
+                    source_wallets=active_source_wallets | owned_source_wallets,
+                    entry_eligible_source_wallets=active_source_wallets,
+                    now=start_epoch,
+                )
                 apply_live_account_status(
                     account,
                     status="enabled",
                     reason="start_after_complete_reconciliation",
+                    changed_at=start_epoch,
                 )
                 record_audit_log(
                     session,
@@ -793,6 +872,11 @@ async def stop_live_trading_account(
                 session,
                 account_key=account.key,
                 reason="Entry canceled because the live account was stopped.",
+            )
+            await synchronize_live_copy_account_source_activity(
+                session,
+                account_key=account.key,
+                eligible_source_wallets=set(),
             )
             record_audit_log(
                 session,
@@ -873,6 +957,11 @@ async def disable_live_trading_account(
                     account,
                     status="disabled",
                     reason="disabled_after_complete_flat_reconciliation",
+                )
+                await synchronize_live_copy_account_source_activity(
+                    session,
+                    account_key=account.key,
+                    eligible_source_wallets=set(),
                 )
                 record_audit_log(
                     session,
@@ -1588,10 +1677,12 @@ async def load_live_order_by_client_order_id(
     client_order_id: str,
 ) -> TradingOrder | None:
     return await session.scalar(
-        select(TradingOrder).where(
+        select(TradingOrder)
+        .where(
             TradingOrder.account_type == "live",
             TradingOrder.client_order_id == client_order_id,
         )
+        .execution_options(populate_existing=True)
     )
 
 
@@ -1696,6 +1787,503 @@ async def submit_live_trade_intent(
     )
 
 
+async def validate_live_copy_entry_lifecycle_gate(
+    session: AsyncSession,
+    *,
+    account: TradingAccount,
+    intent: TradeIntent,
+) -> None:
+    """Fence a copied entry against a concurrent source-lane deactivation.
+
+    Callers hold the live execution lock and the locked account row before this
+    function acquires the lifecycle advisory lock.  Copy workers commit their
+    lifecycle lease before submission, so this order has no inverse holder.
+    """
+
+    if intent.reduce_only or intent.source_wallet in {
+        LIVE_EXCHANGE_SOURCE,
+        LIVE_MANUAL_TEST_SOURCE,
+    }:
+        return
+    await acquire_live_copy_lifecycle_lock(session, account_key=account.key)
+    source_state = await get_live_copy_source_state(
+        session,
+        account_key=account.key,
+        source_wallet=intent.source_wallet,
+        for_update=True,
+    )
+    if source_state is None:
+        raise LiveCopyEntryLifecycleDeferred("live_source_lifecycle_inactive")
+    wallet_fill = await session.scalar(
+        select(WalletFill)
+        .where(
+            WalletFill.wallet_address == intent.source_wallet,
+            WalletFill.external_fill_id == intent.source_fill_id,
+            WalletFill.coin == intent.coin,
+        )
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
+    if wallet_fill is None:
+        raise LiveCopyEntryLifecycleDeferred("live_copy_plan_missing")
+    plan_result = await session.scalars(
+        select(LiveCopyFillState)
+        .where(
+            LiveCopyFillState.account_key == account.key,
+            LiveCopyFillState.account_type == "live",
+            LiveCopyFillState.source_wallet == intent.source_wallet,
+            LiveCopyFillState.source_fill_id == intent.source_fill_id,
+        )
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
+    plan_states = list(plan_result.all())
+    target_state = next(
+        (state for state in plan_states if state.sequence_index == intent.sequence_index),
+        None,
+    )
+    expected_part_count = len(plan_states)
+    source_fill = {
+        "externalFillId": wallet_fill.external_fill_id,
+        "coin": wallet_fill.coin,
+        "timestampMs": wallet_fill.timestamp_ms,
+        "rawJson": wallet_fill.raw_json,
+    }
+    expected_direction_rank, expected_position, expected_numeric_fill_id = (
+        source_fill_order_components(source_fill)
+    )
+    if target_state is not None and (
+        target_state.fill_complete
+        or target_state.trading_order_id is not None
+        or target_state.outcome not in {LIVE_COPY_OUTCOME_PENDING, LIVE_COPY_OUTCOME_RETRYABLE}
+    ):
+        raise LiveCopyEntryLifecycleDeferred(
+            "live_source_lifecycle_reclassified",
+            state_reclassified=True,
+        )
+    if (
+        target_state is None
+        or expected_part_count == 0
+        or {state.sequence_index for state in plan_states} != set(range(expected_part_count))
+        or any(
+            state.expected_part_count != expected_part_count
+            or state.plan_version != LIVE_COPY_FILL_PLAN_VERSION
+            for state in plan_states
+        )
+        or target_state.coin != intent.coin
+        or target_state.side != intent.side
+        or int(target_state.source_timestamp_ms) != int(wallet_fill.timestamp_ms)
+        or int(target_state.source_order_direction_rank) != expected_direction_rank
+        or target_state.source_order_position != expected_position
+        or target_state.source_order_fill_id_numeric != expected_numeric_fill_id
+        or target_state.outcome not in {LIVE_COPY_OUTCOME_PENDING, LIVE_COPY_OUTCOME_RETRYABLE}
+        or (
+            target_state.outcome == LIVE_COPY_OUTCOME_RETRYABLE
+            and target_state.reason != "processing"
+        )
+    ):
+        raise LiveCopyEntryLifecycleDeferred("live_copy_plan_reclassified")
+    if account.status != "enabled":
+        await mark_live_copy_entry_state_terminal(
+            session,
+            state=target_state,
+            outcome=LIVE_COPY_OUTCOME_TERMINAL_SKIP,
+            reason="live_account_not_enabled",
+        )
+        raise LiveCopyEntryLifecycleDeferred(
+            "live_account_not_enabled",
+            state_reclassified=True,
+        )
+    if source_state.status != "active":
+        await mark_live_copy_entry_state_terminal(
+            session,
+            state=target_state,
+            outcome=LIVE_COPY_OUTCOME_BASELINE_IGNORED,
+            reason="live_source_deactivated",
+        )
+        raise LiveCopyEntryLifecycleDeferred(
+            "live_source_lifecycle_reclassified",
+            state_reclassified=True,
+        )
+    unresolved_lower_sequence = await session.scalar(
+        select(LiveCopyFillState.sequence_index)
+        .where(
+            LiveCopyFillState.account_key == account.key,
+            LiveCopyFillState.source_wallet == intent.source_wallet,
+            LiveCopyFillState.source_fill_id == intent.source_fill_id,
+            LiveCopyFillState.sequence_index < intent.sequence_index,
+            exists(
+                select(TradingOrder.id).where(
+                    TradingOrder.id == LiveCopyFillState.trading_order_id,
+                    live_copy_unresolved_order_predicate(),
+                )
+            ),
+        )
+        .order_by(LiveCopyFillState.sequence_index.asc())
+        .limit(1)
+        .with_for_update()
+    )
+    if any(
+        state.sequence_index < intent.sequence_index
+        and (
+            state.outcome
+            not in {
+                LIVE_COPY_OUTCOME_TERMINAL_SKIP,
+                LIVE_COPY_OUTCOME_BASELINE_IGNORED,
+                LIVE_COPY_OUTCOME_ORDER,
+            }
+            or state.sequence_index == unresolved_lower_sequence
+        )
+        for state in plan_states
+    ):
+        raise LiveCopyEntryLifecycleDeferred("live_prior_source_fill_pending")
+    predecessor = await get_prior_live_copy_fill_blocker(
+        session,
+        account_key=account.key,
+        source_wallet=intent.source_wallet,
+        fill=source_fill,
+    )
+    if predecessor is not None:
+        raise LiveCopyEntryLifecycleDeferred("live_prior_source_fill_pending")
+
+    competing_position = await session.scalar(
+        select(TradingPosition.id)
+        .where(
+            TradingPosition.account_key == account.key,
+            TradingPosition.account_type == "live",
+            TradingPosition.coin == intent.coin,
+            TradingPosition.source_wallet.not_in((intent.source_wallet, LIVE_EXCHANGE_SOURCE)),
+            TradingPosition.size > POSITION_EPSILON,
+        )
+        .with_for_update()
+        .limit(1)
+    )
+    competing_order = await session.scalar(
+        select(TradingOrder.id)
+        .where(
+            TradingOrder.account_key == account.key,
+            TradingOrder.account_type == "live",
+            TradingOrder.coin == intent.coin,
+            TradingOrder.source_wallet.not_in((intent.source_wallet, LIVE_EXCHANGE_SOURCE)),
+            live_copy_unresolved_order_predicate(),
+        )
+        .with_for_update()
+        .limit(1)
+    )
+    same_source_unresolved_order = await session.scalar(
+        select(TradingOrder.id)
+        .where(
+            TradingOrder.account_key == account.key,
+            TradingOrder.account_type == "live",
+            TradingOrder.coin == intent.coin,
+            TradingOrder.source_wallet == intent.source_wallet,
+            or_(
+                TradingOrder.source_fill_id != intent.source_fill_id,
+                TradingOrder.sequence_index != intent.sequence_index,
+            ),
+            live_copy_unresolved_order_predicate(),
+        )
+        .with_for_update()
+        .limit(1)
+    )
+    position_result = await session.scalars(
+        select(TradingPosition)
+        .where(
+            TradingPosition.account_key == account.key,
+            TradingPosition.account_type == "live",
+            TradingPosition.coin == intent.coin,
+            TradingPosition.source_wallet.in_((intent.source_wallet, LIVE_EXCHANGE_SOURCE)),
+        )
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
+    positions = list(position_result.all())
+    source_position = next(
+        (position for position in positions if position.source_wallet == intent.source_wallet),
+        None,
+    )
+    exchange_position = next(
+        (position for position in positions if position.source_wallet == LIVE_EXCHANGE_SOURCE),
+        None,
+    )
+    source_has_matching_position = (
+        source_position is not None
+        and source_position.size > POSITION_EPSILON
+        and source_position.side == intent.side
+    )
+    normal_entry_is_post_activation = is_live_copy_fill_post_baseline(
+        source_state,
+        fill=source_fill,
+        origin=target_state.origin,
+        observed_at=target_state.observed_at,
+        first_observed_at=target_state.first_observed_at,
+    )
+    raw_json = wallet_fill.raw_json if isinstance(wallet_fill.raw_json, dict) else {}
+    owned_continuation = await live_copy_entry_follows_owned_position_lifecycle(
+        session,
+        source_state=source_state,
+        fill=source_fill,
+        action=target_state.action,
+        side=target_state.side,
+        start_position=raw_json.get("startPosition"),
+    )
+    if not source_state.entry_eligible and not owned_continuation:
+        await mark_live_copy_entry_state_terminal(
+            session,
+            state=target_state,
+            outcome=LIVE_COPY_OUTCOME_BASELINE_IGNORED,
+            reason="live_retained_source_new_market",
+        )
+        raise LiveCopyEntryLifecycleDeferred(
+            "live_source_lifecycle_reclassified",
+            state_reclassified=True,
+        )
+    if not normal_entry_is_post_activation and not owned_continuation:
+        await mark_live_copy_entry_state_terminal(
+            session,
+            state=target_state,
+            outcome=LIVE_COPY_OUTCOME_BASELINE_IGNORED,
+            reason="live_copy_baseline_entry",
+        )
+        raise LiveCopyEntryLifecycleDeferred(
+            "live_source_lifecycle_reclassified",
+            state_reclassified=True,
+        )
+    planned_open_to_add = (
+        target_state.action == "open" and intent.action == "add" and source_has_matching_position
+    )
+    if (target_state.action != intent.action and not planned_open_to_add) or (
+        intent.action == "add" and not source_has_matching_position
+    ):
+        raise LiveCopyEntryLifecycleDeferred("live_copy_plan_reclassified")
+    conflict_reason: str | None = None
+    if competing_position is not None or competing_order is not None:
+        conflict_reason = "live_market_reserved_by_other_source"
+    elif (
+        source_position is not None
+        and source_position.size > POSITION_EPSILON
+        and source_position.side != intent.side
+    ):
+        conflict_reason = "live_market_reserved_by_other_source"
+    elif exchange_position is not None and exchange_position.size > POSITION_EPSILON:
+        if source_position is None or exchange_position.side != intent.side:
+            conflict_reason = "live_exchange_position_conflict"
+        elif (
+            exchange_position.size > source_position.size + POSITION_EPSILON
+            and same_source_unresolved_order is None
+        ):
+            conflict_reason = "live_exchange_position_conflict"
+    if conflict_reason is not None:
+        await mark_live_copy_entry_state_terminal(
+            session,
+            state=target_state,
+            outcome=LIVE_COPY_OUTCOME_TERMINAL_SKIP,
+            reason=conflict_reason,
+        )
+        raise LiveCopyEntryLifecycleDeferred(
+            conflict_reason,
+            state_reclassified=True,
+        )
+
+
+async def mark_live_copy_entry_state_terminal(
+    session: AsyncSession,
+    *,
+    state: LiveCopyFillState,
+    outcome: str,
+    reason: str,
+) -> None:
+    """Finish a stale copied-entry decision without manufacturing an order row."""
+
+    state.outcome = outcome
+    state.reason = reason
+    state.next_attempt_at = None
+    state.fill_complete = False
+    state.trading_order_id = None
+    await session.flush()
+    await session.commit()
+
+
+async def validate_live_copy_entry_capacity_gate(
+    session: AsyncSession,
+    *,
+    account: TradingAccount,
+    intent: TradeIntent,
+    settings: Settings,
+) -> None:
+    """Reject a stale copied entry when current reservations exhaust its capacity."""
+
+    if intent.reduce_only or intent.source_wallet in {
+        LIVE_EXCHANGE_SOURCE,
+        LIVE_MANUAL_TEST_SOURCE,
+    }:
+        return
+    allocation_pct = decimal_or_none(intent.allocation_pct)
+    if allocation_pct is None:
+        raise LiveCopyEntryLifecycleDeferred("live_allocation_capacity_changed")
+    await acquire_live_copy_lifecycle_lock(session, account_key=account.key)
+    capacity_dex = live_dex_from_coin(intent.coin)
+    unified_mode = live_capital_mode(settings) == LIVE_CAPITAL_MODE_UNIFIED
+    allocation_equity_usd = (
+        live_unified_equity_usd(account)
+        if unified_mode
+        else live_perp_equity_usd(account, dex=capacity_dex)
+    )
+    if unified_mode and allocation_equity_usd <= ZERO:
+        allocation_equity_usd = account.equity_usd or ZERO
+    if allocation_equity_usd <= ZERO:
+        raise LiveCopyEntryLifecycleDeferred("live_allocation_capacity_changed")
+
+    position_result = await session.scalars(
+        select(TradingPosition)
+        .where(
+            TradingPosition.account_key == account.key,
+            TradingPosition.account_type == "live",
+            TradingPosition.size > POSITION_EPSILON,
+        )
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
+    positions = [
+        position
+        for position in position_result.all()
+        if unified_mode or live_dex_from_coin(position.coin) == capacity_dex
+    ]
+    order_result = await session.scalars(
+        select(TradingOrder)
+        .where(
+            TradingOrder.account_key == account.key,
+            TradingOrder.account_type == "live",
+            TradingOrder.source_wallet != LIVE_EXCHANGE_SOURCE,
+            TradingOrder.reduce_only.is_(False),
+            or_(
+                TradingOrder.client_order_id.is_(None),
+                TradingOrder.client_order_id != intent.client_order_id,
+            ),
+            live_copy_unresolved_order_predicate(),
+        )
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
+    orders = [
+        order
+        for order in order_result.all()
+        if order.client_order_id != intent.client_order_id
+        and (unified_mode or live_dex_from_coin(order.coin) == capacity_dex)
+    ]
+    order_ids = [order.id for order in orders if order.id is not None]
+    materialized_size_by_order: dict[Any, Decimal] = {}
+    if order_ids:
+        fill_result = await session.scalars(
+            select(TradingFill)
+            .where(TradingFill.order_id.in_(order_ids))
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
+        for fill in fill_result.all():
+            if fill.order_id is None:
+                continue
+            materialized_size_by_order[fill.order_id] = materialized_size_by_order.get(
+                fill.order_id, ZERO
+            ) + abs(fill.size or ZERO)
+
+    source_position_margin = sum(
+        (
+            live_copy_capacity_position_margin(position)
+            for position in positions
+            if position.source_wallet == intent.source_wallet
+        ),
+        ZERO,
+    )
+    global_position_margin = sum(
+        (
+            live_copy_capacity_position_margin(position)
+            for position in positions
+            if position.source_wallet != LIVE_EXCHANGE_SOURCE
+        ),
+        ZERO,
+    )
+    source_order_reservation = sum(
+        (
+            live_copy_capacity_order_reservation(
+                order,
+                materialized_size=materialized_size_by_order.get(order.id, ZERO),
+            )
+            for order in orders
+            if order.source_wallet == intent.source_wallet
+        ),
+        ZERO,
+    )
+    global_order_reservation = sum(
+        (
+            live_copy_capacity_order_reservation(
+                order,
+                materialized_size=materialized_size_by_order.get(order.id, ZERO),
+            )
+            for order in orders
+        ),
+        ZERO,
+    )
+    incoming_margin = live_copy_capacity_intent_margin(intent)
+    source_remaining = max(
+        allocation_equity_usd * allocation_pct - source_position_margin - source_order_reservation,
+        ZERO,
+    )
+    global_remaining = max(
+        allocation_equity_usd * settings.trading_copy_max_total_allocation_pct
+        - global_position_margin
+        - global_order_reservation,
+        ZERO,
+    )
+    if (
+        incoming_margin > source_remaining + POSITION_EPSILON
+        or incoming_margin > global_remaining + POSITION_EPSILON
+    ):
+        raise LiveCopyEntryLifecycleDeferred("live_allocation_capacity_changed")
+
+
+def live_copy_capacity_position_margin(position: TradingPosition) -> Decimal:
+    return max(decimal_or_none(position.margin_usd) or ZERO, ZERO)
+
+
+def live_copy_capacity_intent_margin(intent: TradeIntent) -> Decimal:
+    margin_usd = decimal_or_none(intent.margin_usd) or ZERO
+    if margin_usd > ZERO:
+        return margin_usd
+    leverage = decimal_or_none(intent.leverage) or Decimal("1")
+    return margin_from_notional(
+        decimal_or_none(intent.notional_usd) or ZERO,
+        leverage if leverage > ZERO else Decimal("1"),
+    )
+
+
+def live_copy_capacity_order_reservation(
+    order: TradingOrder,
+    *,
+    materialized_size: Decimal,
+) -> Decimal:
+    requested_size = decimal_or_none(order.requested_size) or ZERO
+    filled_size = decimal_or_none(order.filled_size) or ZERO
+    expected_size = (
+        (filled_size if filled_size > POSITION_EPSILON else requested_size)
+        if order.status == "filled"
+        else requested_size
+    )
+    outstanding_size = max(expected_size - materialized_size, ZERO)
+    if outstanding_size <= POSITION_EPSILON:
+        return ZERO
+    reservation_margin = decimal_or_none(order.margin_usd) or ZERO
+    if reservation_margin <= ZERO:
+        leverage = decimal_or_none(order.leverage) or Decimal("1")
+        reservation_margin = margin_from_notional(
+            decimal_or_none(order.requested_notional_usd) or ZERO,
+            leverage if leverage > ZERO else Decimal("1"),
+        )
+    if requested_size <= POSITION_EPSILON:
+        return reservation_margin
+    return reservation_margin * min(outstanding_size / requested_size, Decimal("1"))
+
+
 async def submit_live_trade_intent_under_account_lock(
     session: AsyncSession,
     *,
@@ -1712,11 +2300,10 @@ async def submit_live_trade_intent_under_account_lock(
         ):
             account = await load_live_account_for_update(session, account_key=account_key)
             validate_live_account_identity(account, settings=settings)
-            if not intent.reduce_only and account.status != "enabled":
-                raise LiveOrderSubmitError(
-                    "Live account is not enabled for entry execution.",
-                    status_code=409,
-                )
+            is_live_copy_entry = not intent.reduce_only and intent.source_wallet not in {
+                LIVE_EXCHANGE_SOURCE,
+                LIVE_MANUAL_TEST_SOURCE,
+            }
             existing_order = await load_live_order_by_client_order_id(
                 session,
                 client_order_id=intent.client_order_id,
@@ -1726,6 +2313,11 @@ async def submit_live_trade_intent_under_account_lock(
                 or existing_order.status == "ready"
                 or is_retryable_live_order_submit_failure(existing_order)
             )
+            if not intent.reduce_only and account.status != "enabled":
+                raise LiveOrderSubmitError(
+                    "Live account is not enabled for entry execution.",
+                    status_code=409,
+                )
 
             if not intent.reduce_only and will_dispatch:
                 await ensure_live_entry_intent_is_fresh(
@@ -1745,6 +2337,20 @@ async def submit_live_trade_intent_under_account_lock(
                     live_client.validate_account_order(account=account, intent=intent)
                 except Exception as exc:
                     raise LiveOrderSubmitError(str(exc) or exc.__class__.__name__) from exc
+
+            if is_live_copy_entry and will_dispatch:
+                await validate_live_copy_entry_lifecycle_gate(
+                    session,
+                    account=account,
+                    intent=intent,
+                )
+            if is_live_copy_entry and will_dispatch:
+                await validate_live_copy_entry_capacity_gate(
+                    session,
+                    account=account,
+                    intent=intent,
+                    settings=settings,
+                )
 
             order, dispatch, _ = await prepare_live_order_dispatch(
                 session,
@@ -2313,6 +2919,8 @@ def is_retryable_live_copy_skip(order: TradingOrder) -> bool:
         "skip:live_account_exit_only",
         "skip:live_execution_busy",
         "skip:live_execution_price_unavailable",
+        "skip:live_matching_position_missing",
+        "skip:live_preexisting_source_add",
         "skip:live_reconciliation_failed",
         "skip:live_reconciliation_incomplete",
         "skip:live_reconciliation_stale",
@@ -2428,6 +3036,14 @@ async def run_live_trading_account_reconciliation(
     info_client: HyperliquidClient | None = None,
     lookback_minutes: int | None = None,
 ) -> LiveReconciliationResult:
+    """Run under the caller-held live_execution job lock.
+
+    Network reads complete before the lifecycle lock. The subsequent fill and
+    position mutation transaction shares the lifecycle fence with attribution
+    recovery, so source ownership cannot be derived from rows reconciliation is
+    concurrently replacing.
+    """
+
     if account.account_type != "live":
         raise LiveReconciliationError("Only live accounts can be reconciled.")
     user_address = live_account_user_address(account, settings=settings)
@@ -2466,6 +3082,13 @@ async def run_live_trading_account_reconciliation(
             user=user_address,
             start_time_ms=start_time_ms,
         )
+        perp_snapshot = await fetch_live_perp_states(client, user_address=user_address)
+        spot_state = await fetch_live_spot_state(client, user_address=user_address)
+        user_abstraction = await fetch_live_user_abstraction(
+            client,
+            user_address=user_address,
+        )
+        await acquire_live_copy_lifecycle_lock(session, account_key=account.key)
         inserted_fills = await reconcile_live_fills(
             session,
             account=account,
@@ -2476,12 +3099,6 @@ async def run_live_trading_account_reconciliation(
             account_key=account.key,
         )
         await recompute_live_account_fill_totals(session, account=account)
-        perp_snapshot = await fetch_live_perp_states(client, user_address=user_address)
-        spot_state = await fetch_live_spot_state(client, user_address=user_address)
-        user_abstraction = await fetch_live_user_abstraction(
-            client,
-            user_address=user_address,
-        )
         position_result = await reconcile_live_positions(
             session,
             account=account,
@@ -3455,6 +4072,10 @@ async def apply_live_open_fill_to_position(
     margin_delta = order_margin_delta(order, fill_notional=fill_notional)
     fee_usd = parsed_fill["fee_usd"]
     filled_at = parsed_fill["filled_at"]
+    lifecycle_order = await load_live_copy_position_lifecycle_order(
+        session,
+        order=order,
+    )
 
     if position is None:
         session.add(
@@ -3472,7 +4093,15 @@ async def apply_live_open_fill_to_position(
                 margin_usd=margin_delta,
                 realized_pnl_usd=ZERO,
                 fee_usd=fee_usd,
-                raw_payload={"source": "live_fill"},
+                raw_payload={
+                    "source": "live_fill",
+                    **(
+                        {"sourceLifecycleOrder": lifecycle_order["raw"]}
+                        if lifecycle_order is not None
+                        else {}
+                    ),
+                },
+                **(lifecycle_order["columns"] if lifecycle_order is not None else {}),
                 opened_at=filled_at,
                 last_reconciled_at=filled_at,
             )
@@ -3498,6 +4127,42 @@ async def apply_live_open_fill_to_position(
     )
     position.fee_usd += fee_usd
     position.last_reconciled_at = filled_at
+
+
+async def load_live_copy_position_lifecycle_order(
+    session: AsyncSession,
+    *,
+    order: TradingOrder,
+) -> dict[str, Any] | None:
+    state = await session.scalar(
+        select(LiveCopyFillState).where(
+            LiveCopyFillState.account_key == order.account_key,
+            LiveCopyFillState.source_wallet == order.source_wallet,
+            LiveCopyFillState.source_fill_id == order.source_fill_id,
+            LiveCopyFillState.sequence_index == order.sequence_index,
+        )
+    )
+    if state is None:
+        return None
+    numeric_fill_id = state.source_order_fill_id_numeric
+    raw = {
+        "timestampMs": int(state.source_timestamp_ms),
+        "coin": state.coin,
+        "directionRank": int(state.source_order_direction_rank),
+        "positionRank": str(state.source_order_position),
+        "fillIdNumeric": str(numeric_fill_id) if numeric_fill_id is not None else None,
+        "fillId": state.source_fill_id,
+    }
+    return {
+        "raw": raw,
+        "columns": {
+            "source_lifecycle_timestamp_ms": int(state.source_timestamp_ms),
+            "source_lifecycle_direction_rank": int(state.source_order_direction_rank),
+            "source_lifecycle_position": state.source_order_position,
+            "source_lifecycle_fill_id_numeric": numeric_fill_id,
+            "source_lifecycle_fill_id": state.source_fill_id,
+        },
+    }
 
 
 async def apply_live_close_fill_to_position(

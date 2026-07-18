@@ -169,6 +169,24 @@ class TradingOrderRead(CamelModel):
         return "cross" if value is None else value
 
 
+class LiveCopyDecisionRead(CamelModel):
+    account_key: str
+    source_wallet: str
+    source_fill_id: str
+    sequence_index: int
+    coin: str
+    planned_action: Literal["open", "add", "reduce", "close", "flip_close", "flip_open"]
+    side: Literal["long", "short"]
+    outcome: Literal["pending", "retryable", "order", "terminal_skip", "baseline_ignored"]
+    reason: str | None = None
+    attempt_count: int
+    first_observed_at: datetime | None = None
+    last_attempt_at: datetime | None = None
+    next_attempt_at: datetime | None = None
+    trading_order_id: UUID | None = None
+    updated_at: datetime
+
+
 class TradingClosedTradeRead(CamelModel):
     id: str
     account_key: str
@@ -221,6 +239,7 @@ class TradingAccountsResponse(CamelModel):
     positions: list[TradingPositionRead] = Field(default_factory=list)
     recent_fills: list[TradingFillRead] = Field(default_factory=list)
     recent_orders: list[TradingOrderRead] = Field(default_factory=list)
+    recent_live_copy_decisions: list[LiveCopyDecisionRead] = Field(default_factory=list)
     closed_trades: list[TradingClosedTradeRead] = Field(default_factory=list)
     source_metadata: list[TradingSourceMetadataRead] = Field(default_factory=list)
     updated_at: datetime

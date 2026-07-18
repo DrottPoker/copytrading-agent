@@ -60,6 +60,7 @@ class WatchedWallet(Base, TimestampMixin, UpdatedAtMixin):
     )
     polling_tier: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pool'"))
     cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    copy_eligibility_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_polled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_seen_fill_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     notes: Mapped[str | None] = mapped_column(Text)
@@ -829,6 +830,11 @@ class TradingPosition(Base, TimestampMixin, UpdatedAtMixin):
         Numeric, nullable=False, server_default=text("0")
     )
     fee_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False, server_default=text("0"))
+    source_lifecycle_timestamp_ms: Mapped[int | None] = mapped_column(BigInteger)
+    source_lifecycle_direction_rank: Mapped[int | None] = mapped_column(Integer)
+    source_lifecycle_position: Mapped[Decimal | None] = mapped_column(Numeric)
+    source_lifecycle_fill_id_numeric: Mapped[Decimal | None] = mapped_column(Numeric)
+    source_lifecycle_fill_id: Mapped[str | None] = mapped_column(Text)
     raw_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -911,6 +917,218 @@ class TradingOrder(Base, TimestampMixin, UpdatedAtMixin):
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     filled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class LiveCopySourceState(Base, TimestampMixin, UpdatedAtMixin):
+    __tablename__ = "live_copy_source_states"
+    __table_args__ = (
+        CheckConstraint(
+            "account_type = 'live'",
+            name="ck_live_copy_source_states_account_type",
+        ),
+        CheckConstraint(
+            "status in ('baseline_pending', 'active', 'inactive')",
+            name="ck_live_copy_source_states_status",
+        ),
+        ForeignKeyConstraint(
+            ["account_key", "account_type"],
+            ["trading_accounts.key", "trading_accounts.account_type"],
+            name="fk_live_copy_source_states_account_key_type",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_live_copy_source_states_status_baseline",
+            "status",
+            "baseline_completed_at",
+        ),
+    )
+
+    account_key: Mapped[str] = mapped_column(Text, primary_key=True)
+    source_wallet: Mapped[str] = mapped_column(Text, primary_key=True)
+    account_type: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        server_default=text("'live'"),
+    )
+    status: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        server_default=text("'baseline_pending'"),
+    )
+    entry_eligible: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    )
+    activated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    baseline_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    baseline_source_timestamp_ms: Mapped[int | None] = mapped_column(BigInteger)
+    baseline_fill_ids: Mapped[list[str]] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=text("'[]'::jsonb"),
+    )
+    scan_high_water_timestamp_ms: Mapped[int | None] = mapped_column(BigInteger)
+    scan_high_water_coin: Mapped[str | None] = mapped_column(Text)
+    scan_high_water_direction_rank: Mapped[int | None] = mapped_column(Integer)
+    scan_high_water_position: Mapped[Decimal | None] = mapped_column(Numeric)
+    scan_high_water_fill_id_numeric: Mapped[Decimal | None] = mapped_column(Numeric)
+    scan_high_water_fill_id: Mapped[str | None] = mapped_column(Text)
+    preexisting_markets: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=text("'{}'::jsonb"),
+    )
+
+
+class LiveCopyFillState(Base, TimestampMixin, UpdatedAtMixin):
+    __tablename__ = "live_copy_fill_states"
+    __table_args__ = (
+        CheckConstraint(
+            "account_type = 'live'",
+            name="ck_live_copy_fill_states_account_type",
+        ),
+        CheckConstraint(
+            "action in ('open', 'add', 'reduce', 'close', 'flip_close', 'flip_open')",
+            name="ck_live_copy_fill_states_action",
+        ),
+        CheckConstraint(
+            "side in ('long', 'short')",
+            name="ck_live_copy_fill_states_side",
+        ),
+        CheckConstraint(
+            "origin in ('realtime', 'snapshot_recovery', 'startup_recovery', 'periodic_recovery')",
+            name="ck_live_copy_fill_states_origin",
+        ),
+        CheckConstraint(
+            "outcome in ('pending', 'retryable', 'order', 'terminal_skip', 'baseline_ignored')",
+            name="ck_live_copy_fill_states_outcome",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0",
+            name="ck_live_copy_fill_states_attempt_count",
+        ),
+        CheckConstraint(
+            "expected_part_count > 0",
+            name="ck_live_copy_fill_states_expected_part_count",
+        ),
+        CheckConstraint(
+            "plan_version > 0",
+            name="ck_live_copy_fill_states_plan_version",
+        ),
+        CheckConstraint(
+            "not fill_complete or outcome in ('order', 'terminal_skip', 'baseline_ignored')",
+            name="ck_live_copy_fill_states_complete_outcome",
+        ),
+        ForeignKeyConstraint(
+            ["account_key", "account_type"],
+            ["trading_accounts.key", "trading_accounts.account_type"],
+            name="fk_live_copy_fill_states_account_key_type",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["account_key", "source_wallet"],
+            ["live_copy_source_states.account_key", "live_copy_source_states.source_wallet"],
+            name="fk_live_copy_fill_states_source_state",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["trading_order_id"],
+            ["trading_orders.id"],
+            name="fk_live_copy_fill_states_trading_order",
+            ondelete="SET NULL",
+        ),
+        UniqueConstraint(
+            "account_key",
+            "source_wallet",
+            "source_fill_id",
+            "sequence_index",
+            name="ux_live_copy_fill_states_account_source_fill_sequence",
+        ),
+        Index(
+            "ix_live_copy_fill_states_source_recovery",
+            "account_key",
+            "source_wallet",
+            "fill_complete",
+            "next_attempt_at",
+            "source_timestamp_ms",
+            "source_fill_id",
+        ),
+        Index(
+            "ix_live_copy_fill_states_due",
+            "outcome",
+            "next_attempt_at",
+        ),
+        Index("ix_live_copy_fill_states_recent_updated", "updated_at"),
+        Index("ix_live_copy_fill_states_trading_order", "trading_order_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    account_key: Mapped[str] = mapped_column(Text, nullable=False)
+    account_type: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        server_default=text("'live'"),
+    )
+    source_wallet: Mapped[str] = mapped_column(Text, nullable=False)
+    source_fill_id: Mapped[str] = mapped_column(Text, nullable=False)
+    sequence_index: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    expected_part_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=text("1"),
+    )
+    plan_version: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=text("1"),
+    )
+    coin: Mapped[str] = mapped_column(Text, nullable=False)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    side: Mapped[str] = mapped_column(Text, nullable=False)
+    source_timestamp_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    source_order_direction_rank: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=text("1"),
+    )
+    source_order_position: Mapped[Decimal] = mapped_column(
+        Numeric,
+        nullable=False,
+        server_default=text("0"),
+    )
+    source_order_fill_id_numeric: Mapped[Decimal | None] = mapped_column(Numeric)
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    first_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    origin: Mapped[str] = mapped_column(Text, nullable=False)
+    outcome: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        server_default=text("'pending'"),
+    )
+    reason: Mapped[str | None] = mapped_column(Text)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    fill_complete: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    )
+    trading_order_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
 
 
 class TradingOrderDispatch(Base, TimestampMixin, UpdatedAtMixin):
