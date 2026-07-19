@@ -633,7 +633,13 @@ async def list_trading_accounts_route(
     decision_result = await session.scalars(
         select(LiveCopyFillState)
         .where(LiveCopyFillState.account_type == "live")
-        .order_by(LiveCopyFillState.updated_at.desc(), LiveCopyFillState.created_at.desc())
+        .order_by(
+            func.coalesce(
+                LiveCopyFillState.decision_at,
+                LiveCopyFillState.updated_at,
+            ).desc(),
+            LiveCopyFillState.created_at.desc(),
+        )
         .limit(LIVE_COPY_DECISION_LIMIT)
     )
     closed_trades = await load_live_closed_trades(
@@ -710,6 +716,9 @@ async def list_trading_accounts_route(
                 source_timestamp_ms=decision.source_timestamp_ms,
                 observed_at=decision.observed_at,
                 first_observed_at=decision.first_observed_at,
+                execution_claimed_at=decision.execution_claimed_at,
+                processing_started_at=decision.processing_started_at,
+                decision_at=decision.decision_at,
                 last_attempt_at=decision.last_attempt_at,
                 next_attempt_at=decision.next_attempt_at,
                 trading_order_id=decision.trading_order_id,

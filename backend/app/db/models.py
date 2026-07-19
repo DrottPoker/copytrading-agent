@@ -99,6 +99,75 @@ class WalletFill(Base, TimestampMixin):
     raw_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
 
 
+class LiveCopyWork(Base, TimestampMixin, UpdatedAtMixin):
+    """One durable live-copy execution item per imported source fill."""
+
+    __tablename__ = "live_copy_work"
+    __table_args__ = (
+        CheckConstraint(
+            "origin in ('realtime', 'snapshot_recovery', 'startup_recovery', 'periodic_recovery')",
+            name="ck_live_copy_work_origin",
+        ),
+        CheckConstraint(
+            "status in ('pending', 'processing', 'completed')",
+            name="ck_live_copy_work_status",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0",
+            name="ck_live_copy_work_attempt_count",
+        ),
+        UniqueConstraint("wallet_fill_id", name="ux_live_copy_work_wallet_fill"),
+        UniqueConstraint(
+            "wallet_address",
+            "source_fill_id",
+            name="ux_live_copy_work_wallet_source_fill",
+        ),
+        Index(
+            "ix_live_copy_work_claim",
+            "status",
+            "available_at",
+            "source_timestamp_ms",
+        ),
+        Index(
+            "ix_live_copy_work_wallet_order",
+            "wallet_address",
+            "status",
+            "source_timestamp_ms",
+            "coin",
+            "source_order_direction_rank",
+            "source_order_position",
+            "source_fill_id",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    wallet_fill_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("wallet_fills.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    wallet_address: Mapped[str] = mapped_column(Text, nullable=False)
+    source_fill_id: Mapped[str] = mapped_column(Text, nullable=False)
+    source_timestamp_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    coin: Mapped[str] = mapped_column(Text, nullable=False)
+    source_order_direction_rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_order_position: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    source_order_fill_id_numeric: Mapped[Decimal | None] = mapped_column(Numeric)
+    origin: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    claimed_by: Mapped[str | None] = mapped_column(Text)
+    processing_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
+
+
 class RealtimeExecutionInbox(Base, TimestampMixin, UpdatedAtMixin):
     __tablename__ = "realtime_execution_inbox"
     __table_args__ = (
@@ -1108,6 +1177,9 @@ class LiveCopyFillState(Base, TimestampMixin, UpdatedAtMixin):
     source_order_fill_id_numeric: Mapped[Decimal | None] = mapped_column(Numeric)
     observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     first_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    execution_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    processing_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decision_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     origin: Mapped[str] = mapped_column(Text, nullable=False)
     outcome: Mapped[str] = mapped_column(
         Text,

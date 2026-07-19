@@ -621,22 +621,20 @@ What it does:
 - Commits each realtime fill batch and a matching execution payload to
   `realtime_execution_inbox` in one transaction. The bounded in-process queue is
   a wakeup accelerator, not the source of truth.
-- Keeps every valid non-snapshot WebSocket fill in the execution payload even
-  when polling inserted the same wallet fill first. Presentation events still
-  publish only newly inserted rows, while live and paper copy use their own
-  source-fill idempotency keys to process the duplicate delivery safely.
-- Claims due inbox rows in stable creation order with row locking. Live
-  processing runs before paper processing. Failed work returns to pending with
-  bounded backoff, stale claims are recoverable after a worker crash, and
-  successful rows are deleted.
+- Keeps every valid non-snapshot WebSocket fill in the paper execution payload
+  even when polling inserted the same wallet fill first. Presentation events
+  still publish only newly inserted rows. The same transaction also inserts one
+  unique `live_copy_work` row for live execution.
+- Claims paper inbox rows in stable creation order and live work in canonical
+  per-source order. Failed work returns to pending with bounded backoff, stale
+  claims are recoverable after a worker crash, and successful rows are deleted.
 - Stops WebSocket intake before the execution consumer exits. The consumer
   drains currently claimable inbox work for `worker_shutdown_drain_seconds` and
   returns interrupted claims to pending state.
 - Publishes system and fill events to a capped Redis Stream through a best-effort
-  boundary. Raw fill, result, and error events are published as a bounded
-  concurrent batch with a fixed overall deadline after both live and paper
-  execution. Redis failure or latency cannot make an entry stale before
-  execution or block the next inbox item without bound.
+  boundary after the corresponding durable execution path. Redis failure or
+  latency cannot make an entry stale before execution or block the next durable
+  item without bound.
 - Runs prune after pool import only when the dependent scoring run succeeded.
 
 Purpose:
@@ -735,6 +733,17 @@ What it does:
   stores stale entries as terminal per-fill dispositions with separate source
   and decision timestamps, linking a `TradingOrder` only for a terminal
   order-level decision.
+- Queues each live source fill once in the durable `live_copy_work` table.
+  Realtime ingestion and all recovery origins use the same unique work item,
+  so periodic recovery cannot independently race realtime execution for a fresh
+  entry. Claims and retries survive worker restarts.
+- Commits the work claim before source-account, price, or exchange network I/O.
+  Full account reconciliation runs in its dedicated loop instead of blocking
+  the pre-entry critical path. Existing reconciliation completeness and
+  snapshot-age gates remain authoritative.
+- Shows truthful source-to-ingest, queue, preparation, processing, and total
+  decision latency from explicit wall-clock timestamps. Decision age no longer
+  depends on a PostgreSQL transaction timestamp.
 - Applies the configured paper fee rate to opens and closes. The default is
   0.045% to match Hyperliquid's base perp taker fee because paper fills model
   immediate taker-style execution.
@@ -1401,11 +1410,10 @@ What it does:
   middleware while preserving authenticated non-browser API access.
 - Adds HSTS on the VPS plus content-type, frame, referrer, and permissions
   headers through Caddy.
-- Requires Alembic head `d1f6a9e4c2b3`. This head adds the live-copy source and
-  fill-state tables, source lifecycle key columns, the global
-  `watched_wallets.copy_eligibility_started_at` selection epoch, and strict
-  restart/bootstrap handling. After upgrade, an operator must run
-  `python -m alembic current` and confirm it shows `d1f6a9e4c2b3` before
+- Requires Alembic head `e3b7f9d8c4a1`. This head adds the unified durable
+  live-copy work queue and explicit execution timing columns on top of the
+  source and fill lifecycle tables. After upgrade, an operator must run
+  `python -m alembic current` and confirm it shows `e3b7f9d8c4a1` before
   starting the backend or workers. Earlier Phase 6 migrations preserve
   financial history, enforce account lifecycle integrity, remove the obsolete
   global entry-control table, and expand wallet fill ingest latency to

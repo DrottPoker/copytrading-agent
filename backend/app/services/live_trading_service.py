@@ -2100,6 +2100,7 @@ async def mark_live_copy_entry_state_terminal(
     state.next_attempt_at = None
     state.fill_complete = False
     state.trading_order_id = None
+    state.decision_at = datetime.now(UTC)
     await session.flush()
     await session.commit()
 

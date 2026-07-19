@@ -191,6 +191,9 @@ export type LiveCopyDecision = {
   sourceTimestampMs: number;
   observedAt: string | null;
   firstObservedAt: string | null;
+  executionClaimedAt: string | null;
+  processingStartedAt: string | null;
+  decisionAt: string | null;
   lastAttemptAt: string | null;
   nextAttemptAt: string | null;
   tradingOrderId: string | null;

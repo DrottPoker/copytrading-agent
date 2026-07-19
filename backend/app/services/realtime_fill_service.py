@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import RealtimeExecutionInbox, WalletFill, WatchedWallet
 from app.schemas.wallet import normalize_wallet_address
 from app.services.fill_import_service import build_fill_record
+from app.services.live_copy_state_service import LIVE_COPY_ORIGIN_REALTIME
+from app.services.live_copy_work_service import enqueue_live_copy_work_for_wallet_fills
 
 
 @dataclass(slots=True)
@@ -23,6 +25,7 @@ class StoredRealtimeFills:
     execution_rows: list[dict[str, Any]] | None = None
     inbox_id: str | None = None
     observed_at: datetime | None = None
+    live_copy_work_enqueued: int = 0
 
     @property
     def rows_for_execution(self) -> list[dict[str, Any]]:
@@ -138,7 +141,23 @@ async def store_realtime_fills(
             )
         )
         result = await session.execute(stmt)
-        inserted_rows = [_row_to_dict(row) for row in result.all()]
+        returned_rows = result.all()
+        inserted_rows = [_row_to_dict(row) for row in returned_rows]
+
+    live_copy_work_enqueued = 0
+    if records and not is_snapshot:
+        source_fill_ids = [str(record["external_fill_id"]) for record in records]
+        received_result = await session.scalars(
+            select(WalletFill).where(
+                WalletFill.wallet_address == normalized_address,
+                WalletFill.external_fill_id.in_(source_fill_ids),
+            )
+        )
+        live_copy_work_enqueued = await enqueue_live_copy_work_for_wallet_fills(
+            session,
+            fills=received_result.all(),
+            origin=LIVE_COPY_ORIGIN_REALTIME,
+        )
 
     wallet = await session.scalar(
         select(WatchedWallet).where(WatchedWallet.address == normalized_address)
@@ -158,6 +177,7 @@ async def store_realtime_fills(
         inserted_rows=inserted_rows,
         execution_rows=execution_rows,
         observed_at=observed_at,
+        live_copy_work_enqueued=live_copy_work_enqueued,
     )
     if is_snapshot or execution_rows:
         inbox = RealtimeExecutionInbox(
@@ -167,7 +187,6 @@ async def store_realtime_fills(
         session.add(inbox)
         await session.flush()
         stored.inbox_id = str(inbox.id)
-
     await session.commit()
     return stored
 

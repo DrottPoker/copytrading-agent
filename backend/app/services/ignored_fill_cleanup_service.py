@@ -16,6 +16,12 @@ exists (
   from wallet_fills wf
   where wf.wallet_address = sif.wallet_address
     and wf.external_fill_id = sif.external_fill_id
+    and not exists (
+      select 1
+      from live_copy_work lcw
+      where lcw.wallet_fill_id = wf.id
+        and lcw.status in ('pending', 'processing')
+    )
 )
 """
 

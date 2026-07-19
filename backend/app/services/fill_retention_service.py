@@ -12,6 +12,14 @@ RETENTION_LOCK_KEY = "fill_retention_cleanup"
 RETENTION_LOCK_TTL_SECONDS = 900
 
 PROTECTED_WALLETS_CTE = protected_wallets_cte(include_top_scores=True)
+ACTIVE_LIVE_COPY_WORK_EXCLUSION_SQL = """
+not exists (
+  select 1
+  from live_copy_work lcw
+  where lcw.wallet_fill_id = wf.id
+    and lcw.status in ('pending', 'processing')
+)
+"""
 
 
 async def cleanup_wallet_fill_retention(
@@ -173,6 +181,7 @@ async def count_fill_candidates(
             left join protected_wallets pw on pw.wallet_address = wf.wallet_address
             where wf.timestamp_ms < :cutoff_time_ms
               and pw.wallet_address is null
+              and {ACTIVE_LIVE_COPY_WORK_EXCLUSION_SQL}
             """
         ),
         params,
@@ -240,6 +249,7 @@ async def delete_old_fill_batch(
               left join protected_wallets pw on pw.wallet_address = wf.wallet_address
               where wf.timestamp_ms < :cutoff_time_ms
                 and pw.wallet_address is null
+                and {ACTIVE_LIVE_COPY_WORK_EXCLUSION_SQL}
               order by wf.timestamp_ms asc, wf.id asc
               limit :batch_size
             ),

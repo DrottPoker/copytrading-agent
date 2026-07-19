@@ -13,6 +13,7 @@ from app.services.live_copy_state_service import (
     LIVE_COPY_OUTCOME_RETRYABLE,
     LIVE_COPY_OUTCOME_TERMINAL_SKIP,
     build_live_copy_recovery_candidate_query,
+    ensure_live_copy_fill_plan_states,
     ensure_live_copy_source_state,
     is_live_copy_fill_post_baseline,
     live_copy_retry_delay_seconds,
@@ -293,6 +294,48 @@ async def test_terminal_skip_state_does_not_require_a_trading_order() -> None:
     assert state.next_attempt_at is None
     assert state.fill_complete is False
     assert state.trading_order_id is None
+    assert state.decision_at is not None
+    assert state.decision_at.tzinfo == UTC
+    assert session.flush_count == 1
+
+
+@pytest.mark.asyncio
+async def test_fill_plan_persists_the_durable_work_claim_timestamp() -> None:
+    class PlanSession:
+        def __init__(self) -> None:
+            self.added: list[LiveCopyFillState] = []
+            self.flush_count = 0
+
+        async def scalars(self, _query):
+            return SimpleNamespace(all=lambda: [])
+
+        def add(self, value: LiveCopyFillState) -> None:
+            self.added.append(value)
+
+        async def flush(self) -> None:
+            self.flush_count += 1
+
+    claimed_at = datetime(2026, 7, 19, 12, tzinfo=UTC)
+    session = PlanSession()
+    states = await ensure_live_copy_fill_plan_states(
+        session,  # type: ignore[arg-type]
+        source_state=live_copy_source_state(),
+        fill={
+            "externalFillId": "fill-1",
+            "coin": "HYPE",
+            "timestampMs": int(claimed_at.timestamp() * 1000),
+            "rawJson": {"dir": "Open Long", "startPosition": "0"},
+        },
+        planned_parts=(source_part(action="open", side="long", start_position=Decimal("0")),),
+        origin=LIVE_COPY_ORIGIN_REALTIME,
+        first_observed_at=claimed_at,
+        execution_claimed_at=claimed_at,
+    )
+
+    assert states == session.added
+    assert states[0].execution_claimed_at == claimed_at
+    assert states[0].processing_started_at is None
+    assert states[0].decision_at is None
     assert session.flush_count == 1
 
 

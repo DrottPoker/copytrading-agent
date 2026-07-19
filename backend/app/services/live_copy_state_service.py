@@ -341,6 +341,7 @@ async def close_live_copy_entry_states_at_activation_baseline(
         state.next_attempt_at = None
         state.fill_complete = False
         state.trading_order_id = None
+        state.decision_at = utc_now()
 
     all_result = await session.scalars(
         select(LiveCopyFillState)
@@ -513,6 +514,7 @@ async def synchronize_live_copy_source_activity(
             fill_state.next_attempt_at = None
             fill_state.fill_complete = True
             fill_state.trading_order_id = None
+            fill_state.decision_at = utc_now()
         deactivated += 1
     if deactivated:
         await session.flush()
@@ -856,6 +858,7 @@ async def ensure_live_copy_fill_plan_states(
     now: datetime | None = None,
     observed_at: datetime | None = None,
     first_observed_at: datetime | None = None,
+    execution_claimed_at: datetime | None = None,
 ) -> list[LiveCopyFillState]:
     """Atomically persist every part of one source-fill execution plan.
 
@@ -901,6 +904,8 @@ async def ensure_live_copy_fill_plan_states(
             part=part,
             expected_part_count=expected_part_count,
         )
+        if state.execution_claimed_at is None and execution_claimed_at is not None:
+            state.execution_claimed_at = ensure_utc(execution_claimed_at)
 
     first_seen_at = utc_now(now)
     fill_observed_at = live_copy_fill_observed_at(fill) or (
@@ -930,6 +935,9 @@ async def ensure_live_copy_fill_plan_states(
             observed_at=fill_observed_at,
             first_observed_at=(
                 ensure_utc(first_observed_at) if first_observed_at is not None else None
+            ),
+            execution_claimed_at=(
+                ensure_utc(execution_claimed_at) if execution_claimed_at is not None else None
             ),
             origin=origin,
             outcome=LIVE_COPY_OUTCOME_PENDING,
@@ -1154,6 +1162,8 @@ async def claim_live_copy_fill_part(
     target_state.outcome = LIVE_COPY_OUTCOME_RETRYABLE
     target_state.reason = "processing"
     target_state.last_attempt_at = observed_at
+    if target_state.processing_started_at is None:
+        target_state.processing_started_at = observed_at
     target_state.next_attempt_at = observed_at + timedelta(seconds=max(int(lease_seconds), 1))
     await session.flush()
     return LiveCopyPartClaim(state=target_state, claimed=True, reason="claimed")
@@ -1333,6 +1343,7 @@ async def mark_live_copy_fill_baseline_ignored(
     fill_state.next_attempt_at = None
     fill_state.fill_complete = False
     fill_state.trading_order_id = None
+    fill_state.decision_at = utc_now()
     await session.flush()
 
 
@@ -1349,6 +1360,7 @@ async def mark_live_copy_fill_terminal_skip(
     fill_state.next_attempt_at = None
     fill_state.fill_complete = False
     fill_state.trading_order_id = None
+    fill_state.decision_at = utc_now()
     await session.flush()
 
 
@@ -1380,6 +1392,7 @@ async def link_live_copy_fill_state_to_order(
     fill_state.next_attempt_at = None
     fill_state.fill_complete = False
     fill_state.trading_order_id = order.id
+    fill_state.decision_at = utc_now()
     await session.flush()
 
 

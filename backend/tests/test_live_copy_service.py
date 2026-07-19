@@ -198,6 +198,7 @@ async def test_reconciliation_contention_defers_fill_without_trading_order(
         fill_complete=False,
     )
     retry_reasons: list[str] = []
+    account_loads = 0
 
     class CommitSession:
         commit_count = 0
@@ -209,6 +210,8 @@ async def test_reconciliation_contention_defers_fill_without_trading_order(
         return {"0xsource": source_allocation()}
 
     async def fake_load_accounts(*_args, **_kwargs):
+        nonlocal account_loads
+        account_loads += 1
         return [account]
 
     async def fake_source_states(**_kwargs):
@@ -313,7 +316,8 @@ async def test_reconciliation_contention_defers_fill_without_trading_order(
         )
 
     assert retry_reasons == ["live_reconciliation_deferred"]
-    assert session.commit_count == 3
+    assert account_loads == 2
+    assert session.commit_count == 5
 
 
 @pytest.mark.asyncio
@@ -1659,6 +1663,9 @@ async def test_recovery_syncs_current_source_leverage_and_margin_mode(monkeypatc
     class FakeSession:
         async def scalars(self, _query):
             return ScalarResult()
+
+        async def commit(self) -> None:
+            return None
 
     async def fake_load_source_account_state(**_kwargs):
         return PaperSourceAccountState(

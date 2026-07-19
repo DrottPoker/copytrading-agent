@@ -1782,7 +1782,7 @@ export function buildLiveCopyDecisionActivity(
       { label: decision.side, tone: decision.side === "long" ? "positive" : "warning" },
       ...statusPills,
     ],
-    sortAt: decision.updatedAt,
+    sortAt: decision.decisionAt ?? decision.updatedAt,
     stats: [
       {
         label: "Market",
@@ -1815,8 +1815,8 @@ export function buildLiveCopyDecisionActivity(
         label: "Pipeline",
         value: decision.tradingOrderId ? "record created" : "not created",
         detail: decision.tradingOrderId
-          ? `${shortIdentifier(decision.tradingOrderId)} | age ${formatDecisionAge(decision)} | processing ${formatProcessingLag(decision)}`
-          : `no downstream record | age ${formatDecisionAge(decision)} | processing ${formatProcessingLag(decision)}`,
+          ? `${shortIdentifier(decision.tradingOrderId)} | age ${formatDecisionAge(decision)} | queue ${formatQueueLag(decision)} | prep ${formatPreparationLag(decision)} | work ${formatProcessingLag(decision)}`
+          : `no downstream record | age ${formatDecisionAge(decision)} | queue ${formatQueueLag(decision)} | prep ${formatPreparationLag(decision)} | work ${formatProcessingLag(decision)}`,
         tone: decision.tradingOrderId ? "positive" : decision.outcome === "terminal_skip" ? "danger" : "neutral",
       },
     ],
@@ -1857,7 +1857,7 @@ function sourceTimestampDate(sourceTimestampMs: number | null | undefined) {
 }
 
 function formatDecisionAge(decision: LiveCopyDecision) {
-  return formatElapsedMs(dateMs(decision.updatedAt) - decision.sourceTimestampMs);
+  return formatElapsedMs(decisionTimestampMs(decision) - decision.sourceTimestampMs);
 }
 
 function formatIngestLag(decision: LiveCopyDecision) {
@@ -1868,12 +1868,32 @@ function formatIngestLag(decision: LiveCopyDecision) {
   return formatElapsedMs(dateMs(firstObservedTimestamp) - decision.sourceTimestampMs);
 }
 
+function formatQueueLag(decision: LiveCopyDecision) {
+  const firstObservedTimestamp = decision.firstObservedAt ?? decision.observedAt;
+  const claimedTimestamp = decision.executionClaimedAt ?? decision.processingStartedAt;
+  if (!firstObservedTimestamp || !claimedTimestamp) {
+    return "-";
+  }
+  return formatElapsedMs(dateMs(claimedTimestamp) - dateMs(firstObservedTimestamp));
+}
+
 function formatProcessingLag(decision: LiveCopyDecision) {
-  const firstProcessingTimestamp = decision.observedAt ?? decision.firstObservedAt;
+  const firstProcessingTimestamp = decision.processingStartedAt ?? decision.executionClaimedAt;
   if (!firstProcessingTimestamp) {
     return "-";
   }
-  return formatElapsedMs(dateMs(decision.updatedAt) - dateMs(firstProcessingTimestamp));
+  return formatElapsedMs(decisionTimestampMs(decision) - dateMs(firstProcessingTimestamp));
+}
+
+function formatPreparationLag(decision: LiveCopyDecision) {
+  if (!decision.executionClaimedAt || !decision.processingStartedAt) {
+    return "-";
+  }
+  return formatElapsedMs(dateMs(decision.processingStartedAt) - dateMs(decision.executionClaimedAt));
+}
+
+function decisionTimestampMs(decision: LiveCopyDecision) {
+  return dateMs(decision.decisionAt ?? decision.updatedAt);
 }
 
 function buildLiveFillActivity(

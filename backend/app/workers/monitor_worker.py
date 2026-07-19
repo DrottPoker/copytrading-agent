@@ -30,8 +30,13 @@ from app.services.live_copy_state_service import (
     LIVE_COPY_ORIGIN_PERIODIC_RECOVERY,
     LIVE_COPY_ORIGIN_SNAPSHOT_RECOVERY,
     LIVE_COPY_ORIGIN_STARTUP_RECOVERY,
-    LiveCopyProcessingDeferred,
     LiveCopyProcessingOrigin,
+)
+from app.services.live_copy_work_service import (
+    claim_next_live_copy_work,
+    complete_live_copy_work,
+    load_claimed_live_copy_wallet_fill,
+    retry_live_copy_work,
 )
 from app.services.live_trading_service import (
     LIVE_EXCHANGE_SOURCE,
@@ -49,6 +54,7 @@ from app.services.operation_status_service import (
 )
 from app.services.paper_trading_service import (
     PaperCopyBatchResult,
+    paper_source_fill_from_wallet_fill,
     process_paper_copy_fills,
     process_paper_copy_recovery,
     refresh_paper_copy_allocations,
@@ -82,6 +88,11 @@ RUNTIME_EVENT_BATCH_TIMEOUT_SECONDS = RUNTIME_EVENT_TIMEOUT_SECONDS + 0.5
 @dataclass(frozen=True)
 class RealtimeExecutionWorkItem:
     inbox_id: str
+
+
+@dataclass(frozen=True)
+class LiveCopyWorkWakeItem:
+    wallet_address: str
 
 
 class RealtimeExecutionProcessingError(RuntimeError):
@@ -432,9 +443,13 @@ async def run_owned_monitor_services(
         )
 
     realtime_execution_queue: asyncio.Queue[RealtimeExecutionWorkItem] | None = None
+    live_copy_work_queue: asyncio.Queue[LiveCopyWorkWakeItem] | None = None
     if runs_trading:
         realtime_intake_closed = asyncio.Event()
         realtime_execution_queue = asyncio.Queue(
+            maxsize=getattr(settings, "realtime_execution_queue_size", 1000)
+        )
+        live_copy_work_queue = asyncio.Queue(
             maxsize=getattr(settings, "realtime_execution_queue_size", 1000)
         )
         runtime.mark_queue_state(
@@ -454,6 +469,19 @@ async def run_owned_monitor_services(
                 runtime=runtime,
             ),
         )
+        add_supervised(
+            "live-copy-work",
+            lambda: run_live_copy_work_loop(
+                work_queue=live_copy_work_queue,
+                sessionmaker=sessionmaker,
+                redis=redis,
+                stop_event=stop_event,
+                intake_closed_event=realtime_intake_closed,
+                settings=settings,
+                price_cache=price_cache,
+                runtime=runtime,
+            ),
+        )
         realtime_subscription_task = add_supervised(
             "realtime-subscription",
             lambda: run_realtime_monitor_loop(
@@ -463,6 +491,7 @@ async def run_owned_monitor_services(
                 settings=settings,
                 price_cache=price_cache,
                 execution_queue=realtime_execution_queue,
+                live_copy_work_queue=live_copy_work_queue,
                 runtime=runtime,
             ),
         )
@@ -506,6 +535,7 @@ async def run_realtime_monitor_loop(
     settings: Any,
     price_cache: MarketPriceCache | None = None,
     execution_queue: asyncio.Queue[RealtimeExecutionWorkItem] | None = None,
+    live_copy_work_queue: asyncio.Queue[LiveCopyWorkWakeItem] | None = None,
     runtime: WorkerRuntimeState | None = None,
 ) -> None:
     while not stop_event.is_set():
@@ -561,6 +591,7 @@ async def run_realtime_monitor_loop(
                 settings=settings,
                 price_cache=price_cache,
                 execution_queue=execution_queue,
+                live_copy_work_queue=live_copy_work_queue,
                 runtime=runtime,
             )
 
@@ -1288,26 +1319,18 @@ async def run_live_copy_recovery_once(
                 )
         if result.processed_fills > 0 or result.skipped_fills > 0:
             logger.info(
-                "live copy recovery completed source_wallet=%s processed=%s skipped=%s",
+                "live copy recovery enqueued source_wallet=%s work=%s",
                 source_wallet or "all",
                 result.processed_fills,
-                result.skipped_fills,
             )
             await publish_event(
                 redis,
-                event_type="live_copy_recovery",
+                event_type="live_copy_recovery_enqueued",
                 channel="events:fills",
-                message=(
-                    "Live copy recovery completed: "
-                    f"{result.processed_fills} processed, {result.skipped_fills} skipped"
-                    f"{skip_reason_suffix(result.skip_reasons)}."
-                ),
+                message=f"Live copy recovery queued {result.processed_fills} source fills.",
                 payload={
                     "sourceWallet": source_wallet,
-                    "processedFills": result.processed_fills,
-                    "skippedFills": result.skipped_fills,
-                    "accountsUpdated": result.accounts_updated,
-                    "skipReasons": result.skip_reasons,
+                    "enqueuedWork": result.processed_fills,
                 },
             )
         return result
@@ -1582,6 +1605,7 @@ async def handle_websocket_message(
     settings: Any,
     price_cache: MarketPriceCache | None = None,
     execution_queue: asyncio.Queue[RealtimeExecutionWorkItem] | None = None,
+    live_copy_work_queue: asyncio.Queue[LiveCopyWorkWakeItem] | None = None,
     runtime: WorkerRuntimeState | None = None,
 ) -> None:
     channel = message.get("channel")
@@ -1620,40 +1644,51 @@ async def handle_websocket_message(
         )
 
     if execution_queue is not None:
-        if stored.inbox_id is None:
-            return
+        if stored.inbox_id is not None:
+            try:
+                execution_queue.put_nowait(RealtimeExecutionWorkItem(inbox_id=stored.inbox_id))
+                if runtime is not None:
+                    runtime.mark_queue_state(
+                        depth=execution_queue.qsize(),
+                        capacity=execution_queue.maxsize,
+                    )
+            except asyncio.QueueFull:
+                if runtime is not None:
+                    runtime.mark_queue_state(
+                        depth=execution_queue.qsize(),
+                        capacity=execution_queue.maxsize,
+                        dropped=True,
+                    )
+                logger.error(
+                    "realtime execution wakeup queue full; durable inbox will replay wallet=%s",
+                    stored.wallet_address,
+                )
+                await publish_event(
+                    redis,
+                    event_type="realtime_execution_queue_full",
+                    channel="events:system",
+                    message=(
+                        "Realtime wakeup queue is full; the durable inbox will replay the work."
+                    ),
+                    payload={
+                        "walletAddress": stored.wallet_address,
+                        "inboxId": stored.inbox_id,
+                    },
+                    severity="error",
+                )
+
+    if live_copy_work_queue is not None and not stored.is_snapshot and stored.rows_for_execution:
         try:
-            execution_queue.put_nowait(RealtimeExecutionWorkItem(inbox_id=stored.inbox_id))
-            if runtime is not None:
-                runtime.mark_queue_state(
-                    depth=execution_queue.qsize(),
-                    capacity=execution_queue.maxsize,
-                )
+            live_copy_work_queue.put_nowait(
+                LiveCopyWorkWakeItem(wallet_address=stored.wallet_address)
+            )
         except asyncio.QueueFull:
-            if runtime is not None:
-                runtime.mark_queue_state(
-                    depth=execution_queue.qsize(),
-                    capacity=execution_queue.maxsize,
-                    dropped=True,
-                )
             logger.error(
-                "realtime execution wakeup queue full; durable inbox will replay wallet=%s",
+                "live copy work wakeup queue full; durable work will replay wallet=%s",
                 stored.wallet_address,
             )
-            await publish_event(
-                redis,
-                event_type="realtime_execution_queue_full",
-                channel="events:system",
-                message="Realtime wakeup queue is full; the durable inbox will replay the work.",
-                payload={
-                    "walletAddress": stored.wallet_address,
-                    "inboxId": stored.inbox_id,
-                },
-                severity="error",
-            )
-        return
 
-    if stored.inbox_id is not None:
+    if execution_queue is not None or live_copy_work_queue is not None:
         return
 
     await process_stored_realtime_fills(
@@ -1791,6 +1826,154 @@ def discard_realtime_wakeup(
     )
 
 
+async def run_live_copy_work_loop(
+    *,
+    work_queue: asyncio.Queue[LiveCopyWorkWakeItem],
+    sessionmaker: Any,
+    redis: Any,
+    stop_event: asyncio.Event,
+    intake_closed_event: asyncio.Event,
+    settings: Any,
+    price_cache: MarketPriceCache | None,
+    runtime: WorkerRuntimeState,
+) -> None:
+    """Consume the canonical source-fill work queue for live execution only."""
+
+    owner = f"{runtime.instance_id}:live-copy-work"
+    claim_timeout_seconds = getattr(
+        settings,
+        "realtime_execution_claim_timeout_seconds",
+        300,
+    )
+    retry_base_seconds = getattr(
+        settings,
+        "realtime_execution_retry_base_seconds",
+        5,
+    )
+    while True:
+        claimed = await claim_next_live_copy_work(
+            sessionmaker,
+            owner=owner,
+            claim_timeout_seconds=claim_timeout_seconds,
+        )
+        if claimed is not None:
+            discard_live_copy_work_wakeup(work_queue)
+            try:
+                async with sessionmaker() as session:
+                    wallet_fill = await load_claimed_live_copy_wallet_fill(
+                        session,
+                        work_id=claimed.id,
+                        owner=owner,
+                    )
+                    if wallet_fill is None:
+                        raise RuntimeError("Claimed live-copy work is missing its wallet fill.")
+                    live_result = await process_live_copy_fills(
+                        session,
+                        source_wallet=claimed.wallet_address,
+                        fills=[paper_source_fill_from_wallet_fill(wallet_fill)],
+                        settings=settings,
+                        price_cache=price_cache,
+                        origin=claimed.origin,
+                        realtime_observed_at=wallet_fill.received_at,
+                        execution_claimed_at=claimed.claimed_at,
+                    )
+            except asyncio.CancelledError:
+                try:
+                    await retry_live_copy_work(
+                        sessionmaker,
+                        work_id=claimed.id,
+                        owner=owner,
+                        attempt_count=claimed.attempt_count,
+                        error="Live-copy work was interrupted by worker shutdown.",
+                        retry_base_seconds=retry_base_seconds,
+                        immediate=True,
+                    )
+                except Exception:
+                    logger.exception(
+                        "failed to release live-copy work claim during shutdown id=%s",
+                        claimed.id,
+                    )
+                raise
+            except Exception as exc:
+                await retry_live_copy_work(
+                    sessionmaker,
+                    work_id=claimed.id,
+                    owner=owner,
+                    attempt_count=claimed.attempt_count,
+                    error=exc,
+                    retry_base_seconds=retry_base_seconds,
+                )
+                logger.exception(
+                    "live-copy work failed and was scheduled for durable retry id=%s",
+                    claimed.id,
+                )
+                await publish_event(
+                    redis,
+                    event_type="live_copy_work_retry",
+                    channel="events:system",
+                    message="Live copy work failed and was scheduled for durable retry.",
+                    payload={
+                        "workId": str(claimed.id),
+                        "walletAddress": claimed.wallet_address,
+                        "sourceFillId": claimed.source_fill_id,
+                        "attemptCount": claimed.attempt_count,
+                        "error": str(exc),
+                    },
+                    severity="error",
+                )
+            else:
+                completed = await complete_live_copy_work(
+                    sessionmaker,
+                    work_id=claimed.id,
+                    owner=owner,
+                )
+                if not completed:
+                    logger.warning(
+                        "live-copy work completed after its claim was lost id=%s",
+                        claimed.id,
+                    )
+                if live_result.processed_fills > 0 or live_result.skipped_fills > 0:
+                    await publish_event(
+                        redis,
+                        event_type="live_copy",
+                        channel="events:fills",
+                        message=(
+                            f"Live copied {live_result.processed_fills} fills from "
+                            f"{short_address(claimed.wallet_address)}"
+                            f"{skip_reason_suffix(live_result.skip_reasons)}."
+                        ),
+                        payload={
+                            "walletAddress": claimed.wallet_address,
+                            "sourceFillId": claimed.source_fill_id,
+                            "processedFills": live_result.processed_fills,
+                            "skippedFills": live_result.skipped_fills,
+                            "accountsUpdated": live_result.accounts_updated,
+                            "skipReasons": live_result.skip_reasons,
+                        },
+                    )
+                runtime.mark_progress("live-copy-work")
+            continue
+
+        if stop_event.is_set() and intake_closed_event.is_set():
+            return
+
+        try:
+            await asyncio.wait_for(work_queue.get(), timeout=0.5)
+        except TimeoutError:
+            continue
+        work_queue.task_done()
+
+
+def discard_live_copy_work_wakeup(
+    work_queue: asyncio.Queue[LiveCopyWorkWakeItem],
+) -> None:
+    try:
+        work_queue.get_nowait()
+    except asyncio.QueueEmpty:
+        return
+    work_queue.task_done()
+
+
 async def process_stored_realtime_fills(
     stored: StoredRealtimeFills,
     *,
@@ -1857,76 +2040,6 @@ async def process_stored_realtime_fills(
         )
 
     processing_errors: list[tuple[str, Exception]] = []
-    if live_copy_processing_enabled(settings) and execution_rows:
-        try:
-            if price_cache is not None:
-                await price_cache.request_dexes(
-                    dex_from_coin(stored_fill.get("coin")) for stored_fill in execution_rows
-                )
-            async with sessionmaker() as session:
-                live_result = await process_live_copy_fills(
-                    session,
-                    source_wallet=stored.wallet_address,
-                    fills=execution_rows,
-                    settings=settings,
-                    price_cache=price_cache,
-                    realtime_observed_at=stored.observed_at,
-                )
-            if live_result.processed_fills > 0 or live_result.skipped_fills > 0:
-                presentation_events.append(
-                    {
-                        "event_type": "live_copy",
-                        "channel": "events:fills",
-                        "message": (
-                            f"Live copied {live_result.processed_fills} fills from "
-                            f"{short_address(stored.wallet_address)}"
-                            f"{skip_reason_suffix(live_result.skip_reasons)}."
-                        ),
-                        "payload": {
-                            "walletAddress": stored.wallet_address,
-                            "processedFills": live_result.processed_fills,
-                            "skippedFills": live_result.skipped_fills,
-                            "accountsUpdated": live_result.accounts_updated,
-                            "skipReasons": live_result.skip_reasons,
-                        },
-                    }
-                )
-        except LiveCopyProcessingDeferred as exc:
-            processing_errors.append(("live", exc))
-            logger.info(
-                "live copy processing deferred wallet=%s reason=%s",
-                stored.wallet_address,
-                exc,
-            )
-            presentation_events.append(
-                {
-                    "event_type": "live_copy_deferred",
-                    "channel": "events:system",
-                    "message": "Live copy is waiting for a transient prerequisite.",
-                    "payload": {
-                        "walletAddress": stored.wallet_address,
-                        "reason": exc.reason,
-                        "detail": str(exc),
-                    },
-                    "severity": "warning",
-                }
-            )
-        except Exception as exc:
-            processing_errors.append(("live", exc))
-            logger.exception("live copy processing failed wallet=%s", stored.wallet_address)
-            presentation_events.append(
-                {
-                    "event_type": "live_copy_error",
-                    "channel": "events:system",
-                    "message": "Live copy processing failed.",
-                    "payload": {
-                        "walletAddress": stored.wallet_address,
-                        "error": str(exc),
-                    },
-                    "severity": "error",
-                }
-            )
-
     if settings.paper_trading_enabled and settings.paper_copy_enabled and execution_rows:
         try:
             if price_cache is not None:

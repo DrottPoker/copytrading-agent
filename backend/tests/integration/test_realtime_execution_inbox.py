@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.db.models import RealtimeExecutionInbox, WalletFill
+from app.db.models import LiveCopyWork, RealtimeExecutionInbox, WalletFill
 from app.services.realtime_execution_inbox_service import (
     claim_next_realtime_execution,
     complete_realtime_execution,
@@ -29,7 +29,7 @@ def inbox_payload(external_fill_id: str) -> dict[str, object]:
 
 
 @pytest.mark.asyncio
-async def test_realtime_fill_and_inbox_are_committed_together(
+async def test_realtime_fill_inbox_and_live_copy_work_are_committed_together(
     integration_sessionmaker: async_sessionmaker[AsyncSession],
 ) -> None:
     address = "0x" + "1" * 40
@@ -53,10 +53,13 @@ async def test_realtime_fill_and_inbox_are_committed_together(
         )
 
     assert stored.inbox_id is not None
+    assert stored.live_copy_work_enqueued == 1
     async with integration_sessionmaker() as session:
         wallet_fill_count = await session.scalar(select(func.count()).select_from(WalletFill))
+        work_count = await session.scalar(select(func.count()).select_from(LiveCopyWork))
         inbox = await session.get(RealtimeExecutionInbox, UUID(stored.inbox_id))
     assert wallet_fill_count == 1
+    assert work_count == 1
     assert inbox is not None
     assert inbox.payload["insertedRows"][0]["externalFillId"] == "atomic-first-fill"
 
@@ -101,6 +104,48 @@ async def test_poll_inserted_fill_still_creates_realtime_execution_inbox(
     assert inbox is not None
     assert inbox.payload["insertedRows"] == []
     assert inbox.payload["executionRows"][0]["externalFillId"] == "poll-before-websocket"
+
+
+@pytest.mark.asyncio
+async def test_realtime_duplicate_after_snapshot_enqueues_exactly_one_live_copy_work_item(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    address = "0x" + "3" * 40
+    fill_time_ms = int(datetime.now(UTC).timestamp() * 1000)
+    fill = {
+        "tid": "snapshot-then-realtime",
+        "coin": "HYPE",
+        "side": "B",
+        "dir": "Open Long",
+        "px": "40",
+        "sz": "1",
+        "time": fill_time_ms,
+    }
+    async with integration_sessionmaker() as session:
+        snapshot = await store_realtime_fills(
+            session,
+            wallet_address=address,
+            fills=[fill],
+            is_snapshot=True,
+        )
+    async with integration_sessionmaker() as session:
+        realtime = await store_realtime_fills(
+            session,
+            wallet_address=address,
+            fills=[fill],
+            is_snapshot=False,
+        )
+    async with integration_sessionmaker() as session:
+        work_rows = list((await session.scalars(select(LiveCopyWork))).all())
+
+    assert snapshot.inserted == 1
+    assert snapshot.live_copy_work_enqueued == 0
+    assert realtime.inserted == 0
+    assert realtime.duplicate == 1
+    assert realtime.live_copy_work_enqueued == 1
+    assert len(work_rows) == 1
+    assert work_rows[0].source_fill_id == "snapshot-then-realtime"
+    assert work_rows[0].origin == "realtime"
 
 
 @pytest.mark.asyncio

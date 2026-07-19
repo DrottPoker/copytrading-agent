@@ -145,6 +145,9 @@ def test_live_copy_decision_read_serializes_the_planned_action_and_lifecycle_fie
         source_timestamp_ms=int(observed_at.timestamp() * 1000),
         observed_at=observed_at,
         first_observed_at=observed_at,
+        execution_claimed_at=observed_at + timedelta(milliseconds=100),
+        processing_started_at=observed_at + timedelta(milliseconds=200),
+        decision_at=observed_at + timedelta(seconds=1),
         last_attempt_at=observed_at,
         next_attempt_at=observed_at + timedelta(seconds=30),
         trading_order_id=None,
@@ -157,6 +160,9 @@ def test_live_copy_decision_read_serializes_the_planned_action_and_lifecycle_fie
     assert payload["origin"] == "realtime"
     assert payload["sourceTimestampMs"] == 1767268800000
     assert payload["observedAt"] == "2026-01-01T12:00:00Z"
+    assert payload["executionClaimedAt"] == "2026-01-01T12:00:00.100000Z"
+    assert payload["processingStartedAt"] == "2026-01-01T12:00:00.200000Z"
+    assert payload["decisionAt"] == "2026-01-01T12:00:01Z"
     assert payload["nextAttemptAt"] == "2026-01-01T12:00:30Z"
 
 
@@ -182,6 +188,9 @@ async def test_trading_accounts_route_exposes_recent_live_copy_decisions_separat
         source_order_position=Decimal("1"),
         observed_at=observed_at,
         first_observed_at=observed_at,
+        execution_claimed_at=observed_at + timedelta(milliseconds=100),
+        processing_started_at=observed_at + timedelta(milliseconds=200),
+        decision_at=None,
         origin="realtime",
         outcome="retryable",
         reason="price_unavailable",
@@ -237,6 +246,9 @@ async def test_trading_accounts_route_exposes_recent_live_copy_decisions_separat
     assert read.origin == "realtime"
     assert read.source_timestamp_ms == int(observed_at.timestamp() * 1000)
     assert read.observed_at == observed_at
+    assert read.execution_claimed_at == observed_at + timedelta(milliseconds=100)
+    assert read.processing_started_at == observed_at + timedelta(milliseconds=200)
+    assert read.decision_at is None
 
     decision_sql = str(
         session.statements[3].compile(
@@ -246,7 +258,7 @@ async def test_trading_accounts_route_exposes_recent_live_copy_decisions_separat
     )
     assert "FROM live_copy_fill_states" in decision_sql
     assert "live_copy_fill_states.account_type = 'live'" in decision_sql
-    assert "ORDER BY live_copy_fill_states.updated_at DESC" in decision_sql
+    assert "ORDER BY coalesce(live_copy_fill_states.decision_at" in decision_sql
     assert "LIMIT 50" in decision_sql
 
 

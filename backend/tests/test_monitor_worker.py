@@ -1,11 +1,14 @@
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
 import pytest
 
+from app.services.live_copy_state_service import LIVE_COPY_ORIGIN_REALTIME
+from app.services.live_copy_work_service import ClaimedLiveCopyWork
 from app.services.live_trading_service import LiveReconciliationError
 from app.services.paper_trading_service import PaperCopyBatchResult
 from app.services.realtime_execution_inbox_service import ClaimedRealtimeExecution
@@ -26,7 +29,7 @@ def dummy_sessionmaker() -> DummySession:
 
 
 @pytest.mark.asyncio
-async def test_handle_websocket_message_prioritizes_live_copy(monkeypatch) -> None:
+async def test_handle_websocket_message_never_executes_live_copy_inline(monkeypatch) -> None:
     calls: list[str] = []
     published_events: list[str] = []
     stored_fill = {
@@ -51,8 +54,7 @@ async def test_handle_websocket_message_prioritizes_live_copy(monkeypatch) -> No
         *_args: object,
         **_kwargs: object,
     ) -> PaperCopyBatchResult:
-        calls.append("live")
-        return PaperCopyBatchResult(processed_fills=1)
+        raise AssertionError("live execution must be consumed from durable live-copy work")
 
     async def fake_process_paper_copy_fills(
         *_args: object,
@@ -95,12 +97,12 @@ async def test_handle_websocket_message_prioritizes_live_copy(monkeypatch) -> No
         settings=settings,
     )
 
-    assert calls == ["live", "paper"]
-    assert published_events == ["fill", "live_copy", "paper_copy"]
+    assert calls == ["paper"]
+    assert published_events == ["fill", "paper_copy"]
 
 
 @pytest.mark.asyncio
-async def test_execution_finishes_before_blocked_presentation_events(monkeypatch) -> None:
+async def test_paper_execution_finishes_before_blocked_presentation_events(monkeypatch) -> None:
     sequence: list[str] = []
     execution_complete = asyncio.Event()
     publication_started = asyncio.Event()
@@ -123,8 +125,7 @@ async def test_execution_finishes_before_blocked_presentation_events(monkeypatch
     )
 
     async def fake_live(*_args: object, **_kwargs: object) -> PaperCopyBatchResult:
-        sequence.append("live")
-        return PaperCopyBatchResult(processed_fills=1)
+        raise AssertionError("legacy inbox processing must not execute live copy")
 
     async def fake_paper(*_args: object, **_kwargs: object) -> PaperCopyBatchResult:
         sequence.append("paper")
@@ -159,8 +160,8 @@ async def test_execution_finishes_before_blocked_presentation_events(monkeypatch
     await asyncio.wait_for(execution_complete.wait(), timeout=1)
     await asyncio.wait_for(publication_started.wait(), timeout=1)
 
-    assert sequence[:2] == ["live", "paper"]
-    assert all(item.startswith("event:") for item in sequence[2:])
+    assert sequence[0] == "paper"
+    assert all(item.startswith("event:") for item in sequence[1:])
     assert task.done() is False
 
     release_publication.set()
@@ -168,7 +169,9 @@ async def test_execution_finishes_before_blocked_presentation_events(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_duplicate_realtime_fill_still_reaches_idempotent_copy_execution(monkeypatch) -> None:
+async def test_duplicate_realtime_fill_reaches_paper_but_not_inline_live_execution(
+    monkeypatch,
+) -> None:
     copied_rows: list[tuple[str, list[dict[str, Any]]]] = []
     published_events: list[str] = []
     execution_row = {
@@ -196,8 +199,7 @@ async def test_duplicate_realtime_fill_still_reaches_idempotent_copy_execution(m
         fills: list[dict[str, Any]],
         **_kwargs: object,
     ) -> PaperCopyBatchResult:
-        copied_rows.append(("live", fills))
-        return PaperCopyBatchResult(processed_fills=1)
+        raise AssertionError("live execution must use the live-copy work queue")
 
     async def fake_paper(
         *_args: object,
@@ -229,8 +231,8 @@ async def test_duplicate_realtime_fill_still_reaches_idempotent_copy_execution(m
         ),
     )
 
-    assert copied_rows == [("live", [execution_row]), ("paper", [execution_row])]
-    assert published_events == ["live_copy", "paper_copy"]
+    assert copied_rows == [("paper", [execution_row])]
+    assert published_events == ["paper_copy"]
 
 
 @pytest.mark.asyncio
@@ -676,6 +678,151 @@ async def test_realtime_execution_loop_replays_durable_duplicate_fill_without_wa
 
 
 @pytest.mark.asyncio
+async def test_live_copy_work_loop_claims_processes_and_completes_durable_work(
+    monkeypatch,
+) -> None:
+    work_id = uuid4()
+    wallet_fill_id = uuid4()
+    claimed_at = datetime(2026, 7, 19, 10, tzinfo=UTC)
+    claimed = ClaimedLiveCopyWork(
+        id=work_id,
+        wallet_fill_id=wallet_fill_id,
+        wallet_address="0xsource",
+        source_fill_id="source-fill-1",
+        origin=LIVE_COPY_ORIGIN_REALTIME,
+        claimed_at=claimed_at,
+        attempt_count=1,
+    )
+    claims = [claimed, None]
+    processed: list[dict[str, object]] = []
+    completed: list[dict[str, object]] = []
+
+    async def fake_claim(*_args: object, **_kwargs: object):
+        return claims.pop(0)
+
+    async def fake_load(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(received_at=claimed_at)
+
+    async def fake_process(*_args: object, **kwargs: object) -> PaperCopyBatchResult:
+        processed.append(kwargs)
+        return PaperCopyBatchResult(processed_fills=1)
+
+    async def fake_complete(*_args: object, **kwargs: object) -> bool:
+        completed.append(kwargs)
+        return True
+
+    async def fake_publish(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(monitor_worker, "claim_next_live_copy_work", fake_claim)
+    monkeypatch.setattr(monitor_worker, "load_claimed_live_copy_wallet_fill", fake_load)
+    monkeypatch.setattr(
+        monitor_worker,
+        "paper_source_fill_from_wallet_fill",
+        lambda _fill: {"id": "1"},
+    )
+    monkeypatch.setattr(monitor_worker, "process_live_copy_fills", fake_process)
+    monkeypatch.setattr(monitor_worker, "complete_live_copy_work", fake_complete)
+    monkeypatch.setattr(monitor_worker, "publish_event", fake_publish)
+    stop_event = asyncio.Event()
+    stop_event.set()
+    intake_closed_event = asyncio.Event()
+    intake_closed_event.set()
+    runtime = monitor_worker.WorkerRuntimeState(role="trading", capabilities=("trading",))
+
+    await monitor_worker.run_live_copy_work_loop(
+        work_queue=asyncio.Queue(maxsize=1),
+        sessionmaker=dummy_sessionmaker,
+        redis=object(),
+        stop_event=stop_event,
+        intake_closed_event=intake_closed_event,
+        settings=SimpleNamespace(
+            realtime_execution_claim_timeout_seconds=300,
+            realtime_execution_retry_base_seconds=5,
+        ),
+        price_cache=None,
+        runtime=runtime,
+    )
+
+    assert len(processed) == 1
+    assert processed[0]["source_wallet"] == "0xsource"
+    assert processed[0]["fills"] == [{"id": "1"}]
+    assert processed[0]["origin"] == LIVE_COPY_ORIGIN_REALTIME
+    assert processed[0]["realtime_observed_at"] == claimed_at
+    assert processed[0]["execution_claimed_at"] == claimed_at
+    assert completed == [{"work_id": work_id, "owner": f"{runtime.instance_id}:live-copy-work"}]
+
+
+@pytest.mark.asyncio
+async def test_live_copy_work_loop_retries_after_processing_failure(monkeypatch) -> None:
+    work_id = uuid4()
+    claimed = ClaimedLiveCopyWork(
+        id=work_id,
+        wallet_fill_id=uuid4(),
+        wallet_address="0xsource",
+        source_fill_id="source-fill-1",
+        origin=LIVE_COPY_ORIGIN_REALTIME,
+        claimed_at=datetime(2026, 7, 19, 10, tzinfo=UTC),
+        attempt_count=2,
+    )
+    claims = [claimed, None]
+    retries: list[dict[str, object]] = []
+
+    async def fake_claim(*_args: object, **_kwargs: object):
+        return claims.pop(0)
+
+    async def fake_load(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(received_at=claimed.claimed_at)
+
+    async def failing_process(*_args: object, **_kwargs: object) -> PaperCopyBatchResult:
+        raise RuntimeError("exchange temporarily unavailable")
+
+    async def fake_retry(*_args: object, **kwargs: object) -> bool:
+        retries.append(kwargs)
+        return True
+
+    async def fake_publish(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(monitor_worker, "claim_next_live_copy_work", fake_claim)
+    monkeypatch.setattr(monitor_worker, "load_claimed_live_copy_wallet_fill", fake_load)
+    monkeypatch.setattr(
+        monitor_worker,
+        "paper_source_fill_from_wallet_fill",
+        lambda _fill: {"id": "1"},
+    )
+    monkeypatch.setattr(monitor_worker, "process_live_copy_fills", failing_process)
+    monkeypatch.setattr(monitor_worker, "retry_live_copy_work", fake_retry)
+    monkeypatch.setattr(monitor_worker, "publish_event", fake_publish)
+    stop_event = asyncio.Event()
+    stop_event.set()
+    intake_closed_event = asyncio.Event()
+    intake_closed_event.set()
+    runtime = monitor_worker.WorkerRuntimeState(role="trading", capabilities=("trading",))
+
+    await monitor_worker.run_live_copy_work_loop(
+        work_queue=asyncio.Queue(maxsize=1),
+        sessionmaker=dummy_sessionmaker,
+        redis=object(),
+        stop_event=stop_event,
+        intake_closed_event=intake_closed_event,
+        settings=SimpleNamespace(
+            realtime_execution_claim_timeout_seconds=300,
+            realtime_execution_retry_base_seconds=7,
+        ),
+        price_cache=None,
+        runtime=runtime,
+    )
+
+    assert len(retries) == 1
+    assert retries[0]["work_id"] == work_id
+    assert retries[0]["owner"] == f"{runtime.instance_id}:live-copy-work"
+    assert retries[0]["attempt_count"] == 2
+    assert retries[0]["retry_base_seconds"] == 7
+    assert isinstance(retries[0]["error"], RuntimeError)
+
+
+@pytest.mark.asyncio
 async def test_realtime_execution_waits_for_intake_to_close_before_shutdown(
     monkeypatch,
 ) -> None:
@@ -754,4 +901,9 @@ async def test_trading_worker_registers_core_loops_with_supervisor(monkeypatch) 
         runtime=runtime,
     )
 
-    assert supervised == ["heartbeat", "realtime-execution", "realtime-subscription"]
+    assert supervised == [
+        "heartbeat",
+        "realtime-execution",
+        "live-copy-work",
+        "realtime-subscription",
+    ]

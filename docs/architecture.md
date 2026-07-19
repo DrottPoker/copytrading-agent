@@ -165,9 +165,10 @@ Trading worker responsibilities:
   payload even when the same wallet fill was inserted first by polling. The
   database inserted and duplicate counts stay accurate, while copy execution
   remains idempotent through the account and source-fill order key.
-- Place committed fill batches on a bounded realtime execution queue. Live copy
-  runs before paper copy in the queue consumer. If the queue is full, the fill
-  remains in Postgres and periodic recovery replays it.
+- Place committed paper execution payloads on a bounded realtime inbox wakeup
+  queue. Place live source fills on a separate bounded wakeup queue backed by
+  `live_copy_work`. If either queue is full, the durable database row remains
+  claimable without Redis or the in-process wakeup.
 - Simulate paper copies for non-snapshot fills from scored allocation wallets.
 - Submit live copy orders for non-snapshot fills when live trading and live copy
   execution are enabled.
@@ -186,10 +187,10 @@ Trading worker responsibilities:
 - Recover pending or uncertain live order outbox rows and resume unfinished
   live close-all operations before normal account reconciliation.
 - Publish presentation events to Redis Streams through a best-effort boundary.
-  Raw fill, result, and error events are published concurrently with a fixed
-  overall deadline only after live and paper execution. Redis failure never
-  fails fill persistence or trading work, and Redis latency cannot delay an
-  entry decision or block the next inbox item without bound.
+  Raw fill, result, and error events are published after the corresponding
+  durable paper or live execution path. Redis failure never fails fill
+  persistence or trading work, and Redis latency cannot delay an entry decision
+  or block the next durable item without bound.
 - Claim durable realtime execution payloads from Postgres. The local bounded
   queue only wakes the consumer and can be rebuilt after any restart.
 
@@ -834,6 +835,24 @@ when the result is a terminal order-level decision. Each pre-submit decision
 stores its decision time and exact reason, including source or total
 allocation exhaustion, reconciliation state, source account state, and submit
 validation failures.
+
+Live-copy scheduling uses `live_copy_work` as the single durable ownership
+boundary for realtime and recovery. Realtime ingestion inserts one unique work
+row in the same transaction as a newly stored source fill. Startup, snapshot,
+and periodic recovery only enqueue missing candidate fills into the same table.
+They do not call live execution through an independent path. Claims are
+committed before Hyperliquid I/O, canonical source ordering is stored with each
+work item, and transient failures return the item to a durable retry schedule.
+
+The execution path does not run full account reconciliation before evaluating a
+fresh entry. It consumes the latest authoritative reconciliation snapshot and
+lets the dedicated reconciliation loop refresh exchange state. Entry submission
+still enforces reconciliation completeness and maximum snapshot age, and it
+rechecks source-fill freshness immediately before exchange submission.
+`LiveCopyFillState` stores explicit execution-claim, processing-start, and
+decision timestamps. These are Python wall-clock values and are not derived
+from PostgreSQL transaction-scoped `now()` values.
+
 Paper fees use
 Hyperliquid's base perp taker fee by default, 0.045%, because paper execution
 models immediate taker-style fills rather than resting maker orders.

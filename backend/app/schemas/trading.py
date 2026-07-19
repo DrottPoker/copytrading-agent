@@ -184,6 +184,9 @@ class LiveCopyDecisionRead(CamelModel):
     source_timestamp_ms: int
     observed_at: datetime | None = None
     first_observed_at: datetime | None = None
+    execution_claimed_at: datetime | None = None
+    processing_started_at: datetime | None = None
+    decision_at: datetime | None = None
     last_attempt_at: datetime | None = None
     next_attempt_at: datetime | None = None
     trading_order_id: UUID | None = None

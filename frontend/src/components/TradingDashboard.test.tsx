@@ -33,6 +33,9 @@ function copyDecision(overrides: Partial<LiveCopyDecision>): LiveCopyDecision {
     sourceTimestampMs: 1767225600000,
     observedAt: "2026-01-01T00:00:01Z",
     firstObservedAt: "2026-01-01T00:00:00Z",
+    executionClaimedAt: "2026-01-01T00:00:01Z",
+    processingStartedAt: "2026-01-01T00:00:02Z",
+    decisionAt: "2026-01-01T00:00:03Z",
     lastAttemptAt: null,
     nextAttemptAt: null,
     tradingOrderId: null,
@@ -139,6 +142,9 @@ describe("live copy decisions", () => {
       sourceTimestampMs: Date.parse("2026-01-01T00:00:00Z"),
       observedAt: null,
       firstObservedAt: "2026-01-01T00:00:03Z",
+      executionClaimedAt: "2026-01-01T00:00:05Z",
+      processingStartedAt: "2026-01-01T00:00:08Z",
+      decisionAt: "2026-01-01T00:01:05Z",
       updatedAt: "2026-01-01T00:01:05Z",
     });
 
@@ -153,7 +159,9 @@ describe("live copy decisions", () => {
     });
     expect(activity.stats.find((stat) => stat.label === "First observed")?.detail).toContain("ingest 3 s");
     expect(activity.stats.find((stat) => stat.label === "Pipeline")?.detail).toContain("age 1m 5s");
-    expect(activity.stats.find((stat) => stat.label === "Pipeline")?.detail).toContain("processing 1m 2s");
+    expect(activity.stats.find((stat) => stat.label === "Pipeline")?.detail).toContain("queue 2 s");
+    expect(activity.stats.find((stat) => stat.label === "Pipeline")?.detail).toContain("prep 3 s");
+    expect(activity.stats.find((stat) => stat.label === "Pipeline")?.detail).toContain("work 57 s");
   });
 
   it("keeps no-order decisions in Copy Decisions instead of execution activity", () => {

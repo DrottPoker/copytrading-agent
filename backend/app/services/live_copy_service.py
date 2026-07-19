@@ -47,6 +47,7 @@ from app.services.live_copy_state_service import (
     preexisting_market_matches_part,
     synchronize_live_copy_source_activity,
 )
+from app.services.live_copy_work_service import enqueue_live_copy_work_for_wallet_fills
 from app.services.live_trading_service import (
     LIVE_CAPITAL_MODE_UNIFIED,
     LIVE_EXCHANGE_SOURCE,
@@ -58,6 +59,8 @@ from app.services.live_trading_service import (
     is_retryable_live_order_submit_failure,
     live_capital_mode,
     live_perp_equity_usd,
+    live_reconciliation_is_fresh,
+    live_reconciliation_status,
     live_tradable_equity_usd,
     live_unified_equity_usd,
     load_live_source_position,
@@ -309,6 +312,7 @@ async def process_live_copy_fills(
     price_cache: MarketPriceCache | None = None,
     origin: LiveCopyProcessingOrigin = LIVE_COPY_ORIGIN_REALTIME,
     realtime_observed_at: datetime | None = None,
+    execution_claimed_at: datetime | None = None,
     accounts_override: list[TradingAccount] | None = None,
     prechecked_reconciliation_failures: set[str] | None = None,
     lanes_synchronized: bool = False,
@@ -356,7 +360,14 @@ async def process_live_copy_fills(
     if not accounts:
         return live_skip("live_no_enabled_accounts", len(fills))
 
+    # Do not retain a database transaction while source-account and market
+    # requests are in flight.  The durable work claim is already committed.
+    await session.commit()
+
     if client is None:
+        # The durable work claim and lifecycle preparation must be visible
+        # before a source-state or price request can wait on the network.
+        await session.commit()
         async with HyperliquidClient(resolved_settings) as hyperliquid_client:
             return await process_live_copy_fills(
                 session,
@@ -368,6 +379,7 @@ async def process_live_copy_fills(
                 price_cache=price_cache,
                 origin=origin,
                 realtime_observed_at=realtime_observed_at,
+                execution_claimed_at=execution_claimed_at,
                 accounts_override=candidate_accounts,
                 prechecked_reconciliation_failures=prechecked_reconciliation_failures,
                 lanes_synchronized=lanes_synchronized,
@@ -390,13 +402,12 @@ async def process_live_copy_fills(
         market_prices_task,
     )
 
-    accounts = (
-        accounts_override
-        if accounts_override is not None
-        else await load_live_accounts_for_source_copy(
-            session,
-            source_wallet=normalized_source_wallet,
-        )
+    # Reload after network preflight.  A scheduled reconciliation can complete
+    # while source account and market price requests are in flight, so stale
+    # ORM objects must not decide the entry freshness gate.
+    accounts = await load_live_accounts_for_source_copy(
+        session,
+        source_wallet=normalized_source_wallet,
     )
     accounts = await filter_live_accounts_for_source_allocation(
         session,
@@ -406,14 +417,25 @@ async def process_live_copy_fills(
     )
     if not accounts:
         return live_skip("live_no_enabled_accounts", len(fills))
-    failed_reconciliation_accounts = prechecked_reconciliation_failures
-    if failed_reconciliation_accounts is None:
-        failed_reconciliation_accounts = await refresh_stale_live_copy_accounts(
-            session,
-            accounts=accounts,
-            settings=resolved_settings,
-            client=client,
-        )
+    if prechecked_reconciliation_failures is None:
+        snapshot_now = datetime.now(UTC)
+        failed_reconciliation_accounts = {
+            account.key
+            for account in accounts
+            if live_reconciliation_status(account) != "complete"
+            or not live_reconciliation_is_fresh(
+                account,
+                settings=resolved_settings,
+                now=snapshot_now,
+            )
+        }
+    else:
+        failed_reconciliation_accounts = prechecked_reconciliation_failures
+
+    # A fresh authoritative account snapshot is enforced by the live entry
+    # gate.  Reconciliation has its own worker and must never block fresh
+    # source fills on this latency-critical path.
+    await session.commit()
 
     processed = 0
     skipped = 0
@@ -476,6 +498,7 @@ async def process_live_copy_fills(
                 first_observed_at=first_observed_at_by_fill_id.get(
                     str(fill.get("externalFillId") or "")
                 ),
+                execution_claimed_at=execution_claimed_at,
             )
 
     # Terminal entry decisions are independent of execution ordering.  Make
@@ -748,13 +771,18 @@ async def process_live_copy_fills(
             else:
                 blocked_market_lanes.add(market_lane)
 
-    for account in touched_accounts.values():
-        await reconcile_live_trading_account(
-            session,
-            account=account,
-            settings=resolved_settings,
-            info_client=client,
-        )
+    if touched_accounts:
+        # Reconcile after submission so a subsequent source add or close sees
+        # the exchange-authoritative copied position.  Pre-entry refreshes are
+        # intentionally handled by the dedicated reconciliation worker.
+        await session.commit()
+        for account in touched_accounts.values():
+            await reconcile_live_trading_account(
+                session,
+                account=account,
+                settings=resolved_settings,
+                info_client=client,
+            )
 
     await session.commit()
     if deferred_reasons:
@@ -1699,11 +1727,19 @@ async def process_live_copy_recovery(
     fill_limit_per_source: int = 1000,
     origin: LiveCopyProcessingOrigin = LIVE_COPY_ORIGIN_PERIODIC_RECOVERY,
 ) -> PaperCopyBatchResult:
+    """Seed missing durable work without executing source fills inline.
+
+    Realtime, startup, periodic, and snapshot recovery all converge on
+    ``LiveCopyWork``.  Only the dedicated work consumer may call
+    ``process_live_copy_fills`` for a source fill.
+    """
+
     resolved_settings = settings or get_settings()
     if not live_copy_processing_enabled(resolved_settings):
         return PaperCopyBatchResult()
 
     if client is None:
+        await session.commit()
         async with HyperliquidClient(resolved_settings) as hyperliquid_client:
             return await process_live_copy_recovery(
                 session,
@@ -1722,7 +1758,7 @@ async def process_live_copy_recovery(
         source for source, allocation in allocations.items() if allocation.active
     }
 
-    total = PaperCopyBatchResult()
+    enqueued = 0
     live_client = trading_client or HyperliquidLiveTradingClient(settings=resolved_settings)
     accounts = await load_live_accounts_for_source_copy(session, source_wallet="")
     await bootstrap_missing_live_source_attribution(session, accounts=accounts)
@@ -1739,19 +1775,6 @@ async def process_live_copy_recovery(
             session,
             max_sources=max_sources,
         )
-    failed_reconciliation_accounts = await refresh_stale_live_copy_accounts(
-        session,
-        accounts=accounts,
-        settings=resolved_settings,
-        client=client,
-    )
-    await synchronize_live_copy_lanes(
-        session,
-        accounts=accounts,
-        active_source_wallets=active_source_wallets,
-        protected_account_keys=failed_reconciliation_accounts,
-    )
-    await session.commit()
     for wallet in source_wallets:
         wallet_accounts = await filter_live_accounts_for_source_allocation(
             session,
@@ -1761,6 +1784,9 @@ async def process_live_copy_recovery(
         )
         if not wallet_accounts:
             continue
+        # Margin-mode and leverage synchronization manages existing copied
+        # positions only.  Commit source-state changes before its network I/O.
+        await session.commit()
         await sync_live_source_margin_settings(
             session,
             source_wallet=wallet,
@@ -1790,32 +1816,13 @@ async def process_live_copy_recovery(
             )
             if not candidate_rows:
                 continue
-            fills = [paper_source_fill_from_wallet_fill(fill) for fill in candidate_rows]
-            try:
-                result = await process_live_copy_fills(
-                    session,
-                    source_wallet=wallet,
-                    fills=fills,
-                    settings=resolved_settings,
-                    client=client,
-                    trading_client=live_client,
-                    price_cache=price_cache,
-                    origin=origin,
-                    accounts_override=[account],
-                    prechecked_reconciliation_failures=failed_reconciliation_accounts,
-                    lanes_synchronized=True,
-                )
-            except LiveCopyProcessingDeferred as exc:
-                logger.info(
-                    "live copy recovery deferred account=%s source=%s reason=%s",
-                    account.key,
-                    wallet,
-                    exc,
-                )
-                continue
-            total = combine_batch_results(total, result)
+            enqueued += await enqueue_live_copy_work_for_wallet_fills(
+                session,
+                fills=candidate_rows,
+                origin=origin,
+            )
     await session.commit()
-    return total
+    return PaperCopyBatchResult(processed_fills=enqueued)
 
 
 async def sync_live_source_margin_settings(
@@ -1836,6 +1843,10 @@ async def sync_live_source_margin_settings(
     positions = list(position_result.all())
     if not positions:
         return 0
+
+    # The source account lookup below can wait on the network.  Do not keep
+    # the position read transaction open while it runs.
+    await session.commit()
 
     source_states: dict[str, PaperSourceAccountState] = {}
     unified_equity_cache: dict[str, Decimal | None] = {}
@@ -2976,6 +2987,7 @@ async def load_live_accounts_for_source_copy(
             TradingAccount.archived_at.is_(None),
             TradingAccount.status.in_(["enabled", "exit_only"]),
         )
+        .execution_options(populate_existing=True)
         .order_by(TradingAccount.key.asc())
     )
     result = await session.scalars(query)

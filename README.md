@@ -106,17 +106,21 @@ After upgrade, verify the current migration head before restarting the backend
 and both workers. Starting an individual live account still requires complete
 fresh reconciliation and the normal account lifecycle checks.
 
-Migration `d1f6a9e4c2b3` is the live-copy lifecycle head. It adds the lifecycle
+Migration `d1f6a9e4c2b3` adds the live-copy lifecycle foundation. It adds the lifecycle
 state tables, source lifecycle key columns on live positions, the global
 `watched_wallets.copy_eligibility_started_at` selection epoch, and strict
 restart/bootstrap rules for live source attribution. On a deployment, apply the
 migration, then verify the revision before starting workers:
 
+Migration `e3b7f9d8c4a1` adds the unified durable live-copy work queue and
+explicit execution timing columns. Realtime ingestion and every recovery path
+now converge on one unique work item per source fill. This is the current head.
+
 ```bash
 python -m alembic current
 ```
 
-The command must show `d1f6a9e4c2b3`. Do not start the backend or workers until
+The command must show `e3b7f9d8c4a1`. Do not start the backend or workers until
 that revision is current.
 
 For an existing VPS deployment after pulling this phase:
@@ -305,22 +309,20 @@ counts, last progress, and realtime execution queue health. The Ops Health page
 uses this payload instead of treating a live heartbeat as proof that every loop
 is healthy.
 
-The trading worker commits every realtime source fill and its execution payload
-to `realtime_execution_inbox` in the same Postgres transaction. The bounded
-in-process queue is only a low-latency wakeup buffer. The worker claims the
-oldest due inbox row with `FOR UPDATE SKIP LOCKED`, retries failures with bounded
-backoff, reclaims stale processing claims after a crash, and deletes a row only
-after live and paper processing complete. Queue overflow therefore cannot lose
-or starve the first fill for a source. Shutdown closes WebSocket intake first,
-then drains all currently claimable inbox work within the configured shutdown
-window. Interrupted claims are returned to pending state for the next worker.
+The trading worker commits every realtime source fill, its paper execution
+payload, and a unique `live_copy_work` item in one Postgres transaction. The
+bounded in-process queues are low-latency wakeup buffers only. Paper execution
+continues to use `realtime_execution_inbox`. Live execution claims only
+`live_copy_work`, in canonical per-source order, with `FOR UPDATE SKIP LOCKED`.
+Both consumers retry failures with bounded backoff and reclaim stale claims
+after a crash. Queue overflow cannot lose accepted work. Shutdown closes
+WebSocket intake first and returns interrupted claims to pending state.
 
 Redis Streams powers the recent event feed and SSE resume cursor. Runtime event
 publication is presentation-only and best effort. Redis latency or failure is
 logged but cannot prevent fill persistence, live execution, paper execution, or
 recovery. Raw fill, result, and error events are collected during processing and
-published as a bounded concurrent batch with a fixed overall deadline only after
-live and paper execution.
+published as bounded batches after their durable paper or live execution path.
 Startup recovery runs in the background and prioritizes live copy before paper
 copy.
 
@@ -701,6 +703,22 @@ Sizing policy:
   concurrent poll inserted the same wallet fill first. Database insertion
   counts remain deduplicated, while the source-fill order key keeps live and
   paper execution idempotent.
+- Live execution has one durable `live_copy_work` row per source fill. Realtime
+  ingestion creates the work row in the same transaction as the source fill.
+  Startup, snapshot, and periodic recovery enqueue that same unique work item
+  instead of executing through a competing recovery path. A worker claim is
+  committed before Hyperliquid reads begin, and retry state remains durable
+  across worker restarts.
+- The time-sensitive copy path uses the most recent authoritative account
+  reconciliation snapshot and does not run a full reconciliation before a new
+  entry. Dedicated reconciliation remains responsible for refreshing exchange
+  truth, and the existing snapshot-age gate still blocks entries when that
+  truth is too old or incomplete.
+- Live-copy decisions record the original observation, execution claim,
+  processing start, and final decision as explicit wall-clock timestamps. The
+  dashboard reports ingest, queue, preparation, work, and total decision
+  latency from those timestamps rather than from a transaction-scoped database
+  timestamp.
 - If the cache is stale or missing a coin, paper copy falls back to HTTP
   `allMids`, then dex-specific `allMids`, then `metaAndAssetCtxs`.
 - Paper fills are skipped when adverse live mid price drift from the source fill
@@ -1067,7 +1085,7 @@ docker compose -f docker-compose.vps.yml run --rm backend python -m alembic curr
 docker compose -f docker-compose.vps.yml up -d
 ```
 
-The `current` command must report `d1f6a9e4c2b3` before the backend or workers
+The `current` command must report `e3b7f9d8c4a1` before the backend or workers
 start.
 
 The application images run as non-root users. Backend, frontend, and worker

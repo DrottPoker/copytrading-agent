@@ -32,6 +32,14 @@ WALLET_DATA_DEPENDENCIES = (
         protection_predicate="status in ('pending', 'processing')",
         protection_reason="pending_realtime_execution",
     ),
+    WalletDataDependency(
+        "live_copy_work",
+        "wallet_address",
+        "owned",
+        delete_order=145,
+        protection_predicate="status in ('pending', 'processing')",
+        protection_reason="pending_live_copy_work",
+    ),
     WalletDataDependency("wallet_fills", "wallet_address", "owned", delete_order=130),
     WalletDataDependency(
         "wallet_positions",
