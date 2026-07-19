@@ -42,12 +42,14 @@ edge in monitor and paper mode before any live execution is activated.
   backoff instead of producing fake live order failures. Recovery retains
   nonzero positions and unresolved orders, including filled orders whose fills
   are not fully materialized. Completed dispositions are excluded before limits.
-- Entries older than the configured live-copy age limit become terminal stale
-  no-order decisions. Their origin, source timestamp, observation timestamps,
-  and update time are exposed for diagnostics, and the dashboard shows ingest
-  lag, total source-to-decision age, and processing lag when available. These rows stay in
-  Copy Decisions and do not appear in Recent Execution Activity because no
-  `TradingOrder` is created.
+- Entries first observed after the configured live-copy age limit become
+  terminal stale no-order decisions. Promptly observed entries keep that
+  admission through internal queueing and retries. Their origin, source
+  timestamp, observation timestamps, and update time are exposed for
+  diagnostics, and the dashboard shows ingest lag, total source-to-decision
+  age, and processing lag when available. These rows stay in Copy Decisions and
+  do not appear in Recent Execution Activity because no `TradingOrder` is
+  created.
 - Live source events use canonical numeric fill ordering with close-before-open
   sequencing. Lost attribution can be restored only from strict current
   executed-fill proof, excluding exchange and manual-test reserved sources.

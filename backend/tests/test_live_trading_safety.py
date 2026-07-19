@@ -133,7 +133,11 @@ def live_intent(
     )
 
 
-def live_order(*, status: str = "ready") -> TradingOrder:
+def live_order(
+    *,
+    status: str = "ready",
+    created_at: datetime | None = None,
+) -> TradingOrder:
     return TradingOrder(
         id=uuid4(),
         account_key="live_test",
@@ -154,6 +158,7 @@ def live_order(*, status: str = "ready") -> TradingOrder:
         filled_size=Decimal("0"),
         filled_notional_usd=Decimal("0"),
         fee_usd=Decimal("0"),
+        created_at=created_at or datetime.now(UTC),
     )
 
 
@@ -350,9 +355,29 @@ async def test_fresh_live_entry_intent_needs_no_database_mutation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_expired_live_entry_intent_cancels_order_and_dispatch() -> None:
+async def test_expired_new_live_entry_intent_is_rejected_without_database_mutation() -> None:
     settings = Settings(live_trading_entry_intent_ttl_seconds=30)
-    order = live_order()
+
+    with pytest.raises(
+        LiveOrderSubmitError,
+        match="Live entry intent expired before exchange submission",
+    ):
+        await ensure_live_entry_intent_is_fresh(  # type: ignore[arg-type]
+            NoIoSession(),
+            intent=live_intent(created_at=datetime.now(UTC) - timedelta(seconds=31)),
+            order=None,
+            settings=settings,
+        )
+
+
+@pytest.mark.asyncio
+async def test_expired_retryable_live_entry_cancels_order_and_dispatch() -> None:
+    settings = Settings(live_trading_entry_intent_ttl_seconds=30)
+    order = live_order(
+        status="failed",
+        created_at=datetime.now(UTC) - timedelta(seconds=31),
+    )
+    order.error = "skip:live_execution_busy"
     dispatch = TradingOrderDispatch(
         id=uuid4(),
         order_id=order.id,
@@ -370,7 +395,7 @@ async def test_expired_live_entry_intent_cancels_order_and_dispatch() -> None:
     ):
         await ensure_live_entry_intent_is_fresh(  # type: ignore[arg-type]
             session,
-            intent=live_intent(created_at=datetime.now(UTC) - timedelta(seconds=31)),
+            intent=live_intent(created_at=datetime.now(UTC)),
             order=order,
             settings=settings,
         )
@@ -388,6 +413,23 @@ async def test_expired_live_entry_intent_cancels_order_and_dispatch() -> None:
         "orderId": str(order.id),
     }
     assert session.commit_count == 1
+
+
+@pytest.mark.asyncio
+async def test_fresh_retryable_live_entry_uses_durable_order_created_at() -> None:
+    settings = Settings(live_trading_entry_intent_ttl_seconds=30)
+    order = live_order(
+        status="failed",
+        created_at=datetime.now(UTC) - timedelta(seconds=5),
+    )
+    order.error = "skip:live_execution_busy"
+
+    await ensure_live_entry_intent_is_fresh(  # type: ignore[arg-type]
+        NoIoSession(),
+        intent=live_intent(created_at=datetime.now(UTC) - timedelta(seconds=31)),
+        order=order,
+        settings=settings,
+    )
 
 
 def stopped_live_settings(*, allow_reduce_only: bool) -> Settings:

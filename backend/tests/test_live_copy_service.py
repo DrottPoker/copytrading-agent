@@ -313,6 +313,7 @@ async def test_reconciliation_contention_defers_fill_without_trading_order(
             settings=live_settings,
             client=object(),
             trading_client=object(),
+            first_observed_at_by_fill_id={"fill-1": datetime.now(UTC)},
         )
 
     assert retry_reasons == ["live_reconciliation_deferred"]
@@ -437,6 +438,7 @@ async def test_ambiguous_attribution_defers_fill_without_trading_order(monkeypat
             settings=Settings().model_copy(update={"live_trading_enabled": True}),
             client=object(),
             trading_client=object(),
+            first_observed_at_by_fill_id={"fill-1": datetime.now(UTC)},
         )
 
     assert retry_reasons == ["live_source_attribution_ambiguous"]
@@ -596,9 +598,9 @@ async def test_unowned_close_becomes_lifecycle_state_without_trading_order(
         "expected_stale_check_count",
     ),
     [
-        (("claimed", "complete"), (True, True), False, 2, 2, 2),
-        (("not_due", "claimed"), (True, True), False, 1, 2, 2),
-        (("claimed",), (False, False), True, 1, 1, 2),
+        (("claimed", "complete"), (True, True), False, 2, 2, 1),
+        (("not_due", "claimed"), (True, True), False, 1, 2, 1),
+        (("claimed",), (False, False), True, 1, 1, 1),
     ],
 )
 async def test_stale_live_entry_becomes_terminal_state_without_trading_order(
@@ -768,6 +770,7 @@ async def test_stale_live_entry_becomes_terminal_state_without_trading_order(
         ),
         client=object(),
         trading_client=object(),
+        first_observed_at_by_fill_id={"stale-open": datetime.now(UTC)},
     )
 
     assert terminal_reasons == ["live_source_fill_too_old"]
@@ -786,7 +789,9 @@ async def test_fresh_live_open_is_claimed_once_and_executes_in_normal_pass(
 ) -> None:
     account = live_account(last_reconciled_at=datetime.now(UTC))
     source_state = live_source_lifecycle_state()
-    fill_timestamp_ms = int(datetime.now(UTC).timestamp() * 1000)
+    source_fill_at = datetime(2026, 1, 1, tzinfo=UTC)
+    first_observed_at = source_fill_at + timedelta(milliseconds=300)
+    fill_timestamp_ms = int(source_fill_at.timestamp() * 1000)
     fill_state = LiveCopyFillState(
         account_key=account.key,
         account_type="live",
@@ -804,6 +809,7 @@ async def test_fresh_live_open_is_claimed_once_and_executes_in_normal_pass(
     )
     claim_entry_staleness: list[bool] = []
     applied_parts: list[SourceFillPart] = []
+    applied_admissions: list[live_copy_service.LiveEntryAdmission | None] = []
     terminal_reasons: list[str] = []
     completed_fill_ids: list[str] = []
 
@@ -846,6 +852,7 @@ async def test_fresh_live_open_is_claimed_once_and_executes_in_normal_pass(
 
     async def fake_apply(*_args: object, **kwargs: object) -> PaperCopyBatchResult:
         applied_parts.append(kwargs["part"])
+        applied_admissions.append(kwargs["entry_admission"])
         return PaperCopyBatchResult(processed_fills=1, accounts_updated=1)
 
     async def fake_mark_terminal(*_args: object, **kwargs: object) -> None:
@@ -910,16 +917,77 @@ async def test_fresh_live_open_is_claimed_once_and_executes_in_normal_pass(
                 "rawJson": {"dir": "Open Long", "startPosition": "0"},
             }
         ],
-        settings=Settings().model_copy(update={"live_trading_enabled": True}),
+        settings=Settings().model_copy(
+            update={
+                "live_trading_enabled": True,
+                "trading_copy_max_entry_age_seconds": 15,
+            }
+        ),
         client=object(),
         trading_client=object(),
+        first_observed_at_by_fill_id={"fresh-open": first_observed_at},
     )
 
     assert claim_entry_staleness == [False]
     assert [part.action for part in applied_parts] == ["open"]
+    assert applied_admissions == [
+        live_copy_service.LiveEntryAdmission(
+            first_observed_at=first_observed_at,
+            terminal_reason=None,
+        )
+    ]
     assert terminal_reasons == []
     assert completed_fill_ids == ["fresh-open"]
     assert result == PaperCopyBatchResult(processed_fills=1, accounts_updated=1)
+
+
+def test_live_entry_admission_terminalizes_fill_old_at_first_observation() -> None:
+    source_fill_at = datetime(2026, 1, 1, tzinfo=UTC)
+    fill = {"timestampMs": int(source_fill_at.timestamp() * 1000)}
+
+    admission = live_copy_service.evaluate_live_entry_admission(
+        fill,
+        first_observed_at=source_fill_at + timedelta(seconds=16),
+        settings=Settings(trading_copy_max_entry_age_seconds=15),
+    )
+
+    assert admission.terminal_reason == "live_source_fill_too_old"
+
+
+def test_live_entry_admission_remains_fresh_for_deferred_retry() -> None:
+    source_fill_at = datetime(2026, 1, 1, tzinfo=UTC)
+    first_observed_at = source_fill_at + timedelta(milliseconds=300)
+    fill = {"timestampMs": int(source_fill_at.timestamp() * 1000)}
+    settings = Settings(trading_copy_max_entry_age_seconds=15)
+
+    initial_admission = live_copy_service.evaluate_live_entry_admission(
+        fill,
+        first_observed_at=first_observed_at,
+        settings=settings,
+    )
+    retry_admission = live_copy_service.evaluate_live_entry_admission(
+        fill,
+        first_observed_at=first_observed_at,
+        settings=settings,
+    )
+
+    assert live_copy_service.source_fill_age_exceeds_entry_limit(
+        fill,
+        settings=settings,
+        now=source_fill_at + timedelta(seconds=90),
+    )
+    assert initial_admission.terminal_reason is None
+    assert retry_admission == initial_admission
+
+
+def test_live_entry_admission_fails_closed_without_durable_observation() -> None:
+    admission = live_copy_service.evaluate_live_entry_admission(
+        {"timestampMs": int(datetime(2026, 1, 1, tzinfo=UTC).timestamp() * 1000)},
+        first_observed_at=None,
+        settings=Settings(trading_copy_max_entry_age_seconds=15),
+    )
+
+    assert admission.terminal_reason == "live_source_fill_first_observation_missing"
 
 
 def test_live_skip_records_reason_count() -> None:
@@ -1680,6 +1748,10 @@ async def test_flip_open_waits_until_old_side_is_reconciled(monkeypatch) -> None
             ),
             settings=Settings().model_copy(update={"live_trading_enabled": True}),
             trading_client=object(),
+            entry_admission=live_copy_service.LiveEntryAdmission(
+                first_observed_at=datetime.now(UTC),
+                terminal_reason=None,
+            ),
         )
 
     assert exc_info.value.reason == "live_flip_close_pending"
@@ -1719,9 +1791,47 @@ async def test_defensive_stale_live_entry_guard_raises_terminal_decision() -> No
             market_prices=ExecutionMarketPrices(prices={}, sources={}),
             settings=Settings(trading_copy_max_entry_age_seconds=15),
             trading_client=object(),
+            entry_admission=live_copy_service.LiveEntryAdmission(
+                first_observed_at=datetime.now(UTC),
+                terminal_reason="live_source_fill_too_old",
+            ),
         )
 
     assert exc_info.value.reason == "live_source_fill_too_old"
+
+
+@pytest.mark.asyncio
+async def test_defensive_live_entry_guard_fails_closed_without_first_observation() -> None:
+    with pytest.raises(live_copy_service.LiveCopyPartTerminal) as exc_info:
+        await live_copy_service.apply_live_open_part(
+            object(),
+            account=live_account(last_reconciled_at=datetime(2026, 1, 1, tzinfo=UTC)),
+            allocation=source_allocation(),
+            fill={
+                "externalFillId": "fill-unobserved",
+                "coin": "HYPE",
+                "price": "100",
+                "timestampMs": int(datetime.now(UTC).timestamp() * 1000),
+            },
+            part=SourceFillPart(
+                action="open",
+                side="long",
+                source_size=Decimal("0.1"),
+                source_notional_usd=Decimal("10"),
+                sequence_index=0,
+                close_ratio=None,
+                start_position=Decimal("0"),
+            ),
+            source_account_state=None,
+            source_perp_equity=Decimal("0"),
+            source_leverages={},
+            market_prices=ExecutionMarketPrices(prices={}, sources={}),
+            settings=Settings(trading_copy_max_entry_age_seconds=15),
+            trading_client=object(),
+            entry_admission=None,
+        )
+
+    assert exc_info.value.reason == "live_source_fill_first_observation_missing"
 
 
 @pytest.mark.asyncio
@@ -1758,6 +1868,10 @@ async def test_stale_live_entry_is_classified_before_missing_source_leverage() -
             market_prices=ExecutionMarketPrices(prices={}, sources={}),
             settings=Settings(trading_copy_max_entry_age_seconds=15),
             trading_client=object(),
+            entry_admission=live_copy_service.LiveEntryAdmission(
+                first_observed_at=datetime.now(UTC),
+                terminal_reason="live_source_fill_too_old",
+            ),
         )
 
     assert exc_info.value.reason == "live_source_fill_too_old"
@@ -1801,6 +1915,10 @@ async def test_live_entry_defers_when_source_margin_mode_is_missing() -> None:
             market_prices=ExecutionMarketPrices(prices={}, sources={}),
             settings=Settings(),
             trading_client=object(),
+            entry_admission=live_copy_service.LiveEntryAdmission(
+                first_observed_at=datetime.now(UTC),
+                terminal_reason=None,
+            ),
         )
 
     assert exc_info.value.reason == "live_source_margin_mode_missing"
@@ -2629,6 +2747,7 @@ async def test_record_live_skip_persists_diagnostic_order() -> None:
             "coin": "HYPE",
             "price": "100",
             "time": 1_725_000_000_000,
+            "timestampMs": 1_725_000_000_321,
         },
         part=SourceFillPart(
             action="open",
@@ -2661,7 +2780,9 @@ async def test_record_live_skip_persists_diagnostic_order() -> None:
     assert params["raw_payload"]["sourceFillAgeSeconds"] == 600.123
     assert params["raw_payload"]["decisionAt"]
     assert params["raw_payload"]["decisionContext"] == {"sourceRemainingMarginUsd": "0"}
+    assert params["raw_payload"]["sourceFill"]["sourceTimestampMs"] == 1_725_000_000_321
     assert "submitted_at" not in params
+    assert "created_at" not in params
     assert params["requested_notional_usd"] == Decimal("0")
     assert params["requested_size"] == Decimal("0")
     assert params["filled_size"] == Decimal("0")

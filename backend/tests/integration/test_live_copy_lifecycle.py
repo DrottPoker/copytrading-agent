@@ -17,9 +17,10 @@ from app.db.models import (
     WalletScore,
     WatchedWallet,
 )
-from app.services import live_trading_service
+from app.services import live_copy_service, live_trading_service
 from app.services.live_copy_service import (
     finalize_live_copy_fill_disposition,
+    process_live_copy_fills,
     repair_owned_live_source_positions_for_recovery,
     synchronize_live_copy_lanes,
 )
@@ -47,7 +48,14 @@ from app.services.live_trading_service import (
     LiveCopyEntryLifecycleDeferred,
     submit_live_trade_intent,
 )
-from app.services.paper_trading_service import SourceFillPart, refresh_paper_copy_allocations
+from app.services.paper_trading_service import (
+    ExecutionMarketPrices,
+    PaperCopyBatchResult,
+    PaperSourceAccountState,
+    PaperSourceAllocation,
+    SourceFillPart,
+    refresh_paper_copy_allocations,
+)
 from app.services.trading_core import build_copy_trade_intent
 
 pytestmark = pytest.mark.integration
@@ -742,6 +750,192 @@ async def test_stale_terminal_entry_has_no_order_and_is_not_reselected_for_recov
     assert stored_state.fill_complete is True
     assert stored_state.trading_order_id is None
     assert candidates == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("observation_delay", "expected_terminal_reason"),
+    [
+        (timedelta(milliseconds=300), None),
+        (timedelta(seconds=16), "live_source_fill_too_old"),
+    ],
+)
+async def test_live_copy_uses_durable_first_observation_for_entry_admission(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    observation_delay: timedelta,
+    expected_terminal_reason: str | None,
+) -> None:
+    source_fill_at = datetime(2026, 1, 1, tzinfo=UTC)
+    first_observed_at = source_fill_at + observation_delay
+    source_wallet = f"0xdurable-observation-{int(observation_delay.total_seconds() * 1000)}"
+    source_fill_id = "durable-observation-fill"
+    account_key = f"live_durable_observation_{int(observation_delay.total_seconds() * 1000)}"
+    source_payload = {
+        "externalFillId": source_fill_id,
+        "coin": "HYPE",
+        "price": "10",
+        "size": "1",
+        "notionalUsd": "10",
+        "timestampMs": int(source_fill_at.timestamp() * 1000),
+        "rawJson": {"dir": "Open Long", "startPosition": "0"},
+    }
+    allocation = PaperSourceAllocation(
+        source_wallet=source_wallet,
+        source_label="Durable observation source",
+        rank=1,
+        pool_rank=1,
+        score=Decimal("100"),
+        allocation_pct=Decimal("0.25"),
+        active=True,
+        has_realtime_slot=True,
+        status_reason="trading",
+    )
+    account = TradingAccount(
+        key=account_key,
+        account_type="live",
+        label="Durable observation integration account",
+        status="enabled",
+        network="testnet",
+    )
+    applied_admissions: list[live_copy_service.LiveEntryAdmission | None] = []
+
+    async def fake_refresh_allocations(*_args: object, **_kwargs: object):
+        return {source_wallet: allocation}
+
+    async def fake_live_accounts(*_args: object, **_kwargs: object):
+        return [account]
+
+    async def fake_filter_live_accounts(*_args: object, **_kwargs: object):
+        return [account]
+
+    async def fake_source_account_states(*_args: object, **_kwargs: object):
+        return {
+            "": PaperSourceAccountState(
+                dex="",
+                perp_equity=Decimal("1000"),
+                leverage_by_coin={"HYPE": Decimal("1")},
+                positions_by_coin={},
+                margin_mode_by_coin={"HYPE": "cross"},
+            )
+        }
+
+    async def fake_market_prices(*_args: object, **_kwargs: object):
+        return ExecutionMarketPrices(prices={"HYPE": Decimal("10")}, sources={})
+
+    async def fake_unowned_lifecycle(*_args: object, **_kwargs: object) -> bool:
+        return False
+
+    async def fake_apply(*_args: object, **kwargs: object) -> PaperCopyBatchResult:
+        applied_admissions.append(kwargs["entry_admission"])
+        return PaperCopyBatchResult(processed_fills=1, accounts_updated=1)
+
+    async def fake_finalize(*_args: object, **_kwargs: object) -> bool:
+        return True
+
+    async def fake_reconcile(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(
+        live_copy_service,
+        "refresh_paper_copy_allocations",
+        fake_refresh_allocations,
+    )
+    monkeypatch.setattr(
+        live_copy_service,
+        "load_live_accounts_for_source_copy",
+        fake_live_accounts,
+    )
+    monkeypatch.setattr(
+        live_copy_service,
+        "filter_live_accounts_for_source_allocation",
+        fake_filter_live_accounts,
+    )
+    monkeypatch.setattr(
+        live_copy_service,
+        "load_source_account_states",
+        fake_source_account_states,
+    )
+    monkeypatch.setattr(
+        live_copy_service,
+        "load_execution_market_prices",
+        fake_market_prices,
+    )
+    monkeypatch.setattr(
+        live_copy_service,
+        "live_copy_part_is_unowned_source_lifecycle",
+        fake_unowned_lifecycle,
+    )
+    monkeypatch.setattr(live_copy_service, "live_copy_processing_enabled", lambda _settings: True)
+    monkeypatch.setattr(live_copy_service, "apply_live_copy_part", fake_apply)
+    monkeypatch.setattr(
+        live_copy_service,
+        "finalize_live_copy_fill_disposition",
+        fake_finalize,
+    )
+    monkeypatch.setattr(live_copy_service, "reconcile_live_trading_account", fake_reconcile)
+
+    async with integration_sessionmaker() as session:
+        session.add(account)
+        await session.flush()
+        await ensure_live_copy_source_state(
+            session,
+            account_key=account_key,
+            source_wallet=source_wallet,
+            now=source_fill_at - timedelta(minutes=1),
+            entry_eligible=True,
+        )
+        stored_fill = wallet_fill(
+            source_wallet,
+            source_fill_id,
+            timestamp_ms=int(source_fill_at.timestamp() * 1000),
+        )
+        stored_fill.raw_json = source_payload["rawJson"]
+        stored_fill.received_at = first_observed_at
+        session.add(stored_fill)
+        await session.commit()
+
+    async with integration_sessionmaker() as session:
+        result = await process_live_copy_fills(
+            session,
+            source_wallet=source_wallet,
+            fills=[source_payload],
+            settings=Settings(
+                live_trading_enabled=True,
+                hyperliquid_network="testnet",
+                trading_copy_max_entry_age_seconds=15,
+            ),
+            client=object(),
+            trading_client=object(),
+            prechecked_reconciliation_failures=set(),
+            lanes_synchronized=True,
+        )
+        await session.commit()
+        stored_state = await session.scalar(
+            select(LiveCopyFillState).where(
+                LiveCopyFillState.account_key == account_key,
+                LiveCopyFillState.source_wallet == source_wallet,
+                LiveCopyFillState.source_fill_id == source_fill_id,
+            )
+        )
+
+    assert stored_state is not None
+    assert stored_state.first_observed_at == first_observed_at
+    if expected_terminal_reason is None:
+        assert result.processed_fills == 1
+        assert result.skip_reasons == {}
+        assert applied_admissions == [
+            live_copy_service.LiveEntryAdmission(
+                first_observed_at=first_observed_at,
+                terminal_reason=None,
+            )
+        ]
+        assert stored_state.reason != "live_source_fill_too_old"
+    else:
+        assert result.skip_reasons == {expected_terminal_reason: 1}
+        assert applied_admissions == []
+        assert stored_state.outcome == LIVE_COPY_OUTCOME_TERMINAL_SKIP
+        assert stored_state.reason == expected_terminal_reason
 
 
 @pytest.mark.asyncio

@@ -2550,10 +2550,10 @@ async def ensure_live_entry_intent_is_fresh(
     order: TradingOrder | None,
     settings: Settings,
 ) -> None:
-    created_at = intent.created_at
-    if created_at.tzinfo is None:
-        created_at = created_at.replace(tzinfo=UTC)
-    if datetime.now(UTC) - created_at.astimezone(UTC) <= timedelta(
+    ttl_reference = order.created_at if order is not None else intent.created_at
+    if ttl_reference.tzinfo is None:
+        ttl_reference = ttl_reference.replace(tzinfo=UTC)
+    if datetime.now(UTC) - ttl_reference.astimezone(UTC) <= timedelta(
         seconds=settings.live_trading_entry_intent_ttl_seconds
     ):
         return

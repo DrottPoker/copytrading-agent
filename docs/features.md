@@ -730,13 +730,13 @@ What it does:
   source and account caps can fit the adjusted margin. Otherwise they are
   skipped before any paper position is created. The default minimum is 10 USD to
   match Hyperliquid's live perp minimum order value.
-- Skips new opens or adds when the source fill is older than
-  `trading_copy_max_entry_age_seconds`. This prevents late snapshot or recovery
-  entries from opening exposure minutes after the source traded. Older close and
-  reduce fills can still be processed to catch up existing exposure. Live copy
-  stores stale entries as terminal per-fill dispositions with separate source
-  and decision timestamps, linking a `TradingOrder` only for a terminal
-  order-level decision.
+- Skips new opens or adds when the durable first observation is more than
+  `trading_copy_max_entry_age_seconds` after the source timestamp. This prevents
+  late snapshot or recovery entries from opening exposure while ensuring that
+  internal queue and retry time cannot make a promptly received fill stale.
+  Older close and reduce fills can still be processed to catch up existing
+  exposure. Live copy stores stale entries as terminal per-fill dispositions
+  with separate source, observation, and decision timestamps.
 - Queues each live source fill once in the durable `live_copy_work` table.
   Realtime ingestion and all recovery origins use the same unique work item,
   so periodic recovery cannot independently race realtime execution for a fresh
@@ -1180,8 +1180,8 @@ What it does:
 - Bootstraps legacy attribution and lifecycle keys only from strict current
   executed-fill proof, excluding exchange and manual-test reserved sources.
   Historical existence alone never creates attribution or an active lane.
-- Converts entries older than `trading_copy_max_entry_age_seconds` into one
-  terminal stale decision. Recovery excludes completed dispositions before its
+- Converts entries observed too late for `trading_copy_max_entry_age_seconds`
+  into one terminal stale decision. Recovery excludes completed dispositions before its
   fill limit and includes owned-position overlap so older exits remain
   recoverable without a fixed historical prefix starving new fills. It also
   excludes later non-stale fills behind an unfinished same-market predecessor
@@ -1191,6 +1191,9 @@ What it does:
   update time. The dashboard uses these fields to show ingest lag,
   source-to-decision age, and processing lag, which separates delayed ingest from processing delay.
   Stale decisions do not create a `TradingOrder`.
+- Builds the 30-second live entry-intent TTL from local intent construction
+  time. Existing retryable orders retain their original creation time so a retry
+  cannot renew an expired exchange-submission window.
 - Prices live entry IOC-limit orders with `live_trading_limit_slippage_bps`,
   which defaults to 20 bps. `live_trading_max_slippage_bps` remains the hard
   guard against overly aggressive prices. If the execution value is too tight,

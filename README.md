@@ -684,14 +684,16 @@ Sizing policy:
   and the source and account caps can fit the adjusted margin. Otherwise they
   are skipped before any position is created. The default minimum is 10 USD to
   match Hyperliquid's live perp minimum order value.
-- New entry fills older than `trading_copy_max_entry_age_seconds` are skipped
-  before opening or adding exposure. This prevents snapshot or recovery fills
-  from creating late entries minutes after the source traded. Close and reduce
-  processing still runs for older fills so exits can catch up safely. Live copy
-  stores a stale-entry decision as a terminal per-fill disposition, linked to a
-  `TradingOrder` only when it is an actual order-level decision. The decision
-  timestamp is stored separately from the original source fill timestamp so
-  delayed recovery decisions remain understandable.
+- New entry fills first observed more than
+  `trading_copy_max_entry_age_seconds` after the source timestamp are skipped
+  before opening or adding exposure. Admission is fixed from the durable
+  `WalletFill.received_at` timestamp, so the worker's own queue, preflight, or
+  retry time cannot later reclassify a promptly received fill as stale. This
+  still prevents late snapshot or recovery fills from creating exposure. Close
+  and reduce processing runs regardless of entry admission so exits can catch
+  up safely. Live copy stores a stale-entry decision as a terminal per-fill
+  disposition, linked to a `TradingOrder` only when it is an actual order-level
+  decision.
 - Paper execution starts the configured simulated latency immediately while
   source account state is fetched in parallel.
   It then reads live mids and applies adverse slippage to the execution price.
@@ -713,6 +715,9 @@ Sizing policy:
   become terminal before an earlier unresolved fill. Fresh entries are claimed
   exactly once by the normal execution pass, so they cannot lease themselves as
   `processing` and then wait for their own retry timeout.
+- The 30-second live entry-intent TTL starts when the local execution intent is
+  constructed, not at the source fill timestamp. An existing retryable order
+  keeps its original construction time, so retries cannot renew that TTL.
 - The time-sensitive copy path uses the most recent authoritative account
   reconciliation snapshot and does not run a full reconciliation before a new
   entry. Dedicated reconciliation remains responsible for refreshing exchange

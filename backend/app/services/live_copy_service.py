@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -78,7 +79,6 @@ from app.services.paper_trading_service import (
     build_execution_context,
     combine_skip_reasons,
     decimal_or_zero,
-    fill_datetime,
     is_preexisting_source_add,
     leverage_for_fill,
     load_execution_market_prices,
@@ -164,6 +164,18 @@ class LiveSourceLifecycleProof:
     source_opening_sequence_index: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class LiveEntryAdmission:
+    """Immutable entry-admission result anchored to durable fill observation."""
+
+    first_observed_at: datetime | None
+    terminal_reason: str | None
+
+    @property
+    def is_terminal(self) -> bool:
+        return self.terminal_reason is not None
+
+
 class LiveCopyPartDeferred(RuntimeError):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
@@ -181,6 +193,36 @@ def live_skip(reason: str, count: int = 1) -> PaperCopyBatchResult:
         skipped_fills=count,
         skip_reasons={reason: count} if count > 0 else {},
     )
+
+
+def evaluate_live_entry_admission(
+    fill: dict[str, Any],
+    *,
+    first_observed_at: datetime | None,
+    settings: Settings,
+) -> LiveEntryAdmission:
+    """Evaluate one entry against its immutable durable observation time."""
+
+    if first_observed_at is None:
+        return LiveEntryAdmission(
+            first_observed_at=None,
+            terminal_reason="live_source_fill_first_observation_missing",
+        )
+    observed_at = (
+        first_observed_at.replace(tzinfo=UTC)
+        if first_observed_at.tzinfo is None
+        else first_observed_at
+    )
+    if source_fill_age_exceeds_entry_limit(
+        fill,
+        settings=settings,
+        now=observed_at,
+    ):
+        return LiveEntryAdmission(
+            first_observed_at=observed_at,
+            terminal_reason="live_source_fill_too_old",
+        )
+    return LiveEntryAdmission(first_observed_at=observed_at, terminal_reason=None)
 
 
 def live_copy_allocation_equity_usd(
@@ -313,6 +355,7 @@ async def process_live_copy_fills(
     origin: LiveCopyProcessingOrigin = LIVE_COPY_ORIGIN_REALTIME,
     realtime_observed_at: datetime | None = None,
     execution_claimed_at: datetime | None = None,
+    first_observed_at_by_fill_id: Mapping[str, datetime] | None = None,
     accounts_override: list[TradingAccount] | None = None,
     prechecked_reconciliation_failures: set[str] | None = None,
     lanes_synchronized: bool = False,
@@ -380,6 +423,7 @@ async def process_live_copy_fills(
                 origin=origin,
                 realtime_observed_at=realtime_observed_at,
                 execution_claimed_at=execution_claimed_at,
+                first_observed_at_by_fill_id=first_observed_at_by_fill_id,
                 accounts_override=candidate_accounts,
                 prechecked_reconciliation_failures=prechecked_reconciliation_failures,
                 lanes_synchronized=lanes_synchronized,
@@ -456,7 +500,7 @@ async def process_live_copy_fills(
     execution_fill_ids = {
         str(fill.get("externalFillId") or "") for fill in fills if fill.get("externalFillId")
     }
-    first_observed_at_by_fill_id: dict[str, datetime] = {}
+    durable_first_observed_at_by_fill_id: dict[str, datetime] = {}
     if execution_fill_ids and callable(getattr(session, "execute", None)):
         first_observed_result = await session.execute(
             select(WalletFill.external_fill_id, WalletFill.received_at).where(
@@ -464,11 +508,19 @@ async def process_live_copy_fills(
                 WalletFill.external_fill_id.in_(execution_fill_ids),
             )
         )
-        first_observed_at_by_fill_id = {
+        durable_first_observed_at_by_fill_id = {
             str(source_fill_id): received_at
             for source_fill_id, received_at in first_observed_result.all()
             if source_fill_id and received_at is not None
         }
+    resolved_first_observed_at_by_fill_id = {
+        str(source_fill_id): observed_at
+        for source_fill_id, observed_at in (first_observed_at_by_fill_id or {}).items()
+        if observed_at is not None
+    }
+    # Production processing always uses the persisted WalletFill observation.
+    # Explicit values only support isolated service tests without a database.
+    resolved_first_observed_at_by_fill_id.update(durable_first_observed_at_by_fill_id)
 
     def add_skip(reason: str, count: int = 1) -> None:
         nonlocal skipped
@@ -476,7 +528,7 @@ async def process_live_copy_fills(
         skip_reasons[reason] = skip_reasons.get(reason, 0) + count
 
     sorted_fills = sorted_paper_source_fills(fills)
-    planned_fills: list[tuple[dict[str, Any], list[SourceFillPart]]] = []
+    planned_fills: list[tuple[dict[str, Any], list[SourceFillPart], LiveEntryAdmission | None]] = []
     for fill in sorted_fills:
         if not str(fill.get("externalFillId") or ""):
             add_skip("live_source_fill_id_missing", len(accounts))
@@ -485,7 +537,18 @@ async def process_live_copy_fills(
         if not parts:
             add_skip("live_no_planned_source_parts", len(accounts))
             continue
-        planned_fills.append((fill, parts))
+        source_fill_id = str(fill.get("externalFillId") or "")
+        first_observed_at = resolved_first_observed_at_by_fill_id.get(source_fill_id)
+        entry_admission = (
+            evaluate_live_entry_admission(
+                fill,
+                first_observed_at=first_observed_at,
+                settings=resolved_settings,
+            )
+            if any(part_requires_source_equity(part) for part in parts)
+            else None
+        )
+        planned_fills.append((fill, parts, entry_admission))
         for account in accounts:
             lifecycle_state = source_lifecycle_states[account.key]
             await ensure_live_copy_fill_plan_states(
@@ -495,26 +558,20 @@ async def process_live_copy_fills(
                 planned_parts=parts,
                 origin=origin,
                 observed_at=realtime_observed_at,
-                first_observed_at=first_observed_at_by_fill_id.get(
-                    str(fill.get("externalFillId") or "")
-                ),
+                first_observed_at=first_observed_at,
                 execution_claimed_at=execution_claimed_at,
             )
 
-    # Only stale entry decisions bypass execution ordering. Terminalize them
-    # before an unresolved earlier order can hide the stale source fill.
-    for fill, parts in planned_fills:
+    # Terminal entry admissions bypass execution ordering. Terminalize them
+    # before an unresolved earlier order can hide the source fill.
+    for fill, parts, entry_admission in planned_fills:
         for account in accounts:
             lifecycle_state = source_lifecycle_states[account.key]
             pre_barrier_terminalized = False
             for part in parts:
                 if part.action not in {"open", "add", "flip_open"}:
                     continue
-                stale_entry = source_fill_age_exceeds_entry_limit(
-                    fill,
-                    settings=resolved_settings,
-                )
-                if not stale_entry:
+                if entry_admission is None or not entry_admission.is_terminal:
                     continue
                 claim = await claim_live_copy_fill_part(
                     session,
@@ -542,9 +599,9 @@ async def process_live_copy_fills(
                 await mark_live_copy_fill_terminal_skip(
                     session,
                     fill_state=claim.state,
-                    reason="live_source_fill_too_old",
+                    reason=entry_admission.terminal_reason,
                 )
-                fill_result = live_skip("live_source_fill_too_old")
+                fill_result = live_skip(entry_admission.terminal_reason)
                 processed += fill_result.processed_fills
                 skipped += fill_result.skipped_fills
                 skip_reasons = combine_skip_reasons(skip_reasons, fill_result.skip_reasons)
@@ -558,7 +615,7 @@ async def process_live_copy_fills(
                 )
     await session.commit()
 
-    for fill, parts in planned_fills:
+    for fill, parts, entry_admission in planned_fills:
         source_account_state = source_account_states.get(dex_from_coin(fill.get("coin")))
         if source_account_state is None:
             source_perp_equity = ZERO
@@ -578,16 +635,16 @@ async def process_live_copy_fills(
             for part in parts:
                 if account_fill_deferred:
                     break
-                stale_entry = part_requires_source_equity(
-                    part
-                ) and source_fill_age_exceeds_entry_limit(fill, settings=resolved_settings)
+                terminal_entry = part_requires_source_equity(part) and bool(
+                    entry_admission and entry_admission.is_terminal
+                )
                 claim = await claim_live_copy_fill_part(
                     session,
                     source_state=lifecycle_state,
                     fill=fill,
                     part=part,
                     origin=origin,
-                    entry_is_stale=stale_entry,
+                    entry_is_stale=terminal_entry,
                 )
                 fill_state = claim.state
                 if claim.reason == "blocked":
@@ -618,13 +675,13 @@ async def process_live_copy_fills(
                     )
                     continue
 
-                if stale_entry:
+                if terminal_entry:
                     await mark_live_copy_fill_terminal_skip(
                         session,
                         fill_state=fill_state,
-                        reason="live_source_fill_too_old",
+                        reason=entry_admission.terminal_reason,
                     )
-                    fill_result = live_skip("live_source_fill_too_old")
+                    fill_result = live_skip(entry_admission.terminal_reason)
                 else:
                     if not lifecycle_state.entry_eligible and part.action in {
                         "open",
@@ -687,7 +744,7 @@ async def process_live_copy_fills(
                 if (
                     account.key in failed_reconciliation_accounts
                     and part_requires_source_equity(part)
-                    and not stale_entry
+                    and not terminal_entry
                 ):
                     reason = "live_reconciliation_deferred"
                     await mark_live_copy_fill_retryable(
@@ -701,7 +758,7 @@ async def process_live_copy_fills(
                 elif (
                     source_state_skip_reason is not None
                     and part_requires_source_equity(part)
-                    and not stale_entry
+                    and not terminal_entry
                 ):
                     await mark_live_copy_fill_retryable(
                         session,
@@ -711,7 +768,7 @@ async def process_live_copy_fills(
                     deferred_reasons.add(source_state_skip_reason)
                     account_fill_deferred = True
                     continue
-                elif not stale_entry:
+                elif not terminal_entry:
                     # Claims and any source-lifecycle repair hold transaction
                     # advisory locks.  Persist that work before submission so
                     # the execution gate can lock account then lifecycle.
@@ -729,6 +786,7 @@ async def process_live_copy_fills(
                             market_prices=market_prices,
                             settings=resolved_settings,
                             trading_client=live_client,
+                            entry_admission=entry_admission,
                         )
                     except LiveCopyPartTerminal as exc:
                         await mark_live_copy_fill_terminal_skip(
@@ -1984,6 +2042,7 @@ async def apply_live_copy_part(
     market_prices: ExecutionMarketPrices,
     settings: Settings,
     trading_client: HyperliquidLiveTradingClient,
+    entry_admission: LiveEntryAdmission | None,
 ) -> PaperCopyBatchResult:
     source_fill_id = str(fill.get("externalFillId") or "")
     if not source_fill_id:
@@ -2010,6 +2069,7 @@ async def apply_live_copy_part(
             market_prices=market_prices,
             settings=settings,
             trading_client=trading_client,
+            entry_admission=entry_admission,
         )
     return await apply_live_close_part(
         session,
@@ -2039,6 +2099,7 @@ async def apply_live_open_part(
     market_prices: ExecutionMarketPrices,
     settings: Settings,
     trading_client: HyperliquidLiveTradingClient,
+    entry_admission: LiveEntryAdmission | None,
 ) -> PaperCopyBatchResult:
     coin = str(fill.get("coin") or "")
     raw_source_leverage = resolve_coin_decimal(source_leverages, coin)
@@ -2047,8 +2108,10 @@ async def apply_live_open_part(
         source_account_state.margin_mode_by_coin if source_account_state is not None else {},
         coin,
     )
-    if source_fill_age_exceeds_entry_limit(fill, settings=settings):
-        raise LiveCopyPartTerminal("live_source_fill_too_old")
+    if entry_admission is None or entry_admission.first_observed_at is None:
+        raise LiveCopyPartTerminal("live_source_fill_first_observation_missing")
+    if entry_admission.is_terminal:
+        raise LiveCopyPartTerminal(entry_admission.terminal_reason)
     if raw_source_leverage is None or raw_source_leverage <= ZERO:
         raise LiveCopyPartDeferred("live_source_leverage_missing")
     if raw_source_leverage != raw_source_leverage.to_integral_value():
@@ -2337,7 +2400,6 @@ async def apply_live_open_part(
         allocation_usd=allocation_usd,
         source_perp_equity_usd=source_perp_equity,
         source_exposure_pct=source_exposure_pct,
-        created_at=fill_datetime(fill),
     )
     return await submit_live_copy_intent(
         session,
@@ -2553,7 +2615,6 @@ async def apply_live_close_part(
         allocation_usd=None,
         source_perp_equity_usd=source_perp_equity if source_perp_equity > ZERO else None,
         source_exposure_pct=None,
-        created_at=fill_datetime(fill),
     )
     result = await submit_live_copy_intent(
         session,
@@ -2795,6 +2856,7 @@ async def record_live_skip(
             "coin": coin,
             "price": str(fill.get("price") or ""),
             "time": fill.get("time"),
+            "sourceTimestampMs": fill.get("timestampMs"),
         },
     }
     if source_fill_age_seconds is not None:
@@ -2833,7 +2895,6 @@ async def record_live_skip(
         fee_usd=ZERO,
         error=f"skip:{reason}",
         raw_payload=raw_payload,
-        created_at=fill_datetime(fill),
     )
     result = await session.execute(
         stmt.on_conflict_do_nothing(

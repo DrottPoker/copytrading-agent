@@ -826,15 +826,17 @@ Hyperliquid's live perp minimum order value. Paper execution starts the
 configured latency while source account state is fetched in parallel, then
 prices from live mids when enabled, applies adverse slippage, and skips fills
 whose adverse observed drift exceeds the configured max drift limit. Favorable
-price drift is allowed and recorded as 0 bps. New open or add fills are also
-skipped when the source fill age exceeds
-`trading_copy_max_entry_age_seconds`, so snapshot or recovery entries cannot
-open exposure minutes after the source traded. Live copy stores stale-entry
-decisions in the per-fill lifecycle ledger and links a `TradingOrder` only
-when the result is a terminal order-level decision. Each pre-submit decision
-stores its decision time and exact reason, including source or total
-allocation exhaustion, reconciliation state, source account state, and submit
-validation failures.
+price drift is allowed and recorded as 0 bps. New open or add fills are admitted
+only when their durable first observation is within
+`trading_copy_max_entry_age_seconds` of the source timestamp, so snapshot or
+recovery entries cannot open exposure minutes after the source traded. The
+immutable observation timestamp keeps internal queue, preflight, and retry time
+from turning a promptly received entry stale. Live copy stores stale-entry
+decisions in the per-fill lifecycle ledger and links a `TradingOrder` only when
+the result is a terminal order-level decision. Each pre-submit decision stores
+its decision time and exact reason, including source or total allocation
+exhaustion, reconciliation state, source account state, and submit validation
+failures.
 
 Live-copy scheduling uses `live_copy_work` as the single durable ownership
 boundary for realtime and recovery. Realtime ingestion inserts one unique work
@@ -852,7 +854,9 @@ The execution path does not run full account reconciliation before evaluating a
 fresh entry. It consumes the latest authoritative reconciliation snapshot and
 lets the dedicated reconciliation loop refresh exchange state. Entry submission
 still enforces reconciliation completeness and maximum snapshot age, and it
-rechecks source-fill freshness immediately before exchange submission.
+enforces the entry-intent TTL from actual local intent construction to exchange
+submission. A retryable order retains its original construction time instead of
+renewing the TTL on each retry.
 `LiveCopyFillState` stores explicit execution-claim, processing-start, and
 decision timestamps. These are Python wall-clock values and are not derived
 from PostgreSQL transaction-scoped `now()` values.
