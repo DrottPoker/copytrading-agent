@@ -1336,6 +1336,22 @@ async def mark_live_copy_fill_baseline_ignored(
     await session.flush()
 
 
+async def mark_live_copy_fill_terminal_skip(
+    session: AsyncSession,
+    *,
+    fill_state: LiveCopyFillState,
+    reason: str,
+) -> None:
+    """Persist a terminal decision that intentionally has no order row."""
+
+    fill_state.outcome = LIVE_COPY_OUTCOME_TERMINAL_SKIP
+    fill_state.reason = reason[:2000]
+    fill_state.next_attempt_at = None
+    fill_state.fill_complete = False
+    fill_state.trading_order_id = None
+    await session.flush()
+
+
 async def link_live_copy_fill_state_to_order(
     session: AsyncSession,
     *,

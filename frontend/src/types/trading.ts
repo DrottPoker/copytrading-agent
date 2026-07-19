@@ -170,6 +170,12 @@ export type LiveRiskLimits = {
   reduceOnlyWhenStopped: boolean;
 };
 
+export type LiveCopyProcessingOrigin =
+  | "realtime"
+  | "snapshot_recovery"
+  | "startup_recovery"
+  | "periodic_recovery";
+
 export type LiveCopyDecision = {
   accountKey: string;
   sourceWallet: string;
@@ -181,6 +187,9 @@ export type LiveCopyDecision = {
   outcome: "pending" | "retryable" | "order" | "terminal_skip" | "baseline_ignored";
   reason: string | null;
   attemptCount: number;
+  origin: LiveCopyProcessingOrigin;
+  sourceTimestampMs: number;
+  observedAt: string | null;
   firstObservedAt: string | null;
   lastAttemptAt: string | null;
   nextAttemptAt: string | null;

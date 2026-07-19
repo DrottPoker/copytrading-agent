@@ -141,6 +141,9 @@ def test_live_copy_decision_read_serializes_the_planned_action_and_lifecycle_fie
         outcome="retryable",
         reason="price_unavailable",
         attempt_count=3,
+        origin="realtime",
+        source_timestamp_ms=int(observed_at.timestamp() * 1000),
+        observed_at=observed_at,
         first_observed_at=observed_at,
         last_attempt_at=observed_at,
         next_attempt_at=observed_at + timedelta(seconds=30),
@@ -151,6 +154,9 @@ def test_live_copy_decision_read_serializes_the_planned_action_and_lifecycle_fie
     assert payload["plannedAction"] == "flip_open"
     assert payload["outcome"] == "retryable"
     assert payload["tradingOrderId"] is None
+    assert payload["origin"] == "realtime"
+    assert payload["sourceTimestampMs"] == 1767268800000
+    assert payload["observedAt"] == "2026-01-01T12:00:00Z"
     assert payload["nextAttemptAt"] == "2026-01-01T12:00:30Z"
 
 
@@ -228,6 +234,9 @@ async def test_trading_accounts_route_exposes_recent_live_copy_decisions_separat
     assert read.planned_action == "open"
     assert read.outcome == "retryable"
     assert read.trading_order_id is None
+    assert read.origin == "realtime"
+    assert read.source_timestamp_ms == int(observed_at.timestamp() * 1000)
+    assert read.observed_at == observed_at
 
     decision_sql = str(
         session.statements[3].compile(

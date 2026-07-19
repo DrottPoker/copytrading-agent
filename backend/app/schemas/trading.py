@@ -180,6 +180,9 @@ class LiveCopyDecisionRead(CamelModel):
     outcome: Literal["pending", "retryable", "order", "terminal_skip", "baseline_ignored"]
     reason: str | None = None
     attempt_count: int
+    origin: Literal["realtime", "snapshot_recovery", "startup_recovery", "periodic_recovery"]
+    source_timestamp_ms: int
+    observed_at: datetime | None = None
     first_observed_at: datetime | None = None
     last_attempt_at: datetime | None = None
     next_attempt_at: datetime | None = None

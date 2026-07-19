@@ -43,6 +43,7 @@ from app.services.live_copy_state_service import (
     mark_live_copy_fill_baseline_ignored,
     mark_live_copy_fill_complete_if_durable,
     mark_live_copy_fill_retryable,
+    mark_live_copy_fill_terminal_skip,
     preexisting_market_matches_part,
     synchronize_live_copy_source_activity,
 )
@@ -89,7 +90,6 @@ from app.services.paper_trading_service import (
     resolve_source_current_position,
     sorted_paper_source_fills,
     source_fill_age_exceeds_entry_limit,
-    source_fill_age_seconds,
     source_state_available_for_reconciliation,
 )
 from app.services.source_fill_ordering import (
@@ -162,6 +162,12 @@ class LiveSourceLifecycleProof:
 
 
 class LiveCopyPartDeferred(RuntimeError):
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+class LiveCopyPartTerminal(RuntimeError):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
@@ -508,20 +514,12 @@ async def process_live_copy_fills(
                     continue
                 if not stale_entry or not claim.claimed:
                     continue
-                fill_result = await record_live_skip(
-                    session,
-                    account=account,
-                    allocation=allocation,
-                    fill=fill,
-                    part=part,
-                    reason="live_source_fill_too_old",
-                )
-                if not await finalize_live_copy_fill_disposition(
+                await mark_live_copy_fill_terminal_skip(
                     session,
                     fill_state=claim.state,
-                ):
-                    deferred_reasons.add(claim.state.reason or "live_copy_decision_deferred")
-                    continue
+                    reason="live_source_fill_too_old",
+                )
+                fill_result = live_skip("live_source_fill_too_old")
                 processed += fill_result.processed_fills
                 skipped += fill_result.skipped_fills
                 skip_reasons = combine_skip_reasons(skip_reasons, fill_result.skip_reasons)
@@ -596,14 +594,12 @@ async def process_live_copy_fills(
                     continue
 
                 if stale_entry:
-                    fill_result = await record_live_skip(
+                    await mark_live_copy_fill_terminal_skip(
                         session,
-                        account=account,
-                        allocation=allocation,
-                        fill=fill,
-                        part=part,
+                        fill_state=fill_state,
                         reason="live_source_fill_too_old",
                     )
+                    fill_result = live_skip("live_source_fill_too_old")
                 else:
                     if not lifecycle_state.entry_eligible and part.action in {
                         "open",
@@ -709,6 +705,13 @@ async def process_live_copy_fills(
                             settings=resolved_settings,
                             trading_client=live_client,
                         )
+                    except LiveCopyPartTerminal as exc:
+                        await mark_live_copy_fill_terminal_skip(
+                            session,
+                            fill_state=fill_state,
+                            reason=exc.reason,
+                        )
+                        fill_result = live_skip(exc.reason)
                     except LiveCopyPartDeferred as exc:
                         await mark_live_copy_fill_retryable(
                             session,
@@ -2032,17 +2035,7 @@ async def apply_live_open_part(
         coin,
     )
     if source_fill_age_exceeds_entry_limit(fill, settings=settings):
-        return await record_live_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            reason="live_source_fill_too_old",
-            leverage=source_leverage,
-            margin_mode=source_margin_mode or "cross",
-            source_fill_age_seconds=source_fill_age_seconds(fill),
-        )
+        raise LiveCopyPartTerminal("live_source_fill_too_old")
     if raw_source_leverage is None or raw_source_leverage <= ZERO:
         raise LiveCopyPartDeferred("live_source_leverage_missing")
     if raw_source_leverage != raw_source_leverage.to_integral_value():

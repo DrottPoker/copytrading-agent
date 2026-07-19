@@ -1054,7 +1054,11 @@ from the raw fill and order ledgers:
   orders when no `tradingOrderId` exists.
 - An entry that exceeds the configured TTL is a terminal stale decision. It is
   distinct from a retryable prerequisite and retains both the original source
-  timestamp and the decision timestamp.
+  timestamp and the decision timestamp. The API also exposes the processing
+  origin, `observedAt`, and `firstObservedAt`. The dashboard derives ingest lag,
+  total source-to-decision age, and processing lag from these timestamps, allowing
+  ingest delay to be distinguished from processing delay. This terminal stale
+  state creates no `TradingOrder`.
 - Recovery filters completed dispositions before applying its limit, selects
   only due pending or retryable work, and retains nonzero owned positions plus
   unresolved orders, including filled orders whose exchange fills are not fully
@@ -1296,15 +1300,16 @@ fills by grouping open and close executions into complete trade windows; manual
 exchange position closes are included too, and close-only exchange fills use
 Hyperliquid realized PnL to estimate the entry price when no local open fill is
 available. Individual reduce and close fills remain in Recent Execution
-Activity. Live
-exchange position rows use reconciled Hyperliquid position payloads for mark
+Activity. Live exchange position rows use reconciled Hyperliquid position
+payloads for mark
 price, current notional, unrealized PnL, and ROE. Trading open position rows
 also expose realized PnL plus add and close fill counts for the current position
 window, with live realized PnL summed from the same close, reduce, and
 flip-close fills used by the counts. Source-attributed live position rows are
 refreshed from the matching exchange mark on reconciliation, so source
 performance and copy source rows show current unrealized PnL instead of stale
-fill-time values. If exchange
+fill-time values.
+If exchange
 reconciliation no longer has a matching market and side, the source-attributed
 row is removed, and if manual exchange activity partially reduced the market,
 source exposure is scaled down to match the reconciled exchange size. Live
@@ -1316,6 +1321,11 @@ order is found accepted by exchange state. Successful manual close submissions
 also reconcile immediately so the exchange fill and closed trade row can show
 up without waiting for the next worker loop. Paginated history sections show 10
 rows per page in both modes.
+- Copy Decisions are a separate lifecycle diagnostic view, so stale no-order
+  decisions are not placed in Recent Execution Activity. Each stale row shows
+  its processing origin, source time, first observed time, ingest lag, total
+  source-to-decision age, and processing lag when available. These fields distinguish
+  source ingest delay from time spent in the live-copy pipeline.
 Manual reconciliation can pass a bounded `lookback_minutes` query parameter to
 force a historical live fill backfill when the normal latest-fill overlap would
 start too late.

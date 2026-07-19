@@ -848,6 +848,11 @@ What it does:
   result-oriented row semantics in both modes, so filled, skipped, rejected, and
   failed attempts are visible without mixing paper and live rows. Individual live reduce and
   close fills stay in Recent Execution Activity.
+- Live Copy Decisions are rendered separately from Recent Execution Activity.
+  Stale no-order decisions show the processing origin, source time, first
+  observed time, ingest lag, total source-to-decision age, and processing lag when
+  available. This timing makes ingest delay distinguishable from processing
+  delay, and the no-order state confirms that no `TradingOrder` exists.
 - Closed live trade history includes copied source trades and manual exchange
   position closes. If only an exchange close fill is available locally, the
   backend shows a close-only row and estimates the entry price from Hyperliquid
@@ -1168,7 +1173,11 @@ What it does:
   recoverable without a fixed historical prefix starving new fills. It also
   excludes later non-stale fills behind an unfinished same-market predecessor
   before the limit. Only stale entries bypass that query barrier, and only so
-  they can become terminal no-order decisions.
+  they can become terminal no-order decisions. Stale decision payloads retain
+  the processing origin, source timestamp, observation timestamps, and decision
+  update time. The dashboard uses these fields to show ingest lag,
+  source-to-decision age, and processing lag, which separates delayed ingest from processing delay.
+  Stale decisions do not create a `TradingOrder`.
 - Prices live entry IOC-limit orders with `live_trading_limit_slippage_bps`,
   which defaults to 20 bps. `live_trading_max_slippage_bps` remains the hard
   guard against overly aggressive prices. If the execution value is too tight,

@@ -1772,6 +1772,7 @@ export function buildLiveCopyDecisionActivity(
     id: `copy-decision:${decision.accountKey}:${decision.sourceWallet}:${decision.sourceFillId}:${decision.sequenceIndex}`,
     pills: [
       { label: "copy decision", tone: "neutral" },
+      { label: liveCopyDecisionOriginLabel(decision.origin), tone: "neutral" },
       {
         label: reasonLabel(decision.plannedAction),
         tone: decision.plannedAction.includes("close") || decision.plannedAction === "reduce"
@@ -1803,14 +1804,19 @@ export function buildLiveCopyDecisionActivity(
             : "not attempted",
       },
       {
-        label: "Observed",
+        label: "First observed",
         value: formatShortDateTime(decision.firstObservedAt),
-        detail: `updated ${formatShortDateTime(decision.updatedAt)}`,
+        detail: [
+          `source ${formatShortDateTime(sourceTimestampDate(decision.sourceTimestampMs))}`,
+          `ingest ${formatIngestLag(decision)}`,
+        ].join(" | "),
       },
       {
         label: "Pipeline",
         value: decision.tradingOrderId ? "record created" : "not created",
-        detail: decision.tradingOrderId ? shortIdentifier(decision.tradingOrderId) : "no downstream record",
+        detail: decision.tradingOrderId
+          ? `${shortIdentifier(decision.tradingOrderId)} | age ${formatDecisionAge(decision)} | processing ${formatProcessingLag(decision)}`
+          : `no downstream record | age ${formatDecisionAge(decision)} | processing ${formatProcessingLag(decision)}`,
         tone: decision.tradingOrderId ? "positive" : decision.outcome === "terminal_skip" ? "danger" : "neutral",
       },
     ],
@@ -1825,6 +1831,8 @@ export function liveCopyDecisionStatusPills(decision: LiveCopyDecision): RowPill
         ? { label: decision.nextAttemptAt ? "retry scheduled" : "retry pending", tone: "warning" }
         : decision.outcome === "baseline_ignored"
           ? { label: "baseline ignored", tone: "neutral" }
+          : decision.outcome === "terminal_skip" && decision.reason === "live_source_fill_too_old"
+            ? { label: "stale no-order", tone: "danger" }
           : decision.outcome === "terminal_skip"
             ? { label: "no-order blocked", tone: "danger" }
             : decision.tradingOrderId
@@ -1835,6 +1843,37 @@ export function liveCopyDecisionStatusPills(decision: LiveCopyDecision): RowPill
     return [outcomePill];
   }
   return [outcomePill, { label: "order created", tone: "positive" }];
+}
+
+function liveCopyDecisionOriginLabel(origin: LiveCopyDecision["origin"]) {
+  return origin.replaceAll("_", " ");
+}
+
+function sourceTimestampDate(sourceTimestampMs: number | null | undefined) {
+  if (sourceTimestampMs === null || sourceTimestampMs === undefined || !Number.isFinite(sourceTimestampMs) || sourceTimestampMs <= 0) {
+    return null;
+  }
+  return new Date(sourceTimestampMs).toISOString();
+}
+
+function formatDecisionAge(decision: LiveCopyDecision) {
+  return formatElapsedMs(dateMs(decision.updatedAt) - decision.sourceTimestampMs);
+}
+
+function formatIngestLag(decision: LiveCopyDecision) {
+  const firstObservedTimestamp = decision.firstObservedAt ?? decision.observedAt;
+  if (!firstObservedTimestamp) {
+    return "-";
+  }
+  return formatElapsedMs(dateMs(firstObservedTimestamp) - decision.sourceTimestampMs);
+}
+
+function formatProcessingLag(decision: LiveCopyDecision) {
+  const firstProcessingTimestamp = decision.observedAt ?? decision.firstObservedAt;
+  if (!firstProcessingTimestamp) {
+    return "-";
+  }
+  return formatElapsedMs(dateMs(decision.updatedAt) - dateMs(firstProcessingTimestamp));
 }
 
 function buildLiveFillActivity(
@@ -3143,6 +3182,33 @@ function formatExecutionMs(value: number | null | undefined) {
   return `${new Intl.NumberFormat("sv-SE", { maximumFractionDigits: 2 }).format(
     value / 1000,
   )} s`;
+}
+
+function formatElapsedMs(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return "-";
+  }
+  const elapsedMs = Math.max(0, value);
+  if (elapsedMs < 1000) {
+    return `${formatInteger(elapsedMs)} ms`;
+  }
+  const totalSeconds = elapsedMs / 1000;
+  if (totalSeconds < 60) {
+    return `${new Intl.NumberFormat("sv-SE", { maximumFractionDigits: 1 }).format(totalSeconds)} s`;
+  }
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  if (totalMinutes < 60) {
+    const seconds = Math.floor(totalSeconds % 60);
+    return seconds > 0 ? `${totalMinutes}m ${seconds}s` : `${totalMinutes}m`;
+  }
+  const totalHours = Math.floor(totalMinutes / 60);
+  if (totalHours < 48) {
+    const minutes = totalMinutes % 60;
+    return minutes > 0 ? `${totalHours}h ${minutes}m` : `${totalHours}h`;
+  }
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours % 24;
+  return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
 }
 
 function formatBps(value: string | number | null | undefined) {

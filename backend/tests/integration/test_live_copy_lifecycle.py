@@ -39,6 +39,7 @@ from app.services.live_copy_state_service import (
     load_owned_live_copy_account_source_pairs,
     mark_live_copy_fill_baseline_ignored,
     mark_live_copy_fill_complete_if_durable,
+    mark_live_copy_fill_terminal_skip,
     synchronize_live_copy_account_source_activity,
     synchronize_live_copy_source_activity,
 )
@@ -617,6 +618,130 @@ async def test_legacy_position_repair_unblocks_baselined_exit_recovery(
             now=captured_at,
         )
         assert [fill.external_fill_id for fill in candidates] == ["legacy-exit"]
+
+
+@pytest.mark.asyncio
+async def test_stale_terminal_entry_has_no_order_and_is_not_reselected_for_recovery(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    source_wallet = "0xstale-source"
+    account_key = "live_stale_terminal"
+    observed_at = datetime(2026, 7, 19, 12, tzinfo=UTC)
+    activated_at = observed_at - timedelta(minutes=10)
+    stale_timestamp_ms = int((observed_at - timedelta(minutes=1)).timestamp() * 1000)
+    source_fill_id = "stale-entry"
+    part = SourceFillPart(
+        action="open",
+        side="long",
+        source_size=Decimal("1"),
+        source_notional_usd=Decimal("10"),
+        sequence_index=0,
+        start_position=Decimal("0"),
+    )
+    payload = source_fill(
+        source_fill_id,
+        timestamp_ms=stale_timestamp_ms,
+        direction="Open Long",
+    )
+
+    async with integration_sessionmaker() as session:
+        session.add(
+            TradingAccount(
+                key=account_key,
+                account_type="live",
+                label="Stale terminal integration account",
+                status="enabled",
+                network="testnet",
+            )
+        )
+        await session.flush()
+        source_state = await ensure_live_copy_source_state(
+            session,
+            account_key=account_key,
+            source_wallet=source_wallet,
+            now=activated_at,
+        )
+        stored_fill = wallet_fill(
+            source_wallet,
+            source_fill_id,
+            timestamp_ms=stale_timestamp_ms,
+        )
+        stored_fill.raw_json = payload["rawJson"]
+        stored_fill.received_at = observed_at - timedelta(minutes=1)
+        session.add(stored_fill)
+        await session.flush()
+
+        fill_state = (
+            await ensure_live_copy_fill_plan_states(
+                session,
+                source_state=source_state,
+                fill=payload,
+                planned_parts=(part,),
+                origin=LIVE_COPY_ORIGIN_PERIODIC_RECOVERY,
+                observed_at=stored_fill.received_at,
+                first_observed_at=stored_fill.received_at,
+            )
+        )[0]
+        claim = await claim_live_copy_fill_part(
+            session,
+            source_state=source_state,
+            fill=payload,
+            part=part,
+            origin=LIVE_COPY_ORIGIN_PERIODIC_RECOVERY,
+            now=observed_at,
+            entry_is_stale=True,
+        )
+
+        assert claim.claimed
+        assert claim.state is fill_state
+        await mark_live_copy_fill_terminal_skip(
+            session,
+            fill_state=fill_state,
+            reason="live_source_fill_too_old",
+        )
+        assert await mark_live_copy_fill_complete_if_durable(
+            session,
+            source_state=source_state,
+            source_fill_id=source_fill_id,
+            planned_parts=(part,),
+        )
+        await session.commit()
+
+        stored_state = await session.scalar(
+            select(LiveCopyFillState).where(
+                LiveCopyFillState.account_key == account_key,
+                LiveCopyFillState.source_wallet == source_wallet,
+                LiveCopyFillState.source_fill_id == source_fill_id,
+            )
+        )
+        orders = list(
+            (
+                await session.scalars(
+                    select(TradingOrder).where(
+                        TradingOrder.account_key == account_key,
+                        TradingOrder.source_wallet == source_wallet,
+                        TradingOrder.source_fill_id == source_fill_id,
+                    )
+                )
+            ).all()
+        )
+        candidates = await load_live_copy_recovery_candidate_fills(
+            session,
+            account_key=account_key,
+            source_wallet=source_wallet,
+            source_state=source_state,
+            limit=10,
+            now=observed_at,
+            max_entry_age_seconds=15,
+        )
+
+    assert orders == []
+    assert stored_state is not None
+    assert stored_state.outcome == LIVE_COPY_OUTCOME_TERMINAL_SKIP
+    assert stored_state.reason == "live_source_fill_too_old"
+    assert stored_state.fill_complete is True
+    assert stored_state.trading_order_id is None
+    assert candidates == []
 
 
 @pytest.mark.asyncio

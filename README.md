@@ -609,7 +609,11 @@ Live copy lifecycle and recovery:
   reconciliation to remove the old side before it can submit an entry.
 - Entry fills that exceed the configured entry TTL receive one terminal stale
   decision. This is distinct from a transient retry and remains auditable with
-  the original source timestamp and decision context.
+  the original source timestamp and decision context. The decision API also
+  exposes its processing origin, source timestamp, observation timestamps, and
+  update time. The dashboard renders ingest lag, source-to-decision age, and
+  processing lag so operators can distinguish delayed ingest from slow processing. A stale
+  decision is a no-order terminal state and does not create a `TradingOrder`.
 - Recovery removes completed fill dispositions before applying its per-source
   limit. It retains work for nonzero owned positions and unresolved orders,
   including filled orders whose exchange fills are not fully materialized. This
@@ -727,6 +731,10 @@ Sizing policy:
   row semantics in both modes, so filled, skipped, rejected, and failed attempts
   are visible without mixing paper and live rows. Individual live reduce and
   close fills stay in Recent Execution Activity.
+- Live Copy Decisions remain a separate diagnostic list. Stale no-order rows
+  show their realtime or recovery origin, source time, first observed time,
+  ingest lag, total source-to-decision age, and processing lag when available. They never
+  appear in Recent Execution Activity because no `TradingOrder` was created.
 - Closed live trade history includes copied source trades and manual exchange
   position closes. If only an exchange close fill is available locally, the
   backend shows a close-only row and estimates the entry price from Hyperliquid

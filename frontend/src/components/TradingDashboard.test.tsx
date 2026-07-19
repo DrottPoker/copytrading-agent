@@ -29,6 +29,9 @@ function copyDecision(overrides: Partial<LiveCopyDecision>): LiveCopyDecision {
     outcome: "pending",
     reason: null,
     attemptCount: 0,
+    origin: "realtime",
+    sourceTimestampMs: 1767225600000,
+    observedAt: "2026-01-01T00:00:01Z",
     firstObservedAt: "2026-01-01T00:00:00Z",
     lastAttemptAt: null,
     nextAttemptAt: null,
@@ -126,6 +129,41 @@ describe("live copy decisions", () => {
     expect(liveCopyDecisionStatusPills(created)).toEqual([
       { label: "order created", tone: "positive" },
     ]);
+  });
+
+  it("shows stale no-order timing and recovery origin diagnostics", () => {
+    const decision = copyDecision({
+      outcome: "terminal_skip",
+      reason: "live_source_fill_too_old",
+      origin: "snapshot_recovery",
+      sourceTimestampMs: Date.parse("2026-01-01T00:00:00Z"),
+      observedAt: null,
+      firstObservedAt: "2026-01-01T00:00:03Z",
+      updatedAt: "2026-01-01T00:01:05Z",
+    });
+
+    expect(liveCopyDecisionStatusPills(decision)).toEqual([
+      { label: "stale no-order", tone: "danger" },
+    ]);
+    const activity = buildLiveCopyDecisionActivities([decision], new Map())[0];
+    expect(activity.pills.map((pill) => pill.label)).toContain("snapshot recovery");
+    expect(activity.stats.find((stat) => stat.label === "First observed")).toMatchObject({
+      value: "01/01 01:00",
+      detail: expect.stringContaining("source 01/01 01:00"),
+    });
+    expect(activity.stats.find((stat) => stat.label === "First observed")?.detail).toContain("ingest 3 s");
+    expect(activity.stats.find((stat) => stat.label === "Pipeline")?.detail).toContain("age 1m 5s");
+    expect(activity.stats.find((stat) => stat.label === "Pipeline")?.detail).toContain("processing 1m 2s");
+  });
+
+  it("keeps no-order decisions in Copy Decisions instead of execution activity", () => {
+    const decision = copyDecision({
+      outcome: "terminal_skip",
+      reason: "live_source_fill_too_old",
+    });
+
+    expect(buildLiveCopyDecisionActivities([decision], new Map())).toHaveLength(1);
+    expect(buildLiveCopyDecisionActivities([decision], new Map())[0].id).toContain("copy-decision:");
   });
 });
 

@@ -11,12 +11,14 @@ from app.services.live_copy_state_service import (
     LIVE_COPY_ORIGIN_PERIODIC_RECOVERY,
     LIVE_COPY_ORIGIN_REALTIME,
     LIVE_COPY_OUTCOME_RETRYABLE,
+    LIVE_COPY_OUTCOME_TERMINAL_SKIP,
     build_live_copy_recovery_candidate_query,
     ensure_live_copy_source_state,
     is_live_copy_fill_post_baseline,
     live_copy_retry_delay_seconds,
     live_copy_unresolved_order_predicate,
     mark_live_copy_fill_retryable,
+    mark_live_copy_fill_terminal_skip,
     normalize_live_copy_fill_plan_parts,
     preexisting_market_matches_part,
     update_preexisting_markets_for_part,
@@ -257,6 +259,41 @@ async def test_retryable_state_uses_bounded_backoff_without_an_order() -> None:
     assert session.flush_count == 1
     assert live_copy_retry_delay_seconds(5, base_seconds=5, max_seconds=60) == 60
     assert live_copy_retry_delay_seconds(999, base_seconds=5, max_seconds=60) == 60
+
+
+@pytest.mark.asyncio
+async def test_terminal_skip_state_does_not_require_a_trading_order() -> None:
+    session = FlushSession()
+    state = LiveCopyFillState(
+        account_key="live_main",
+        account_type="live",
+        source_wallet="0xsource",
+        source_fill_id="fill-1",
+        sequence_index=0,
+        coin="HYPE",
+        action="open",
+        side="long",
+        source_timestamp_ms=1_000,
+        origin=LIVE_COPY_ORIGIN_REALTIME,
+        outcome="retryable",
+        reason="processing",
+        attempt_count=1,
+        next_attempt_at=datetime(2026, 7, 18, tzinfo=UTC) + timedelta(minutes=1),
+        fill_complete=False,
+    )
+
+    await mark_live_copy_fill_terminal_skip(
+        session,
+        fill_state=state,
+        reason="live_source_fill_too_old",
+    )
+
+    assert state.outcome == LIVE_COPY_OUTCOME_TERMINAL_SKIP
+    assert state.reason == "live_source_fill_too_old"
+    assert state.next_attempt_at is None
+    assert state.fill_complete is False
+    assert state.trading_order_id is None
+    assert session.flush_count == 1
 
 
 def test_recovery_query_excludes_completed_before_limit_and_keeps_due_retry_paths() -> None:

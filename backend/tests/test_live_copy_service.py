@@ -581,6 +581,188 @@ async def test_unowned_close_becomes_lifecycle_state_without_trading_order(
     assert completed_fill_ids == ["close-1"]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "pre_barrier_reason",
+        "normal_reason",
+        "stale_checks",
+        "apply_terminal",
+        "expected_completion_count",
+    ),
+    [
+        ("claimed", "complete", (True, True), False, 2),
+        ("not_due", "claimed", (True, True), False, 1),
+        ("claimed", "claimed", (False, False), True, 1),
+    ],
+)
+async def test_stale_live_entry_becomes_terminal_state_without_trading_order(
+    monkeypatch: pytest.MonkeyPatch,
+    pre_barrier_reason: str,
+    normal_reason: str,
+    stale_checks: tuple[bool, bool],
+    apply_terminal: bool,
+    expected_completion_count: int,
+) -> None:
+    account = live_account(last_reconciled_at=datetime.now(UTC))
+    source_state = live_source_lifecycle_state()
+    fill_state = LiveCopyFillState(
+        account_key=account.key,
+        account_type="live",
+        source_wallet="0xsource",
+        source_fill_id="stale-open",
+        sequence_index=0,
+        coin="CASHCAT",
+        action="open",
+        side="long",
+        source_timestamp_ms=1_000,
+        origin="realtime",
+        outcome="retryable",
+        attempt_count=0,
+        fill_complete=False,
+    )
+    terminal_reasons: list[str] = []
+    completed_fill_ids: list[str] = []
+    claims = iter((pre_barrier_reason, normal_reason))
+    stale_results = iter(stale_checks)
+
+    class CommitSession:
+        async def commit(self) -> None:
+            return None
+
+    async def fake_refresh_allocations(*_args: object, **_kwargs: object):
+        return {"0xsource": source_allocation()}
+
+    async def fake_load_accounts(*_args: object, **_kwargs: object):
+        return [account]
+
+    async def fake_source_states(*_args: object, **_kwargs: object):
+        return {
+            "": PaperSourceAccountState(
+                dex="",
+                perp_equity=Decimal("1000"),
+                leverage_by_coin={"CASHCAT": Decimal("3")},
+                positions_by_coin={},
+                margin_mode_by_coin={"CASHCAT": "cross"},
+            )
+        }
+
+    async def fake_market_prices(*_args: object, **_kwargs: object):
+        return ExecutionMarketPrices(prices={"CASHCAT": Decimal("0.04")}, sources={})
+
+    async def no_failed_reconciliation(*_args: object, **_kwargs: object):
+        return set()
+
+    async def fake_source_state(*_args: object, **_kwargs: object):
+        return source_state
+
+    async def fake_fill_plan(*_args: object, **_kwargs: object):
+        return [fill_state]
+
+    async def fake_claim(*_args: object, **_kwargs: object):
+        reason = next(claims)
+        return LiveCopyPartClaim(
+            state=fill_state,
+            claimed=reason == "claimed",
+            reason=reason,
+        )
+
+    async def fake_mark_terminal(*_args: object, **kwargs: object) -> None:
+        terminal_reasons.append(str(kwargs["reason"]))
+        fill_state.outcome = "terminal_skip"
+        fill_state.reason = str(kwargs["reason"])
+        fill_state.trading_order_id = None
+
+    async def copyable_lifecycle(*_args: object, **_kwargs: object) -> bool:
+        return False
+
+    async def fake_finalize(*_args: object, **_kwargs: object) -> bool:
+        return True
+
+    async def fake_complete(*_args: object, **kwargs: object) -> bool:
+        completed_fill_ids.append(str(kwargs["source_fill_id"]))
+        return True
+
+    async def unexpected_order(*_args: object, **_kwargs: object):
+        raise AssertionError("Stale entries must not create or mutate TradingOrder rows.")
+
+    async def apply_part(*_args: object, **_kwargs: object):
+        if apply_terminal:
+            raise live_copy_service.LiveCopyPartTerminal("live_source_fill_too_old")
+        return await unexpected_order()
+
+    monkeypatch.setattr(
+        live_copy_service,
+        "refresh_paper_copy_allocations",
+        fake_refresh_allocations,
+    )
+    monkeypatch.setattr(
+        live_copy_service,
+        "load_live_accounts_for_source_copy",
+        fake_load_accounts,
+    )
+    monkeypatch.setattr(live_copy_service, "load_source_account_states", fake_source_states)
+    monkeypatch.setattr(live_copy_service, "load_execution_market_prices", fake_market_prices)
+    monkeypatch.setattr(
+        live_copy_service,
+        "refresh_stale_live_copy_accounts",
+        no_failed_reconciliation,
+    )
+    monkeypatch.setattr(live_copy_service, "ensure_live_copy_source_state", fake_source_state)
+    monkeypatch.setattr(live_copy_service, "ensure_live_copy_fill_plan_states", fake_fill_plan)
+    monkeypatch.setattr(live_copy_service, "claim_live_copy_fill_part", fake_claim)
+    monkeypatch.setattr(
+        live_copy_service,
+        "live_copy_part_is_unowned_source_lifecycle",
+        copyable_lifecycle,
+    )
+    monkeypatch.setattr(
+        live_copy_service,
+        "source_fill_age_exceeds_entry_limit",
+        lambda *_args, **_kwargs: next(stale_results),
+    )
+    monkeypatch.setattr(live_copy_service, "mark_live_copy_fill_terminal_skip", fake_mark_terminal)
+    monkeypatch.setattr(live_copy_service, "finalize_live_copy_fill_disposition", fake_finalize)
+    monkeypatch.setattr(
+        live_copy_service,
+        "mark_live_copy_fill_complete_if_durable",
+        fake_complete,
+    )
+    monkeypatch.setattr(live_copy_service, "apply_live_copy_part", apply_part)
+    monkeypatch.setattr(live_copy_service, "record_live_skip", unexpected_order)
+
+    result = await live_copy_service.process_live_copy_fills(
+        CommitSession(),
+        source_wallet="0xsource",
+        fills=[
+            {
+                "externalFillId": "stale-open",
+                "coin": "CASHCAT",
+                "price": "0.04",
+                "size": "100",
+                "notionalUsd": "4",
+                "timestampMs": int((datetime.now(UTC) - timedelta(minutes=2)).timestamp() * 1000),
+                "rawJson": {"dir": "Open Long", "startPosition": "0"},
+            }
+        ],
+        settings=Settings().model_copy(
+            update={
+                "live_trading_enabled": True,
+                "trading_copy_max_entry_age_seconds": 15,
+            }
+        ),
+        client=object(),
+        trading_client=object(),
+    )
+
+    assert terminal_reasons == ["live_source_fill_too_old"]
+    assert completed_fill_ids == ["stale-open"] * expected_completion_count
+    assert fill_state.outcome == "terminal_skip"
+    assert fill_state.reason == "live_source_fill_too_old"
+    assert fill_state.trading_order_id is None
+    assert result.skip_reasons == {"live_source_fill_too_old": 1}
+
+
 def test_live_skip_records_reason_count() -> None:
     result = live_skip("live_account_no_tradable_equity", 3)
 
@@ -1345,111 +1527,81 @@ async def test_flip_open_waits_until_old_side_is_reconciled(monkeypatch) -> None
 
 
 @pytest.mark.asyncio
-async def test_recovery_stale_live_entry_skip_is_visible_for_diagnostics(monkeypatch) -> None:
-    captured: dict[str, object] = {}
+async def test_defensive_stale_live_entry_guard_raises_terminal_decision() -> None:
+    with pytest.raises(live_copy_service.LiveCopyPartTerminal) as exc_info:
+        await live_copy_service.apply_live_open_part(
+            object(),
+            account=live_account(last_reconciled_at=datetime(2026, 1, 1, tzinfo=UTC)),
+            allocation=source_allocation(),
+            fill={
+                "externalFillId": "fill-1",
+                "coin": "HYPE",
+                "price": "100",
+                "timestampMs": int((datetime.now(UTC) - timedelta(seconds=20)).timestamp() * 1000),
+            },
+            part=SourceFillPart(
+                action="open",
+                side="long",
+                source_size=Decimal("0.1"),
+                source_notional_usd=Decimal("10"),
+                sequence_index=0,
+                close_ratio=None,
+                start_position=Decimal("0"),
+            ),
+            source_account_state=PaperSourceAccountState(
+                dex="",
+                perp_equity=Decimal("1000"),
+                leverage_by_coin={"HYPE": Decimal("25")},
+                positions_by_coin={},
+                margin_mode_by_coin={"HYPE": "cross"},
+            ),
+            source_perp_equity=Decimal("1000"),
+            source_leverages={"HYPE": Decimal("25")},
+            market_prices=ExecutionMarketPrices(prices={}, sources={}),
+            settings=Settings(trading_copy_max_entry_age_seconds=15),
+            trading_client=object(),
+        )
 
-    async def fake_record_live_skip(*_args, **kwargs):
-        captured.update(kwargs)
-        return PaperCopyBatchResult(skipped_fills=1)
-
-    monkeypatch.setattr(live_copy_service, "record_live_skip", fake_record_live_skip)
-
-    result = await live_copy_service.apply_live_open_part(
-        object(),
-        account=live_account(last_reconciled_at=datetime(2026, 1, 1, tzinfo=UTC)),
-        allocation=PaperSourceAllocation(
-            source_wallet="0xsource",
-            source_label="Source",
-            rank=1,
-            pool_rank=1,
-            score=Decimal("90"),
-            allocation_pct=Decimal("0.2"),
-            active=True,
-            has_realtime_slot=True,
-            status_reason="trading",
-        ),
-        fill={
-            "externalFillId": "fill-1",
-            "coin": "HYPE",
-            "price": "100",
-            "timestampMs": int((datetime.now(UTC) - timedelta(seconds=20)).timestamp() * 1000),
-        },
-        part=SourceFillPart(
-            action="open",
-            side="long",
-            source_size=Decimal("0.1"),
-            source_notional_usd=Decimal("10"),
-            sequence_index=0,
-            close_ratio=None,
-            start_position=Decimal("0"),
-        ),
-        source_account_state=PaperSourceAccountState(
-            dex="",
-            perp_equity=Decimal("1000"),
-            leverage_by_coin={"HYPE": Decimal("25")},
-            positions_by_coin={},
-            margin_mode_by_coin={"HYPE": "cross"},
-        ),
-        source_perp_equity=Decimal("1000"),
-        source_leverages={"HYPE": Decimal("25")},
-        market_prices=ExecutionMarketPrices(prices={}, sources={}),
-        settings=Settings(trading_copy_max_entry_age_seconds=15),
-        trading_client=object(),
-    )
-
-    assert result.skipped_fills == 1
-    assert captured["reason"] == "live_source_fill_too_old"
-    assert "hidden_from_activity" not in captured
-    assert captured["leverage"] == Decimal("25")
+    assert exc_info.value.reason == "live_source_fill_too_old"
 
 
 @pytest.mark.asyncio
-async def test_stale_live_entry_is_classified_before_missing_source_leverage(
-    monkeypatch,
-) -> None:
-    captured: dict[str, object] = {}
+async def test_stale_live_entry_is_classified_before_missing_source_leverage() -> None:
+    with pytest.raises(live_copy_service.LiveCopyPartTerminal) as exc_info:
+        await live_copy_service.apply_live_open_part(
+            object(),
+            account=live_account(last_reconciled_at=datetime(2026, 1, 1, tzinfo=UTC)),
+            allocation=source_allocation(),
+            fill={
+                "externalFillId": "fill-old",
+                "coin": "CASHCAT",
+                "price": "0.04",
+                "timestampMs": int((datetime.now(UTC) - timedelta(minutes=2)).timestamp() * 1000),
+            },
+            part=SourceFillPart(
+                action="open",
+                side="long",
+                source_size=Decimal("100"),
+                source_notional_usd=Decimal("4"),
+                sequence_index=0,
+                close_ratio=None,
+                start_position=Decimal("0"),
+            ),
+            source_account_state=PaperSourceAccountState(
+                dex="",
+                perp_equity=Decimal("1000"),
+                leverage_by_coin={},
+                positions_by_coin={},
+                margin_mode_by_coin={},
+            ),
+            source_perp_equity=Decimal("1000"),
+            source_leverages={},
+            market_prices=ExecutionMarketPrices(prices={}, sources={}),
+            settings=Settings(trading_copy_max_entry_age_seconds=15),
+            trading_client=object(),
+        )
 
-    async def fake_record_live_skip(*_args, **kwargs):
-        captured.update(kwargs)
-        return PaperCopyBatchResult(skipped_fills=1)
-
-    monkeypatch.setattr(live_copy_service, "record_live_skip", fake_record_live_skip)
-
-    result = await live_copy_service.apply_live_open_part(
-        object(),
-        account=live_account(last_reconciled_at=datetime(2026, 1, 1, tzinfo=UTC)),
-        allocation=source_allocation(),
-        fill={
-            "externalFillId": "fill-old",
-            "coin": "CASHCAT",
-            "price": "0.04",
-            "timestampMs": int((datetime.now(UTC) - timedelta(minutes=2)).timestamp() * 1000),
-        },
-        part=SourceFillPart(
-            action="open",
-            side="long",
-            source_size=Decimal("100"),
-            source_notional_usd=Decimal("4"),
-            sequence_index=0,
-            close_ratio=None,
-            start_position=Decimal("0"),
-        ),
-        source_account_state=PaperSourceAccountState(
-            dex="",
-            perp_equity=Decimal("1000"),
-            leverage_by_coin={},
-            positions_by_coin={},
-            margin_mode_by_coin={},
-        ),
-        source_perp_equity=Decimal("1000"),
-        source_leverages={},
-        market_prices=ExecutionMarketPrices(prices={}, sources={}),
-        settings=Settings(trading_copy_max_entry_age_seconds=15),
-        trading_client=object(),
-    )
-
-    assert result.skipped_fills == 1
-    assert captured["reason"] == "live_source_fill_too_old"
+    assert exc_info.value.reason == "live_source_fill_too_old"
 
 
 @pytest.mark.asyncio
