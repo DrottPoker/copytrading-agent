@@ -30,6 +30,7 @@ from app.services.live_copy_state_service import (
     LIVE_COPY_ORIGIN_PERIODIC_RECOVERY,
     LIVE_COPY_ORIGIN_SNAPSHOT_RECOVERY,
     LIVE_COPY_ORIGIN_STARTUP_RECOVERY,
+    LiveCopyProcessingDeferred,
     LiveCopyProcessingOrigin,
 )
 from app.services.live_copy_work_service import (
@@ -1894,6 +1895,36 @@ async def run_live_copy_work_loop(
                         claimed.id,
                     )
                 raise
+            except LiveCopyProcessingDeferred as exc:
+                await retry_live_copy_work(
+                    sessionmaker,
+                    work_id=claimed.id,
+                    owner=owner,
+                    attempt_count=claimed.attempt_count,
+                    error=exc,
+                    retry_base_seconds=retry_base_seconds,
+                )
+                logger.info(
+                    "live-copy work deferred and was scheduled for durable retry "
+                    "id=%s reason=%s attempt=%s",
+                    claimed.id,
+                    exc.reason,
+                    claimed.attempt_count,
+                )
+                await publish_event(
+                    redis,
+                    event_type="live_copy_deferred",
+                    channel="events:system",
+                    message="Live copy work deferred and was scheduled for durable retry.",
+                    payload={
+                        "workId": str(claimed.id),
+                        "walletAddress": claimed.wallet_address,
+                        "sourceFillId": claimed.source_fill_id,
+                        "reason": exc.reason,
+                        "attemptCount": claimed.attempt_count,
+                    },
+                    severity="warning",
+                )
             except Exception as exc:
                 await retry_live_copy_work(
                     sessionmaker,

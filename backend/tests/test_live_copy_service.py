@@ -588,25 +588,27 @@ async def test_unowned_close_becomes_lifecycle_state_without_trading_order(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     (
-        "pre_barrier_reason",
-        "normal_reason",
+        "claim_reasons",
         "stale_checks",
         "apply_terminal",
         "expected_completion_count",
+        "expected_claim_count",
+        "expected_stale_check_count",
     ),
     [
-        ("claimed", "complete", (True, True), False, 2),
-        ("not_due", "claimed", (True, True), False, 1),
-        ("claimed", "claimed", (False, False), True, 1),
+        (("claimed", "complete"), (True, True), False, 2, 2, 2),
+        (("not_due", "claimed"), (True, True), False, 1, 2, 2),
+        (("claimed",), (False, False), True, 1, 1, 2),
     ],
 )
 async def test_stale_live_entry_becomes_terminal_state_without_trading_order(
     monkeypatch: pytest.MonkeyPatch,
-    pre_barrier_reason: str,
-    normal_reason: str,
+    claim_reasons: tuple[str, ...],
     stale_checks: tuple[bool, bool],
     apply_terminal: bool,
     expected_completion_count: int,
+    expected_claim_count: int,
+    expected_stale_check_count: int,
 ) -> None:
     account = live_account(last_reconciled_at=datetime.now(UTC))
     source_state = live_source_lifecycle_state()
@@ -627,8 +629,10 @@ async def test_stale_live_entry_becomes_terminal_state_without_trading_order(
     )
     terminal_reasons: list[str] = []
     completed_fill_ids: list[str] = []
-    claims = iter((pre_barrier_reason, normal_reason))
+    claims = iter(claim_reasons)
     stale_results = iter(stale_checks)
+    claim_call_count = 0
+    stale_check_count = 0
 
     class CommitSession:
         async def commit(self) -> None:
@@ -664,6 +668,8 @@ async def test_stale_live_entry_becomes_terminal_state_without_trading_order(
         return [fill_state]
 
     async def fake_claim(*_args: object, **_kwargs: object):
+        nonlocal claim_call_count
+        claim_call_count += 1
         reason = next(claims)
         return LiveCopyPartClaim(
             state=fill_state,
@@ -720,10 +726,15 @@ async def test_stale_live_entry_becomes_terminal_state_without_trading_order(
         "live_copy_part_is_unowned_source_lifecycle",
         copyable_lifecycle,
     )
+    def fake_source_fill_age_exceeds_entry_limit(*_args: object, **_kwargs: object) -> bool:
+        nonlocal stale_check_count
+        stale_check_count += 1
+        return next(stale_results)
+
     monkeypatch.setattr(
         live_copy_service,
         "source_fill_age_exceeds_entry_limit",
-        lambda *_args, **_kwargs: next(stale_results),
+        fake_source_fill_age_exceeds_entry_limit,
     )
     monkeypatch.setattr(live_copy_service, "mark_live_copy_fill_terminal_skip", fake_mark_terminal)
     monkeypatch.setattr(live_copy_service, "finalize_live_copy_fill_disposition", fake_finalize)
@@ -765,6 +776,150 @@ async def test_stale_live_entry_becomes_terminal_state_without_trading_order(
     assert fill_state.reason == "live_source_fill_too_old"
     assert fill_state.trading_order_id is None
     assert result.skip_reasons == {"live_source_fill_too_old": 1}
+    assert claim_call_count == expected_claim_count
+    assert stale_check_count == expected_stale_check_count
+
+
+@pytest.mark.asyncio
+async def test_fresh_live_open_is_claimed_once_and_executes_in_normal_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account = live_account(last_reconciled_at=datetime.now(UTC))
+    source_state = live_source_lifecycle_state()
+    fill_timestamp_ms = int(datetime.now(UTC).timestamp() * 1000)
+    fill_state = LiveCopyFillState(
+        account_key=account.key,
+        account_type="live",
+        source_wallet="0xsource",
+        source_fill_id="fresh-open",
+        sequence_index=0,
+        coin="CASHCAT",
+        action="open",
+        side="long",
+        source_timestamp_ms=fill_timestamp_ms,
+        origin="realtime",
+        outcome="retryable",
+        attempt_count=0,
+        fill_complete=False,
+    )
+    claim_entry_staleness: list[bool] = []
+    applied_parts: list[SourceFillPart] = []
+    terminal_reasons: list[str] = []
+    completed_fill_ids: list[str] = []
+
+    class CommitSession:
+        async def commit(self) -> None:
+            return None
+
+    async def fake_refresh_allocations(*_args: object, **_kwargs: object):
+        return {"0xsource": source_allocation()}
+
+    async def fake_load_accounts(*_args: object, **_kwargs: object):
+        return [account]
+
+    async def fake_source_states(*_args: object, **_kwargs: object):
+        return {
+            "": PaperSourceAccountState(
+                dex="",
+                perp_equity=Decimal("1000"),
+                leverage_by_coin={"CASHCAT": Decimal("3")},
+                positions_by_coin={},
+                margin_mode_by_coin={"CASHCAT": "cross"},
+            )
+        }
+
+    async def fake_market_prices(*_args: object, **_kwargs: object):
+        return ExecutionMarketPrices(prices={"CASHCAT": Decimal("0.04")}, sources={})
+
+    async def fake_source_state(*_args: object, **_kwargs: object):
+        return source_state
+
+    async def fake_fill_plan(*_args: object, **_kwargs: object):
+        return [fill_state]
+
+    async def fake_claim(*_args: object, **kwargs: object):
+        claim_entry_staleness.append(bool(kwargs["entry_is_stale"]))
+        return LiveCopyPartClaim(state=fill_state, claimed=True, reason="claimed")
+
+    async def copyable_lifecycle(*_args: object, **_kwargs: object) -> bool:
+        return False
+
+    async def fake_apply(*_args: object, **kwargs: object) -> PaperCopyBatchResult:
+        applied_parts.append(kwargs["part"])
+        return PaperCopyBatchResult(processed_fills=1, accounts_updated=1)
+
+    async def fake_mark_terminal(*_args: object, **kwargs: object) -> None:
+        terminal_reasons.append(str(kwargs["reason"]))
+
+    async def fake_finalize(*_args: object, **_kwargs: object) -> bool:
+        return True
+
+    async def fake_complete(*_args: object, **kwargs: object) -> bool:
+        completed_fill_ids.append(str(kwargs["source_fill_id"]))
+        return True
+
+    async def fake_reconcile(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(
+        live_copy_service,
+        "refresh_paper_copy_allocations",
+        fake_refresh_allocations,
+    )
+    monkeypatch.setattr(
+        live_copy_service,
+        "load_live_accounts_for_source_copy",
+        fake_load_accounts,
+    )
+    monkeypatch.setattr(live_copy_service, "load_source_account_states", fake_source_states)
+    monkeypatch.setattr(live_copy_service, "load_execution_market_prices", fake_market_prices)
+    monkeypatch.setattr(live_copy_service, "ensure_live_copy_source_state", fake_source_state)
+    monkeypatch.setattr(live_copy_service, "ensure_live_copy_fill_plan_states", fake_fill_plan)
+    monkeypatch.setattr(live_copy_service, "claim_live_copy_fill_part", fake_claim)
+    monkeypatch.setattr(
+        live_copy_service,
+        "live_copy_part_is_unowned_source_lifecycle",
+        copyable_lifecycle,
+    )
+    monkeypatch.setattr(
+        live_copy_service,
+        "source_fill_age_exceeds_entry_limit",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(live_copy_service, "apply_live_copy_part", fake_apply)
+    monkeypatch.setattr(live_copy_service, "mark_live_copy_fill_terminal_skip", fake_mark_terminal)
+    monkeypatch.setattr(live_copy_service, "finalize_live_copy_fill_disposition", fake_finalize)
+    monkeypatch.setattr(
+        live_copy_service,
+        "mark_live_copy_fill_complete_if_durable",
+        fake_complete,
+    )
+    monkeypatch.setattr(live_copy_service, "reconcile_live_trading_account", fake_reconcile)
+
+    result = await live_copy_service.process_live_copy_fills(
+        CommitSession(),
+        source_wallet="0xsource",
+        fills=[
+            {
+                "externalFillId": "fresh-open",
+                "coin": "CASHCAT",
+                "price": "0.04",
+                "size": "100",
+                "notionalUsd": "4",
+                "timestampMs": fill_timestamp_ms,
+                "rawJson": {"dir": "Open Long", "startPosition": "0"},
+            }
+        ],
+        settings=Settings().model_copy(update={"live_trading_enabled": True}),
+        client=object(),
+        trading_client=object(),
+    )
+
+    assert claim_entry_staleness == [False]
+    assert [part.action for part in applied_parts] == ["open"]
+    assert terminal_reasons == []
+    assert completed_fill_ids == ["fresh-open"]
+    assert result == PaperCopyBatchResult(processed_fills=1, accounts_updated=1)
 
 
 def test_live_skip_records_reason_count() -> None:

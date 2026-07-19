@@ -843,6 +843,10 @@ and periodic recovery only enqueue missing candidate fills into the same table.
 They do not call live execution through an independent path. Claims are
 committed before Hyperliquid I/O, canonical source ordering is stored with each
 work item, and transient failures return the item to a durable retry schedule.
+The pre-barrier terminalization pass only claims entry parts whose source fill
+is already stale. Fresh entries remain unclaimed until the normal execution
+pass, which gives each fresh part one lifecycle claim and prevents a self-owned
+`processing` lease from blocking that same work item.
 
 The execution path does not run full account reconciliation before evaluating a
 fresh entry. It consumes the latest authoritative reconciliation snapshot and

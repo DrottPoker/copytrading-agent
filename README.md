@@ -709,6 +709,10 @@ Sizing policy:
   instead of executing through a competing recovery path. A worker claim is
   committed before Hyperliquid reads begin, and retry state remains durable
   across worker restarts.
+- The ordering pre-pass only claims entry parts that are already stale and must
+  become terminal before an earlier unresolved fill. Fresh entries are claimed
+  exactly once by the normal execution pass, so they cannot lease themselves as
+  `processing` and then wait for their own retry timeout.
 - The time-sensitive copy path uses the most recent authoritative account
   reconciliation snapshot and does not run a full reconciliation before a new
   entry. Dedicated reconciliation remains responsible for refreshing exchange

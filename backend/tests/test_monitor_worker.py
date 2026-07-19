@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -7,7 +8,10 @@ from uuid import uuid4
 
 import pytest
 
-from app.services.live_copy_state_service import LIVE_COPY_ORIGIN_REALTIME
+from app.services.live_copy_state_service import (
+    LIVE_COPY_ORIGIN_REALTIME,
+    LiveCopyProcessingDeferred,
+)
 from app.services.live_copy_work_service import ClaimedLiveCopyWork
 from app.services.live_trading_service import LiveReconciliationError
 from app.services.paper_trading_service import PaperCopyBatchResult
@@ -820,6 +824,101 @@ async def test_live_copy_work_loop_retries_after_processing_failure(monkeypatch)
     assert retries[0]["attempt_count"] == 2
     assert retries[0]["retry_base_seconds"] == 7
     assert isinstance(retries[0]["error"], RuntimeError)
+
+
+@pytest.mark.asyncio
+async def test_live_copy_work_loop_retries_deferred_processing_without_error_log(
+    monkeypatch,
+    caplog,
+) -> None:
+    work_id = uuid4()
+    claimed = ClaimedLiveCopyWork(
+        id=work_id,
+        wallet_fill_id=uuid4(),
+        wallet_address="0xsource",
+        source_fill_id="source-fill-1",
+        origin=LIVE_COPY_ORIGIN_REALTIME,
+        claimed_at=datetime(2026, 7, 19, 10, tzinfo=UTC),
+        attempt_count=3,
+    )
+    claims = [claimed, None]
+    retries: list[dict[str, object]] = []
+    events: list[dict[str, object]] = []
+
+    async def fake_claim(*_args: object, **_kwargs: object):
+        return claims.pop(0)
+
+    async def fake_load(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(received_at=claimed.claimed_at)
+
+    async def deferred_process(*_args: object, **_kwargs: object) -> PaperCopyBatchResult:
+        raise LiveCopyProcessingDeferred("live_reconciliation_deferred")
+
+    async def fake_retry(*_args: object, **kwargs: object) -> bool:
+        retries.append(kwargs)
+        return True
+
+    async def fake_complete(*_args: object, **_kwargs: object) -> bool:
+        raise AssertionError("Deferred live-copy work must not complete its durable work row.")
+
+    async def fake_publish(*_args: object, **kwargs: object) -> None:
+        events.append(kwargs)
+
+    monkeypatch.setattr(monitor_worker, "claim_next_live_copy_work", fake_claim)
+    monkeypatch.setattr(monitor_worker, "load_claimed_live_copy_wallet_fill", fake_load)
+    monkeypatch.setattr(
+        monitor_worker,
+        "paper_source_fill_from_wallet_fill",
+        lambda _fill: {"id": "1"},
+    )
+    monkeypatch.setattr(monitor_worker, "process_live_copy_fills", deferred_process)
+    monkeypatch.setattr(monitor_worker, "retry_live_copy_work", fake_retry)
+    monkeypatch.setattr(monitor_worker, "complete_live_copy_work", fake_complete)
+    monkeypatch.setattr(monitor_worker, "publish_event", fake_publish)
+    stop_event = asyncio.Event()
+    stop_event.set()
+    intake_closed_event = asyncio.Event()
+    intake_closed_event.set()
+    runtime = monitor_worker.WorkerRuntimeState(role="trading", capabilities=("trading",))
+    caplog.set_level(logging.INFO)
+
+    await monitor_worker.run_live_copy_work_loop(
+        work_queue=asyncio.Queue(maxsize=1),
+        sessionmaker=dummy_sessionmaker,
+        redis=object(),
+        stop_event=stop_event,
+        intake_closed_event=intake_closed_event,
+        settings=SimpleNamespace(
+            realtime_execution_claim_timeout_seconds=300,
+            realtime_execution_retry_base_seconds=7,
+        ),
+        price_cache=None,
+        runtime=runtime,
+    )
+
+    assert len(retries) == 1
+    assert retries[0]["work_id"] == work_id
+    assert retries[0]["owner"] == f"{runtime.instance_id}:live-copy-work"
+    assert retries[0]["attempt_count"] == 3
+    assert retries[0]["retry_base_seconds"] == 7
+    assert isinstance(retries[0]["error"], LiveCopyProcessingDeferred)
+    assert retries[0]["error"].reason == "live_reconciliation_deferred"
+    assert events == [
+        {
+            "event_type": "live_copy_deferred",
+            "channel": "events:system",
+            "message": "Live copy work deferred and was scheduled for durable retry.",
+            "payload": {
+                "workId": str(work_id),
+                "walletAddress": "0xsource",
+                "sourceFillId": "source-fill-1",
+                "reason": "live_reconciliation_deferred",
+                "attemptCount": 3,
+            },
+            "severity": "warning",
+        }
+    ]
+    assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
 
 
 @pytest.mark.asyncio

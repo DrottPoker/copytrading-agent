@@ -628,6 +628,10 @@ What it does:
 - Claims paper inbox rows in stable creation order and live work in canonical
   per-source order. Failed work returns to pending with bounded backoff, stale
   claims are recoverable after a worker crash, and successful rows are deleted.
+- Claims fresh live entry parts only in the normal execution pass. The
+  pre-barrier pass claims only entries that are already stale and need a
+  terminal no-order decision, so fresh work cannot defer itself as
+  `processing` before execution starts.
 - Stops WebSocket intake before the execution consumer exits. The consumer
   drains currently claimable inbox work for `worker_shutdown_drain_seconds` and
   returns interrupted claims to pending state.

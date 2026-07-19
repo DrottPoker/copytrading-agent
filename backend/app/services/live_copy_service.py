@@ -501,8 +501,8 @@ async def process_live_copy_fills(
                 execution_claimed_at=execution_claimed_at,
             )
 
-    # Terminal entry decisions are independent of execution ordering.  Make
-    # them before an unresolved earlier order can hide stale or baseline work.
+    # Only stale entry decisions bypass execution ordering. Terminalize them
+    # before an unresolved earlier order can hide the stale source fill.
     for fill, parts in planned_fills:
         for account in accounts:
             lifecycle_state = source_lifecycle_states[account.key]
@@ -514,13 +514,15 @@ async def process_live_copy_fills(
                     fill,
                     settings=resolved_settings,
                 )
+                if not stale_entry:
+                    continue
                 claim = await claim_live_copy_fill_part(
                     session,
                     source_state=lifecycle_state,
                     fill=fill,
                     part=part,
                     origin=origin,
-                    entry_is_stale=stale_entry,
+                    entry_is_stale=True,
                 )
                 if claim.state is None or claim.reason in {"complete", "blocked", "missing_plan"}:
                     continue
@@ -535,7 +537,7 @@ async def process_live_copy_fills(
                     )
                     pre_barrier_terminalized = True
                     continue
-                if not stale_entry or not claim.claimed:
+                if not claim.claimed:
                     continue
                 await mark_live_copy_fill_terminal_skip(
                     session,
