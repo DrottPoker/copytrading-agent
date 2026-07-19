@@ -42,6 +42,14 @@ edge in monitor and paper mode before any live execution is activated.
   backoff instead of producing fake live order failures. Recovery retains
   nonzero positions and unresolved orders, including filled orders whose fills
   are not fully materialized. Completed dispositions are excluded before limits.
+- The renewable `live_execution:{account_key}` fence serializes order
+  submission, reconciliation, and margin sync. A busy fence is transient and
+  does not imply another visible fill. Fully validated entries skipped only
+  because the fence is busy persist their complete intent, retry with the same
+  client order ID and original TTL without requiring a fresh source leverage
+  read, and recheck price drift plus normal live gates. Expiry terminalizes as
+  `live_entry_intent_expired`; generic leverage-missing rows never guess or
+  become reusable intents.
 - Entries first observed after the configured live-copy age limit become
   terminal stale no-order decisions. Promptly observed entries keep that
   admission through internal queueing and retries. Their origin, source

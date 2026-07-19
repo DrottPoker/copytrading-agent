@@ -41,7 +41,7 @@ from app.services.paper_trading_service import (
     PaperSourceCurrentPosition,
     SourceFillPart,
 )
-from app.services.trading_core import build_copy_trade_intent
+from app.services.trading_core import build_client_order_id, build_copy_trade_intent
 
 
 def test_live_copy_account_snapshot_without_reconcile_is_stale() -> None:
@@ -1695,6 +1695,10 @@ async def test_retryable_skip_disposition_remains_retryable(monkeypatch) -> None
 
 @pytest.mark.asyncio
 async def test_flip_open_waits_until_old_side_is_reconciled(monkeypatch) -> None:
+    class EmptyOrderSession:
+        async def scalar(self, _statement):
+            return None
+
     async def old_side_position(*_args, **_kwargs):
         return live_position(source_wallet="0xsource", side="long")
 
@@ -1716,7 +1720,7 @@ async def test_flip_open_waits_until_old_side_is_reconciled(monkeypatch) -> None
 
     with pytest.raises(live_copy_service.LiveCopyPartDeferred) as exc_info:
         await live_copy_service.apply_live_open_part(
-            object(),
+            EmptyOrderSession(),
             account=live_account(last_reconciled_at=datetime.now(UTC)),
             allocation=source_allocation(),
             fill={
@@ -1879,9 +1883,13 @@ async def test_stale_live_entry_is_classified_before_missing_source_leverage() -
 
 @pytest.mark.asyncio
 async def test_live_entry_defers_when_source_margin_mode_is_missing() -> None:
+    class EmptyOrderSession:
+        async def scalar(self, _statement):
+            return None
+
     with pytest.raises(live_copy_service.LiveCopyPartDeferred) as exc_info:
         await live_copy_service.apply_live_open_part(
-            object(),
+            EmptyOrderSession(),
             account=live_account(last_reconciled_at=datetime(2026, 1, 1, tzinfo=UTC)),
             allocation=PaperSourceAllocation(
                 source_wallet="0xsource",
@@ -1922,6 +1930,150 @@ async def test_live_entry_defers_when_source_margin_mode_is_missing() -> None:
         )
 
     assert exc_info.value.reason == "live_source_margin_mode_missing"
+
+
+@pytest.mark.asyncio
+async def test_live_busy_retry_reuses_fresh_persisted_intent_without_current_leverage(
+    monkeypatch,
+) -> None:
+    order = persisted_busy_open_order(
+        created_at=datetime.now(UTC) - timedelta(seconds=1),
+        action="add",
+    )
+    order.raw_payload = {}
+    submitted_intents = []
+
+    class ExistingOrderSession:
+        def __init__(self) -> None:
+            self.orders = [order]
+
+        async def scalar(self, _statement):
+            return self.orders[0]
+
+    async def fresh_intent(*_args, **kwargs):
+        assert kwargs["order"] is order
+        assert kwargs["intent"].created_at == order.created_at
+
+    async def submit_intent(*_args, **kwargs):
+        submitted_intents.append(kwargs["intent"])
+        return PaperCopyBatchResult(processed_fills=1)
+
+    def unexpected_leverage_lookup(*_args, **_kwargs):
+        raise AssertionError("A complete persisted busy intent must not read current leverage.")
+
+    monkeypatch.setattr(live_copy_service, "ensure_live_entry_intent_is_fresh", fresh_intent)
+    monkeypatch.setattr(live_copy_service, "submit_live_copy_intent", submit_intent)
+    monkeypatch.setattr(live_copy_service, "resolve_coin_decimal", unexpected_leverage_lookup)
+
+    session = ExistingOrderSession()
+    result = await live_copy_service.apply_live_open_part(
+        session,
+        **live_open_retry_kwargs(),
+    )
+
+    assert result.processed_fills == 1
+    assert len(session.orders) == 1
+    assert len(submitted_intents) == 1
+    intent = submitted_intents[0]
+    assert intent.client_order_id == order.client_order_id
+    assert intent.action == "add"
+    assert intent.size == Decimal("1")
+    assert intent.notional_usd == Decimal("100")
+    assert intent.limit_price == Decimal("100")
+    assert intent.leverage == Decimal("3")
+    assert intent.margin_mode == "isolated"
+
+
+@pytest.mark.asyncio
+async def test_live_busy_retry_expires_before_current_leverage_lookup_or_submission(
+    monkeypatch,
+) -> None:
+    order = persisted_busy_open_order(created_at=datetime.now(UTC) - timedelta(minutes=1))
+
+    class ExistingOrderSession:
+        async def scalar(self, _statement):
+            return order
+
+    async def expired_intent(*_args, **kwargs):
+        assert kwargs["order"] is order
+        raise LiveOrderSubmitError(
+            "Live entry intent expired before exchange submission.",
+            status_code=409,
+        )
+
+    def unexpected_leverage_lookup(*_args, **_kwargs):
+        raise AssertionError("Expired persisted intent must not read current leverage.")
+
+    async def unexpected_submit(*_args, **_kwargs):
+        raise AssertionError("Expired persisted intent must not submit an exchange order.")
+
+    monkeypatch.setattr(live_copy_service, "ensure_live_entry_intent_is_fresh", expired_intent)
+    monkeypatch.setattr(live_copy_service, "resolve_coin_decimal", unexpected_leverage_lookup)
+    monkeypatch.setattr(live_copy_service, "submit_live_copy_intent", unexpected_submit)
+
+    with pytest.raises(live_copy_service.LiveCopyPartTerminal) as exc_info:
+        await live_copy_service.apply_live_open_part(
+            ExistingOrderSession(),
+            **live_open_retry_kwargs(),
+        )
+
+    assert exc_info.value.reason == "live_entry_intent_expired"
+    expired_fill_state = lifecycle_fill_state(
+        source_fill_id="fill-1",
+        sequence_index=0,
+        action="open",
+        side="long",
+        direction_rank=1,
+        numeric_fill_id=Decimal("1"),
+    )
+    expired_fill_state.outcome = "terminal_skip"
+    expired_fill_state.reason = "live_entry_intent_expired"
+
+    class FinalizeSession:
+        async def scalar(self, _statement):
+            return None
+
+    assert await live_copy_service.finalize_live_copy_fill_disposition(
+        FinalizeSession(),
+        fill_state=expired_fill_state,
+    )
+    assert expired_fill_state.reason == "live_entry_intent_expired"
+
+
+@pytest.mark.asyncio
+async def test_live_generic_leverage_missing_skip_is_not_reused_as_complete_intent(
+    monkeypatch,
+) -> None:
+    order = persisted_busy_open_order(created_at=datetime.now(UTC) - timedelta(seconds=1))
+    order.error = "skip:live_source_leverage_missing"
+
+    class ExistingOrderSession:
+        def __init__(self) -> None:
+            self.orders = [order]
+
+        async def scalar(self, _statement):
+            return self.orders[0]
+
+    async def unexpected_ttl_check(*_args, **_kwargs):
+        raise AssertionError("Generic leverage-missing skips are not complete persisted intents.")
+
+    async def unexpected_submit(*_args, **_kwargs):
+        raise AssertionError("Generic leverage-missing skips must not submit an exchange order.")
+
+    monkeypatch.setattr(
+        live_copy_service, "ensure_live_entry_intent_is_fresh", unexpected_ttl_check
+    )
+    monkeypatch.setattr(live_copy_service, "submit_live_copy_intent", unexpected_submit)
+
+    session = ExistingOrderSession()
+    with pytest.raises(live_copy_service.LiveCopyPartDeferred) as exc_info:
+        await live_copy_service.apply_live_open_part(
+            session,
+            **live_open_retry_kwargs(),
+        )
+
+    assert exc_info.value.reason == "live_source_leverage_missing"
+    assert len(session.orders) == 1
 
 
 @pytest.mark.asyncio
@@ -2573,6 +2725,41 @@ async def test_submit_live_copy_intent_reports_submit_error(monkeypatch) -> None
     assert params["error"] == "skip:live_order_submit_error"
     assert params["raw_payload"]["decisionAt"]
     assert params["raw_payload"]["submitError"]["message"] == "Rejected by exchange."
+    assert params["raw_payload"]["tradeIntent"] == {
+        "accountKey": "live_test",
+        "accountType": "live",
+        "sourceWallet": "0xsource",
+        "sourceFillId": "fill-1",
+        "sequenceIndex": 0,
+        "clientOrderId": build_client_order_id(
+            account_key="live_test",
+            source_wallet="0xsource",
+            source_fill_id="fill-1",
+            sequence_index=0,
+            action="open",
+        ),
+        "coin": "HYPE",
+        "action": "open",
+        "side": "long",
+        "isBuy": True,
+        "reduceOnly": False,
+        "size": "0.1",
+        "notionalUsd": "10",
+        "marginUsd": "1",
+        "leverage": "10",
+        "marginMode": "cross",
+        "limitPrice": "100",
+        "sourcePrice": "100",
+        "observedPrice": "100",
+        "priceDriftBps": "0",
+        "priceSource": "test",
+        "allocationPct": "0.2",
+        "allocationUsd": "40",
+        "sourcePerpEquityUsd": "1000",
+        "sourceExposurePct": "0.01",
+        "createdAt": params["created_at"].isoformat(),
+    }
+    assert params["raw_payload"]["preDispatchIntent"] == {"fullyValidated": True}
 
 
 @pytest.mark.asyncio
@@ -3036,6 +3223,83 @@ def lifecycle_fill_state(
         origin="periodic_recovery",
         outcome="pending",
         fill_complete=False,
+    )
+
+
+def live_open_retry_kwargs() -> dict[str, object]:
+    return {
+        "account": live_account(last_reconciled_at=datetime.now(UTC)),
+        "allocation": source_allocation(),
+        "fill": {"externalFillId": "fill-1", "coin": "HYPE", "price": "100"},
+        "part": SourceFillPart(
+            action="open",
+            side="long",
+            source_size=Decimal("1"),
+            source_notional_usd=Decimal("100"),
+            sequence_index=0,
+            close_ratio=None,
+            start_position=Decimal("0"),
+        ),
+        "source_account_state": PaperSourceAccountState(
+            dex="",
+            perp_equity=Decimal("1000"),
+            leverage_by_coin={},
+            positions_by_coin={},
+            margin_mode_by_coin={},
+        ),
+        "source_perp_equity": Decimal("1000"),
+        "source_leverages": {},
+        "market_prices": ExecutionMarketPrices(
+            prices={"HYPE": Decimal("100")},
+            sources={"HYPE": "test"},
+        ),
+        "settings": Settings().model_copy(update={"live_trading_enabled": True}),
+        "trading_client": object(),
+        "entry_admission": live_copy_service.LiveEntryAdmission(
+            first_observed_at=datetime.now(UTC),
+            terminal_reason=None,
+        ),
+    }
+
+
+def persisted_busy_open_order(*, created_at: datetime, action: str = "open") -> TradingOrder:
+    return TradingOrder(
+        account_key="live_test",
+        account_type="live",
+        source_wallet="0xsource",
+        source_fill_id="fill-1",
+        sequence_index=0,
+        client_order_id=build_client_order_id(
+            account_key="live_test",
+            source_wallet="0xsource",
+            source_fill_id="fill-1",
+            sequence_index=0,
+            action=action,
+        ),
+        coin="HYPE",
+        action=action,
+        side="long",
+        is_buy=True,
+        reduce_only=False,
+        order_type="skip",
+        status="failed",
+        requested_size=Decimal("1"),
+        requested_notional_usd=Decimal("100"),
+        margin_usd=Decimal("33.333333333333333333"),
+        leverage=Decimal("3"),
+        margin_mode="isolated",
+        limit_price=Decimal("100"),
+        filled_size=Decimal("0"),
+        filled_notional_usd=Decimal("0"),
+        fee_usd=Decimal("0"),
+        error="skip:live_execution_busy",
+        raw_payload={
+            "preDispatchIntent": {
+                "fullyValidated": True,
+                "marginMode": "isolated",
+            }
+        },
+        created_at=created_at,
     )
 
 

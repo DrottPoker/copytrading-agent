@@ -622,7 +622,157 @@ def test_parse_live_position_reads_signed_position_size() -> None:
 
 
 @pytest.mark.asyncio
-async def test_margin_setting_sync_commits_before_exchange_update(
+async def test_margin_setting_sync_unchanged_settings_skip_execution_lock_and_exchange(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    account = TradingAccount(
+        key="live_test",
+        account_type="live",
+        label="Live Test",
+        status="enabled",
+        network="mainnet",
+    )
+    exchange_position = live_position(raw_payload={})
+    exchange_position.leverage = Decimal("1")
+    exchange_position.margin_mode = "isolated"
+    source_position = live_position(raw_payload={})
+    source_position.source_wallet = "0xsource"
+    source_position.margin_mode = "cross"
+
+    class ScalarResult:
+        def all(self):
+            return [exchange_position, source_position]
+
+    class FakeSession:
+        scalar_calls = 0
+
+        async def scalars(self, _query):
+            self.scalar_calls += 1
+            return ScalarResult()
+
+        async def commit(self):
+            events.append("commit")
+
+        def add(self, _value):
+            events.append("audit")
+
+    class FakeClient:
+        async def update_margin_setting(self, **_kwargs):
+            events.append("exchange")
+            return {"status": "ok"}
+
+    @asynccontextmanager
+    async def fake_job_lock(*_args, **_kwargs):
+        events.append("job_lock")
+        yield
+
+    async def unexpected_account_load(*_args, **_kwargs):
+        raise AssertionError("The execution lock should not be acquired.")
+
+    async def fake_load_live_account(*_args, **_kwargs):
+        events.append("account_load")
+        return account
+
+    monkeypatch.setattr(live_trading_service, "job_lock", fake_job_lock)
+    monkeypatch.setattr(
+        live_trading_service,
+        "load_live_account",
+        fake_load_live_account,
+    )
+    monkeypatch.setattr(
+        live_trading_service,
+        "load_live_account_for_update",
+        unexpected_account_load,
+    )
+    monkeypatch.setattr(
+        live_trading_service,
+        "validate_live_account_identity",
+        lambda *_args, **_kwargs: events.append("account_validated"),
+    )
+
+    session = FakeSession()
+    changed = await live_trading_service.sync_live_position_margin_setting(
+        session,
+        account_key="live_test",
+        source_wallet="0xsource",
+        coin="HYPE",
+        leverage=Decimal("1"),
+        margin_mode="isolated",
+        settings=Settings(),
+        client=FakeClient(),
+    )
+
+    assert changed is False
+    assert session.scalar_calls == 2
+    assert events == ["account_load", "account_validated", "commit"]
+    assert source_position.leverage == Decimal("1")
+    assert source_position.margin_mode == "isolated"
+    assert source_position.raw_payload is not None
+    assert source_position.raw_payload["marginSettingSync"]["exchangeResponse"] is None
+
+
+@pytest.mark.asyncio
+async def test_margin_setting_sync_missing_preflight_position_commits_before_returning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    account = TradingAccount(
+        key="live_test",
+        account_type="live",
+        label="Live Test",
+        status="enabled",
+        network="mainnet",
+    )
+    exchange_position = live_position(raw_payload={})
+    exchange_position.leverage = Decimal("1")
+    exchange_position.margin_mode = "isolated"
+
+    class ScalarResult:
+        def all(self):
+            return [exchange_position]
+
+    class FakeSession:
+        async def scalars(self, _query):
+            return ScalarResult()
+
+        async def commit(self):
+            events.append("commit")
+
+    async def fake_load_live_account(*_args, **_kwargs):
+        return account
+
+    def unexpected_job_lock(*_args, **_kwargs):
+        raise AssertionError("Missing positions must not acquire the execution lock.")
+
+    monkeypatch.setattr(live_trading_service, "job_lock", unexpected_job_lock)
+    monkeypatch.setattr(
+        live_trading_service,
+        "load_live_account",
+        fake_load_live_account,
+    )
+    monkeypatch.setattr(
+        live_trading_service,
+        "validate_live_account_identity",
+        lambda *_args, **_kwargs: None,
+    )
+
+    changed = await live_trading_service.sync_live_position_margin_setting(
+        FakeSession(),
+        account_key="live_test",
+        source_wallet="0xsource",
+        coin="HYPE",
+        leverage=Decimal("1"),
+        margin_mode="isolated",
+        settings=Settings(),
+    )
+
+    assert changed is False
+    assert events == ["commit"]
+
+
+@pytest.mark.asyncio
+async def test_margin_setting_sync_changed_settings_acquire_execution_lock_and_update(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
@@ -660,13 +810,23 @@ async def test_margin_setting_sync_commits_before_exchange_update(
 
     @asynccontextmanager
     async def fake_job_lock(*_args, **_kwargs):
+        events.append("job_lock")
         yield
 
-    async def fake_load_live_account(*_args, **_kwargs):
+    async def fake_load_live_account_for_update(*_args, **_kwargs):
         return account
 
     monkeypatch.setattr(live_trading_service, "job_lock", fake_job_lock)
-    monkeypatch.setattr(live_trading_service, "load_live_account", fake_load_live_account)
+    monkeypatch.setattr(
+        live_trading_service,
+        "load_live_account",
+        fake_load_live_account_for_update,
+    )
+    monkeypatch.setattr(
+        live_trading_service,
+        "load_live_account_for_update",
+        fake_load_live_account_for_update,
+    )
     monkeypatch.setattr(
         live_trading_service,
         "validate_live_account_identity",
@@ -685,9 +845,96 @@ async def test_margin_setting_sync_commits_before_exchange_update(
     )
 
     assert changed is True
+    assert events.count("job_lock") == 1
+    assert events.count("exchange") == 1
     assert events.index("commit") < events.index("exchange")
     assert exchange_position.leverage == Decimal("1")
     assert exchange_position.margin_mode == "isolated"
+    assert source_position.leverage == Decimal("1")
+    assert source_position.margin_mode == "isolated"
+
+
+@pytest.mark.asyncio
+async def test_margin_setting_sync_revalidates_settings_after_execution_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    account = TradingAccount(
+        key="live_test",
+        account_type="live",
+        label="Live Test",
+        status="enabled",
+        network="mainnet",
+    )
+    exchange_position = live_position(raw_payload={})
+    exchange_position.margin_mode = "cross"
+    source_position = live_position(raw_payload={})
+    source_position.source_wallet = "0xsource"
+    source_position.margin_mode = "cross"
+
+    class ScalarResult:
+        def all(self):
+            return [exchange_position, source_position]
+
+    class FakeSession:
+        scalar_calls = 0
+
+        async def scalars(self, _query):
+            self.scalar_calls += 1
+            return ScalarResult()
+
+        async def commit(self):
+            events.append("commit")
+
+        def add(self, _value):
+            events.append("audit")
+
+    class FakeClient:
+        async def update_margin_setting(self, **_kwargs):
+            raise AssertionError("Settings must be revalidated before exchange update.")
+
+    @asynccontextmanager
+    async def fake_job_lock(*_args, **_kwargs):
+        events.append("job_lock")
+        exchange_position.leverage = Decimal("1")
+        exchange_position.margin_mode = "isolated"
+        yield
+
+    async def fake_load_live_account_for_update(*_args, **_kwargs):
+        return account
+
+    monkeypatch.setattr(live_trading_service, "job_lock", fake_job_lock)
+    monkeypatch.setattr(
+        live_trading_service,
+        "load_live_account",
+        fake_load_live_account_for_update,
+    )
+    monkeypatch.setattr(
+        live_trading_service,
+        "load_live_account_for_update",
+        fake_load_live_account_for_update,
+    )
+    monkeypatch.setattr(
+        live_trading_service,
+        "validate_live_account_identity",
+        lambda *_args, **_kwargs: None,
+    )
+
+    session = FakeSession()
+    changed = await live_trading_service.sync_live_position_margin_setting(
+        session,
+        account_key="live_test",
+        source_wallet="0xsource",
+        coin="HYPE",
+        leverage=Decimal("1"),
+        margin_mode="isolated",
+        settings=Settings(),
+        client=FakeClient(),
+    )
+
+    assert changed is False
+    assert session.scalar_calls == 3
+    assert events == ["job_lock", "commit", "commit"]
     assert source_position.leverage == Decimal("1")
     assert source_position.margin_mode == "isolated"
 

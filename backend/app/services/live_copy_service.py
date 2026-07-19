@@ -49,6 +49,7 @@ from app.services.live_copy_state_service import (
     synchronize_live_copy_source_activity,
 )
 from app.services.live_copy_work_service import enqueue_live_copy_work_for_wallet_fills
+from app.services.live_execution_state import trade_intent_from_order
 from app.services.live_trading_service import (
     LIVE_CAPITAL_MODE_UNIFIED,
     LIVE_EXCHANGE_SOURCE,
@@ -57,6 +58,7 @@ from app.services.live_trading_service import (
     LiveCopyEntryLifecycleDeferred,
     LiveOrderSubmitError,
     LiveReconciliationError,
+    ensure_live_entry_intent_is_fresh,
     is_retryable_live_order_submit_failure,
     live_capital_mode,
     live_perp_equity_usd,
@@ -109,6 +111,7 @@ from app.services.trading_core import (
     build_client_order_id,
     build_copy_trade_intent,
     margin_from_notional,
+    trade_intent_payload,
     trade_is_buy,
 )
 
@@ -2029,6 +2032,106 @@ def live_copy_account_snapshot_is_stale(
     return (now - last_reconciled_at).total_seconds() >= max_age_seconds
 
 
+async def load_complete_persisted_live_open_intent(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    source_wallet: str,
+    source_fill_id: str,
+    sequence_index: int,
+    coin: str,
+    action: str,
+    side: str,
+) -> tuple[TradingOrder, TradeIntent] | None:
+    if not source_fill_id:
+        return None
+    order = await session.scalar(
+        select(TradingOrder).where(
+            TradingOrder.account_key == account_key,
+            TradingOrder.account_type == "live",
+            TradingOrder.source_wallet == source_wallet,
+            TradingOrder.source_fill_id == source_fill_id,
+            TradingOrder.sequence_index == sequence_index,
+        )
+    )
+    if order is None:
+        return None
+    intent = complete_persisted_live_open_intent(
+        order=order,
+        account_key=account_key,
+        source_wallet=source_wallet,
+        source_fill_id=source_fill_id,
+        sequence_index=sequence_index,
+        coin=coin,
+        action=action,
+        side=side,
+    )
+    return (order, intent) if intent is not None else None
+
+
+def complete_persisted_live_open_intent(
+    *,
+    order: TradingOrder,
+    account_key: str,
+    source_wallet: str,
+    source_fill_id: str,
+    sequence_index: int,
+    coin: str,
+    action: str,
+    side: str,
+) -> TradeIntent | None:
+    if (
+        order.account_key != account_key
+        or order.account_type != "live"
+        or order.source_wallet.lower() != source_wallet.lower()
+        or order.source_fill_id != source_fill_id
+        or order.sequence_index != sequence_index
+        or order.error != "skip:live_execution_busy"
+        or order.status != "failed"
+        or order.order_type != "skip"
+        or order.exchange_order_id
+        or order.filled_size > ZERO
+        or order.filled_notional_usd > ZERO
+        or order.reduce_only
+        or order.coin != coin
+        or order.action not in ({"open", "add"} if action == "open" else {action})
+        or order.side != side
+        or order.margin_mode not in {"cross", "isolated"}
+        or not order.client_order_id
+        or not isinstance(order.created_at, datetime)
+    ):
+        return None
+
+    expected_client_order_id = build_client_order_id(
+        account_key=account_key,
+        source_wallet=source_wallet,
+        source_fill_id=source_fill_id,
+        sequence_index=sequence_index,
+        action=order.action,
+    )
+    if order.client_order_id != expected_client_order_id:
+        return None
+
+    requested_size = decimal_or_zero(order.requested_size)
+    requested_notional_usd = decimal_or_zero(order.requested_notional_usd)
+    margin_usd = decimal_or_zero(order.margin_usd)
+    leverage = decimal_or_zero(order.leverage)
+    limit_price = decimal_or_zero(order.limit_price)
+    required_positive_values = (
+        requested_size,
+        requested_notional_usd,
+        margin_usd,
+        leverage,
+        limit_price,
+    )
+    if any(not value.is_finite() or value <= ZERO for value in required_positive_values):
+        return None
+    if order.is_buy != trade_is_buy(side=side, reduce_only=False):
+        return None
+
+    return trade_intent_from_order(order)
+
+
 async def apply_live_copy_part(
     session: AsyncSession,
     *,
@@ -2102,16 +2205,73 @@ async def apply_live_open_part(
     entry_admission: LiveEntryAdmission | None,
 ) -> PaperCopyBatchResult:
     coin = str(fill.get("coin") or "")
+    if entry_admission is None or entry_admission.first_observed_at is None:
+        raise LiveCopyPartTerminal("live_source_fill_first_observation_missing")
+    if entry_admission.is_terminal:
+        raise LiveCopyPartTerminal(entry_admission.terminal_reason)
+
+    source_fill_id = str(fill.get("externalFillId") or "")
+    persisted_intent = await load_complete_persisted_live_open_intent(
+        session,
+        account_key=account.key,
+        source_wallet=allocation.source_wallet,
+        source_fill_id=source_fill_id,
+        sequence_index=part.sequence_index,
+        coin=coin,
+        action=part.action,
+        side=part.side,
+    )
+    if persisted_intent is not None:
+        persisted_order, intent = persisted_intent
+        try:
+            await ensure_live_entry_intent_is_fresh(
+                session,
+                intent=intent,
+                order=persisted_order,
+                settings=settings,
+            )
+        except LiveOrderSubmitError as exc:
+            raise LiveCopyPartTerminal(live_submit_failure_reason(exc)) from exc
+
+        execution_context = build_execution_context(
+            fill=fill,
+            part=part,
+            market_prices=market_prices,
+            settings=settings,
+            slippage_bps=settings.live_trading_limit_slippage_bps,
+            latency_ms=0,
+        )
+        if execution_context is None:
+            raise LiveCopyPartDeferred("live_execution_price_unavailable")
+        if execution_context.price_drift_bps > settings.trading_copy_max_price_drift_bps:
+            return await record_live_skip(
+                session,
+                account=account,
+                allocation=allocation,
+                fill=fill,
+                part=part,
+                reason="live_price_drift_too_high",
+                leverage=intent.leverage,
+                margin_mode=intent.margin_mode,
+                limit_price=execution_context.execution_price,
+                margin_usd=intent.margin_usd,
+                requested_notional_usd=intent.notional_usd,
+                requested_size=intent.size,
+            )
+        return await submit_live_copy_intent(
+            session,
+            account=account,
+            intent=intent,
+            settings=settings,
+            trading_client=trading_client,
+        )
+
     raw_source_leverage = resolve_coin_decimal(source_leverages, coin)
     source_leverage = raw_source_leverage or Decimal("1")
     source_margin_mode = resolve_coin_margin_mode(
         source_account_state.margin_mode_by_coin if source_account_state is not None else {},
         coin,
     )
-    if entry_admission is None or entry_admission.first_observed_at is None:
-        raise LiveCopyPartTerminal("live_source_fill_first_observation_missing")
-    if entry_admission.is_terminal:
-        raise LiveCopyPartTerminal(entry_admission.terminal_reason)
     if raw_source_leverage is None or raw_source_leverage <= ZERO:
         raise LiveCopyPartDeferred("live_source_leverage_missing")
     if raw_source_leverage != raw_source_leverage.to_integral_value():
@@ -2799,6 +2959,8 @@ async def record_live_intent_failure(
         raw_payload={
             "decisionAt": datetime.now(UTC).isoformat(),
             "skipReason": reason,
+            "tradeIntent": trade_intent_payload(intent),
+            "preDispatchIntent": {"fullyValidated": True},
             "submitError": {
                 "message": message,
                 "statusCode": error.status_code,

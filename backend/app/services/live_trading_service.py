@@ -2441,35 +2441,102 @@ async def sync_live_position_margin_setting(
     client: HyperliquidLiveTradingClient | None = None,
 ) -> bool:
     live_client = client or HyperliquidLiveTradingClient(settings=settings)
+    position_query = (
+        select(TradingPosition)
+        .where(
+            TradingPosition.account_key == account_key,
+            TradingPosition.account_type == "live",
+            TradingPosition.coin == coin,
+            TradingPosition.source_wallet.in_([source_wallet, LIVE_EXCHANGE_SOURCE]),
+        )
+        .execution_options(populate_existing=True)
+    )
+
+    def position_pair(
+        positions: list[TradingPosition],
+    ) -> tuple[TradingPosition | None, TradingPosition | None]:
+        exchange_position = next(
+            (
+                position
+                for position in positions
+                if position.source_wallet == LIVE_EXCHANGE_SOURCE
+            ),
+            None,
+        )
+        source_position = next(
+            (position for position in positions if position.source_wallet == source_wallet),
+            None,
+        )
+        return exchange_position, source_position
+
+    def synchronize_position_metadata(
+        positions: list[TradingPosition],
+        *,
+        response: dict[str, Any] | None,
+    ) -> None:
+        synced_at = datetime.now(UTC)
+        for position in positions:
+            position.leverage = leverage
+            position.margin_mode = margin_mode
+            position.margin_usd = margin_from_notional(position.notional_usd, leverage)
+            position.raw_payload = merge_raw_payload(
+                position.raw_payload,
+                {
+                    "marginSettingSync": {
+                        "leverage": str(leverage),
+                        "marginMode": margin_mode,
+                        "sourceWallet": source_wallet,
+                        "syncedAt": synced_at.isoformat(),
+                        "exchangeResponse": response,
+                    }
+                },
+            )
+
+    preflight_account = await load_live_account(session, account_key=account_key)
+    validate_live_account_identity(preflight_account, settings=settings)
+    preflight_result = await session.scalars(position_query)
+    preflight_positions = list(preflight_result.all())
+    exchange_position, source_position = position_pair(preflight_positions)
+    if exchange_position is None or source_position is None:
+        await session.commit()
+        return False
+
+    exchange_change_needed = (
+        exchange_position.leverage != leverage
+        or exchange_position.margin_mode != margin_mode
+    )
+    if not exchange_change_needed:
+        locked_result = await session.scalars(position_query.with_for_update())
+        locked_positions = list(locked_result.all())
+        exchange_position, source_position = position_pair(locked_positions)
+        if exchange_position is None or source_position is None:
+            await session.commit()
+            return False
+        exchange_change_needed = (
+            exchange_position.leverage != leverage
+            or exchange_position.margin_mode != margin_mode
+        )
+        if not exchange_change_needed:
+            synchronize_position_metadata(locked_positions, response=None)
+            await session.commit()
+            return False
+
+        # Do not retain position row locks while waiting for the account execution lock.
+        await session.commit()
+
     try:
         async with job_lock(
             session,
             key=f"live_execution:{account_key}",
             ttl_seconds=120,
         ):
-            account = await load_live_account(session, account_key=account_key)
+            account = await load_live_account_for_update(session, account_key=account_key)
             validate_live_account_identity(account, settings=settings)
-            position_query = select(TradingPosition).where(
-                TradingPosition.account_key == account_key,
-                TradingPosition.account_type == "live",
-                TradingPosition.coin == coin,
-                TradingPosition.source_wallet.in_([source_wallet, LIVE_EXCHANGE_SOURCE]),
-            )
-            result = await session.scalars(position_query)
+            result = await session.scalars(position_query.with_for_update())
             positions = list(result.all())
-            exchange_position = next(
-                (
-                    position
-                    for position in positions
-                    if position.source_wallet == LIVE_EXCHANGE_SOURCE
-                ),
-                None,
-            )
-            source_position = next(
-                (position for position in positions if position.source_wallet == source_wallet),
-                None,
-            )
+            exchange_position, source_position = position_pair(positions)
             if exchange_position is None or source_position is None:
+                await session.commit()
                 return False
 
             changed = (
@@ -2504,23 +2571,7 @@ async def sync_live_position_margin_setting(
                 raise LiveOrderSubmitError(
                     "Live margin setting changed externally but local position state disappeared."
                 )
-            synced_at = datetime.now(UTC)
-            for position in positions:
-                position.leverage = leverage
-                position.margin_mode = margin_mode
-                position.margin_usd = margin_from_notional(position.notional_usd, leverage)
-                position.raw_payload = merge_raw_payload(
-                    position.raw_payload,
-                    {
-                        "marginSettingSync": {
-                            "leverage": str(leverage),
-                            "marginMode": margin_mode,
-                            "sourceWallet": source_wallet,
-                            "syncedAt": synced_at.isoformat(),
-                            "exchangeResponse": response,
-                        }
-                    },
-                )
+            synchronize_position_metadata(positions, response=response)
             if changed:
                 record_audit_log(
                     session,

@@ -532,6 +532,17 @@ Live activation and account lifecycle:
   `exit_only`, cancels unsent entries, and persists the event for audit. Expired
   intents and invalid exchange leverage or slippage values are rejected
   before submission without opening exposure.
+- The renewable `live_execution:{account_key}` fence is shared by order
+  submission, reconciliation, and margin-setting synchronization. A transient
+  busy result does not imply that another visible fill exists. A fully validated
+  entry that cannot submit because the fence is busy is persisted as
+  `skip:live_execution_busy` and retries with its original client order ID
+  (CLOID), size, notional, leverage, margin mode, limit price, and `created_at`.
+  This retry uses the persisted leverage without requiring a fresh source
+  leverage read. It rechecks current price drift and the normal account,
+  lifecycle, reconciliation, risk, and capacity gates. The original 30-second TTL is
+  never renewed, and expiry becomes `live_entry_intent_expired`. Generic
+  leverage-missing skips are not reusable persisted intents.
 - Weekly loss usage is net realized PnL after fees plus current aggregate
   exchange unrealized PnL. Its percentage base is reconstructed start-of-week
   account equity. Current unrealized PnL is included once and is not duplicated
@@ -874,9 +885,13 @@ Sizing policy:
   avoid duplicate simulation.
 - Realtime fills, recovery reconciliation, and manual closes are serialized per
   source wallet with a Postgres advisory transaction lock.
-- Live order dispatch is serialized per live account with a renewable Postgres
-  job lock. Reconciliation uses the same account lock so it cannot race an
-  in-flight dispatch. The order and outbox row are committed before an exchange
+- Live order dispatch, account reconciliation, and margin-setting
+  synchronization share the renewable `live_execution:{account_key}` Postgres
+  fence. Reconciliation and margin sync revalidate after acquiring it. Periodic
+  margin sync first compares the local exchange and source-attributed rows; when
+  both already match, it updates local metadata without taking the fence or
+  calling the exchange. Actual exchange changes still acquire and revalidate
+  under the fence. The order and outbox row are committed before an exchange
   request, and no account or order row lock is held while Hyperliquid is called.
 - New entry finalization reruns intent freshness and risk checks under the
   per-account execution lock immediately before dispatch.

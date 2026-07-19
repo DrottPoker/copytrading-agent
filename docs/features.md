@@ -1061,9 +1061,19 @@ What it does:
   submission. It commits `submitting` before the network request, classifies a
   lost response as `uncertain`, and checks Hyperliquid `orderStatus` by
   deterministic cloid before any retry decision.
-- Serializes live execution per account without holding account or order row
-  locks over Hyperliquid network calls. The trading worker recovers durable
-  outbox rows after restart.
+- Serializes order submission, account reconciliation, and margin-setting
+  synchronization through the renewable `live_execution:{account_key}` fence
+  without holding account or order row locks over Hyperliquid network calls. A
+  busy fence is transient coordination, not evidence of another visible fill.
+  A fully validated entry that cannot submit because the fence is busy is
+  persisted as `skip:live_execution_busy` with its complete pre-dispatch intent.
+  Retry reuses the original client order ID (CLOID), size, notional, leverage,
+  margin mode, limit price, and `created_at` without requiring a fresh source
+  leverage read, then rechecks current price drift and the normal account,
+  lifecycle, reconciliation, risk, and capacity gates. The original TTL is
+  never renewed; expiry terminalizes as `live_entry_intent_expired`.
+  Generic leverage-missing skips are not reusable intents. The trading worker
+  recovers durable outbox rows after restart.
 - Persists close-all as a resumable operation with per-position progress. The
   account remains `exit_only` until reconciliation confirms it is flat, then it
   becomes `disabled`. The worker resumes unfinished close-all operations after
@@ -1240,12 +1250,18 @@ What it does:
   source leverage without a local maximum, and copies source cross or isolated
   mode. Hyperliquid's leverage update is sent with the matching `isCross` value
   before order submission and must return `ok`. Missing source leverage or
-  margin mode skips the entry instead of guessing. Hyperliquid enforces each
-  market's supported leverage. Reduce-only orders do not change exchange margin
-  settings.
+  margin mode skips the entry instead of guessing. Generic leverage-missing
+  rows do not become reusable persisted intents. A fully validated busy-fence
+  intent can retry from its captured leverage and margin mode without requiring
+  current source leverage. Hyperliquid enforces each market's supported
+  leverage. Reduce-only orders do not change exchange margin settings.
 - Rechecks leverage and margin mode for every open source-attributed position
   during live copy recovery. A source change without a fill is applied to the
-  target through the account execution lock and persisted in the audit trail.
+  target through the account execution fence and persisted in the audit trail.
+  Periodic margin sync first compares local exchange and source-attributed rows;
+  when both already match, it updates local metadata without taking the fence or
+  calling the exchange. Actual exchange changes acquire and revalidate under
+  the fence.
 - Exposes margin mode together with leverage on live positions and orders in the
   dashboard.
 - Reconciles matched live fills back into source-attributed live positions so

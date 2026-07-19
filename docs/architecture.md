@@ -857,6 +857,16 @@ still enforces reconciliation completeness and maximum snapshot age, and it
 enforces the entry-intent TTL from actual local intent construction to exchange
 submission. A retryable order retains its original construction time instead of
 renewing the TTL on each retry.
+The renewable `live_execution:{account_key}` fence is shared by order
+submission, reconciliation, and margin-setting synchronization. A busy fence is
+a transient coordination result, not evidence of another visible fill. A fully
+validated entry that cannot submit because the fence is busy is persisted as
+`skip:live_execution_busy` with its complete pre-dispatch intent. Retry reuses
+the original client order ID (CLOID), size, notional, leverage, margin mode,
+limit price, and creation time without requiring a fresh source leverage read,
+then rechecks current price drift and the normal account, lifecycle,
+reconciliation, risk, and capacity gates. The original TTL is never renewed;
+expiry becomes `live_entry_intent_expired`.
 `LiveCopyFillState` stores explicit execution-claim, processing-start, and
 decision timestamps. These are Python wall-clock values and are not derived
 from PostgreSQL transaction-scoped `now()` values.
@@ -1198,7 +1208,11 @@ whole number. The adapter applies `updateLeverage` to the resolved Hyperliquid
 market with `isCross=true` for cross or `isCross=false` for isolated and
 requires a successful response before submitting the order. Missing source
 leverage or margin mode blocks the entry instead of falling back to a local
-value. Reduce-only orders never mutate exchange margin settings.
+value. Generic leverage-missing skip rows are not reusable intents. A complete
+pre-dispatch intent persisted only because the account fence was busy can retry
+without rereading current source leverage, using the leverage and margin mode
+captured in that intent. Reduce-only orders never mutate exchange margin
+settings.
 
 The source `userFills` stream does not emit leverage-only or margin-mode-only
 changes. The live copy recovery loop therefore reads current source
@@ -1232,9 +1246,14 @@ imports `userFillsByTime` rows into `trading_fills` and syncs aggregate account
 positions from `clearinghouseState` into `trading_positions` with source wallet
 `__exchange__`.
 
-Account reconciliation acquires the same per-account execution lock as order
-dispatch. A snapshot therefore cannot interleave with an in-flight submission,
-even when API and worker processes target the same account concurrently.
+Account reconciliation acquires the same per-account
+`live_execution:{account_key}` fence as order dispatch and margin synchronization.
+A snapshot therefore cannot interleave with an in-flight submission or margin
+update, even when API and worker processes target the same account concurrently.
+Periodic margin sync first compares the local exchange and source-attributed
+rows; matching settings update local metadata without taking the fence or
+calling Hyperliquid. Actual exchange changes acquire the fence and revalidate
+before updating.
 
 Live close-all is a resumable operation, not one long API transaction. The
 account is committed as `exit_only` first. `trading_close_all_operations` stores
