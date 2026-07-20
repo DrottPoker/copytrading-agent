@@ -105,21 +105,20 @@ async def test_realtime_duplicates_and_recovery_converge_on_one_durable_work_row
 
 
 @pytest.mark.asyncio
-async def test_claiming_respects_per_source_order_and_commits_before_processing(
+async def test_claiming_preserves_same_market_order_without_blocking_other_markets(
     integration_sessionmaker: async_sessionmaker[AsyncSession],
 ) -> None:
     source_a = "0xsource-a"
-    source_b = "0xsource-b"
-    older_a = wallet_fill(source_a, "a-old", timestamp_ms=1_000)
-    newer_a = wallet_fill(source_a, "a-new", timestamp_ms=2_000)
-    only_b = wallet_fill(source_b, "b-only", timestamp_ms=1_500)
+    older_a = wallet_fill(source_a, "pump-old", timestamp_ms=1_000, coin="PUMP")
+    newer_a = wallet_fill(source_a, "pump-new", timestamp_ms=2_000, coin="PUMP")
+    independent_market = wallet_fill(source_a, "ace-only", timestamp_ms=1_500, coin="ACE")
     async with integration_sessionmaker() as session:
-        session.add_all([older_a, newer_a, only_b])
+        session.add_all([older_a, newer_a, independent_market])
         await session.flush()
         assert (
             await enqueue_live_copy_work_for_wallet_fills(
                 session,
-                fills=[newer_a, only_b, older_a],
+                fills=[newer_a, independent_market, older_a],
                 origin=LIVE_COPY_ORIGIN_PERIODIC_RECOVERY,
             )
             == 3
@@ -132,7 +131,7 @@ async def test_claiming_respects_per_source_order_and_commits_before_processing(
         claim_timeout_seconds=300,
     )
     assert first is not None
-    assert first.source_fill_id == "a-old"
+    assert first.source_fill_id == "pump-old"
     async with integration_sessionmaker() as session:
         committed = await session.get(LiveCopyWork, first.id)
     assert committed is not None
@@ -146,7 +145,7 @@ async def test_claiming_respects_per_source_order_and_commits_before_processing(
         claim_timeout_seconds=300,
     )
     assert second is not None
-    assert second.source_fill_id == "b-only"
+    assert second.source_fill_id == "ace-only"
     assert await complete_live_copy_work(
         integration_sessionmaker,
         work_id=second.id,
@@ -164,7 +163,7 @@ async def test_claiming_respects_per_source_order_and_commits_before_processing(
         claim_timeout_seconds=300,
     )
     assert third is not None
-    assert third.source_fill_id == "a-new"
+    assert third.source_fill_id == "pump-new"
 
 
 @pytest.mark.asyncio
@@ -347,11 +346,17 @@ def hyperliquid_fill(external_fill_id: str, *, fill_time_ms: int) -> dict[str, o
     }
 
 
-def wallet_fill(wallet_address: str, external_fill_id: str, *, timestamp_ms: int) -> WalletFill:
+def wallet_fill(
+    wallet_address: str,
+    external_fill_id: str,
+    *,
+    timestamp_ms: int,
+    coin: str = "HYPE",
+) -> WalletFill:
     return WalletFill(
         wallet_address=wallet_address,
         external_fill_id=external_fill_id,
-        coin="HYPE",
+        coin=coin,
         side="buy",
         price=Decimal("10"),
         size=Decimal("1"),

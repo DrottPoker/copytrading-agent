@@ -322,7 +322,9 @@ async def test_reconciliation_contention_defers_fill_without_trading_order(
 
 
 @pytest.mark.asyncio
-async def test_ambiguous_attribution_defers_fill_without_trading_order(monkeypatch) -> None:
+async def test_under_ttl_ambiguous_entry_remains_retryable_without_trading_order(
+    monkeypatch,
+) -> None:
     account = live_account(last_reconciled_at=datetime.now(UTC))
     source_state = live_source_lifecycle_state()
     fill_state = LiveCopyFillState(
@@ -339,6 +341,7 @@ async def test_ambiguous_attribution_defers_fill_without_trading_order(monkeypat
         outcome="retryable",
         attempt_count=0,
         fill_complete=False,
+        processing_started_at=datetime.now(UTC) - timedelta(seconds=5),
     )
     retry_reasons: list[str] = []
 
@@ -435,13 +438,192 @@ async def test_ambiguous_attribution_defers_fill_without_trading_order(monkeypat
                     "rawJson": {"dir": "Open Long", "startPosition": "100"},
                 }
             ],
-            settings=Settings().model_copy(update={"live_trading_enabled": True}),
+            settings=Settings().model_copy(
+                update={
+                    "live_trading_enabled": True,
+                    "live_trading_entry_intent_ttl_seconds": 30,
+                }
+            ),
             client=object(),
             trading_client=object(),
             first_observed_at_by_fill_id={"fill-1": datetime.now(UTC)},
         )
 
     assert retry_reasons == ["live_source_attribution_ambiguous"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("has_existing_order", "expected_terminal_reason", "expected_apply_count"),
+    [
+        (False, "live_entry_preparation_expired", 0),
+        (True, None, 1),
+    ],
+)
+async def test_expired_entry_preparation_terminalizes_only_without_an_order(
+    monkeypatch,
+    has_existing_order: bool,
+    expected_terminal_reason: str | None,
+    expected_apply_count: int,
+) -> None:
+    account = live_account(last_reconciled_at=datetime.now(UTC))
+    source_state = live_source_lifecycle_state()
+    fill_state = LiveCopyFillState(
+        account_key=account.key,
+        account_type="live",
+        source_wallet="0xsource",
+        source_fill_id="fill-1",
+        sequence_index=0,
+        coin="CASHCAT",
+        action="add",
+        side="long",
+        source_timestamp_ms=int(datetime.now(UTC).timestamp() * 1000),
+        origin="realtime",
+        outcome="retryable",
+        attempt_count=12,
+        fill_complete=False,
+        processing_started_at=datetime.now(UTC) - timedelta(seconds=31),
+    )
+    terminal_reasons: list[str] = []
+    completed_fill_ids: list[str] = []
+    applied_parts: list[SourceFillPart] = []
+
+    class CommitSession:
+        async def commit(self) -> None:
+            pass
+
+    async def fake_refresh_allocations(*_args, **_kwargs):
+        return {"0xsource": source_allocation()}
+
+    async def fake_load_accounts(*_args, **_kwargs):
+        return [account]
+
+    async def fake_source_states(*_args, **_kwargs):
+        return {
+            "": PaperSourceAccountState(
+                dex="",
+                perp_equity=Decimal("1000"),
+                leverage_by_coin={"CASHCAT": Decimal("3")},
+                positions_by_coin={},
+                margin_mode_by_coin={"CASHCAT": "cross"},
+            )
+        }
+
+    async def fake_market_prices(*_args, **_kwargs):
+        return ExecutionMarketPrices(prices={"CASHCAT": Decimal("0.04")}, sources={})
+
+    async def no_failed_reconciliation(*_args, **_kwargs):
+        return set()
+
+    async def fake_source_state(*_args, **_kwargs):
+        return source_state
+
+    async def fake_fill_plan(*_args, **_kwargs):
+        return [fill_state]
+
+    async def fake_claim(*_args, **_kwargs):
+        return LiveCopyPartClaim(state=fill_state, claimed=True, reason="claimed")
+
+    async def no_order_row(*_args, **_kwargs):
+        return has_existing_order
+
+    async def lifecycle(*_args, **_kwargs):
+        if not has_existing_order:
+            raise AssertionError("Expired entry preparation must not recover source attribution.")
+        return False
+
+    async def fake_mark_terminal(*_args, **kwargs):
+        reason = str(kwargs["reason"])
+        terminal_reasons.append(reason)
+        fill_state.outcome = "terminal_skip"
+        fill_state.reason = reason
+        fill_state.trading_order_id = None
+
+    async def fake_finalize(*_args, **_kwargs):
+        return True
+
+    async def fake_complete(*_args, **kwargs):
+        completed_fill_ids.append(str(kwargs["source_fill_id"]))
+        return True
+
+    async def apply_part(*_args, **kwargs):
+        applied_parts.append(kwargs["part"])
+        if not has_existing_order:
+            raise AssertionError("Expired entry preparation must not create a TradingOrder.")
+        return PaperCopyBatchResult()
+
+    monkeypatch.setattr(
+        live_copy_service,
+        "refresh_paper_copy_allocations",
+        fake_refresh_allocations,
+    )
+    monkeypatch.setattr(
+        live_copy_service,
+        "load_live_accounts_for_source_copy",
+        fake_load_accounts,
+    )
+    monkeypatch.setattr(live_copy_service, "load_source_account_states", fake_source_states)
+    monkeypatch.setattr(live_copy_service, "load_execution_market_prices", fake_market_prices)
+    monkeypatch.setattr(
+        live_copy_service,
+        "refresh_stale_live_copy_accounts",
+        no_failed_reconciliation,
+    )
+    monkeypatch.setattr(live_copy_service, "ensure_live_copy_source_state", fake_source_state)
+    monkeypatch.setattr(live_copy_service, "ensure_live_copy_fill_plan_states", fake_fill_plan)
+    monkeypatch.setattr(live_copy_service, "claim_live_copy_fill_part", fake_claim)
+    monkeypatch.setattr(live_copy_service, "live_order_row_exists", no_order_row)
+    monkeypatch.setattr(
+        live_copy_service,
+        "live_copy_part_is_unowned_source_lifecycle",
+        lifecycle,
+    )
+    monkeypatch.setattr(live_copy_service, "mark_live_copy_fill_terminal_skip", fake_mark_terminal)
+    monkeypatch.setattr(live_copy_service, "finalize_live_copy_fill_disposition", fake_finalize)
+    monkeypatch.setattr(
+        live_copy_service,
+        "mark_live_copy_fill_complete_if_durable",
+        fake_complete,
+    )
+    monkeypatch.setattr(live_copy_service, "apply_live_copy_part", apply_part)
+
+    result = await live_copy_service.process_live_copy_fills(
+        CommitSession(),
+        source_wallet="0xsource",
+        fills=[
+            {
+                "externalFillId": "fill-1",
+                "coin": "CASHCAT",
+                "price": "0.04",
+                "size": "100",
+                "notionalUsd": "4",
+                "timestampMs": int(datetime.now(UTC).timestamp() * 1000),
+                "rawJson": {"dir": "Open Long", "startPosition": "100"},
+            }
+        ],
+        settings=Settings().model_copy(
+            update={
+                "live_trading_enabled": True,
+                "live_trading_entry_intent_ttl_seconds": 30,
+            }
+        ),
+        client=object(),
+        trading_client=object(),
+        first_observed_at_by_fill_id={"fill-1": datetime.now(UTC)},
+    )
+
+    assert terminal_reasons == (
+        [expected_terminal_reason] if expected_terminal_reason is not None else []
+    )
+    assert completed_fill_ids == ["fill-1"]
+    assert len(applied_parts) == expected_apply_count
+    if expected_terminal_reason is not None:
+        assert fill_state.outcome == "terminal_skip"
+        assert fill_state.reason == expected_terminal_reason
+        assert fill_state.trading_order_id is None
+        assert result.skip_reasons == {expected_terminal_reason: 1}
+    else:
+        assert result == PaperCopyBatchResult()
 
 
 @pytest.mark.asyncio
@@ -1148,6 +1330,50 @@ async def test_close_without_owned_or_exchange_position_is_unowned_lifecycle(
 
 
 @pytest.mark.asyncio
+async def test_ambiguous_exit_remains_retryable(monkeypatch) -> None:
+    async def no_position(*_args, **_kwargs):
+        return None
+
+    async def ambiguous_recovery(*_args, **_kwargs):
+        raise live_copy_service.LiveCopyPartDeferred("live_source_attribution_ambiguous")
+
+    async def unexpected_reservation_check(*_args, **_kwargs):
+        raise AssertionError("Exit attribution must not become an entry reservation terminal.")
+
+    monkeypatch.setattr(live_copy_service, "load_live_source_position", no_position)
+    monkeypatch.setattr(
+        live_copy_service,
+        "recover_live_source_position_attribution",
+        ambiguous_recovery,
+    )
+    monkeypatch.setattr(
+        live_copy_service,
+        "live_market_is_reserved_by_other_source",
+        unexpected_reservation_check,
+    )
+
+    with pytest.raises(live_copy_service.LiveCopyPartDeferred) as exc_info:
+        await live_copy_service.live_copy_part_is_unowned_source_lifecycle(
+            object(),
+            account=live_account(last_reconciled_at=datetime(2026, 1, 1, tzinfo=UTC)),
+            source_state=live_source_lifecycle_state(),
+            fill={"externalFillId": "close-1", "coin": "CASHCAT", "timestampMs": 1_000},
+            part=SourceFillPart(
+                action="close",
+                side="long",
+                source_size=Decimal("100"),
+                source_notional_usd=Decimal("4"),
+                sequence_index=0,
+                close_ratio=Decimal("0.5"),
+                start_position=Decimal("200"),
+            ),
+            baseline_part=False,
+        )
+
+    assert exc_info.value.reason == "live_source_attribution_ambiguous"
+
+
+@pytest.mark.asyncio
 async def test_old_exit_cannot_close_a_newer_owned_source_lifecycle(monkeypatch) -> None:
     position = live_position(source_wallet="0xsource", side="long")
     position.source_lifecycle_timestamp_ms = int(
@@ -1200,6 +1426,14 @@ async def test_preexisting_add_is_unowned_but_fresh_flip_open_is_copyable(
         "recover_live_source_position_attribution",
         no_position,
     )
+    async def market_is_free(*_args, **_kwargs):
+        return False
+
+    monkeypatch.setattr(
+        live_copy_service,
+        "live_market_is_reserved_by_other_source",
+        market_is_free,
+    )
     account = live_account(last_reconciled_at=datetime(2026, 1, 1, tzinfo=UTC))
     source_state = live_source_lifecycle_state()
     fill = {"externalFillId": "fill-1", "coin": "CASHCAT", "timestampMs": 1_000}
@@ -1239,6 +1473,52 @@ async def test_preexisting_add_is_unowned_but_fresh_flip_open_is_copyable(
 
     assert preexisting_add is True
     assert flip_open is False
+
+
+@pytest.mark.asyncio
+async def test_other_source_reservation_terminalizes_entry_before_attribution_recovery(
+    monkeypatch,
+) -> None:
+    async def no_position(*_args, **_kwargs):
+        return None
+
+    async def reserved_by_other_source(*_args, **_kwargs):
+        return True
+
+    async def unexpected_recovery(*_args, **_kwargs):
+        raise AssertionError("A reserved market must not attempt attribution recovery.")
+
+    monkeypatch.setattr(live_copy_service, "load_live_source_position", no_position)
+    monkeypatch.setattr(
+        live_copy_service,
+        "live_market_is_reserved_by_other_source",
+        reserved_by_other_source,
+    )
+    monkeypatch.setattr(
+        live_copy_service,
+        "recover_live_source_position_attribution",
+        unexpected_recovery,
+    )
+
+    with pytest.raises(live_copy_service.LiveCopyPartTerminal) as exc_info:
+        await live_copy_service.live_copy_part_is_unowned_source_lifecycle(
+            object(),
+            account=live_account(last_reconciled_at=datetime(2026, 1, 1, tzinfo=UTC)),
+            source_state=live_source_lifecycle_state(),
+            fill={"externalFillId": "open-1", "coin": "CASHCAT", "timestampMs": 1_000},
+            part=SourceFillPart(
+                action="add",
+                side="long",
+                source_size=Decimal("100"),
+                source_notional_usd=Decimal("4"),
+                sequence_index=0,
+                close_ratio=None,
+                start_position=Decimal("200"),
+            ),
+            baseline_part=False,
+        )
+
+    assert exc_info.value.reason == "live_market_reserved_by_other_source"
 
 
 @pytest.mark.asyncio

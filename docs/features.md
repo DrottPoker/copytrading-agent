@@ -1204,6 +1204,11 @@ What it does:
 - Builds the 30-second live entry-intent TTL from local intent construction
   time. Existing retryable orders retain their original creation time so a retry
   cannot renew an expired exchange-submission window.
+- Bounds pre-order entry preparation by the same TTL from the first durable
+  processing claim. Entries that cannot resolve attribution or another
+  prerequisite in that window become `live_entry_preparation_expired` without
+  creating an order. Existing orders continue through their own original intent
+  TTL, and exits remain retryable.
 - Prices live entry IOC-limit orders with `live_trading_limit_slippage_bps`,
   which defaults to 20 bps. `live_trading_max_slippage_bps` remains the hard
   guard against overly aggressive prices. If the execution value is too tight,
@@ -1232,7 +1237,9 @@ What it does:
   margin settings at account level. This prevents leverage or cross/isolated
   settings from different sources overwriting each other. Different coins can
   independently use different margin modes. Matching exits and adds from the
-  reserved source remain allowed.
+  reserved source remain allowed. The reservation conflict is terminalized
+  before attribution recovery, so it cannot create an indefinite ambiguous
+  entry retry.
 - Enforces live entry guardrails for reconciliation freshness, entry intent TTL,
   weekly account loss percentage, and max orders per minute.
   Stale or incomplete reconciliation blocks only the entry without changing the

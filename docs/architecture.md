@@ -857,6 +857,11 @@ still enforces reconciliation completeness and maximum snapshot age, and it
 enforces the entry-intent TTL from actual local intent construction to exchange
 submission. A retryable order retains its original construction time instead of
 renewing the TTL on each retry.
+Before a `TradingOrder` exists, the same configured TTL bounds preparation from
+the entry part's immutable first processing claim. An unresolved entry becomes
+the terminal no-order decision `live_entry_preparation_expired`; reduce and
+close parts are not expired by this pre-intent deadline. Once an order exists,
+its original `created_at` and the normal intent-expiry path remain authoritative.
 The renewable `live_execution:{account_key}` fence is shared by order
 submission, reconciliation, and margin-setting synchronization. A busy fence is
 a transient coordination result, not evidence of another visible fill. A fully
@@ -1123,6 +1128,11 @@ from the raw fill and order ledgers:
   source owns the market, and manual fills do not add unexplained exposure.
   Recovery restores at most the proven source size and defers ambiguous cases
   without submitting an order.
+- A continuation entry with no owned source position checks the account-market
+  reservation before attribution recovery. An existing reservation owned by a
+  different source is terminal for that entry instead of retrying as ambiguous.
+  Other attribution failures remain fail-closed and retryable only within the
+  bounded pre-intent entry window. Exit attribution remains retryable.
 - Flip-close and flip-open remain separate ordered parts. Flip-open is retryable
   while the old source-attributed side still exists, allowing reconciliation to
   confirm the close before any opposite-side entry is submitted.

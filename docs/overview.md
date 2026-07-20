@@ -52,14 +52,19 @@ edge in monitor and paper mode before any live execution is activated.
   become reusable intents.
 - Entries first observed after the configured live-copy age limit become
   terminal stale no-order decisions. Promptly observed entries keep that
-  admission through internal queueing and retries. Their origin, source
+  admission through internal queueing, while pre-order preparation is bounded
+  from its first processing claim. An unresolved entry becomes
+  `live_entry_preparation_expired` without an order; exits remain retryable.
+  Their origin, source
   timestamp, observation timestamps, and update time are exposed for
   diagnostics, and the dashboard shows ingest lag, total source-to-decision
   age, and processing lag when available. These rows stay in Copy Decisions and
   do not appear in Recent Execution Activity because no `TradingOrder` is
   created.
 - Live source events use canonical numeric fill ordering with close-before-open
-  sequencing. Lost attribution can be restored only from strict current
+  sequencing. Durable work blocks only later work from the same wallet and
+  coin, so one unresolved market cannot halt independent coins. Lost
+  attribution can be restored only from strict current
   executed-fill proof, excluding exchange and manual-test reserved sources.
   Every multipart plan is committed before exchange submission, with the final
   gate lock order preserved. Separate pipeline decisions remain visible without

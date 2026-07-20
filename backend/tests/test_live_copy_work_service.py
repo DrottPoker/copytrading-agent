@@ -68,6 +68,7 @@ def test_claim_query_uses_postgres_skip_locked_and_earlier_source_barrier() -> N
 
     assert "FOR UPDATE SKIP LOCKED" in sql
     assert "live_copy_work_1.wallet_address = live_copy_work.wallet_address" in sql
+    assert "live_copy_work_1.coin = live_copy_work.coin" in sql
     assert "live_copy_work_1.status IN ('pending', 'processing')" in sql
     assert (
         "live_copy_work_1.source_order_fill_id_numeric "

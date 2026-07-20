@@ -729,6 +729,14 @@ Sizing policy:
 - The 30-second live entry-intent TTL starts when the local execution intent is
   constructed, not at the source fill timestamp. An existing retryable order
   keeps its original construction time, so retries cannot renew that TTL.
+- Before an order exists, entry preparation has the same bounded window from
+  the part's first durable processing claim. If attribution or another
+  prerequisite is still unresolved when that window expires, the part becomes
+  the terminal no-order decision `live_entry_preparation_expired`. Exit parts
+  remain retryable because they may still be needed to reduce owned exposure.
+- A market already reserved by another source terminalizes a new entry as
+  `live_market_reserved_by_other_source` before attribution recovery. Strict
+  attribution proof is never weakened to force an order through.
 - The time-sensitive copy path uses the most recent authoritative account
   reconciliation snapshot and does not run a full reconciliation before a new
   entry. Dedicated reconciliation remains responsible for refreshing exchange

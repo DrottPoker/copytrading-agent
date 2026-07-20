@@ -2,7 +2,7 @@ import asyncio
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -151,6 +151,7 @@ LIVE_COPY_RETRYABLE_SKIP_REASONS = frozenset(
         "source_perp_equity_zero",
     }
 )
+LIVE_COPY_ENTRY_ACTIONS = frozenset({"open", "add", "flip_open"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,6 +227,35 @@ def evaluate_live_entry_admission(
             terminal_reason="live_source_fill_too_old",
         )
     return LiveEntryAdmission(first_observed_at=observed_at, terminal_reason=None)
+
+
+def live_entry_preparation_expired(
+    fill_state: LiveCopyFillState,
+    *,
+    settings: Settings,
+    now: datetime | None = None,
+) -> bool:
+    """Bound pre-intent entry preparation by its first durable processing time."""
+
+    if fill_state.action not in LIVE_COPY_ENTRY_ACTIONS:
+        return False
+    processing_started_at = fill_state.processing_started_at
+    if processing_started_at is None:
+        return False
+    started_at = (
+        processing_started_at.replace(tzinfo=UTC)
+        if processing_started_at.tzinfo is None
+        else processing_started_at.astimezone(UTC)
+    )
+    reference_time = now or datetime.now(UTC)
+    reference_time = (
+        reference_time.replace(tzinfo=UTC)
+        if reference_time.tzinfo is None
+        else reference_time.astimezone(UTC)
+    )
+    return reference_time > started_at + timedelta(
+        seconds=settings.live_trading_entry_intent_ttl_seconds
+    )
 
 
 def live_copy_allocation_equity_usd(
@@ -678,7 +708,29 @@ async def process_live_copy_fills(
                     )
                     continue
 
-                if terminal_entry:
+                preparation_expired = (
+                    part.action in LIVE_COPY_ENTRY_ACTIONS
+                    and live_entry_preparation_expired(
+                        fill_state,
+                        settings=resolved_settings,
+                    )
+                    and not await live_order_row_exists(
+                        session,
+                        account_key=account.key,
+                        source_wallet=lifecycle_state.source_wallet,
+                        source_fill_id=str(fill.get("externalFillId") or ""),
+                        sequence_index=part.sequence_index,
+                    )
+                )
+                if preparation_expired:
+                    await mark_live_copy_fill_terminal_skip(
+                        session,
+                        fill_state=fill_state,
+                        reason="live_entry_preparation_expired",
+                    )
+                    fill_result = live_skip("live_entry_preparation_expired")
+                    terminal_entry = True
+                elif terminal_entry:
                     await mark_live_copy_fill_terminal_skip(
                         session,
                         fill_state=fill_state,
@@ -716,6 +768,7 @@ async def process_live_copy_fills(
                                 record_preexisting_market=False,
                             )
                             continue
+                    lifecycle_terminal = False
                     try:
                         unowned_source_lifecycle = await live_copy_part_is_unowned_source_lifecycle(
                             session,
@@ -725,6 +778,15 @@ async def process_live_copy_fills(
                             part=part,
                             baseline_part=baseline_part,
                         )
+                    except LiveCopyPartTerminal as exc:
+                        await mark_live_copy_fill_terminal_skip(
+                            session,
+                            fill_state=fill_state,
+                            reason=exc.reason,
+                        )
+                        fill_result = live_skip(exc.reason)
+                        lifecycle_terminal = True
+                        terminal_entry = True
                     except LiveCopyPartDeferred as exc:
                         await mark_live_copy_fill_retryable(
                             session,
@@ -734,7 +796,7 @@ async def process_live_copy_fills(
                         deferred_reasons.add(exc.reason)
                         account_fill_deferred = True
                         continue
-                    if unowned_source_lifecycle:
+                    if not lifecycle_terminal and unowned_source_lifecycle:
                         await mark_live_copy_fill_baseline_ignored(
                             session,
                             source_state=lifecycle_state,
@@ -893,6 +955,14 @@ async def live_copy_part_is_unowned_source_lifecycle(
         return False
     if preexisting_market_matches_part(source_state, coin=coin, part=part):
         return True
+    if position is None and part.action in LIVE_COPY_ENTRY_ACTIONS:
+        if await live_market_is_reserved_by_other_source(
+            session,
+            account_key=account.key,
+            source_wallet=source_state.source_wallet,
+            coin=coin,
+        ):
+            raise LiveCopyPartTerminal("live_market_reserved_by_other_source")
     continuation_part = part.action in {"reduce", "close", "flip_close"} or (
         part.action in {"open", "add"}
         and is_preexisting_source_add(part.start_position, side=part.side)
@@ -3279,6 +3349,28 @@ async def live_order_exists(
         )
     )
     return existing is not None and not is_retryable_live_order_submit_failure(existing)
+
+
+async def live_order_row_exists(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    source_wallet: str,
+    source_fill_id: str,
+    sequence_index: int,
+) -> bool:
+    """Return whether a durable order owns this source-fill part's intent lifecycle."""
+
+    existing_order_id = await session.scalar(
+        select(TradingOrder.id).where(
+            TradingOrder.account_key == account_key,
+            TradingOrder.account_type == "live",
+            TradingOrder.source_wallet == source_wallet,
+            TradingOrder.source_fill_id == source_fill_id,
+            TradingOrder.sequence_index == sequence_index,
+        )
+    )
+    return existing_order_id is not None
 
 
 async def live_pending_close_size_for_position(

@@ -129,11 +129,11 @@ async def claim_next_live_copy_work(
 
 
 def live_copy_work_claim_query(*, now: datetime, stale_before: datetime):
-    """Select only a source wallet's earliest unfinished fill.
+    """Select only a source market lane's earliest unfinished fill.
 
-    A deferred older fill blocks later fills from the same source.  This keeps
-    the durable queue aligned with the lifecycle ordering gate even after a
-    restart or a recovery scan inserts missing historical candidates.
+    A deferred older fill blocks later fills for the same source wallet and
+    coin.  Independent markets remain claimable while preserving each market
+    lane's durable lifecycle order after a restart or recovery scan.
     """
 
     earlier = aliased(LiveCopyWork)
@@ -210,6 +210,7 @@ def live_copy_work_claim_query(*, now: datetime, stale_before: datetime):
     has_earlier_unfinished = exists(
         select(earlier.id).where(
             earlier.wallet_address == LiveCopyWork.wallet_address,
+            earlier.coin == LiveCopyWork.coin,
             earlier.status.in_((LIVE_COPY_WORK_PENDING, LIVE_COPY_WORK_PROCESSING)),
             earlier_order,
         )
