@@ -19,6 +19,12 @@ and local Postgres.
 The VPS compose file does not publish backend, frontend, Postgres, or Redis
 ports directly. Only Caddy is exposed publicly.
 
+Redis stores presentation events and is intentionally optional for backend and
+worker startup. When Redis is unavailable, `/health` and `/ready` report a
+degraded Redis dependency but return HTTP 200 while Postgres is healthy. The
+trading and maintenance workers continue to run. A Postgres failure remains a
+readiness failure.
+
 ## Requirements
 
 - A Linux VPS with Docker and the Docker Compose plugin.

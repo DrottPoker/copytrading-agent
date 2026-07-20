@@ -21,7 +21,7 @@ from app.core.auth import DashboardAuthMiddleware
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.db.session import get_sessionmaker
-from app.integrations.redis_client import get_redis
+from app.integrations.redis_client import close_redis_clients, get_redis
 from app.services.job_lock_service import JobLockAlreadyHeldError
 from app.workers.monitor_worker import run_monitor_services
 
@@ -56,13 +56,16 @@ async def lifespan(app_instance: FastAPI):
     finally:
         if stop_event is not None:
             stop_event.set()
-        if background_task is not None:
-            try:
-                await asyncio.wait_for(background_task, timeout=30)
-            except TimeoutError:
-                background_task.cancel()
-                await asyncio.gather(background_task, return_exceptions=True)
-            logger.info("api background worker stopped")
+        try:
+            if background_task is not None:
+                try:
+                    await asyncio.wait_for(background_task, timeout=30)
+                except TimeoutError:
+                    background_task.cancel()
+                    await asyncio.gather(background_task, return_exceptions=True)
+                logger.info("api background worker stopped")
+        finally:
+            await close_redis_clients()
 
 
 app = FastAPI(

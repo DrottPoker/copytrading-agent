@@ -317,6 +317,10 @@ continues to use `realtime_execution_inbox`. Live execution claims only
 Both consumers retry failures with bounded backoff and reclaim stale claims
 after a crash. Queue overflow cannot lose accepted work. Shutdown closes
 WebSocket intake first and returns interrupted claims to pending state.
+When idle, both consumers poll their durable Postgres work table every five
+seconds as a bounded fallback for a restart or lost local wakeup. An in-process
+queue item wakes the consumer immediately. Redis is not an execution queue
+because event delivery is best effort and must never determine trading work.
 
 Redis Streams powers the recent event feed and SSE resume cursor. Runtime event
 publication is presentation-only and best effort. Redis latency or failure is
@@ -1123,9 +1127,12 @@ start.
 The application images run as non-root users. Backend, frontend, and worker
 containers use read-only root filesystems, writable `tmpfs` mounts only where
 needed, `no-new-privileges`, and all Linux capabilities dropped. Redis has an
-explicit healthcheck before application services start. Caddy adds HSTS on the
-VPS and sets content-type, frame, referrer, and permissions security headers.
-Keep state and backups in the declared volumes rather than writing into an
+explicit healthcheck, but it is not a startup dependency for the backend or
+workers. Redis only serves presentation events. A Redis outage leaves
+`/health` and `/ready` degraded while they return HTTP 200 if Postgres is
+healthy, so trading and maintenance can continue. Caddy adds HSTS on the VPS
+and sets content-type, frame, referrer, and permissions security headers. Keep
+state and backups in the declared volumes rather than writing into an
 application container.
 
 Local VPS Postgres data lives in the `postgres_data` Docker volume. Do not run

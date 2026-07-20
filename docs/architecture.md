@@ -169,6 +169,10 @@ Trading worker responsibilities:
   queue. Place live source fills on a separate bounded wakeup queue backed by
   `live_copy_work`. If either queue is full, the durable database row remains
   claimable without Redis or the in-process wakeup.
+- Both execution consumers claim durable Postgres work before an idle wait and
+  poll again every five seconds when no local wakeup arrives. Local queue items
+  wake the consumers immediately, while the bounded poll recovers from worker
+  restarts and lost wakeups.
 - Simulate paper copies for non-snapshot fills from scored allocation wallets.
 - Submit live copy orders for non-snapshot fills when live trading and live copy
   execution are enabled.
@@ -326,6 +330,10 @@ created.
 Redis is presentation runtime state only. It is not an execution queue or a
 trading source of truth.
 
+Redis event delivery is best effort and may be delayed or unavailable, so it
+cannot determine whether durable trading work is claimed or processed. Postgres
+owns execution work, ordering, leases, and recovery instead.
+
 It is used for:
 
 - A bounded Redis Stream, `events:stream:v1`, for recent versioned events.
@@ -336,6 +344,9 @@ Worker publication has a timeout and catches Redis failures. Presentation events
 can be delayed or omitted while Redis is unavailable, but committed fills,
 execution, reconciliation, and recovery continue. The legacy `events:recent`
 list is read only as a compatibility fallback when the stream is empty.
+`/health` and `/ready` report Redis as degraded but remain HTTP-ready while
+Postgres is healthy. Redis is therefore not a Compose startup dependency for
+the backend or workers.
 
 Redis can be rebuilt from Postgres and Hyperliquid history. The stream is capped
 to recent events and is not an audit ledger.
@@ -438,9 +449,9 @@ without an `Origin` header still authenticate through Basic Auth.
 
 Backend and frontend images run as non-root users. Compose applies read-only root
 filesystems, explicit writable `tmpfs` mounts, `no-new-privileges`, and drops all
-Linux capabilities for application containers. Redis has a healthcheck before
-workers start. Caddy applies HSTS on the VPS and content-type, frame, referrer,
-and permissions headers at the edge.
+Linux capabilities for application containers. Redis has its own healthcheck
+but does not gate backend or worker startup. Caddy applies HSTS on the VPS and
+content-type, frame, referrer, and permissions headers at the edge.
 
 ## Test Architecture
 

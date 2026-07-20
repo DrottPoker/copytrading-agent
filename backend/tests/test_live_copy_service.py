@@ -910,6 +910,7 @@ async def test_stale_live_entry_becomes_terminal_state_without_trading_order(
         "live_copy_part_is_unowned_source_lifecycle",
         copyable_lifecycle,
     )
+
     def fake_source_fill_age_exceeds_entry_limit(*_args: object, **_kwargs: object) -> bool:
         nonlocal stale_check_count
         stale_check_count += 1
@@ -1426,6 +1427,7 @@ async def test_preexisting_add_is_unowned_but_fresh_flip_open_is_copyable(
         "recover_live_source_position_attribution",
         no_position,
     )
+
     async def market_is_free(*_args, **_kwargs):
         return False
 

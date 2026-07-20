@@ -925,10 +925,21 @@ async def test_live_copy_work_loop_retries_deferred_processing_without_error_log
 async def test_realtime_execution_waits_for_intake_to_close_before_shutdown(
     monkeypatch,
 ) -> None:
+    claim_count = 0
+    idle_wait_timeouts: list[float] = []
+    original_wait_for = asyncio.wait_for
+
     async def fake_claim(*_args: object, **_kwargs: object) -> None:
+        nonlocal claim_count
+        claim_count += 1
         return None
 
+    async def record_idle_wait(awaitable, timeout: float):
+        idle_wait_timeouts.append(timeout)
+        return await original_wait_for(awaitable, timeout)
+
     monkeypatch.setattr(monitor_worker, "claim_next_realtime_execution", fake_claim)
+    monkeypatch.setattr(monitor_worker.asyncio, "wait_for", record_idle_wait)
     stop_event = asyncio.Event()
     stop_event.set()
     intake_closed_event = asyncio.Event()
@@ -954,10 +965,61 @@ async def test_realtime_execution_waits_for_intake_to_close_before_shutdown(
     await asyncio.sleep(0)
 
     assert task.done() is False
+    assert claim_count == 1
+    assert idle_wait_timeouts == [monitor_worker.DURABLE_QUEUE_POLL_FALLBACK_SECONDS]
 
     intake_closed_event.set()
     execution_queue.put_nowait(monitor_worker.RealtimeExecutionWorkItem(inbox_id="wake"))
-    await asyncio.wait_for(task, timeout=1)
+    await original_wait_for(task, timeout=1)
+    assert claim_count == 2
+
+
+@pytest.mark.asyncio
+async def test_live_copy_work_wakeup_uses_five_second_durable_poll_fallback(
+    monkeypatch,
+) -> None:
+    claim_count = 0
+    idle_wait_timeouts: list[float] = []
+    original_wait_for = asyncio.wait_for
+
+    async def fake_claim(*_args: object, **_kwargs: object) -> None:
+        nonlocal claim_count
+        claim_count += 1
+        return None
+
+    async def record_idle_wait(awaitable, timeout: float):
+        idle_wait_timeouts.append(timeout)
+        return await original_wait_for(awaitable, timeout)
+
+    monkeypatch.setattr(monitor_worker, "claim_next_live_copy_work", fake_claim)
+    monkeypatch.setattr(monitor_worker.asyncio, "wait_for", record_idle_wait)
+    stop_event = asyncio.Event()
+    intake_closed_event = asyncio.Event()
+    work_queue: asyncio.Queue[monitor_worker.LiveCopyWorkWakeItem] = asyncio.Queue(maxsize=1)
+    runtime = monitor_worker.WorkerRuntimeState(role="trading", capabilities=("trading",))
+    task = asyncio.create_task(
+        monitor_worker.run_live_copy_work_loop(
+            work_queue=work_queue,
+            sessionmaker=object(),
+            redis=object(),
+            stop_event=stop_event,
+            intake_closed_event=intake_closed_event,
+            settings=SimpleNamespace(),
+            price_cache=None,
+            runtime=runtime,
+        )
+    )
+    await asyncio.sleep(0)
+
+    assert task.done() is False
+    assert claim_count == 1
+    assert idle_wait_timeouts == [monitor_worker.DURABLE_QUEUE_POLL_FALLBACK_SECONDS]
+
+    stop_event.set()
+    intake_closed_event.set()
+    work_queue.put_nowait(monitor_worker.LiveCopyWorkWakeItem(wallet_address="0xsource"))
+    await original_wait_for(task, timeout=1)
+    assert claim_count == 2
 
 
 @pytest.mark.asyncio

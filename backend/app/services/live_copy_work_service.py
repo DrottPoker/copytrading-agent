@@ -50,11 +50,7 @@ async def enqueue_live_copy_work_for_wallet_fills(
 ) -> int:
     """Add missing work rows without changing already claimed source history."""
 
-    records = [
-        live_copy_work_record(fill, origin=origin)
-        for fill in fills
-        if fill.id is not None
-    ]
+    records = [live_copy_work_record(fill, origin=origin) for fill in fills if fill.id is not None]
     if not records:
         return 0
     result = await session.execute(
@@ -104,9 +100,7 @@ async def claim_next_live_copy_work(
     now = datetime.now(UTC)
     stale_before = now - timedelta(seconds=max(claim_timeout_seconds, 1))
     async with sessionmaker() as session:
-        work = await session.scalar(
-            live_copy_work_claim_query(now=now, stale_before=stale_before)
-        )
+        work = await session.scalar(live_copy_work_claim_query(now=now, stale_before=stale_before))
         if work is None:
             return None
 

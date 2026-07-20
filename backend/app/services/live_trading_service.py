@@ -2456,11 +2456,7 @@ async def sync_live_position_margin_setting(
         positions: list[TradingPosition],
     ) -> tuple[TradingPosition | None, TradingPosition | None]:
         exchange_position = next(
-            (
-                position
-                for position in positions
-                if position.source_wallet == LIVE_EXCHANGE_SOURCE
-            ),
+            (position for position in positions if position.source_wallet == LIVE_EXCHANGE_SOURCE),
             None,
         )
         source_position = next(
@@ -2502,8 +2498,7 @@ async def sync_live_position_margin_setting(
         return False
 
     exchange_change_needed = (
-        exchange_position.leverage != leverage
-        or exchange_position.margin_mode != margin_mode
+        exchange_position.leverage != leverage or exchange_position.margin_mode != margin_mode
     )
     if not exchange_change_needed:
         locked_result = await session.scalars(position_query.with_for_update())
@@ -2513,8 +2508,7 @@ async def sync_live_position_margin_setting(
             await session.commit()
             return False
         exchange_change_needed = (
-            exchange_position.leverage != leverage
-            or exchange_position.margin_mode != margin_mode
+            exchange_position.leverage != leverage or exchange_position.margin_mode != margin_mode
         )
         if not exchange_change_needed:
             synchronize_position_metadata(locked_positions, response=None)

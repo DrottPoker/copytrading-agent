@@ -232,6 +232,7 @@ def upgrade() -> None:
         """
     )
 
+
 def downgrade() -> None:
     op.drop_column("live_copy_fill_states", "decision_at")
     op.drop_column("live_copy_fill_states", "processing_started_at")

@@ -1,4 +1,6 @@
+import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
@@ -15,6 +17,9 @@ from app.services.realtime_event_service import (
 )
 
 router = APIRouter(tags=["events"])
+logger = logging.getLogger(__name__)
+EVENT_RECENT_TIMEOUT_SECONDS = 3
+EVENT_STREAM_READ_TIMEOUT_SECONDS = 12
 
 
 @router.get("/events/recent", response_model=LiveEventListResponse)
@@ -23,8 +28,13 @@ async def recent_events_route(
 ) -> LiveEventListResponse:
     redis = get_redis()
     try:
-        events = await list_recent_events(redis, limit=limit)
-    except RedisError as exc:
+        events = await asyncio.wait_for(
+            list_recent_events(redis, limit=limit),
+            timeout=EVENT_RECENT_TIMEOUT_SECONDS,
+        )
+    except asyncio.CancelledError:
+        raise
+    except (RedisError, TimeoutError) as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Redis is not available.",
@@ -50,28 +60,39 @@ async def events_route(request: Request) -> StreamingResponse:
 async def stream_events(request: Request) -> AsyncIterator[str]:
     redis = get_redis()
     last_event_id = normalize_stream_cursor(request.headers.get("last-event-id"))
-    if last_event_id == "$":
-        last_event_id = await latest_event_stream_id(redis)
-    yield sse_event(
-        {
-            "type": "system",
-            "channel": "events:system",
-            "message": "SSE connected.",
-            "payload": {},
-        }
-    )
-    while not await request.is_disconnected():
-        events = await read_event_stream(
-            redis,
-            last_event_id=last_event_id,
-            block_ms=10_000,
+    try:
+        if last_event_id == "$":
+            last_event_id = await asyncio.wait_for(
+                latest_event_stream_id(redis),
+                timeout=EVENT_STREAM_READ_TIMEOUT_SECONDS,
+            )
+        yield sse_event(
+            {
+                "type": "system",
+                "channel": "events:system",
+                "message": "SSE connected.",
+                "payload": {},
+            }
         )
-        if not events:
-            yield ": keepalive\n\n"
-            continue
-        for event in events:
-            last_event_id = str(event["id"])
-            yield sse_event(event, event_id=last_event_id)
+        while not await request.is_disconnected():
+            events = await asyncio.wait_for(
+                read_event_stream(
+                    redis,
+                    last_event_id=last_event_id,
+                    block_ms=10_000,
+                ),
+                timeout=EVENT_STREAM_READ_TIMEOUT_SECONDS,
+            )
+            if not events:
+                yield ": keepalive\n\n"
+                continue
+            for event in events:
+                last_event_id = str(event["id"])
+                yield sse_event(event, event_id=last_event_id)
+    except asyncio.CancelledError:
+        raise
+    except (RedisError, TimeoutError):
+        logger.warning("event stream closed because Redis is unavailable", exc_info=True)
 
 
 def sse_event(payload: dict[str, object], *, event_id: str | None = None) -> str:

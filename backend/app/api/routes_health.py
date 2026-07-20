@@ -20,7 +20,7 @@ async def health(
         check_redis(settings),
     )
     service_status = dependency_status(postgres_status, redis_status)
-    if service_status != "ok":
+    if postgres_status.get("status") != "ok":
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
 
     return {

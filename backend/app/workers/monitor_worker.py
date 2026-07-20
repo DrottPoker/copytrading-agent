@@ -16,7 +16,7 @@ from app.integrations.hyperliquid_ws_client import (
     stream_all_mids,
     stream_user_fills,
 )
-from app.integrations.redis_client import get_redis
+from app.integrations.redis_client import close_redis_clients, get_redis
 from app.services.discovery_service import run_discovery_import
 from app.services.job_lock_service import JobLockAlreadyHeldError, job_lock
 from app.services.live_copy_service import (
@@ -84,6 +84,7 @@ MAINTENANCE_WORKER_ROLES = {"all", "maintenance"}
 RUNTIME_EVENT_TIMEOUT_SECONDS = 2
 RUNTIME_EVENT_BATCH_CONCURRENCY = 16
 RUNTIME_EVENT_BATCH_TIMEOUT_SECONDS = RUNTIME_EVENT_TIMEOUT_SECONDS + 0.5
+DURABLE_QUEUE_POLL_FALLBACK_SECONDS = 5
 
 
 @dataclass(frozen=True)
@@ -193,19 +194,22 @@ async def run_worker() -> None:
     )
     sessionmaker = get_sessionmaker(settings)
     redis = get_redis(settings.redis_url)
-    if sessionmaker is None:
-        logger.error(
-            "monitor worker cannot start realtime subscriptions: database is not configured"
-        )
-        return
+    try:
+        if sessionmaker is None:
+            logger.error(
+                "monitor worker cannot start realtime subscriptions: database is not configured"
+            )
+            return
 
-    await run_monitor_services_with_lease_retry(
-        sessionmaker=sessionmaker,
-        redis=redis,
-        stop_event=stop_event,
-        settings=settings,
-    )
-    logger.info("monitor worker stopped")
+        await run_monitor_services_with_lease_retry(
+            sessionmaker=sessionmaker,
+            redis=redis,
+            stop_event=stop_event,
+            settings=settings,
+        )
+    finally:
+        await close_redis_clients()
+        logger.info("monitor worker stopped")
 
 
 async def run_monitor_services_with_lease_retry(
@@ -1801,7 +1805,10 @@ async def run_realtime_execution_loop(
             return
 
         try:
-            await asyncio.wait_for(execution_queue.get(), timeout=1)
+            await asyncio.wait_for(
+                execution_queue.get(),
+                timeout=DURABLE_QUEUE_POLL_FALLBACK_SECONDS,
+            )
         except TimeoutError:
             continue
         execution_queue.task_done()
@@ -1989,7 +1996,10 @@ async def run_live_copy_work_loop(
             return
 
         try:
-            await asyncio.wait_for(work_queue.get(), timeout=0.5)
+            await asyncio.wait_for(
+                work_queue.get(),
+                timeout=DURABLE_QUEUE_POLL_FALLBACK_SECONDS,
+            )
         except TimeoutError:
             continue
         work_queue.task_done()
