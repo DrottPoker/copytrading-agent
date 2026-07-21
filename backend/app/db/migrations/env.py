@@ -29,6 +29,7 @@ from app.db.models import (  # noqa: F401
     TradingCloseAllItem,
     TradingCloseAllOperation,
     TradingFill,
+    TradingFundingPayment,
     TradingOrder,
     TradingOrderDispatch,
     TradingPosition,

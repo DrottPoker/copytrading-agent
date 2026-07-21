@@ -25,6 +25,7 @@ from app.services.live_trading_service import (
     LiveCloseAllResult,
     LiveCopyEntryLifecycleDeferred,
     LiveFillFetchResult,
+    LiveFundingFetchResult,
     LiveOrderLifecycleResult,
     LiveOrderReconciliationResult,
     LiveOrderSubmitError,
@@ -682,6 +683,7 @@ async def test_partial_reconciliation_preserves_enabled_lifecycle_and_protects_e
         pages=1,
         error="Fill history is incomplete.",
     )
+    funding_result = LiveFundingFetchResult(payments=(), complete=True, pages=1)
     perp_snapshot = LivePerpSnapshot(states=(), requested_dexes=())
     position_result = LivePositionReconciliationResult(
         open_positions=1,
@@ -700,6 +702,9 @@ async def test_partial_reconciliation_preserves_enabled_lifecycle_and_protects_e
 
     async def return_fill_result(*_args: Any, **_kwargs: Any) -> LiveFillFetchResult:
         return fill_result
+
+    async def return_funding_result(*_args: Any, **_kwargs: Any) -> LiveFundingFetchResult:
+        return funding_result
 
     async def return_perp_snapshot(*_args: Any, **_kwargs: Any) -> LivePerpSnapshot:
         return perp_snapshot
@@ -723,8 +728,23 @@ async def test_partial_reconciliation_preserves_enabled_lifecycle_and_protects_e
         "live_fill_reconciliation_start_time_ms",
         return_zero,
     )
+    monkeypatch.setattr(
+        live_trading_service,
+        "live_funding_reconciliation_start_time_ms",
+        return_zero,
+    )
     monkeypatch.setattr(live_trading_service, "fetch_live_fills_by_time", return_fill_result)
+    monkeypatch.setattr(
+        live_trading_service,
+        "fetch_live_funding_by_time",
+        return_funding_result,
+    )
     monkeypatch.setattr(live_trading_service, "reconcile_live_fills", return_zero)
+    monkeypatch.setattr(
+        live_trading_service,
+        "reconcile_live_funding_payments",
+        return_zero,
+    )
     monkeypatch.setattr(
         live_trading_service,
         "update_live_orders_from_reconciled_fills",

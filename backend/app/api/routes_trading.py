@@ -14,6 +14,7 @@ from app.db.models import (
     LiveCopyFillState,
     TradingAccount,
     TradingFill,
+    TradingFundingPayment,
     TradingOrder,
     TradingPosition,
     WalletFill,
@@ -263,13 +264,23 @@ async def trading_account_read(
 ) -> TradingAccountRead:
     await session.flush()
     await session.refresh(account)
-    return enriched_trading_account_read(account, settings=settings)
+    funding_usd = await session.scalar(
+        select(func.coalesce(func.sum(TradingFundingPayment.amount_usd), Decimal("0"))).where(
+            TradingFundingPayment.account_key == account.key
+        )
+    )
+    return enriched_trading_account_read(
+        account,
+        settings=settings,
+        funding_usd=funding_usd or Decimal("0"),
+    )
 
 
 def enriched_trading_account_read(
     account: TradingAccount,
     *,
     settings: Settings,
+    funding_usd: Decimal = Decimal("0"),
 ) -> TradingAccountRead:
     read = TradingAccountRead.model_validate(account)
     if account.account_type != "live":
@@ -288,6 +299,7 @@ def enriched_trading_account_read(
     return read.model_copy(
         update={
             "capital_mode": mode,
+            "funding_usd": funding_usd,
             "user_abstraction": normalize_user_abstraction(
                 last_reconciliation.get("userAbstraction")
                 or last_reconciliation.get("userAbstractionRaw")
@@ -513,7 +525,7 @@ async def load_live_position_entry_execution_delays(
 async def load_live_position_fill_metrics(
     session: AsyncSession,
     positions: list[TradingPosition],
-) -> dict[UUID, tuple[int, int, Decimal]]:
+) -> dict[UUID, tuple[int, int, Decimal, Decimal]]:
     live_positions = [position for position in positions if position.account_type == "live"]
     if not live_positions:
         return {}
@@ -551,14 +563,55 @@ async def load_live_position_fill_metrics(
         .where(TradingPosition.id.in_(position_ids))
         .group_by(TradingPosition.id)
     )
-    return {
+    metrics = {
         row.id: (
             int(row.add_fill_count or 0),
             int(row.close_fill_count or 0),
             row.realized_pnl_usd or Decimal("0"),
+            Decimal("0"),
         )
         for row in result.all()
     }
+    exchange_markets = {
+        (position.account_key, position.coin)
+        for position in live_positions
+        if position.source_wallet == LIVE_EXCHANGE_SOURCE
+    }
+    effective_positions = [
+        position
+        for position in live_positions
+        if position.source_wallet == LIVE_EXCHANGE_SOURCE
+        or (position.account_key, position.coin) not in exchange_markets
+    ]
+    if not effective_positions:
+        return metrics
+    funding_result = await session.execute(
+        select(
+            TradingPosition.id,
+            func.coalesce(func.sum(TradingFundingPayment.amount_usd), Decimal("0")).label(
+                "funding_usd"
+            ),
+        )
+        .outerjoin(
+            TradingFundingPayment,
+            and_(
+                TradingFundingPayment.account_key == TradingPosition.account_key,
+                TradingFundingPayment.coin == TradingPosition.coin,
+                TradingFundingPayment.occurred_at >= TradingPosition.opened_at,
+            ),
+        )
+        .where(TradingPosition.id.in_([position.id for position in effective_positions]))
+        .group_by(TradingPosition.id)
+    )
+    for row in funding_result.all():
+        add_count, close_count, realized_pnl_usd, _ = metrics[row.id]
+        metrics[row.id] = (
+            add_count,
+            close_count,
+            realized_pnl_usd,
+            row.funding_usd or Decimal("0"),
+        )
+    return metrics
 
 
 def matching_live_entry_delay(
@@ -578,16 +631,19 @@ def trading_position_read(
     position: TradingPosition,
     *,
     entry_execution_delay_ms: int | None = None,
-    fill_metrics: tuple[int, int, Decimal] | None = None,
+    fill_metrics: tuple[int, int, Decimal, Decimal] | None = None,
 ) -> TradingPositionRead:
-    add_fill_count, close_fill_count, realized_pnl_usd = (
-        fill_metrics if fill_metrics is not None else (0, 0, position.realized_pnl_usd)
+    add_fill_count, close_fill_count, realized_pnl_usd, funding_usd = (
+        fill_metrics
+        if fill_metrics is not None
+        else (0, 0, position.realized_pnl_usd, Decimal("0"))
     )
     read = TradingPositionRead.model_validate(position)
     if position.account_type != "live":
         return read.model_copy(
             update={
                 "realized_pnl_usd": realized_pnl_usd,
+                "funding_usd": funding_usd,
                 "add_fill_count": add_fill_count,
                 "close_fill_count": close_fill_count,
             }
@@ -599,6 +655,7 @@ def trading_position_read(
             "unrealized_pnl_usd": live_position_unrealized_pnl(position),
             "unrealized_pnl_pct": live_position_unrealized_pnl_pct(position),
             "realized_pnl_usd": realized_pnl_usd,
+            "funding_usd": funding_usd,
             "price_updated_at": position.last_reconciled_at,
             "entry_execution_delay_ms": entry_execution_delay_ms,
             "add_fill_count": add_fill_count,
@@ -695,9 +752,26 @@ async def list_trading_accounts_route(
         source_wallets=sorted(source_wallets),
         settings=settings,
     )
+    funding_totals: dict[str, Decimal] = {}
+    if accounts:
+        funding_totals_result = await session.execute(
+            select(
+                TradingFundingPayment.account_key,
+                func.coalesce(func.sum(TradingFundingPayment.amount_usd), Decimal("0")),
+            ).group_by(TradingFundingPayment.account_key)
+        )
+        funding_totals = {
+            str(account_key): amount or Decimal("0")
+            for account_key, amount in funding_totals_result.all()
+        }
     return TradingAccountsResponse(
         accounts=[
-            enriched_trading_account_read(account, settings=settings) for account in accounts
+            enriched_trading_account_read(
+                account,
+                settings=settings,
+                funding_usd=funding_totals.get(account.key, Decimal("0")),
+            )
+            for account in accounts
         ],
         live_trading_enabled=settings.live_trading_enabled,
         risk_limits=live_risk_limits_read(settings),
@@ -707,7 +781,7 @@ async def list_trading_accounts_route(
                 entry_execution_delay_ms=entry_execution_delays.get(position.id),
                 fill_metrics=position_fill_metrics.get(
                     position.id,
-                    (0, 0, position.realized_pnl_usd),
+                    (0, 0, position.realized_pnl_usd, Decimal("0")),
                 ),
             )
             for position in positions

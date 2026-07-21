@@ -55,6 +55,7 @@ class TradingAccountRead(CamelModel):
     equity_usd: Decimal | None
     realized_pnl_usd: Decimal
     fee_usd: Decimal
+    funding_usd: Decimal = Decimal("0")
     last_reconciled_at: datetime | None
     lifecycle_version: int = 0
     status_changed_at: datetime | None = None
@@ -95,6 +96,7 @@ class TradingPositionRead(CamelModel):
     price_updated_at: datetime | None = None
     realized_pnl_usd: Decimal
     fee_usd: Decimal
+    funding_usd: Decimal = Decimal("0")
     add_fill_count: int = 0
     close_fill_count: int = 0
     opened_at: datetime
@@ -220,6 +222,7 @@ class TradingClosedTradeRead(CamelModel):
     entry_notional_usd: Decimal
     exit_notional_usd: Decimal
     fee_usd: Decimal
+    funding_usd: Decimal
     realized_pnl_usd: Decimal
     net_pnl_usd: Decimal
     opened_at: datetime
@@ -288,6 +291,8 @@ class LiveReconciliationResponse(CamelModel):
     run_id: UUID | None = None
     fetched_fills: int
     inserted_fills: int
+    fetched_funding_payments: int = 0
+    inserted_funding_payments: int = 0
     updated_orders: int
     open_positions: int
     removed_positions: int

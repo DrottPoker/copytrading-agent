@@ -880,7 +880,8 @@ What it does:
   renders its own exposure, PnL, activity, and execution status. Live-only
   historical sources remain visible through Wallet PnL history and Recent
   Execution Activity.
-- Open position rows include unrealized PnL, realized PnL, and add and close
+- Open position rows include unrealized PnL, realized PnL, signed Hyperliquid
+  funding, and add and close
   fill counts for the current position window. Live open position realized PnL
   is summed from the same close, reduce, and flip-close fills used by the
   position fill counts. Add counts include actual `add` fills only, not the
@@ -1085,15 +1086,19 @@ What it does:
   Missing positions are deleted only when the matching scope returned a
   complete snapshot. Failed dex or catalog requests preserve the previous
   exchange and source-position state.
-- Tracks independent completeness for order statuses, fill pagination, the perp
+- Tracks independent completeness for order statuses, fill pagination, funding
+  pagination, the perp
   catalog, every perp dex, spot balances, account abstraction, and positions.
   Every attempt is stored in `trading_reconciliation_runs`, with automatic
   retention cleanup after 30 days.
 - Preserves last known capital for failed components and marks it stale instead
   of replacing it with zero. The account's last complete timestamp advances
   only after every required component succeeds.
-- Recomputes account realized PnL and fees from the idempotent live fill ledger
-  after reconciliation. This repairs drift in derived account totals.
+- Recomputes gross account realized PnL and fees from the idempotent live fill
+  ledger after reconciliation. Live reconciliation separately imports
+  Hyperliquid `userFunding` entries into an idempotent signed funding ledger.
+  Dashboard net realized PnL is `closedPnl - fee + funding`; positive funding
+  is received and negative funding is paid.
 - Blocks new live entries after a partial or failed reconciliation until a
   complete attempt succeeds. Reduce-only exits continue to work.
 - Keeps an enabled account enabled when reconciliation becomes partial or fails.
@@ -1252,7 +1257,8 @@ What it does:
   A breached weekly loss or order-rate limit moves the account to `exit_only`,
   cancels unsent entries, and records a critical risk event. Expired intents and
   invalid exchange leverage or slippage values are rejected before submission.
-- Calculates weekly loss usage from net realized PnL after fees plus current
+- Calculates weekly loss usage from net realized PnL after fees and signed
+  Hyperliquid funding plus current
   aggregate exchange unrealized PnL. The percentage base reconstructs account
   equity at the start of the UTC week. Current unrealized PnL is included once
   without duplicating it through position or fill rows.
@@ -1443,11 +1449,12 @@ What it does:
   middleware while preserving authenticated non-browser API access.
 - Adds HSTS on the VPS plus content-type, frame, referrer, and permissions
   headers through Caddy.
-- Requires Alembic head `f9a1c5d2e7b4`. This head adds the append-only
-  exchange-attempt ledger on top of the unified durable live-copy work queue
+- Requires Alembic head `a2c4e6f8b0d1`. This head adds the signed Hyperliquid
+  funding-payment ledger on top of the append-only exchange-attempt ledger and
+  unified durable live-copy work queue
   and explicit execution timing columns on top of the
   source and fill lifecycle tables. After upgrade, an operator must run
-  `python -m alembic current` and confirm it shows `f9a1c5d2e7b4` before
+  `python -m alembic current` and confirm it shows `a2c4e6f8b0d1` before
   starting the backend or workers. Earlier Phase 6 migrations preserve
   financial history, enforce account lifecycle integrity, remove the obsolete
   global entry-control table, and expand wallet fill ingest latency to

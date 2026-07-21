@@ -107,6 +107,8 @@ type DashboardAccount = {
   equityUsd: number;
   totalPnlUsd: number;
   realizedPnlUsd: number;
+  feeUsd: number;
+  fundingUsd: number;
   unrealizedPnlUsd: number | null;
   openMarginUsd: number;
   openNotionalUsd: number;
@@ -130,6 +132,7 @@ type DashboardPosition = {
   entryPrice: string | number | null;
   size: string | number | null;
   realizedPnlUsd: string | number | null;
+  fundingUsd: string | number | null;
   unrealizedPnlUsd: string | number | null;
   unrealizedPnlPct: string | number | null;
   addFillCount: number;
@@ -573,7 +576,7 @@ export function TradingDashboard({
           icon={TrendingUp}
           label="Realized"
           value={formatCurrency(metrics.realizedPnl)}
-          detail={`${formatCurrency(metrics.fees)} fees`}
+          detail={`${formatCurrency(metrics.fees)} fees | ${formatSignedCurrency(metrics.funding)} funding`}
           tone={metrics.realizedPnl >= 0 ? "positive" : "danger"}
         />
         <HeroMetric
@@ -899,7 +902,12 @@ function AccountRow({
         </div>
         <RowStat label="Equity" value={formatCurrency(account.equityUsd)} />
         <RowStat label="Total" value={formatCurrency(account.totalPnlUsd)} tone={account.totalPnlUsd >= 0 ? "positive" : "danger"} />
-        <RowStat label="Realized" value={formatCurrency(account.realizedPnlUsd)} tone={account.realizedPnlUsd >= 0 ? "positive" : "danger"} />
+        <RowStat
+          label="Net realized"
+          value={formatCurrency(account.realizedPnlUsd)}
+          detail={`${formatCurrency(account.feeUsd)} fees | ${formatSignedCurrency(account.fundingUsd)} funding`}
+          tone={account.realizedPnlUsd >= 0 ? "positive" : "danger"}
+        />
         <RowStat
           label="Unrealized"
           value={account.unrealizedPnlUsd === null ? "-" : formatCurrency(account.unrealizedPnlUsd)}
@@ -1243,6 +1251,7 @@ function PositionRow({
     livePosition !== null || (paperPosition !== null && position.markPrice !== null);
   const unrealizedPnl = numberValue(position.unrealizedPnlUsd ?? 0);
   const realizedPnl = numberValue(position.realizedPnlUsd ?? 0);
+  const fundingUsd = numberValue(position.fundingUsd ?? 0);
   const sourceName = sourceDisplayName(position.sourceLabel, position.sourceWallet);
   const closeTitle =
     livePosition !== null
@@ -1252,7 +1261,7 @@ function PositionRow({
         : "Execution price unavailable";
   return (
     <ListRow>
-      <div className="grid gap-2 xl:grid-cols-[1.15fr_repeat(7,minmax(0,0.72fr))_auto] xl:items-center">
+      <div className="grid gap-2 xl:grid-cols-[1.15fr_repeat(8,minmax(0,0.72fr))_auto] xl:items-center">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-1">
             <p className="font-semibold text-ink">{position.coin}</p>
@@ -1288,6 +1297,11 @@ function PositionRow({
           label="Realized"
           value={formatCurrency(position.realizedPnlUsd)}
           tone={realizedPnl >= 0 ? "positive" : "danger"}
+        />
+        <RowStat
+          label="Funding"
+          value={formatSignedCurrency(position.fundingUsd)}
+          tone={fundingUsd >= 0 ? "positive" : "danger"}
         />
         <RowStat
           label="Fills"
@@ -1408,7 +1422,7 @@ function LiveClosedTradeRow({ trade }: { trade: TradingClosedTrade }) {
   const sourceName = sourceDisplayName(trade.sourceLabel, trade.sourceWallet);
   return (
     <ListRow>
-      <div className="grid gap-2 xl:grid-cols-[1.05fr_0.85fr_0.8fr_0.85fr_0.85fr_0.75fr] xl:items-center">
+      <div className="grid gap-2 xl:grid-cols-[1.05fr_repeat(7,minmax(0,0.8fr))] xl:items-center">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-1">
             <p className="font-semibold text-ink">{trade.coin}</p>
@@ -1438,6 +1452,11 @@ function LiveClosedTradeRow({ trade }: { trade: TradingClosedTrade }) {
         <RowStat label="Exit" value={formatPrice(trade.exitPrice)} detail={`size ${formatSize(trade.size)}`} />
         <RowStat label="Notional" value={formatCurrency(trade.exitNotionalUsd)} detail={`${formatInteger(trade.openFillCount)} open, ${formatInteger(trade.closeFillCount)} close fills`} />
         <RowStat label="Fee" value={formatCurrency(trade.feeUsd)} />
+        <RowStat
+          label="Funding"
+          value={formatSignedCurrency(trade.fundingUsd)}
+          tone={numberValue(trade.fundingUsd) >= 0 ? "positive" : "danger"}
+        />
       </div>
     </ListRow>
   );
@@ -1565,6 +1584,8 @@ function buildPaperDashboardAccounts(summary: PaperTradingSummaryResponse): Dash
     openNotionalUsd: numberValue(account.openNotionalUsd),
     openPositionCount: account.openPositionCount,
     paperAccount: account,
+    feeUsd: numberValue(account.feeUsd),
+    fundingUsd: 0,
     realizedPnlUsd: numberValue(account.realizedPnlUsd),
     statusLabel: account.enabled ? "enabled" : "disabled",
     statusTone: account.enabled ? "positive" : "warning",
@@ -1603,10 +1624,19 @@ function buildLiveDashboardAccounts(
         ),
         openPositionCount: positions.length,
         paperAccount: null,
-        realizedPnlUsd: numberValue(account.realizedPnlUsd),
+        feeUsd: numberValue(account.feeUsd),
+        fundingUsd: numberValue(account.fundingUsd),
+        realizedPnlUsd:
+          numberValue(account.realizedPnlUsd) -
+          numberValue(account.feeUsd) +
+          numberValue(account.fundingUsd),
         statusLabel: formatLiveAccountStatus(account.status),
         statusTone: account.status === "enabled" ? "positive" : account.status === "exit_only" ? "warning" : "neutral",
-        totalPnlUsd: numberValue(account.realizedPnlUsd) + liveUnrealizedPnl,
+        totalPnlUsd:
+          numberValue(account.realizedPnlUsd) -
+          numberValue(account.feeUsd) +
+          numberValue(account.fundingUsd) +
+          liveUnrealizedPnl,
         unrealizedPnlUsd: liveUnrealizedPnl,
       };
     });
@@ -1630,6 +1660,7 @@ function buildPaperDashboardPositions(paperPositions: PaperPosition[]): Dashboar
     livePosition: null,
     priceUpdatedAt: position.priceUpdatedAt,
     realizedPnlUsd: position.realizedPnlUsd,
+    fundingUsd: 0,
     side: position.side,
     size: position.size,
     sourceLabel: position.sourceLabel,
@@ -1663,6 +1694,7 @@ function buildLiveDashboardPositions(
     livePosition: position,
     priceUpdatedAt: position.priceUpdatedAt ?? position.lastReconciledAt,
     realizedPnlUsd: position.realizedPnlUsd,
+    fundingUsd: position.fundingUsd,
     side: position.side,
     size: position.size,
     sourceLabel: isLiveExchangePosition(position)
@@ -2129,6 +2161,7 @@ function buildPaperMetrics(summary: PaperTradingSummaryResponse) {
   return {
     cashEquity,
     fees,
+    funding: 0,
     netEquity: cashEquity + unrealizedPnl,
     openMargin,
     openNotional,
@@ -2151,6 +2184,10 @@ function buildLiveMetrics(
   const liveFees = tradingAccounts.accounts
     .filter((account) => account.accountType === "live")
     .reduce((total, account) => total + numberValue(account.feeUsd), 0);
+  const liveFunding = tradingAccounts.accounts
+    .filter((account) => account.accountType === "live")
+    .reduce((total, account) => total + numberValue(account.fundingUsd), 0);
+  const liveNetRealizedPnl = liveRealizedPnl - liveFees + liveFunding;
   const liveOpenMargin = sumNumbers(livePositions.map((position) => position.marginUsd));
   const liveOpenNotional = sumNumbers(
     livePositions.map((position) => position.currentNotionalUsd ?? position.notionalUsd),
@@ -2161,11 +2198,12 @@ function buildLiveMetrics(
   return {
     cashEquity: liveEquity,
     fees: liveFees,
+    funding: liveFunding,
     netEquity: liveEquity,
     openMargin: liveOpenMargin,
     openNotional: liveOpenNotional,
-    realizedPnl: liveRealizedPnl,
-    totalPnl: liveRealizedPnl + liveUnrealizedPnl,
+    realizedPnl: liveNetRealizedPnl,
+    totalPnl: liveNetRealizedPnl + liveUnrealizedPnl,
     unrealizedPnl: liveUnrealizedPnl,
   };
 }
@@ -3209,6 +3247,14 @@ function formatSize(value: string | number | null | undefined) {
     return "-";
   }
   return new Intl.NumberFormat("sv-SE", { maximumFractionDigits: 6 }).format(numberValue(value));
+}
+
+function formatSignedCurrency(value: string | number | null | undefined) {
+  const resolved = numberValue(value ?? 0);
+  if (resolved > 0) {
+    return `+${formatCurrency(resolved)}`;
+  }
+  return formatCurrency(resolved);
 }
 
 function formatPrice(value: string | number | null | undefined) {

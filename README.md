@@ -57,6 +57,7 @@ Current schema includes:
 - `trading_reconciliation_runs`, auditable live reconciliation results and
   component completeness
 - `trading_fills`, reconciled paper or live execution fills
+- `trading_funding_payments`, idempotent signed Hyperliquid funding ledger for live accounts
 - `paper_trading_accounts`
 - `paper_copy_allocations`
 - `paper_positions`
@@ -119,14 +120,18 @@ now converge on one unique work item per source fill.
 Migration `f9a1c5d2e7b4` changes live order dispatches into an append-only
 attempt ledger. Existing rows are backfilled as attempt 1. A logical
 `TradingOrder.client_order_id` remains the source-part idempotency key, while
-each exchange submission uses its own deterministic 128-bit CLOID. This is the
-current head.
+each exchange submission uses its own deterministic 128-bit CLOID.
+
+Migration `a2c4e6f8b0d1` adds the live funding-payment ledger. Live
+reconciliation imports signed USDC funding payments from Hyperliquid separately
+from trade fills. Live net realized PnL is Hyperliquid `closedPnl`, minus
+Hyperliquid fill fees, plus signed Hyperliquid funding. This is the current head.
 
 ```bash
 python -m alembic current
 ```
 
-The command must show `f9a1c5d2e7b4`. Do not start the backend or workers until
+The command must show `a2c4e6f8b0d1`. Do not start the backend or workers until
 that revision is current.
 
 For an existing VPS deployment after pulling this phase:
@@ -553,7 +558,8 @@ Live activation and account lifecycle:
   lifecycle, reconciliation, risk, and capacity gates. The original 30-second TTL is
   never renewed, and expiry becomes `live_entry_intent_expired`. Generic
   leverage-missing skips are not reusable persisted intents.
-- Weekly loss usage is net realized PnL after fees plus current aggregate
+- Weekly loss usage is net realized PnL after fees and signed Hyperliquid
+  funding plus current aggregate
   exchange unrealized PnL. Its percentage base is reconstructed start-of-week
   account equity. Current unrealized PnL is included once and is not duplicated
   across positions or fill rows.
@@ -1129,7 +1135,7 @@ docker compose -f docker-compose.vps.yml run --rm backend python -m alembic curr
 docker compose -f docker-compose.vps.yml up -d
 ```
 
-The `current` command must report `f9a1c5d2e7b4` before the backend or workers
+The `current` command must report `a2c4e6f8b0d1` before the backend or workers
 start.
 
 The application images run as non-root users. Backend, frontend, and worker

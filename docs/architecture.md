@@ -1046,6 +1046,8 @@ Generic live-ready tables sit beside the legacy paper tables:
 - `trading_reconciliation_runs`: one auditable row per live reconciliation
   attempt with component statuses, counts, errors, and final completeness.
 - `trading_fills`: reconciled exchange fill records.
+- `trading_funding_payments`: signed Hyperliquid `userFunding` entries,
+  deduplicated per live account and exchange event.
 - `live_copy_source_states`: one baseline and lifecycle marker per live account
   and source wallet. It records activation, the latest baseline timestamp and
   same-timestamp fill IDs, plus an observability high-water mark and compact
@@ -1220,7 +1222,8 @@ Breached weekly loss or order-rate limits still trip the account to `exit_only`,
 cancel unsent entries, and record a critical risk event and audit entry. Expired
 intents and static leverage or slippage violations are rejected before
 submission.
-Weekly loss usage combines net realized PnL after fees with current aggregate
+Weekly loss usage combines net realized PnL after fees and signed Hyperliquid
+funding with current aggregate
 exchange unrealized PnL. The percentage base is current account equity minus
 weekly net PnL, which reconstructs start-of-week equity. The exchange aggregate
 is added once and is not reconstructed from source-attributed rows.
@@ -1376,7 +1379,11 @@ pool context. The trading API reconstructs live closed trades from stored live
 fills by grouping open and close executions into complete trade windows; manual
 exchange position closes are included too, and close-only exchange fills use
 Hyperliquid realized PnL to estimate the entry price when no local open fill is
-available. Individual reduce and close fills remain in Recent Execution
+available. Fill fees and `closedPnl` remain authoritative Hyperliquid fill
+fields. Funding is imported from the separate Hyperliquid `userFunding` ledger,
+preserves its signed USDC amount, and is attributed to the matching account and
+coin position window. Live trade net PnL is `closedPnl - fee + funding`.
+Individual reduce and close fills remain in Recent Execution
 Activity. Live exchange position rows use reconciled Hyperliquid position
 payloads for mark
 price, current notional, unrealized PnL, and ROE. Trading open position rows

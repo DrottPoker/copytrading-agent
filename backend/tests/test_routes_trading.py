@@ -117,10 +117,11 @@ def test_trading_position_read_exposes_position_pnl_and_fill_counts() -> None:
     read = trading_position_read(
         position,
         entry_execution_delay_ms=640,
-        fill_metrics=(3, 2, Decimal("1.23")),
+        fill_metrics=(3, 2, Decimal("1.23"), Decimal("-0.04")),
     )
 
     assert read.realized_pnl_usd == Decimal("1.23")
+    assert read.funding_usd == Decimal("-0.04")
     assert read.unrealized_pnl_usd == Decimal("2.50")
     assert read.add_fill_count == 3
     assert read.close_fill_count == 2

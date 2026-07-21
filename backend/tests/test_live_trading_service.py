@@ -12,6 +12,7 @@ from app.db.models import (
     TradingCloseAllItem,
     TradingCloseAllOperation,
     TradingFill,
+    TradingFundingPayment,
     TradingOrder,
     TradingOrderDispatch,
     TradingPosition,
@@ -23,10 +24,12 @@ from app.services.live_trading_service import (
     LivePerpState,
     apply_live_order_result,
     apply_order_status_response,
+    attach_live_funding_to_closed_trades,
     build_testnet_live_trade_intent,
     close_all_live_account_positions,
     create_live_trading_account,
     fetch_live_fills_by_time,
+    fetch_live_funding_by_time,
     is_retryable_live_order_submit_failure,
     live_account_key_for_route,
     live_closed_trades_from_fills,
@@ -40,6 +43,7 @@ from app.services.live_trading_service import (
     manual_live_close_recovery_status,
     map_exchange_order_status,
     parse_live_fill,
+    parse_live_funding_payment,
     parse_live_position,
     reset_live_order_for_retry,
     resolve_live_account_wallet_address,
@@ -643,6 +647,70 @@ def test_parse_live_fill_uses_tid_for_id_and_infers_side() -> None:
     assert parsed["side"] == "long"
     assert parsed["action"] == "open"
     assert parsed["notional_usd"] == Decimal("1724.22555")
+
+
+def test_parse_live_funding_payment_preserves_hyperliquid_signed_usdc() -> None:
+    parsed = parse_live_funding_payment(
+        {
+            "delta": {
+                "coin": "BTC",
+                "fundingRate": "0.0000125",
+                "szi": "-0.25",
+                "type": "funding",
+                "usdc": "0.04",
+            },
+            "hash": "0xabc",
+            "time": 1_767_225_600_000,
+        },
+        account_key="live_test",
+    )
+
+    assert parsed is not None
+    assert parsed["coin"] == "BTC"
+    assert parsed["amount_usd"] == Decimal("0.04")
+    assert parsed["position_size"] == Decimal("-0.25")
+    assert parsed["funding_rate"] == Decimal("0.0000125")
+    assert parsed["occurred_at"] == datetime(2026, 1, 1, tzinfo=UTC)
+
+
+def test_attach_live_funding_updates_closed_trade_net_once() -> None:
+    fills = [
+        live_fill(
+            action="open",
+            filled_at=datetime(2026, 1, 1, 10, 0, tzinfo=UTC),
+            fee_usd=Decimal("0.01"),
+            notional_usd=Decimal("100"),
+            price=Decimal("100"),
+            realized_pnl_usd=Decimal("0"),
+            sequence_index=0,
+            size=Decimal("1"),
+        ),
+        live_fill(
+            action="close",
+            filled_at=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
+            fee_usd=Decimal("0.01"),
+            notional_usd=Decimal("105"),
+            price=Decimal("105"),
+            realized_pnl_usd=Decimal("5"),
+            sequence_index=1,
+            size=Decimal("1"),
+        ),
+    ]
+    trades = live_closed_trades_from_fills(fills)
+    payment = TradingFundingPayment(
+        account_key="live_test",
+        account_type="live",
+        exchange_event_id="funding-1",
+        coin="HYPE",
+        amount_usd=Decimal("-0.25"),
+        occurred_at=datetime(2026, 1, 1, 11, 0, tzinfo=UTC),
+        raw_payload={},
+    )
+
+    funded_trades = attach_live_funding_to_closed_trades(trades, [payment])
+
+    assert funded_trades[0].funding_usd == Decimal("-0.25")
+    assert funded_trades[0].net_pnl_usd == Decimal("4.73")
 
 
 def test_parse_live_position_reads_signed_position_size() -> None:
@@ -1596,6 +1664,55 @@ async def test_fetch_live_fills_marks_safety_limit_as_partial() -> None:
     assert result.pages == 2
     assert result.next_start_time_ms == 1998
     assert result.error == "Fill reconciliation reached the 2-page safety limit."
+
+
+@pytest.mark.asyncio
+async def test_fetch_live_funding_by_time_paginates_without_duplicates() -> None:
+    class FundingClient:
+        def __init__(self) -> None:
+            self.start_times: list[int] = []
+
+        async def user_funding(
+            self,
+            *,
+            user: str,
+            start_time_ms: int,
+        ) -> list[dict[str, object]]:
+            self.start_times.append(start_time_ms)
+            if len(self.start_times) == 1:
+                return [
+                    {
+                        "delta": {"coin": "BTC", "usdc": str(index)},
+                        "hash": f"0x{index}",
+                        "time": start_time_ms + index,
+                    }
+                    for index in range(500)
+                ]
+            return [
+                {
+                    "delta": {"coin": "BTC", "usdc": "499"},
+                    "hash": "0x499",
+                    "time": 1499,
+                    "user": user,
+                },
+                {
+                    "delta": {"coin": "BTC", "usdc": "500"},
+                    "hash": "0x500",
+                    "time": 1500,
+                },
+            ]
+
+    client = FundingClient()
+    result = await fetch_live_funding_by_time(  # type: ignore[arg-type]
+        client,
+        user="0xuser",
+        start_time_ms=1000,
+    )
+
+    assert len(result.payments) == 501
+    assert result.complete is True
+    assert result.pages == 2
+    assert client.start_times == [1000, 1499]
 
 
 def test_partial_spot_reconciliation_preserves_last_authoritative_capital() -> None:

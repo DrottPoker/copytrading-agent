@@ -21,6 +21,7 @@ export type TradingAccount = {
   equityUsd: string | null;
   realizedPnlUsd: string;
   feeUsd: string;
+  fundingUsd: string;
   lastReconciledAt: string | null;
   lifecycleVersion: number;
   statusChangedAt: string | null;
@@ -61,6 +62,7 @@ export type TradingPosition = {
   priceUpdatedAt: string | null;
   realizedPnlUsd: string;
   feeUsd: string;
+  fundingUsd: string;
   addFillCount: number;
   closeFillCount: number;
   openedAt: string;
@@ -138,6 +140,7 @@ export type TradingClosedTrade = {
   entryNotionalUsd: string;
   exitNotionalUsd: string;
   feeUsd: string;
+  fundingUsd: string;
   realizedPnlUsd: string;
   netPnlUsd: string;
   openedAt: string;

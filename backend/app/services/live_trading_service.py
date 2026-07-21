@@ -18,6 +18,7 @@ from app.db.models import (
     TradingCloseAllItem,
     TradingCloseAllOperation,
     TradingFill,
+    TradingFundingPayment,
     TradingOrder,
     TradingOrderDispatch,
     TradingPosition,
@@ -95,6 +96,7 @@ LIVE_MANUAL_TEST_SOURCE = "__manual_testnet__"
 ACTIVE_ORDER_STATUSES = RECONCILABLE_ORDER_STATUSES
 MAX_LIVE_FILL_RECONCILIATION_PAGES = 10
 MAX_LIVE_FILL_HISTORY = 10_000
+MAX_LIVE_FUNDING_RECONCILIATION_PAGES = 10
 LIVE_RECONCILIATION_RUN_RETENTION_DAYS = 30
 LIVE_ACCOUNT_KEY_MAX_LENGTH = 64
 LIVE_CAPITAL_MODE_UNIFIED = "unified"
@@ -166,6 +168,8 @@ class LiveReconciliationResult:
     run_id: UUID | None = None
     fetched_fills: int = 0
     inserted_fills: int = 0
+    fetched_funding_payments: int = 0
+    inserted_funding_payments: int = 0
     updated_orders: int = 0
     open_positions: int = 0
     removed_positions: int = 0
@@ -205,6 +209,7 @@ class LiveClosedTrade:
     entry_notional_usd: Decimal
     exit_notional_usd: Decimal
     fee_usd: Decimal
+    funding_usd: Decimal
     realized_pnl_usd: Decimal
     net_pnl_usd: Decimal
     opened_at: datetime
@@ -230,6 +235,7 @@ class LiveTradeAccumulator:
     entry_notional_usd: Decimal = ZERO
     exit_notional_usd: Decimal = ZERO
     fee_usd: Decimal = ZERO
+    funding_usd: Decimal = ZERO
     realized_pnl_usd: Decimal = ZERO
     open_fill_count: int = 0
     close_fill_count: int = 0
@@ -294,6 +300,15 @@ class LivePerpSnapshot:
 @dataclass(frozen=True)
 class LiveFillFetchResult:
     fills: tuple[dict[str, Any], ...]
+    complete: bool
+    pages: int
+    next_start_time_ms: int | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class LiveFundingFetchResult:
+    payments: tuple[dict[str, Any], ...]
     complete: bool
     pages: int
     next_start_time_ms: int | None = None
@@ -2957,18 +2972,28 @@ async def live_account_weekly_net_pnl(
     utc_now = now.replace(tzinfo=UTC) if now.tzinfo is None else now.astimezone(UTC)
     day_start = utc_now.replace(hour=0, minute=0, second=0, microsecond=0)
     week_start = day_start - timedelta(days=day_start.weekday())
-    value = await session.scalar(
+    fill_total = (
         select(
             func.coalesce(
-                func.sum(TradingFill.realized_pnl_usd - TradingFill.fee_usd),
-                ZERO,
+                func.sum(TradingFill.realized_pnl_usd - TradingFill.fee_usd), ZERO
             )
-        ).where(
+        )
+        .where(
             TradingFill.account_key == account_key,
             TradingFill.account_type == "live",
             TradingFill.filled_at >= week_start,
         )
+        .scalar_subquery()
     )
+    funding_total = (
+        select(func.coalesce(func.sum(TradingFundingPayment.amount_usd), ZERO))
+        .where(
+            TradingFundingPayment.account_key == account_key,
+            TradingFundingPayment.occurred_at >= week_start,
+        )
+        .scalar_subquery()
+    )
+    value = await session.scalar(select(fill_total + funding_total))
     return decimal_or_none(value) or ZERO
 
 
@@ -3245,6 +3270,18 @@ async def run_live_trading_account_reconciliation(
             user=user_address,
             start_time_ms=start_time_ms,
         )
+        funding_start_time_ms = await live_funding_reconciliation_start_time_ms(
+            session,
+            account_key=account.key,
+            settings=settings,
+            now=reconciled_at,
+            lookback_minutes=lookback_minutes,
+        )
+        funding_result = await fetch_live_funding_by_time(
+            client,
+            user=user_address,
+            start_time_ms=funding_start_time_ms,
+        )
         perp_snapshot = await fetch_live_perp_states(client, user_address=user_address)
         spot_state = await fetch_live_spot_state(client, user_address=user_address)
         user_abstraction = await fetch_live_user_abstraction(
@@ -3256,6 +3293,11 @@ async def run_live_trading_account_reconciliation(
             session,
             account=account,
             fills=list(fill_result.fills),
+        )
+        inserted_funding_payments = await reconcile_live_funding_payments(
+            session,
+            account=account,
+            payments=list(funding_result.payments),
         )
         updated_orders_from_fills = await update_live_orders_from_reconciled_fills(
             session,
@@ -3277,6 +3319,7 @@ async def run_live_trading_account_reconciliation(
             order_result=order_result,
             unresolved_order_ids=unresolved_order_ids,
             fill_result=fill_result,
+            funding_result=funding_result,
             perp_snapshot=perp_snapshot,
             spot_state=spot_state,
             user_abstraction=user_abstraction,
@@ -3288,6 +3331,7 @@ async def run_live_trading_account_reconciliation(
             order_result=order_result,
             unresolved_order_ids=unresolved_order_ids,
             fill_result=fill_result,
+            funding_result=funding_result,
             perp_snapshot=perp_snapshot,
             spot_state=spot_state,
             user_abstraction=user_abstraction,
@@ -3414,6 +3458,8 @@ async def run_live_trading_account_reconciliation(
         run_id=run.id,
         fetched_fills=len(fill_result.fills),
         inserted_fills=inserted_fills,
+        fetched_funding_payments=len(funding_result.payments),
+        inserted_funding_payments=inserted_funding_payments,
         updated_orders=updated_orders,
         open_positions=position_result.open_positions,
         removed_positions=position_result.removed_positions,
@@ -3465,6 +3511,7 @@ def reconciliation_component_errors(
     order_result: LiveOrderReconciliationResult,
     unresolved_order_ids: tuple[UUID, ...],
     fill_result: LiveFillFetchResult,
+    funding_result: LiveFundingFetchResult,
     perp_snapshot: LivePerpSnapshot,
     spot_state: dict[str, Any],
     user_abstraction: Any,
@@ -3474,6 +3521,8 @@ def reconciliation_component_errors(
         errors["orders"] = f"{len(unresolved_order_ids)} live order statuses remain unresolved."
     if not fill_result.complete:
         errors["fills"] = fill_result.error or "Live fill history is incomplete."
+    if not funding_result.complete:
+        errors["funding"] = funding_result.error or "Live funding history is incomplete."
     errors.update(perp_snapshot.component_errors)
     if not perp_snapshot.complete and not any(key.startswith("perp") for key in errors):
         errors["positions"] = "One or more perp position scopes are incomplete."
@@ -3491,6 +3540,7 @@ def reconciliation_components_payload(
     order_result: LiveOrderReconciliationResult,
     unresolved_order_ids: tuple[UUID, ...],
     fill_result: LiveFillFetchResult,
+    funding_result: LiveFundingFetchResult,
     perp_snapshot: LivePerpSnapshot,
     spot_state: dict[str, Any],
     user_abstraction: Any,
@@ -3509,6 +3559,13 @@ def reconciliation_components_payload(
             "pages": fill_result.pages,
             "nextStartTimeMs": fill_result.next_start_time_ms,
             "error": fill_result.error,
+        },
+        "funding": {
+            "status": "complete" if funding_result.complete else "partial",
+            "fetched": len(funding_result.payments),
+            "pages": funding_result.pages,
+            "nextStartTimeMs": funding_result.next_start_time_ms,
+            "error": funding_result.error,
         },
         "perpCatalog": {
             "status": "complete" if perp_snapshot.catalog_complete else "partial",
@@ -3798,6 +3855,85 @@ def live_fill_pagination_key(fill: dict[str, Any]) -> tuple[str, ...]:
     )
 
 
+async def fetch_live_funding_by_time(
+    client: HyperliquidClient,
+    *,
+    user: str,
+    start_time_ms: int,
+    max_pages: int = MAX_LIVE_FUNDING_RECONCILIATION_PAGES,
+) -> LiveFundingFetchResult:
+    payments: list[dict[str, Any]] = []
+    seen_keys: set[tuple[str, ...]] = set()
+    next_start_time_ms = start_time_ms
+    pages = 0
+    for _ in range(max_pages):
+        try:
+            batch = await client.user_funding(
+                user=user,
+                start_time_ms=next_start_time_ms,
+            )
+        except Exception as exc:
+            return LiveFundingFetchResult(
+                payments=tuple(payments),
+                complete=False,
+                pages=pages,
+                next_start_time_ms=next_start_time_ms,
+                error=str(exc) or exc.__class__.__name__,
+            )
+        pages += 1
+        if not batch:
+            return LiveFundingFetchResult(payments=tuple(payments), complete=True, pages=pages)
+        new_payments = []
+        for payment in batch:
+            key = live_funding_pagination_key(payment)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            new_payments.append(payment)
+        payments.extend(new_payments)
+        timestamps = [
+            int(timestamp)
+            for payment in batch
+            for timestamp in [decimal_or_none(payment.get("time"))]
+            if timestamp is not None
+        ]
+        if len(batch) < 500 or not timestamps:
+            return LiveFundingFetchResult(payments=tuple(payments), complete=True, pages=pages)
+        next_page_start_time_ms = max(timestamps)
+        if next_page_start_time_ms < next_start_time_ms or not new_payments:
+            return LiveFundingFetchResult(
+                payments=tuple(payments),
+                complete=False,
+                pages=pages,
+                next_start_time_ms=next_start_time_ms,
+                error="Funding reconciliation pagination did not advance.",
+            )
+        next_start_time_ms = next_page_start_time_ms
+    return LiveFundingFetchResult(
+        payments=tuple(payments),
+        complete=False,
+        pages=pages,
+        next_start_time_ms=next_start_time_ms,
+        error=f"Funding reconciliation reached the {max_pages}-page safety limit.",
+    )
+
+
+def live_funding_pagination_key(payment: dict[str, Any]) -> tuple[str, ...]:
+    delta = payment.get("delta")
+    resolved_delta = delta if isinstance(delta, dict) else {}
+    return tuple(
+        str(value or "")
+        for value in (
+            payment.get("hash"),
+            payment.get("time"),
+            resolved_delta.get("coin"),
+            resolved_delta.get("usdc"),
+            resolved_delta.get("szi"),
+            resolved_delta.get("fundingRate"),
+        )
+    )
+
+
 async def fetch_live_perp_states(
     client: HyperliquidClient,
     *,
@@ -3967,6 +4103,31 @@ async def reconcile_live_fills(
     return inserted
 
 
+async def reconcile_live_funding_payments(
+    session: AsyncSession,
+    *,
+    account: TradingAccount,
+    payments: list[dict[str, Any]],
+) -> int:
+    inserted = 0
+    for payment in payments:
+        parsed = parse_live_funding_payment(payment, account_key=account.key)
+        if parsed is None:
+            continue
+        stmt = insert(TradingFundingPayment).values(
+            account_key=account.key,
+            account_type="live",
+            **parsed,
+        )
+        stmt = stmt.on_conflict_do_nothing(
+            constraint="ux_trading_funding_payments_account_event"
+        )
+        result = await session.execute(stmt)
+        inserted += int(int(result.rowcount or 0) > 0)
+    await session.flush()
+    return inserted
+
+
 async def load_live_orders_for_fill_matching(
     session: AsyncSession,
     *,
@@ -4053,7 +4214,19 @@ async def load_live_closed_trades(
         .limit(fill_scan_limit)
     )
     fills = list(fill_result.all())
-    return live_closed_trades_from_fills(fills, limit=limit)
+    trades = live_closed_trades_from_fills(fills, limit=limit)
+    if not trades:
+        return trades
+    funding_result = await session.scalars(
+        select(TradingFundingPayment).where(
+            TradingFundingPayment.account_key.in_({trade.account_key for trade in trades}),
+            TradingFundingPayment.occurred_at
+            >= min(trade.opened_at for trade in trades),
+            TradingFundingPayment.occurred_at
+            <= max(trade.closed_at for trade in trades),
+        )
+    )
+    return attach_live_funding_to_closed_trades(trades, list(funding_result.all()))
 
 
 def live_closed_trades_from_fills(
@@ -4135,6 +4308,7 @@ def live_exchange_close_only_trade(fill: TradingFill) -> LiveClosedTrade | None:
         entry_notional_usd=entry_notional_usd,
         exit_notional_usd=exit_notional_usd,
         fee_usd=fee_usd,
+        funding_usd=ZERO,
         realized_pnl_usd=realized_pnl_usd,
         net_pnl_usd=realized_pnl_usd - fee_usd,
         opened_at=fill.filled_at,
@@ -4199,14 +4373,42 @@ def finish_live_closed_trade(trade: LiveTradeAccumulator) -> LiveClosedTrade:
         entry_notional_usd=trade.entry_notional_usd,
         exit_notional_usd=trade.exit_notional_usd,
         fee_usd=trade.fee_usd,
+        funding_usd=trade.funding_usd,
         realized_pnl_usd=trade.realized_pnl_usd,
-        net_pnl_usd=trade.realized_pnl_usd - trade.fee_usd,
+        net_pnl_usd=trade.realized_pnl_usd - trade.fee_usd + trade.funding_usd,
         opened_at=trade.opened_at,
         closed_at=trade.closed_at,
         duration_ms=max(duration_ms, 0),
         open_fill_count=trade.open_fill_count,
         close_fill_count=trade.close_fill_count,
     )
+
+
+def attach_live_funding_to_closed_trades(
+    trades: list[LiveClosedTrade],
+    payments: list[TradingFundingPayment],
+) -> list[LiveClosedTrade]:
+    totals = [ZERO for _ in trades]
+    for payment in payments:
+        candidates = [
+            index
+            for index, trade in enumerate(trades)
+            if trade.account_key == payment.account_key
+            and trade.coin == payment.coin
+            and trade.opened_at <= payment.occurred_at <= trade.closed_at
+        ]
+        if not candidates:
+            continue
+        index = max(candidates, key=lambda item: trades[item].opened_at)
+        totals[index] += decimal_or_none(payment.amount_usd) or ZERO
+    return [
+        replace(
+            trade,
+            funding_usd=totals[index],
+            net_pnl_usd=trade.realized_pnl_usd - trade.fee_usd + totals[index],
+        )
+        for index, trade in enumerate(trades)
+    ]
 
 
 def live_fill_chronology_key(fill: TradingFill) -> tuple[datetime, datetime, str, int]:
@@ -4790,6 +4992,37 @@ async def live_fill_reconciliation_start_time_ms(
     return int(start_at.timestamp() * 1000)
 
 
+async def live_funding_reconciliation_start_time_ms(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    settings: Settings,
+    now: datetime,
+    lookback_minutes: int | None = None,
+) -> int:
+    if lookback_minutes is not None:
+        start_at = now - timedelta(minutes=max(lookback_minutes, 1))
+        return int(start_at.timestamp() * 1000)
+    latest_payment_at = await session.scalar(
+        select(func.max(TradingFundingPayment.occurred_at)).where(
+            TradingFundingPayment.account_key == account_key,
+        )
+    )
+    if latest_payment_at is not None:
+        start_at = latest_payment_at - timedelta(hours=1)
+    else:
+        earliest_fill_at = await session.scalar(
+            select(func.min(TradingFill.filled_at)).where(
+                TradingFill.account_key == account_key,
+                TradingFill.account_type == "live",
+            )
+        )
+        start_at = earliest_fill_at or (
+            now - timedelta(minutes=settings.live_trading_reconciliation_lookback_minutes)
+        )
+    return int(start_at.timestamp() * 1000)
+
+
 def build_testnet_live_trade_intent(
     *,
     account: TradingAccount,
@@ -5216,6 +5449,35 @@ def parse_live_fill(fill: dict[str, Any], *, account_key: str) -> dict[str, Any]
         "realized_pnl_usd": decimal_or_none(fill.get("closedPnl")) or ZERO,
         "filled_at": ms_to_datetime(timestamp_ms) or datetime.now(UTC),
         "raw_payload": fill,
+    }
+
+
+def parse_live_funding_payment(
+    payment: dict[str, Any],
+    *,
+    account_key: str,
+) -> dict[str, Any] | None:
+    delta = payment.get("delta")
+    if not isinstance(delta, dict):
+        return None
+    coin = string_or_none(delta.get("coin"))
+    amount_usd = decimal_or_none(delta.get("usdc"))
+    timestamp_ms = decimal_or_none(payment.get("time"))
+    if not coin or amount_usd is None or timestamp_ms is None:
+        return None
+    identity = "|".join(live_funding_pagination_key(payment))
+    exchange_event_id = blake2s(
+        f"{account_key}|{identity}".encode(),
+        digest_size=16,
+    ).hexdigest()
+    return {
+        "exchange_event_id": exchange_event_id,
+        "coin": coin,
+        "amount_usd": amount_usd,
+        "funding_rate": decimal_or_none(delta.get("fundingRate")),
+        "position_size": decimal_or_none(delta.get("szi")),
+        "occurred_at": ms_to_datetime(timestamp_ms) or datetime.now(UTC),
+        "raw_payload": payment,
     }
 
 

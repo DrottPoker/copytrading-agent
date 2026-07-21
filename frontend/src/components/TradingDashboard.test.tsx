@@ -241,6 +241,7 @@ function position(overrides: Partial<TradingPosition>): TradingPosition {
     priceUpdatedAt: null,
     realizedPnlUsd: "0",
     feeUsd: "0",
+    fundingUsd: "0",
     addFillCount: 1,
     closeFillCount: 0,
     openedAt: "2026-01-01T00:00:00Z",

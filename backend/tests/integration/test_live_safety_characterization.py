@@ -10,6 +10,7 @@ from app.core.config import Settings
 from app.db.models import (
     TradingAccount,
     TradingFill,
+    TradingFundingPayment,
     TradingOrder,
     TradingOrderDispatch,
     TradingPosition,
@@ -26,6 +27,7 @@ from app.services.live_trading_service import (
     prune_live_reconciliation_runs,
     recompute_live_account_fill_totals,
     reconcile_live_fills,
+    reconcile_live_funding_payments,
     reconcile_live_positions,
     reconcile_live_trading_account,
     recover_live_order_dispatches,
@@ -73,6 +75,48 @@ def reduce_only_intent(account: TradingAccount):
         source_fill_id="source-fill-1",
         created_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
+
+
+@pytest.mark.asyncio
+async def test_live_funding_reconciliation_is_idempotent(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    payment = {
+        "delta": {
+            "coin": "BTC",
+            "fundingRate": "0.00001",
+            "szi": "0.1",
+            "type": "funding",
+            "usdc": "-0.05",
+        },
+        "hash": "0xfunding",
+        "time": 1_767_225_600_000,
+    }
+    async with integration_sessionmaker() as session:
+        account = live_account()
+        session.add(account)
+        await session.commit()
+
+        first_inserted = await reconcile_live_funding_payments(
+            session,
+            account=account,
+            payments=[payment],
+        )
+        second_inserted = await reconcile_live_funding_payments(
+            session,
+            account=account,
+            payments=[payment],
+        )
+        await session.commit()
+
+        stored = await session.scalar(select(TradingFundingPayment))
+        count = await session.scalar(select(func.count(TradingFundingPayment.id)))
+
+    assert first_inserted == 1
+    assert second_inserted == 0
+    assert count == 1
+    assert stored is not None
+    assert stored.amount_usd == Decimal("-0.05")
 
 
 @pytest.mark.asyncio
@@ -623,6 +667,9 @@ async def test_partial_reconciliation_is_audited_and_does_not_advance_complete_t
 
     class PartialReconciliationClient(PartialPerpStateClient):
         async def user_fills_by_time(self, **_kwargs: object) -> list[dict[str, object]]:
+            return []
+
+        async def user_funding(self, **_kwargs: object) -> list[dict[str, object]]:
             return []
 
         async def spot_clearinghouse_state(self, *, user: str) -> dict[str, object]:

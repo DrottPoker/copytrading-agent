@@ -386,14 +386,15 @@ docker compose -f docker-compose.vps.yml exec backend \
 docker compose -f docker-compose.vps.yml logs --tail=100 backend trading-worker maintenance-worker postgres-backup caddy
 ```
 
-The Alembic head for this update is `f9a1c5d2e7b4`. The current chain removes
+The Alembic head for this update is `a2c4e6f8b0d1`. The current chain adds the
+signed Hyperliquid funding-payment ledger, removes
 the obsolete durable live-entry control, expands wallet fill ingest latency to
 `BIGINT`, persists live margin mode, adds the authoritative live-copy lifecycle,
 and adds the unified durable `live_copy_work` queue. It also converts the live
 order outbox into an append-only attempt ledger, backfilling existing dispatches
 as attempt 1. The migration bridges only
 unfinished realtime inbox work into the new queue. It does not replay the full
-historical fill table. The `current` command must show `f9a1c5d2e7b4` before the
+historical fill table. The `current` command must show `a2c4e6f8b0d1` before the
 backend or workers are restarted.
 
 Paper trading state is stored in local Postgres, not in the worker containers.

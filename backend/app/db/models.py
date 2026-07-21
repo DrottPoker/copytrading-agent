@@ -1393,6 +1393,53 @@ class TradingFill(Base, TimestampMixin):
     filled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class TradingFundingPayment(Base, TimestampMixin):
+    __tablename__ = "trading_funding_payments"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["account_key", "account_type"],
+            ["trading_accounts.key", "trading_accounts.account_type"],
+            name="fk_trading_funding_payments_account_key_type_trading_accounts",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "account_type = 'live'",
+            name="ck_trading_funding_payments_live",
+        ),
+        UniqueConstraint(
+            "account_key",
+            "exchange_event_id",
+            name="ux_trading_funding_payments_account_event",
+        ),
+        Index(
+            "ix_trading_funding_payments_account_occurred",
+            "account_key",
+            "occurred_at",
+        ),
+        Index(
+            "ix_trading_funding_payments_account_coin_occurred",
+            "account_key",
+            "coin",
+            "occurred_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    account_key: Mapped[str] = mapped_column(Text, nullable=False)
+    account_type: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'live'")
+    )
+    exchange_event_id: Mapped[str] = mapped_column(Text, nullable=False)
+    coin: Mapped[str] = mapped_column(Text, nullable=False)
+    amount_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    funding_rate: Mapped[Decimal | None] = mapped_column(Numeric)
+    position_size: Mapped[Decimal | None] = mapped_column(Numeric)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    raw_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+
+
 class PaperTradingAccount(Base, TimestampMixin, UpdatedAtMixin):
     __tablename__ = "paper_trading_accounts"
 
