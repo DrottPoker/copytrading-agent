@@ -6,6 +6,7 @@ import type { LiveCopyDecision, TradingPosition } from "@/types/trading";
 import {
   buildLiveCopyDecisionActivities,
   collectLiveCopySourceWallets,
+  compareDashboardPositionsOldestFirst,
   compareCopySourcesByAllocationUsed,
   compareWalletHistoryByPnl,
   displayLivePositions,
@@ -102,16 +103,49 @@ describe("copy source performance", () => {
     ]);
   });
 
-  it("sorts Wallet PnL History by realized PnL descending", () => {
+  it("sorts Wallet PnL History by total PnL descending", () => {
     const wallets = [
-      { sourceWallet: "0xlow", poolRank: 1, realizedPnlUsd: "0.79", totalPnlUsd: "5" },
-      { sourceWallet: "0xhigh", poolRank: 10, realizedPnlUsd: "7.17", totalPnlUsd: "6" },
+      { sourceWallet: "0xlow", poolRank: 1, realizedPnlUsd: "7.17", totalPnlUsd: "5" },
+      { sourceWallet: "0xhigh", poolRank: 10, realizedPnlUsd: "0.79", totalPnlUsd: "6" },
     ];
 
     expect(wallets.sort(compareWalletHistoryByPnl).map((wallet) => wallet.sourceWallet)).toEqual([
       "0xhigh",
       "0xlow",
     ]);
+  });
+
+  it("keeps open positions oldest first with a deterministic tie break", () => {
+    const positions = [
+      {
+        id: "newest",
+        accountKey: "live-test",
+        sourceWallet: "0xsource",
+        coin: "ETH",
+        side: "long" as const,
+        openedAt: "2026-01-03T00:00:00Z",
+      },
+      {
+        id: "old-b",
+        accountKey: "live-test",
+        sourceWallet: "0xsource",
+        coin: "ETH",
+        side: "long" as const,
+        openedAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "old-a",
+        accountKey: "live-test",
+        sourceWallet: "0xsource",
+        coin: "BTC",
+        side: "long" as const,
+        openedAt: "2026-01-01T00:00:00Z",
+      },
+    ];
+
+    expect(
+      positions.sort(compareDashboardPositionsOldestFirst).map((position) => position.id),
+    ).toEqual(["old-a", "old-b", "newest"]);
   });
 });
 
@@ -324,14 +358,14 @@ describe("resolveCurrentSourceStatus", () => {
     ).toBe("retained");
   });
 
-  it("reports a monitored open source as trading while new entries are paused", () => {
+  it("reports an entry-ineligible monitored source with exposure as reduce only", () => {
     expect(
       resolveCurrentSourceStatus({
         canOpenNewPositions: false,
         hasRealtimeSlot: true,
         openPositionCount: 1,
       }),
-    ).toBe("trading");
+    ).toBe("retained");
   });
 });
 

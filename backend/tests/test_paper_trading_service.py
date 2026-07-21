@@ -19,6 +19,7 @@ from app.services.paper_trading_service import (
     paper_monitor_status,
     paper_position_read,
     paper_source_status,
+    paper_wallet_performance_reads,
     parse_source_leverages,
     parse_source_margin_modes,
     pnl_per_monitored_hour,
@@ -172,6 +173,49 @@ def test_paper_monitor_status_uses_acknowledged_subscription_truth() -> None:
         )
         == "waiting"
     )
+
+
+def test_wallet_performance_sorts_by_total_pnl_before_realized_pnl() -> None:
+    snapshot = RealtimeSubscriptionSnapshot(
+        status="connected",
+        desired_wallets=(),
+        monitored_wallets=frozenset(),
+        worker_role="trading",
+        worker_instance_id="worker-1",
+        updated_at=datetime(2026, 7, 10, tzinfo=UTC),
+    )
+
+    rows = paper_wallet_performance_reads(
+        allocations=[],
+        positions=[
+            {
+                "source_wallet": "0xhighrealized",
+                "unrealized_pnl_usd": Decimal("-9"),
+                "current_notional_usd": Decimal("10"),
+                "notional_usd": Decimal("10"),
+                "margin_usd": Decimal("2"),
+            }
+        ],
+        fill_performance_rows=[
+            {
+                "source_wallet": "0xhighrealized",
+                "realized_pnl_usd": Decimal("10"),
+            },
+            {
+                "source_wallet": "0xhightotal",
+                "realized_pnl_usd": Decimal("2"),
+            },
+        ],
+        source_allocations={},
+        source_labels={},
+        monitoring_stats={},
+        realtime_monitoring=snapshot,
+    )
+
+    assert [row["source_wallet"] for row in rows] == [
+        "0xhightotal",
+        "0xhighrealized",
+    ]
 
 
 def test_paper_position_read_exposes_position_pnl_and_fill_counts() -> None:

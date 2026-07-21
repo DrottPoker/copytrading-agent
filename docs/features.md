@@ -891,6 +891,8 @@ What it does:
   for that position. Successful manual closes immediately reconcile the live
   account so the exchange fill and closed trade row can appear without waiting
   for the next worker loop.
+- Open positions sort by opening time ascending with deterministic identity
+  tie-breakers. Mark-price and reconciliation updates do not reorder them.
 - The Accounts page filters account data to one selected paper or live account.
   It keeps the last selected account in browser storage and falls back to the
   first synced account. For paper accounts it shows account KPIs, balance and
@@ -947,10 +949,11 @@ What it does:
   realtime wallet sets. Those wallets remain visible even when no live account
   currently accepts entries. Allocation and open-position sources supplement
   that runtime set.
-- A source with open exposure and a current realtime slot is `trading`, even
-  when new entries are paused. `Retained` requires open exposure without a
-  current slot. A slotted source without exposure is `entries paused` when no
-  account accepts entries and `waiting for trades` when it is entry-ready.
+- A source with open exposure is `trading` only while it has both a current
+  realtime slot and permission to open new positions. Existing exposure without
+  both conditions is `retained` internally and displayed as `reduce only`. A
+  slotted source without exposure is `entries paused` when no account accepts
+  entries and `waiting for trades` when it is entry-ready.
 - Source rows display `pool #` from the wallet score pool rank, not the realtime
   monitor slot or retained-source order. Retained rows also show the blocking
   reason, such as outside copy top 10, drawdown blocked, paper account disabled,
@@ -959,7 +962,8 @@ What it does:
   PnL shown as supporting context.
 - Copy Sources sorts by allocation-used percentage descending, followed by used
   USD, realized PnL, source status, pool rank, and wallet address for deterministic
-  ties. Wallet PnL History sorts by realized PnL descending.
+  ties. Wallet PnL History sorts by total PnL descending, followed by realized
+  PnL, pool rank, and wallet address.
 - The Sources summary and Copy Sources header derive their trading, monitored,
   connecting, offline, and waiting-for-slot counts from the same current
   source-state rows used by the source badges. Historical monitoring duration
@@ -972,6 +976,9 @@ What it does:
   motion instead of visible refreshing text.
 - Wallet PnL history rows show `monitored` only while the source has a confirmed
   realtime subscription and `history` otherwise.
+- Monitoring duration snapshots are persisted in the same transaction as each
+  acknowledged realtime subscription-state transition. Wallets that are
+  connecting or waiting for a slot do not accrue monitored time.
 - Wallet PnL history, closed trade history, and recent execution activity are
   paginated at 10 rows per page.
 

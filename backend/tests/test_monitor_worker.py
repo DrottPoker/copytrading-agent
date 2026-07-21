@@ -27,9 +27,49 @@ class DummySession:
     async def __aexit__(self, *_args: object) -> None:
         return None
 
+    async def commit(self) -> None:
+        return None
+
 
 def dummy_sessionmaker() -> DummySession:
     return DummySession()
+
+
+@pytest.mark.asyncio
+async def test_subscription_persistence_updates_monitoring_time_from_acknowledged_wallets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    persisted: list[tuple[str, ...]] = []
+
+    async def fake_mark_state(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    async def fake_record_snapshot(
+        *_args: object,
+        monitored_wallets: tuple[str, ...],
+        **_kwargs: object,
+    ) -> None:
+        persisted.append(monitored_wallets)
+
+    monkeypatch.setattr(monitor_worker, "mark_realtime_subscription_state", fake_mark_state)
+    monkeypatch.setattr(monitor_worker, "record_wallet_monitoring_snapshot", fake_record_snapshot)
+    runtime = monitor_worker.WorkerRuntimeState(role="trading", capabilities=("trading",))
+    runtime.mark_realtime_subscription_connecting(["0xsource", "0xwaiting"])
+    runtime.mark_realtime_subscription_acknowledged("0xsource")
+
+    await monitor_worker.persist_realtime_subscription_runtime(
+        sessionmaker=dummy_sessionmaker,
+        runtime=runtime,
+        settings=SimpleNamespace(realtime_subscription_refresh_seconds=15),
+    )
+    runtime.mark_realtime_subscription_disconnected()
+    await monitor_worker.persist_realtime_subscription_runtime(
+        sessionmaker=dummy_sessionmaker,
+        runtime=runtime,
+        settings=SimpleNamespace(realtime_subscription_refresh_seconds=15),
+    )
+
+    assert persisted == [("0xsource",), ()]
 
 
 @pytest.mark.asyncio

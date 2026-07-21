@@ -58,6 +58,7 @@ from app.services.paper_trading_service import (
     paper_source_fill_from_wallet_fill,
     process_paper_copy_fills,
     process_paper_copy_recovery,
+    record_wallet_monitoring_snapshot,
     refresh_paper_copy_allocations,
 )
 from app.services.pool_fill_import_service import import_due_pool_wallet_fills
@@ -555,6 +556,7 @@ async def run_realtime_monitor_loop(
                 await persist_realtime_subscription_runtime(
                     sessionmaker=sessionmaker,
                     runtime=runtime,
+                    settings=settings,
                 )
             logger.info("no enabled wallets available for realtime monitoring")
             await publish_event(
@@ -572,6 +574,7 @@ async def run_realtime_monitor_loop(
             await persist_realtime_subscription_runtime(
                 sessionmaker=sessionmaker,
                 runtime=runtime,
+                settings=settings,
             )
         logger.info("subscribing to realtime fills wallets=%s", ",".join(wallet_addresses))
         await publish_event(
@@ -613,6 +616,7 @@ async def run_realtime_monitor_loop(
                 await persist_realtime_subscription_runtime(
                     sessionmaker=sessionmaker,
                     runtime=runtime,
+                    settings=settings,
                 )
 
         stream_task = asyncio.create_task(
@@ -653,6 +657,7 @@ async def run_realtime_monitor_loop(
                         await persist_realtime_subscription_runtime(
                             sessionmaker=sessionmaker,
                             runtime=runtime,
+                            settings=settings,
                         )
                     continue
 
@@ -685,6 +690,7 @@ async def run_realtime_monitor_loop(
                 await persist_realtime_subscription_runtime(
                     sessionmaker=sessionmaker,
                     runtime=runtime,
+                    settings=settings,
                 )
 
 
@@ -720,6 +726,7 @@ async def persist_realtime_subscription_runtime(
     *,
     sessionmaker: Any,
     runtime: WorkerRuntimeState,
+    settings: Any,
 ) -> None:
     try:
         async with sessionmaker() as session:
@@ -730,6 +737,11 @@ async def persist_realtime_subscription_runtime(
                 monitored_wallets=runtime.realtime_subscription_monitored_wallets,
                 worker_role=runtime.role,
                 worker_instance_id=runtime.instance_id,
+            )
+            await record_wallet_monitoring_snapshot(
+                session,
+                monitored_wallets=runtime.realtime_subscription_monitored_wallets,
+                settings=settings,
             )
             await session.commit()
     except Exception:

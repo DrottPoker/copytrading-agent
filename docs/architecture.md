@@ -154,9 +154,10 @@ Trading worker responsibilities:
   subscription refresh. State older than three refresh intervals is treated as
   disconnected. If every requested wallet is not acknowledged within one
   refresh interval, the worker reconnects instead of leaving the set in an
-  indefinite connecting state. Allocation refresh writes
-  `wallet_monitoring_stats` snapshots only for acknowledged wallets, so downtime
-  does not count as monitored time.
+  indefinite connecting state. The worker writes `wallet_monitoring_stats`
+  snapshots in the same transaction as subscription state changes and only for
+  acknowledged wallets, so waiting time and downtime do not count as monitored
+  time.
 - Subscribe to Hyperliquid `userFills` over WebSocket.
 - Subscribe to Hyperliquid `allMids` over WebSocket and maintain a short-lived
   price cache for copy execution.
@@ -960,15 +961,20 @@ that realized PnL, or realized plus current unrealized PnL, by the same wallet's
 accumulated monitored seconds. It never combines live PnL with a paper-derived
 per-hour rate. Copy Sources sorts by allocation-used percentage descending,
 followed by used USD, realized PnL, status, pool rank, and wallet-address
-tie-breakers. Wallet PnL History sorts by realized PnL descending.
+tie-breakers. Wallet PnL History sorts by total PnL descending, followed by
+realized PnL, pool rank, and wallet address.
+Open-position rows sort by durable opening time ascending and use position
+identity as a deterministic tie-breaker, so mark updates do not reorder them.
 Dashboard source counters are reduced from the same current source rows as the
 badges, so source-attributed open positions drive the trading count
 even when exchange aggregate positions are preferred in the separate
 open-position display.
 The dashboard aggregates allocation status across paper accounts when rendering
-source rows. Open source-attributed exposure with a current realtime slot is
-`trading`; entry readiness separately determines whether an empty slotted source
-is `waiting_for_trades` or `entries_paused`.
+source rows. Open source-attributed exposure is `trading` only when it has both
+a current realtime slot and entry permission. Otherwise it is retained for
+reductions and exits and rendered as `reduce only`. Entry readiness separately
+determines whether an empty slotted source is `waiting_for_trades` or
+`entries_paused`.
 Paper account `enabled` is database runtime state after the account has been
 created through the dashboard or API. The Accounts page can create paper
 accounts with a selected USD starting balance and live accounts with a wallet

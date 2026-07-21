@@ -137,6 +137,7 @@ type DashboardPosition = {
   unrealizedPnlPct: string | number | null;
   addFillCount: number;
   closeFillCount: number;
+  openedAt: string;
   markPrice: string | number | null;
   priceUpdatedAt: string | null;
   entryExecutionDelayMs: number | null;
@@ -1667,10 +1668,11 @@ function buildPaperDashboardPositions(paperPositions: PaperPosition[]): Dashboar
     sourceWallet: position.sourceWallet,
     addFillCount: position.addFillCount,
     closeFillCount: position.closeFillCount,
+    openedAt: position.openedAt,
     unrealizedPnlPct: position.unrealizedPnlPct,
     unrealizedPnlUsd: position.unrealizedPnlUsd,
     updatedAt: position.updatedAt,
-  }));
+  })).sort(compareDashboardPositionsOldestFirst);
 }
 
 function buildLiveDashboardPositions(
@@ -1703,10 +1705,11 @@ function buildLiveDashboardPositions(
     sourceWallet: position.sourceWallet,
     addFillCount: position.addFillCount,
     closeFillCount: position.closeFillCount,
+    openedAt: position.openedAt,
     unrealizedPnlPct: position.unrealizedPnlPct,
     unrealizedPnlUsd: position.unrealizedPnlUsd,
     updatedAt: position.updatedAt,
-  })).sort((left, right) => dateMs(right.updatedAt) - dateMs(left.updatedAt));
+  })).sort(compareDashboardPositionsOldestFirst);
 }
 
 function buildPaperDashboardFills(paperFills: PaperCopyFill[]): ExecutionActivityItem[] {
@@ -2559,7 +2562,7 @@ function buildLiveWalletHistory(
         wallet.skippedFillCount > 0 ||
         numberValue(wallet.totalPnlUsd) !== 0,
     )
-    .sort((left, right) => dateMs(right.lastFillAt) - dateMs(left.lastFillAt));
+    .sort(compareWalletHistoryByPnl);
 }
 
 function buildLiveClosedTradeRows(
@@ -2951,7 +2954,7 @@ export function resolveCurrentSourceStatus({
   openPositionCount: number;
 }): MonitoredSource["sourceStatus"] {
   if (openPositionCount > 0) {
-    return hasRealtimeSlot ? "trading" : "retained";
+    return canOpenNewPositions && hasRealtimeSlot ? "trading" : "retained";
   }
   if (!hasRealtimeSlot) {
     return "waiting_for_slot";
@@ -2998,6 +3001,9 @@ function resolveLiveSourceStatusReason({
 }
 
 function formatSourceStatus(status: MonitoredSource["sourceStatus"]) {
+  if (status === "retained") {
+    return "reduce only";
+  }
   if (status === "entries_paused") {
     return "entries paused";
   }
@@ -3213,19 +3219,37 @@ export function compareWalletHistoryByPnl(
   left: WalletHistorySortValue,
   right: WalletHistorySortValue,
 ) {
-  const realizedDiff = numberValue(right.realizedPnlUsd) - numberValue(left.realizedPnlUsd);
-  if (realizedDiff !== 0) {
-    return realizedDiff;
-  }
   const totalDiff = numberValue(right.totalPnlUsd) - numberValue(left.totalPnlUsd);
   if (totalDiff !== 0) {
     return totalDiff;
+  }
+  const realizedDiff = numberValue(right.realizedPnlUsd) - numberValue(left.realizedPnlUsd);
+  if (realizedDiff !== 0) {
+    return realizedDiff;
   }
   const rankDiff = (left.poolRank ?? 9999) - (right.poolRank ?? 9999);
   if (rankDiff !== 0) {
     return rankDiff;
   }
   return left.sourceWallet.localeCompare(right.sourceWallet);
+}
+
+type DashboardPositionSortValue = Pick<
+  DashboardPosition,
+  "accountKey" | "coin" | "id" | "openedAt" | "side" | "sourceWallet"
+>;
+
+export function compareDashboardPositionsOldestFirst(
+  left: DashboardPositionSortValue,
+  right: DashboardPositionSortValue,
+) {
+  const openedDiff = dateMs(left.openedAt) - dateMs(right.openedAt);
+  if (openedDiff !== 0) {
+    return openedDiff;
+  }
+  return [left.accountKey, left.sourceWallet, left.coin, left.side, left.id]
+    .join("|")
+    .localeCompare([right.accountKey, right.sourceWallet, right.coin, right.side, right.id].join("|"));
 }
 
 export function pnlPerMonitoredHour(pnlUsd: number, monitoredSeconds: number): number | null {
