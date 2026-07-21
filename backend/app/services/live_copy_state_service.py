@@ -120,8 +120,15 @@ def live_copy_unresolved_order_predicate():
 class LiveCopyProcessingDeferred(RuntimeError):
     """A transient prerequisite prevented a live-copy part from being decided."""
 
-    def __init__(self, reason: str, message: str | None = None) -> None:
+    def __init__(
+        self,
+        reason: str,
+        message: str | None = None,
+        *,
+        retry_base_seconds: int | None = None,
+    ) -> None:
         self.reason = reason
+        self.retry_base_seconds = retry_base_seconds
         super().__init__(message or reason)
 
 

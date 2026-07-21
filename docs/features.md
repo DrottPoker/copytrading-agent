@@ -862,6 +862,9 @@ What it does:
   failed attempts are visible without mixing paper and live rows. Individual live reduce and
   close fills stay in Recent Execution Activity.
 - Live Copy Decisions are rendered separately from Recent Execution Activity.
+  They distinguish decision-only and pre-submit skips from exchange rejects,
+  status-unknown attempts, accepted orders, partial fills, and fills. The view
+  labels prerequisite retries separately from exchange submissions and status lookups.
   Stale no-order decisions show the processing origin, source time, first
   observed time, ingest lag, total source-to-decision age, and processing lag when
   available. This timing makes ingest delay distinguishable from processing
@@ -1067,7 +1070,7 @@ What it does:
   busy fence is transient coordination, not evidence of another visible fill.
   A fully validated entry that cannot submit because the fence is busy is
   persisted as `skip:live_execution_busy` with its complete pre-dispatch intent.
-  Retry reuses the original client order ID (CLOID), size, notional, leverage,
+  Retry retains the original logical order ID, size, notional, leverage,
   margin mode, limit price, and `created_at` without requiring a fresh source
   leverage read, then rechecks current price drift and the normal account,
   lifecycle, reconciliation, risk, and capacity gates. The original TTL is
@@ -1440,10 +1443,11 @@ What it does:
   middleware while preserving authenticated non-browser API access.
 - Adds HSTS on the VPS plus content-type, frame, referrer, and permissions
   headers through Caddy.
-- Requires Alembic head `e3b7f9d8c4a1`. This head adds the unified durable
-  live-copy work queue and explicit execution timing columns on top of the
+- Requires Alembic head `f9a1c5d2e7b4`. This head adds the append-only
+  exchange-attempt ledger on top of the unified durable live-copy work queue
+  and explicit execution timing columns on top of the
   source and fill lifecycle tables. After upgrade, an operator must run
-  `python -m alembic current` and confirm it shows `e3b7f9d8c4a1` before
+  `python -m alembic current` and confirm it shows `f9a1c5d2e7b4` before
   starting the backend or workers. Earlier Phase 6 migrations preserve
   financial history, enforce account lifecycle integrity, remove the obsolete
   global entry-control table, and expand wallet fill ingest latency to

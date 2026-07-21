@@ -197,6 +197,20 @@ export type LiveCopyDecision = {
   lastAttemptAt: string | null;
   nextAttemptAt: string | null;
   tradingOrderId: string | null;
+  orderRecordId: string | null;
+  logicalOrderStatus: string | null;
+  logicalOrderError: string | null;
+  latestDispatchAttemptNumber: number | null;
+  latestDispatchClientOrderId: string | null;
+  latestDispatchStatus: string | null;
+  latestExchangeStatus: string | null;
+  latestExchangeErrorCode: string | null;
+  latestExchangeErrorMessage: string | null;
+  latestExchangeResponse: Record<string, unknown> | null;
+  submitAttemptCount: number;
+  statusLookupCount: number;
+  lastStatusLookupAt: string | null;
+  lastStatusLookupError: string | null;
   updatedAt: string;
 };
 

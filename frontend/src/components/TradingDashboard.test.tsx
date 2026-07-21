@@ -39,6 +39,20 @@ function copyDecision(overrides: Partial<LiveCopyDecision>): LiveCopyDecision {
     lastAttemptAt: null,
     nextAttemptAt: null,
     tradingOrderId: null,
+    orderRecordId: null,
+    logicalOrderStatus: null,
+    logicalOrderError: null,
+    latestDispatchAttemptNumber: null,
+    latestDispatchClientOrderId: null,
+    latestDispatchStatus: null,
+    latestExchangeStatus: null,
+    latestExchangeErrorCode: null,
+    latestExchangeErrorMessage: null,
+    latestExchangeResponse: null,
+    submitAttemptCount: 0,
+    statusLookupCount: 0,
+    lastStatusLookupAt: null,
+    lastStatusLookupError: null,
     updatedAt: "2026-01-01T00:00:00Z",
     ...overrides,
   };
@@ -113,10 +127,10 @@ describe("live copy decisions", () => {
     ]);
     const activity = buildLiveCopyDecisionActivities([decision], new Map())[0];
     expect(activity.pills.map((pill) => pill.label)).not.toContain("order created");
-    expect(activity.stats.find((stat) => stat.label === "Pipeline")?.value).toBe("not created");
+    expect(activity.stats.find((stat) => stat.label === "Pipeline")?.value).toBe("pre-submit skip");
   });
 
-  it("shows retry scheduling and order creation only when a record exists", () => {
+  it("shows retry scheduling and accepted exchange execution separately", () => {
     const retry = copyDecision({
       outcome: "retryable",
       nextAttemptAt: "2026-01-01T00:01:00Z",
@@ -124,14 +138,45 @@ describe("live copy decisions", () => {
     const created = copyDecision({
       outcome: "order",
       tradingOrderId: "order-1",
+      orderRecordId: "order-1",
+      logicalOrderStatus: "accepted",
+      latestExchangeStatus: "accepted",
     });
 
     expect(liveCopyDecisionStatusPills(retry)).toEqual([
       { label: "retry scheduled", tone: "warning" },
     ]);
     expect(liveCopyDecisionStatusPills(created)).toEqual([
-      { label: "order created", tone: "positive" },
+      { label: "order recorded", tone: "neutral" },
+      { label: "accepted", tone: "positive" },
     ]);
+  });
+
+  it("shows a definitive exchange reject as a red retryable execution result", () => {
+    const decision = copyDecision({
+      outcome: "retryable",
+      orderRecordId: "order-1",
+      logicalOrderStatus: "rejected",
+      logicalOrderError: "exchange_ioc_no_match: Order could not immediately match.",
+      latestDispatchAttemptNumber: 1,
+      latestDispatchClientOrderId: "0x1234567890abcdef",
+      latestDispatchStatus: "completed",
+      latestExchangeStatus: "rejected",
+      latestExchangeErrorCode: "exchange_ioc_no_match",
+      latestExchangeErrorMessage: "Order could not immediately match.",
+      submitAttemptCount: 1,
+      nextAttemptAt: "2026-01-01T00:01:00Z",
+    });
+
+    const activity = buildLiveCopyDecisionActivities([decision], new Map())[0];
+    expect(activity.pills).toContainEqual({ label: "rejected", tone: "danger" });
+    expect(activity.stats.find((stat) => stat.label === "Pipeline")?.value).toBe(
+      "exchange rejected, retry scheduled",
+    );
+    expect(activity.stats.find((stat) => stat.label === "Exchange attempts")?.value).toBe("1");
+    expect(activity.stats.find((stat) => stat.label === "Exchange attempts")?.detail).toContain(
+      "CLOID",
+    );
   });
 
   it("shows stale no-order timing and recovery origin diagnostics", () => {

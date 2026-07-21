@@ -1761,6 +1761,7 @@ export function buildLiveCopyDecisionActivity(
 ): ExecutionActivityItem {
   const isExchange = isLiveExchangeSource(decision.sourceWallet);
   const statusPills = liveCopyDecisionStatusPills(decision);
+  const pipeline = liveCopyDecisionPipeline(decision);
   return {
     identity: {
       href: isExchange ? null : `/wallets/${decision.sourceWallet}`,
@@ -1791,17 +1792,40 @@ export function buildLiveCopyDecisionActivity(
       },
       {
         label: "Reason",
-        value: decision.reason ? reasonLabel(decision.reason) : "-",
-        tone: decision.outcome === "terminal_skip" ? "danger" : "neutral",
+        value: decision.latestExchangeErrorCode
+          ? reasonLabel(decision.latestExchangeErrorCode)
+          : decision.reason
+            ? reasonLabel(decision.reason)
+            : "-",
+        detail: decision.latestExchangeErrorMessage ?? decision.logicalOrderError ?? undefined,
+        tone: decision.latestExchangeErrorCode || decision.outcome === "terminal_skip"
+          ? "danger"
+          : "neutral",
       },
       {
-        label: "Attempts",
+        label: "Prerequisite retries",
         value: formatInteger(decision.attemptCount),
         detail: decision.nextAttemptAt
           ? `next ${formatShortDateTime(decision.nextAttemptAt)}`
           : decision.lastAttemptAt
             ? `last ${formatShortDateTime(decision.lastAttemptAt)}`
             : "not attempted",
+      },
+      {
+        label: "Exchange attempts",
+        value: formatInteger(decision.submitAttemptCount),
+        detail: [
+          decision.latestDispatchAttemptNumber
+            ? `attempt ${formatInteger(decision.latestDispatchAttemptNumber)}`
+            : "not submitted",
+          decision.latestDispatchClientOrderId
+            ? `CLOID ${shortIdentifier(decision.latestDispatchClientOrderId)}`
+            : null,
+          decision.statusLookupCount > 0
+            ? `status lookups ${formatInteger(decision.statusLookupCount)}`
+            : "no status lookup",
+        ].filter(Boolean).join(" | "),
+        tone: liveCopyDecisionExchangeTone(decision),
       },
       {
         label: "First observed",
@@ -1813,17 +1837,16 @@ export function buildLiveCopyDecisionActivity(
       },
       {
         label: "Pipeline",
-        value: decision.tradingOrderId ? "record created" : "not created",
-        detail: decision.tradingOrderId
-          ? `${shortIdentifier(decision.tradingOrderId)} | age ${formatDecisionAge(decision)} | queue ${formatQueueLag(decision)} | prep ${formatPreparationLag(decision)} | work ${formatProcessingLag(decision)}`
-          : `no downstream record | age ${formatDecisionAge(decision)} | queue ${formatQueueLag(decision)} | prep ${formatPreparationLag(decision)} | work ${formatProcessingLag(decision)}`,
-        tone: decision.tradingOrderId ? "positive" : decision.outcome === "terminal_skip" ? "danger" : "neutral",
+        value: pipeline.label,
+        detail: `${pipeline.detail} | age ${formatDecisionAge(decision)} | queue ${formatQueueLag(decision)} | prep ${formatPreparationLag(decision)} | work ${formatProcessingLag(decision)}`,
+        tone: pipeline.tone,
       },
     ],
   };
 }
 
 export function liveCopyDecisionStatusPills(decision: LiveCopyDecision): RowPill[] {
+  const orderRecordId = decision.orderRecordId ?? decision.tradingOrderId;
   const outcomePill: RowPill =
     decision.outcome === "pending"
       ? { label: "waiting/pending", tone: "warning" }
@@ -1835,14 +1858,88 @@ export function liveCopyDecisionStatusPills(decision: LiveCopyDecision): RowPill
             ? { label: "stale no-order", tone: "danger" }
           : decision.outcome === "terminal_skip"
             ? { label: "no-order blocked", tone: "danger" }
-            : decision.tradingOrderId
-              ? { label: "order created", tone: "positive" }
+            : orderRecordId
+              ? { label: "order recorded", tone: "neutral" }
               : { label: "record missing", tone: "danger" };
 
-  if (decision.outcome === "order" || !decision.tradingOrderId) {
+  const exchangeStatus = decision.latestExchangeStatus ?? decision.logicalOrderStatus;
+  if (!exchangeStatus) {
     return [outcomePill];
   }
-  return [outcomePill, { label: "order created", tone: "positive" }];
+  return [
+    outcomePill,
+    { label: reasonLabel(exchangeStatus), tone: liveOrderStatusTone(exchangeStatus) },
+  ];
+}
+
+function liveCopyDecisionExchangeTone(decision: LiveCopyDecision): Tone {
+  return liveOrderStatusTone(
+    decision.latestExchangeStatus
+      ?? decision.logicalOrderStatus
+      ?? decision.latestDispatchStatus
+      ?? "unknown",
+  );
+}
+
+function liveCopyDecisionPipeline(decision: LiveCopyDecision): {
+  label: string;
+  detail: string;
+  tone: Tone;
+} {
+  const logicalStatus = decision.logicalOrderStatus;
+  const exchangeStatus = decision.latestExchangeStatus;
+  const orderRecordId = decision.orderRecordId ?? decision.tradingOrderId;
+  if (!orderRecordId) {
+    return {
+      label: decision.outcome === "terminal_skip" ? "pre-submit skip" : "decision only",
+      detail: "no logical order record",
+      tone: decision.outcome === "terminal_skip" ? "danger" : "warning",
+    };
+  }
+  if (exchangeStatus === "filled" || logicalStatus === "filled") {
+    return {
+      label: "filled",
+      detail: `order ${shortIdentifier(orderRecordId)}`,
+      tone: "positive",
+    };
+  }
+  if (exchangeStatus === "accepted" || logicalStatus === "accepted") {
+    return {
+      label: "accepted",
+      detail: `order ${shortIdentifier(orderRecordId)}`,
+      tone: "positive",
+    };
+  }
+  if (exchangeStatus === "rejected" || logicalStatus === "rejected") {
+    return {
+      label: decision.nextAttemptAt ? "exchange rejected, retry scheduled" : "exchange rejected",
+      detail: decision.latestExchangeErrorMessage ?? decision.logicalOrderError ?? "exchange rejected",
+      tone: "danger",
+    };
+  }
+  if (logicalStatus === "failed" || logicalStatus === "canceled") {
+    return {
+      label: decision.submitAttemptCount === 0 ? "pre-submit skip" : logicalStatus,
+      detail: decision.logicalOrderError ?? `order ${shortIdentifier(orderRecordId)}`,
+      tone: "danger",
+    };
+  }
+  if (logicalStatus === "uncertain" || decision.latestDispatchStatus === "uncertain") {
+    return {
+      label: "status unknown",
+      detail: decision.lastStatusLookupError ?? "awaiting exchange status lookup",
+      tone: "warning",
+    };
+  }
+  return {
+    label: logicalStatus ?? "order recorded",
+    detail: `order ${shortIdentifier(orderRecordId)}${
+      decision.latestDispatchClientOrderId
+        ? ` | CLOID ${shortIdentifier(decision.latestDispatchClientOrderId)}`
+        : ""
+    }`,
+    tone: liveCopyDecisionExchangeTone(decision),
+  };
 }
 
 function liveCopyDecisionOriginLabel(origin: LiveCopyDecision["origin"]) {

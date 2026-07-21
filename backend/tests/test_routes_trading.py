@@ -203,7 +203,7 @@ async def test_trading_accounts_route_exposes_recent_live_copy_decisions_separat
         created_at=observed_at,
         updated_at=observed_at + timedelta(seconds=1),
     )
-    session = TradingAccountsRouteSession([[], [], [], [decision], []])
+    session = TradingAccountsRouteSession([[], [], [], [decision], [], []])
 
     async def empty_list_trading_accounts(*_args: Any, **_kwargs: Any) -> list[Any]:
         return []

@@ -878,7 +878,7 @@ submission, reconciliation, and margin-setting synchronization. A busy fence is
 a transient coordination result, not evidence of another visible fill. A fully
 validated entry that cannot submit because the fence is busy is persisted as
 `skip:live_execution_busy` with its complete pre-dispatch intent. Retry reuses
-the original client order ID (CLOID), size, notional, leverage, margin mode,
+the original logical order ID, size, notional, leverage, margin mode,
 limit price, and creation time without requiring a fresh source leverage read,
 then rechecks current price drift and the normal account, lifecycle,
 reconciliation, risk, and capacity gates. The original TTL is never renewed;
@@ -1037,8 +1037,9 @@ Generic live-ready tables sit beside the legacy paper tables:
   reconciliation.
 - `trading_orders`: idempotent order records keyed by deterministic client order
   id and source fill sequence.
-- `trading_order_dispatches`: one durable outbox row per live order, including
-  dispatch attempt and uncertain-delivery state.
+- `trading_order_dispatches`: an append-only exchange-attempt ledger per live
+  order, including an attempt-specific CLOID, exchange outcome, and
+  uncertain-delivery status lookup diagnostics.
 - `trading_close_all_operations`: resumable account-level close-all state.
 - `trading_close_all_items`: per-position close progress linked to the latest
   durable live order.
@@ -1249,13 +1250,22 @@ trading validation, and live copy sizing. `standard_per_dex` keeps separate
 default and HIP-3 perp capital, and copied entries size from the same perp dex
 as the copied market.
 
-Live order lifecycle is persisted in `trading_orders` and its delivery state is
-persisted in `trading_order_dispatches`. New orders are committed as `ready`
-with a `pending` outbox row. The dispatcher then commits `submitting` before it
-calls Hyperliquid. An exchange response moves the order to `accepted`,
-`rejected`, `filled`, `partially_filled`, or `canceled`. A known pre-submit
-configuration or market rejection can become `failed`. A timeout or other lost
-response becomes `uncertain` because the exchange may have accepted it.
+Live order lifecycle is persisted in `trading_orders` and exchange delivery is
+persisted as append-only rows in `trading_order_dispatches`. `TradingOrder`
+keeps the logical source-part idempotency key. Every exchange attempt derives a
+different deterministic 128-bit CLOID from that key and its attempt number.
+New orders are committed as `ready` with attempt 1 pending. The dispatcher then
+commits `submitting` before it calls Hyperliquid. An exchange response moves the
+order to `accepted`, `rejected`, `filled`, `partially_filled`, or `canceled`. A
+known pre-submit configuration or market rejection can become `failed`. A
+timeout or other lost response becomes `uncertain` because the exchange may
+have accepted it. Uncertain attempts are recovered only through status lookup
+with the same CLOID and are never resubmitted.
+
+Only definitive IOC no-match and open-interest-cap rejections may retry. Their
+source fill is reprocessed with fresh pricing and all lifecycle, risk, capacity,
+drift, and original-TTL checks. Retry never widens slippage and stops after
+three exchange submissions. All other exchange rejects are terminal.
 
 Live dispatch is serialized per account by a renewable Postgres job lock. The
 lock survives multiple short database transactions, so no business row lock or
@@ -1391,7 +1401,9 @@ rows per page in both modes.
 - Copy Decisions are a separate lifecycle diagnostic view, so stale no-order
   decisions are not placed in Recent Execution Activity. Each stale row shows
   its processing origin, source time, first observed time, ingest lag, total
-  source-to-decision age, and processing lag when available. These fields distinguish
+  source-to-decision age, and processing lag when available. Correlated orders
+  also expose logical status plus the latest attempt CLOID, exchange reject,
+  raw response, submit count, and status lookup diagnostics. These fields distinguish
   source ingest delay from time spent in the live-copy pipeline.
 Manual reconciliation can pass a bounded `lookback_minutes` query parameter to
 force a historical live fill backfill when the normal latest-fill overlap would

@@ -51,7 +51,7 @@ Current schema includes:
 - `trading_accounts`, generic paper and live account registry
 - `trading_positions`, live-ready account/source/coin position state
 - `trading_orders`, idempotent order intent and exchange status records
-- `trading_order_dispatches`, durable live order outbox and delivery state
+- `trading_order_dispatches`, append-only live exchange-attempt ledger and delivery state
 - `trading_close_all_operations`, resumable live close-all workflows
 - `trading_close_all_items`, per-position close-all progress and latest order
 - `trading_reconciliation_runs`, auditable live reconciliation results and
@@ -114,13 +114,19 @@ migration, then verify the revision before starting workers:
 
 Migration `e3b7f9d8c4a1` adds the unified durable live-copy work queue and
 explicit execution timing columns. Realtime ingestion and every recovery path
-now converge on one unique work item per source fill. This is the current head.
+now converge on one unique work item per source fill.
+
+Migration `f9a1c5d2e7b4` changes live order dispatches into an append-only
+attempt ledger. Existing rows are backfilled as attempt 1. A logical
+`TradingOrder.client_order_id` remains the source-part idempotency key, while
+each exchange submission uses its own deterministic 128-bit CLOID. This is the
+current head.
 
 ```bash
 python -m alembic current
 ```
 
-The command must show `e3b7f9d8c4a1`. Do not start the backend or workers until
+The command must show `f9a1c5d2e7b4`. Do not start the backend or workers until
 that revision is current.
 
 For an existing VPS deployment after pulling this phase:
@@ -540,8 +546,8 @@ Live activation and account lifecycle:
   submission, reconciliation, and margin-setting synchronization. A transient
   busy result does not imply that another visible fill exists. A fully validated
   entry that cannot submit because the fence is busy is persisted as
-  `skip:live_execution_busy` and retries with its original client order ID
-  (CLOID), size, notional, leverage, margin mode, limit price, and `created_at`.
+  `skip:live_execution_busy` and retries with its original logical order ID,
+  size, notional, leverage, margin mode, limit price, and `created_at`.
   This retry uses the persisted leverage without requiring a fresh source
   leverage read. It rechecks current price drift and the normal account,
   lifecycle, reconciliation, risk, and capacity gates. The original 30-second TTL is
@@ -781,7 +787,9 @@ Sizing policy:
   row semantics in both modes, so filled, skipped, rejected, and failed attempts
   are visible without mixing paper and live rows. Individual live reduce and
   close fills stay in Recent Execution Activity.
-- Live Copy Decisions remain a separate diagnostic list. Stale no-order rows
+- Live Copy Decisions remain a separate diagnostic list. Correlated orders show
+  logical status plus the latest exchange attempt CLOID, reject message, submit
+  attempts, and status lookups. Stale no-order rows
   show their realtime or recovery origin, source time, first observed time,
   ingest lag, total source-to-decision age, and processing lag when available. They never
   appear in Recent Execution Activity because no `TradingOrder` was created.
@@ -908,7 +916,7 @@ Sizing policy:
 - New entry finalization reruns intent freshness and risk checks under the
   per-account execution lock immediately before dispatch.
 - A lost exchange response is stored as `uncertain`, not `failed`. The trading
-  worker queries Hyperliquid by deterministic client order id before any retry
+  worker queries Hyperliquid by that attempt's deterministic CLOID before any retry
   decision, so a possibly accepted order is not submitted blindly a second time.
 - Live close-all first moves the account to `exit_only`, persists an operation
   and one item per exchange position, then submits each reduce-only close through
@@ -1121,7 +1129,7 @@ docker compose -f docker-compose.vps.yml run --rm backend python -m alembic curr
 docker compose -f docker-compose.vps.yml up -d
 ```
 
-The `current` command must report `e3b7f9d8c4a1` before the backend or workers
+The `current` command must report `f9a1c5d2e7b4` before the backend or workers
 start.
 
 The application images run as non-root users. Backend, frontend, and worker

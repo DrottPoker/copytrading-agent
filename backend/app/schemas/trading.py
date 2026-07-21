@@ -1,6 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import Field, field_validator
@@ -190,6 +190,20 @@ class LiveCopyDecisionRead(CamelModel):
     last_attempt_at: datetime | None = None
     next_attempt_at: datetime | None = None
     trading_order_id: UUID | None = None
+    order_record_id: UUID | None = None
+    logical_order_status: str | None = None
+    logical_order_error: str | None = None
+    latest_dispatch_attempt_number: int | None = None
+    latest_dispatch_client_order_id: str | None = None
+    latest_dispatch_status: str | None = None
+    latest_exchange_status: str | None = None
+    latest_exchange_error_code: str | None = None
+    latest_exchange_error_message: str | None = None
+    latest_exchange_response: dict[str, Any] | None = None
+    submit_attempt_count: int = 0
+    status_lookup_count: int = 0
+    last_status_lookup_at: datetime | None = None
+    last_status_lookup_error: str | None = None
     updated_at: datetime
 
 

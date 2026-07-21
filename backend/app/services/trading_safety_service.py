@@ -56,16 +56,17 @@ async def cancel_unsent_live_entries(
         return 0
 
     now = datetime.now(UTC)
-    dispatches = {
-        dispatch.order_id: dispatch
-        for dispatch in (
-            await session.scalars(
-                select(TradingOrderDispatch)
-                .where(TradingOrderDispatch.order_id.in_([order.id for order in orders]))
-                .with_for_update()
-            )
-        ).all()
-    }
+    dispatches: dict[object, TradingOrderDispatch] = {}
+    for dispatch in (
+        await session.scalars(
+            select(TradingOrderDispatch)
+            .where(TradingOrderDispatch.order_id.in_([order.id for order in orders]))
+            .with_for_update()
+        )
+    ).all():
+        previous = dispatches.get(dispatch.order_id)
+        if previous is None or dispatch.attempt_number > previous.attempt_number:
+            dispatches[dispatch.order_id] = dispatch
     for order in orders:
         order.status = "canceled"
         order.error = reason

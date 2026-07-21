@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -50,6 +50,7 @@ from app.services.live_copy_state_service import (
 )
 from app.services.live_copy_work_service import enqueue_live_copy_work_for_wallet_fills
 from app.services.live_execution_state import trade_intent_from_order
+from app.services.live_order_reject_policy import live_copy_retry_delay_seconds
 from app.services.live_trading_service import (
     LIVE_CAPITAL_MODE_UNIFIED,
     LIVE_EXCHANGE_SOURCE,
@@ -519,6 +520,7 @@ async def process_live_copy_fills(
     skip_reasons: dict[str, int] = {}
     touched_accounts: dict[str, TradingAccount] = {}
     deferred_reasons: set[str] = set()
+    deferred_retry_base_seconds = 0
     blocked_market_lanes: set[tuple[str, str]] = set()
     live_client = trading_client or HyperliquidLiveTradingClient(settings=resolved_settings)
     source_lifecycle_states = {
@@ -792,6 +794,10 @@ async def process_live_copy_fills(
                             session,
                             fill_state=fill_state,
                             reason=exc.reason,
+                            base_seconds=max(
+                                live_copy_retry_delay_seconds(exc.reason),
+                                1,
+                            ),
                         )
                         deferred_reasons.add(exc.reason)
                         account_fill_deferred = True
@@ -865,6 +871,10 @@ async def process_live_copy_fills(
                             session,
                             fill_state=fill_state,
                             reason=exc.reason,
+                            base_seconds=max(
+                                live_copy_retry_delay_seconds(exc.reason),
+                                1,
+                            ),
                         )
                         deferred_reasons.add(exc.reason)
                         account_fill_deferred = True
@@ -875,7 +885,12 @@ async def process_live_copy_fills(
                     fill_state=fill_state,
                 )
                 if not disposition_is_durable:
-                    deferred_reasons.add(fill_state.reason or "live_copy_decision_deferred")
+                    deferred_reason = fill_state.reason or "live_copy_decision_deferred"
+                    deferred_reasons.add(deferred_reason)
+                    deferred_retry_base_seconds = max(
+                        deferred_retry_base_seconds,
+                        live_copy_retry_delay_seconds(deferred_reason),
+                    )
                     account_fill_deferred = True
                     continue
 
@@ -912,9 +927,14 @@ async def process_live_copy_fills(
     await session.commit()
     if deferred_reasons:
         reasons = ", ".join(sorted(deferred_reasons))
+        deferred_retry_base_seconds = max(
+            deferred_retry_base_seconds,
+            *(live_copy_retry_delay_seconds(reason) for reason in deferred_reasons),
+        )
         raise LiveCopyProcessingDeferred(
             "live_copy_parts_deferred",
             f"Live copy processing deferred: {reasons}",
+            retry_base_seconds=deferred_retry_base_seconds or None,
         )
     return PaperCopyBatchResult(
         processed_fills=processed,
@@ -1822,10 +1842,15 @@ async def finalize_live_copy_fill_disposition(
         is_retryable_live_order_submit_failure(order)
         and order.error not in LIVE_COPY_TERMINAL_SKIP_ERRORS
     ):
+        retry_reason = order.error or "live_order_retryable_failure"
         await mark_live_copy_fill_retryable(
             session,
             fill_state=fill_state,
-            reason=order.error or "live_order_retryable_failure",
+            reason=retry_reason,
+            base_seconds=max(
+                live_copy_retry_delay_seconds(retry_reason),
+                1,
+            ),
         )
         return False
     if order.order_type == "skip":
@@ -2150,15 +2175,23 @@ def complete_persisted_live_open_intent(
     action: str,
     side: str,
 ) -> TradeIntent | None:
+    reusable_busy_skip = (
+        order.error == "skip:live_execution_busy"
+        and order.status == "failed"
+        and order.order_type == "skip"
+    )
+    reusable_exchange_reject = (
+        is_retryable_live_order_submit_failure(order)
+        and order.status == "rejected"
+        and order.order_type == "ioc"
+    )
     if (
         order.account_key != account_key
         or order.account_type != "live"
         or order.source_wallet.lower() != source_wallet.lower()
         or order.source_fill_id != source_fill_id
         or order.sequence_index != sequence_index
-        or order.error != "skip:live_execution_busy"
-        or order.status != "failed"
-        or order.order_type != "skip"
+        or not (reusable_busy_skip or reusable_exchange_reject)
         or order.exchange_order_id
         or order.filled_size > ZERO
         or order.filled_notional_usd > ZERO
@@ -2327,6 +2360,16 @@ async def apply_live_open_part(
                 margin_usd=intent.margin_usd,
                 requested_notional_usd=intent.notional_usd,
                 requested_size=intent.size,
+            )
+        if persisted_order.status == "rejected":
+            intent = replace(
+                intent,
+                size=intent.notional_usd / execution_context.execution_price,
+                limit_price=execution_context.execution_price,
+                source_price=execution_context.source_price,
+                observed_price=execution_context.observed_price,
+                price_drift_bps=execution_context.price_drift_bps,
+                price_source=execution_context.price_source,
             )
         return await submit_live_copy_intent(
             session,

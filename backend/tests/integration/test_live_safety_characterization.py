@@ -15,6 +15,8 @@ from app.db.models import (
     TradingPosition,
     TradingReconciliationRun,
 )
+from app.integrations.hyperliquid_live_client import LiveOrderResult
+from app.services.live_execution_state import build_dispatch_client_order_id
 from app.services.live_trading_service import (
     LIVE_EXCHANGE_SOURCE,
     LiveOrderSubmitError,
@@ -30,6 +32,7 @@ from app.services.live_trading_service import (
     submit_live_trade_intent,
     update_live_orders_from_reconciled_fills,
 )
+from app.services.trading_core import TradeIntent
 
 from ..fakes.live_exchange import FaultInjectingTradingClient, SimulatedProcessCrash
 
@@ -256,13 +259,94 @@ async def test_uncertain_dispatch_is_recovered_by_cloid_before_any_retry(
         order = await session.scalar(select(TradingOrder))
         dispatch = await session.scalar(select(TradingOrderDispatch))
 
-    assert info_client.requested_oids == [intent.client_order_id]
+    assert info_client.requested_oids == [
+        build_dispatch_client_order_id(intent.client_order_id, attempt_number=1)
+    ]
     assert result.recovered == 1
     assert result.dispatched == 0
     assert order is not None
     assert order.status == "filled"
     assert dispatch is not None
     assert dispatch.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_definitive_ioc_reject_uses_a_new_cloid_for_the_bounded_retry(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    account = live_account()
+    intent = reduce_only_intent(account)
+
+    class RejectThenFillClient:
+        def __init__(self) -> None:
+            self.submitted_client_order_ids: list[str] = []
+
+        def validate_account_order(self, *, account: TradingAccount, intent: TradeIntent) -> None:
+            return None
+
+        async def submit_order(
+            self,
+            *,
+            account: TradingAccount,
+            intent: TradeIntent,
+        ) -> LiveOrderResult:
+            client_order_id = str(intent.client_order_id)
+            self.submitted_client_order_ids.append(client_order_id)
+            if len(self.submitted_client_order_ids) == 1:
+                return LiveOrderResult(
+                    status="rejected",
+                    client_order_id=client_order_id,
+                    exchange_order_id=None,
+                    filled_size=None,
+                    average_fill_price=None,
+                    raw_response={"status": "ok", "attempt": 1},
+                    error="Order could not immediately match against any resting orders.",
+                )
+            return LiveOrderResult(
+                status="filled",
+                client_order_id=client_order_id,
+                exchange_order_id="456",
+                filled_size=intent.size,
+                average_fill_price=intent.limit_price,
+                raw_response={"status": "ok", "attempt": 2},
+            )
+
+    client = RejectThenFillClient()
+    async with integration_sessionmaker() as session:
+        session.add(account)
+        await session.commit()
+        first = await submit_live_trade_intent(
+            session,
+            account=account,
+            intent=intent,
+            settings=live_settings(),
+            client=client,  # type: ignore[arg-type]
+        )
+        assert first.order.status == "rejected"
+
+        second = await submit_live_trade_intent(
+            session,
+            account=account,
+            intent=intent,
+            settings=live_settings(),
+            client=client,  # type: ignore[arg-type]
+        )
+        dispatches = list(
+            (
+                await session.scalars(
+                    select(TradingOrderDispatch).order_by(
+                        TradingOrderDispatch.attempt_number.asc()
+                    )
+                )
+            ).all()
+        )
+
+    assert second.order.status == "filled"
+    assert [dispatch.attempt_number for dispatch in dispatches] == [1, 2]
+    assert client.submitted_client_order_ids == [
+        build_dispatch_client_order_id(intent.client_order_id, attempt_number=1),
+        build_dispatch_client_order_id(intent.client_order_id, attempt_number=2),
+    ]
 
 
 @pytest.mark.asyncio
@@ -306,11 +390,26 @@ async def test_duplicate_and_partial_exchange_fills_are_idempotent(
         "fee": "0.01",
         "tid": 99,
         "oid": 123,
-        "cloid": intent.client_order_id,
+        "cloid": build_dispatch_client_order_id(intent.client_order_id, attempt_number=1),
     }
 
     async with integration_sessionmaker() as session:
         session.add_all([account, order])
+        await session.flush()
+        session.add(
+            TradingOrderDispatch(
+                order_id=order.id,
+                account_key=account.key,
+                client_order_id=build_dispatch_client_order_id(
+                    intent.client_order_id,
+                    attempt_number=1,
+                ),
+                attempt_number=1,
+                status="completed",
+                attempt_count=1,
+                available_at=datetime.now(UTC),
+            )
+        )
         await session.commit()
         inserted_first = await reconcile_live_fills(session, account=account, fills=[fill])
         inserted_second = await reconcile_live_fills(session, account=account, fills=[fill])

@@ -38,6 +38,10 @@ from app.schemas.trading import (
     TradingPositionRead,
     TradingSourceMetadataRead,
 )
+from app.services.live_copy_decision_service import (
+    live_copy_decision_identity,
+    load_live_copy_decision_execution_diagnostics,
+)
 from app.services.live_trading_service import (
     LIVE_EXCHANGE_SOURCE,
     LiveTradingServiceError,
@@ -659,6 +663,16 @@ async def list_trading_accounts_route(
     recent_fills = list(fill_result.all())
     recent_orders = list(order_result.all())
     recent_live_copy_decisions = list(decision_result.all())
+    decision_diagnostics = await load_live_copy_decision_execution_diagnostics(
+        session,
+        decision_identities={
+            live_copy_decision_identity(decision) for decision in recent_live_copy_decisions
+        },
+    )
+    decision_diagnostics_by_state_id = {
+        decision.id: decision_diagnostics.get(live_copy_decision_identity(decision))
+        for decision in recent_live_copy_decisions
+    }
     historical_source_result = await session.scalars(
         select(TradingFill.source_wallet).where(TradingFill.account_type == "live").distinct()
     )
@@ -722,6 +736,82 @@ async def list_trading_accounts_route(
                 last_attempt_at=decision.last_attempt_at,
                 next_attempt_at=decision.next_attempt_at,
                 trading_order_id=decision.trading_order_id,
+                order_record_id=(
+                    decision_diagnostics_by_state_id[decision.id].order_record_id
+                    if decision_diagnostics_by_state_id[decision.id] is not None
+                    else None
+                ),
+                logical_order_status=(
+                    decision_diagnostics_by_state_id[decision.id].logical_order_status
+                    if decision_diagnostics_by_state_id[decision.id] is not None
+                    else None
+                ),
+                logical_order_error=(
+                    decision_diagnostics_by_state_id[decision.id].logical_order_error
+                    if decision_diagnostics_by_state_id[decision.id] is not None
+                    else None
+                ),
+                latest_dispatch_attempt_number=(
+                    decision_diagnostics_by_state_id[
+                        decision.id
+                    ].latest_dispatch_attempt_number
+                    if decision_diagnostics_by_state_id[decision.id] is not None
+                    else None
+                ),
+                latest_dispatch_client_order_id=(
+                    decision_diagnostics_by_state_id[
+                        decision.id
+                    ].latest_dispatch_client_order_id
+                    if decision_diagnostics_by_state_id[decision.id] is not None
+                    else None
+                ),
+                latest_dispatch_status=(
+                    decision_diagnostics_by_state_id[decision.id].latest_dispatch_status
+                    if decision_diagnostics_by_state_id[decision.id] is not None
+                    else None
+                ),
+                latest_exchange_status=(
+                    decision_diagnostics_by_state_id[decision.id].latest_exchange_status
+                    if decision_diagnostics_by_state_id[decision.id] is not None
+                    else None
+                ),
+                latest_exchange_error_code=(
+                    decision_diagnostics_by_state_id[decision.id].latest_exchange_error_code
+                    if decision_diagnostics_by_state_id[decision.id] is not None
+                    else None
+                ),
+                latest_exchange_error_message=(
+                    decision_diagnostics_by_state_id[
+                        decision.id
+                    ].latest_exchange_error_message
+                    if decision_diagnostics_by_state_id[decision.id] is not None
+                    else None
+                ),
+                latest_exchange_response=(
+                    decision_diagnostics_by_state_id[decision.id].latest_exchange_response
+                    if decision_diagnostics_by_state_id[decision.id] is not None
+                    else None
+                ),
+                submit_attempt_count=(
+                    decision_diagnostics_by_state_id[decision.id].submit_attempt_count
+                    if decision_diagnostics_by_state_id[decision.id] is not None
+                    else 0
+                ),
+                status_lookup_count=(
+                    decision_diagnostics_by_state_id[decision.id].status_lookup_count
+                    if decision_diagnostics_by_state_id[decision.id] is not None
+                    else 0
+                ),
+                last_status_lookup_at=(
+                    decision_diagnostics_by_state_id[decision.id].last_status_lookup_at
+                    if decision_diagnostics_by_state_id[decision.id] is not None
+                    else None
+                ),
+                last_status_lookup_error=(
+                    decision_diagnostics_by_state_id[decision.id].last_status_lookup_error
+                    if decision_diagnostics_by_state_id[decision.id] is not None
+                    else None
+                ),
                 updated_at=decision.updated_at,
             )
             for decision in recent_live_copy_decisions

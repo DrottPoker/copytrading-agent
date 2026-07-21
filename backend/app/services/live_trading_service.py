@@ -1,5 +1,5 @@
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from hashlib import blake2s
@@ -53,16 +53,25 @@ from app.services.live_copy_state_service import (
     synchronize_live_copy_account_source_activity,
 )
 from app.services.live_execution_state import (
+    MAX_LIVE_ORDER_SUBMIT_ATTEMPTS,
     RECONCILABLE_ORDER_STATUSES,
     RECOVERABLE_ORDER_STATUSES,
     TERMINAL_ORDER_STATUSES,
+    create_next_live_order_dispatch,
     load_live_order_dispatch,
     mark_live_order_dispatch_completed,
     mark_live_order_dispatching,
     mark_live_order_failed,
     mark_live_order_uncertain,
     prepare_live_order_dispatch,
+    record_live_order_exchange_result,
+    record_live_order_status_lookup,
     trade_intent_from_order,
+)
+from app.services.live_order_reject_policy import (
+    OPEN_INTEREST_CAP,
+    OPEN_INTEREST_CAP_COOLDOWN_REASON,
+    classify_live_order_reject,
 )
 from app.services.source_fill_ordering import source_fill_order_components
 from app.services.trading_core import (
@@ -2346,6 +2355,11 @@ async def submit_live_trade_intent_under_account_lock(
                     intent=intent,
                 )
             if is_live_copy_entry and will_dispatch:
+                await validate_live_copy_exchange_market_cooldown(
+                    session,
+                    intent=intent,
+                )
+            if is_live_copy_entry and will_dispatch:
                 await validate_live_copy_entry_capacity_gate(
                     session,
                     account=account,
@@ -2359,11 +2373,13 @@ async def submit_live_trade_intent_under_account_lock(
             )
             if order.status in TERMINAL_ORDER_STATUSES:
                 if is_retryable_live_order_submit_failure(order):
+                    if dispatch.attempt_count > 0 or dispatch.status != "pending":
+                        dispatch = await create_next_live_order_dispatch(
+                            session,
+                            order=order,
+                        )
                     reset_live_order_for_retry(order, intent=intent)
                     order.status = "ready"
-                    dispatch.status = "pending"
-                    dispatch.completed_at = None
-                    dispatch.last_error = None
                     await session.commit()
                 else:
                     dispatch.status = "completed"
@@ -2393,8 +2409,9 @@ async def submit_live_trade_intent_under_account_lock(
                 order=order,
                 dispatch=dispatch,
             )
+            exchange_intent = replace(intent, client_order_id=dispatch.client_order_id)
             try:
-                result = await live_client.submit_order(account=account, intent=intent)
+                result = await live_client.submit_order(account=account, intent=exchange_intent)
             except (
                 HyperliquidLiveOrderRejectedError,
                 HyperliquidLiveTradingConfigurationError,
@@ -2415,7 +2432,12 @@ async def submit_live_trade_intent_under_account_lock(
                 )
                 raise LiveOrderSubmitError(str(exc) or exc.__class__.__name__) from exc
 
-            apply_live_order_result(order, result, updated_at=datetime.now(UTC))
+            apply_live_order_result(
+                order,
+                result,
+                dispatch=dispatch,
+                updated_at=datetime.now(UTC),
+            )
             await mark_live_order_dispatch_completed(session, dispatch=dispatch)
             return LiveOrderLifecycleResult(
                 order=order,
@@ -2427,6 +2449,33 @@ async def submit_live_trade_intent_under_account_lock(
             "Another live order is already being dispatched for this account.",
             status_code=409,
         ) from exc
+
+
+async def validate_live_copy_exchange_market_cooldown(
+    session: AsyncSession,
+    *,
+    intent: TradeIntent,
+    now: datetime | None = None,
+) -> None:
+    """Defer copied entries while a recent market-wide OI-cap reject cools down."""
+
+    checked_at = now or datetime.now(UTC)
+    recent_reject = await session.scalar(
+        select(TradingOrder.id)
+        .where(
+            TradingOrder.account_type == "live",
+            TradingOrder.coin == intent.coin,
+            TradingOrder.status == "rejected",
+            TradingOrder.error.startswith(f"{OPEN_INTEREST_CAP.code}:"),
+            TradingOrder.updated_at
+            >= checked_at - timedelta(seconds=OPEN_INTEREST_CAP.retry_delay_seconds),
+            TradingOrder.client_order_id != intent.client_order_id,
+        )
+        .order_by(TradingOrder.updated_at.desc())
+        .limit(1)
+    )
+    if recent_reject is not None:
+        raise LiveCopyEntryLifecycleDeferred(OPEN_INTEREST_CAP_COOLDOWN_REASON)
 
 
 async def sync_live_position_margin_setting(
@@ -2603,11 +2652,14 @@ async def ensure_live_entry_intent_is_fresh(
     ):
         return
 
-    if order is not None and order.status in {"planned", "ready", "failed", "canceled"}:
+    if order is not None and (
+        order.status in {"planned", "ready", "failed", "canceled"}
+        or (order.status == "rejected" and is_retryable_live_order_submit_failure(order))
+    ):
         dispatch = await load_live_order_dispatch(session, order_id=order.id)
         order.status = "canceled"
         order.error = "Live entry intent expired before exchange submission."
-        if dispatch is not None:
+        if dispatch is not None and dispatch.status in {"pending", "dispatching", "uncertain"}:
             dispatch.status = "canceled"
             dispatch.completed_at = datetime.now(UTC)
             dispatch.last_error = order.error
@@ -2727,12 +2779,13 @@ async def recover_live_order_dispatches(
             try:
                 status_response = await client.order_status(
                     user=live_account_user_address(account, settings=settings),
-                    oid=order.client_order_id,
+                    oid=dispatch.client_order_id,
                 )
             except Exception as exc:
                 refreshed_order = await session.get(TradingOrder, order.id)
                 refreshed_dispatch = await session.get(TradingOrderDispatch, dispatch.id)
                 if refreshed_order is not None and refreshed_dispatch is not None:
+                    record_live_order_status_lookup(refreshed_dispatch, error=exc)
                     await mark_live_order_uncertain(
                         session,
                         order=refreshed_order,
@@ -2752,11 +2805,25 @@ async def recover_live_order_dispatches(
                 apply_order_status_response(refreshed_order, status_response)
                 refreshed_dispatch.status = "completed"
                 refreshed_dispatch.completed_at = datetime.now(UTC)
-                refreshed_dispatch.last_error = None
+                record_live_order_status_lookup(
+                    refreshed_dispatch,
+                    response=status_response,
+                )
+                record_live_order_exchange_result(
+                    refreshed_dispatch,
+                    exchange_status=mapped_exchange_order_status(status_response) or "unknown",
+                    error_code=None,
+                    error_message=None,
+                    raw_response=status_response,
+                )
                 await session.commit()
                 recovered += 1
                 continue
 
+            record_live_order_status_lookup(
+                refreshed_dispatch,
+                response=status_response,
+            )
             await mark_live_order_uncertain(
                 session,
                 order=refreshed_order,
@@ -2937,9 +3004,17 @@ async def live_account_recent_order_count(
 
 
 def is_retryable_live_order_submit_failure(order: TradingOrder) -> bool:
-    if order.status != "failed":
-        return False
     if order.exchange_order_id or order.filled_size > ZERO or order.filled_notional_usd > ZERO:
+        return False
+    if order.status == "rejected":
+        payload = order.raw_payload if isinstance(order.raw_payload, dict) else {}
+        exchange_reject = payload.get("exchangeReject")
+        return bool(
+            isinstance(exchange_reject, dict)
+            and exchange_reject.get("transient") is True
+            and exchange_reject.get("retryExhausted") is not True
+        )
+    if order.status != "failed":
         return False
     if is_retryable_live_copy_skip(order):
         return True
@@ -2981,10 +3056,12 @@ def is_retryable_live_copy_skip(order: TradingOrder) -> bool:
 
 
 def reset_live_order_for_retry(order: TradingOrder, *, intent: TradeIntent) -> None:
+    preserve_original_submit_at = order.status == "rejected"
     retry_reason = live_order_retry_reason(order)
     order.status = "planned"
     order.error = None
-    order.submitted_at = None
+    if not preserve_original_submit_at:
+        order.submitted_at = None
     order.coin = intent.coin
     order.action = intent.action
     order.side = intent.side
@@ -3011,6 +3088,10 @@ def reset_live_order_for_retry(order: TradingOrder, *, intent: TradeIntent) -> N
 def live_order_retry_reason(order: TradingOrder) -> str:
     if is_retryable_live_copy_skip(order):
         return str(order.error or "retryable_live_copy_skip").removeprefix("skip:")
+    payload = order.raw_payload if isinstance(order.raw_payload, dict) else {}
+    exchange_reject = payload.get("exchangeReject")
+    if isinstance(exchange_reject, dict) and exchange_reject.get("code"):
+        return str(exchange_reject["code"])
     return "market_metadata_available_after_previous_submit_failure"
 
 
@@ -3018,6 +3099,7 @@ def apply_live_order_result(
     order: TradingOrder,
     result: LiveOrderResult,
     *,
+    dispatch: TradingOrderDispatch | None = None,
     updated_at: datetime,
 ) -> None:
     order.status = result.status
@@ -3027,6 +3109,41 @@ def apply_live_order_result(
         order.raw_payload,
         {"exchangeResponse": result.raw_response},
     )
+    if result.status == "rejected":
+        classification = classify_live_order_reject(result.error)
+        retry_exhausted = (
+            dispatch is not None
+            and dispatch.attempt_number >= MAX_LIVE_ORDER_SUBMIT_ATTEMPTS
+        )
+        order.raw_payload = merge_raw_payload(
+            order.raw_payload,
+            {
+                "exchangeReject": {
+                    "code": classification.code,
+                    "message": result.error,
+                    "transient": classification.transient,
+                    "retryExhausted": retry_exhausted,
+                    "retryDelaySeconds": classification.retry_delay_seconds,
+                }
+            },
+        )
+        order.error = f"{classification.code}: {result.error or 'Order rejected.'}"
+        if dispatch is not None:
+            record_live_order_exchange_result(
+                dispatch,
+                exchange_status=result.status,
+                error_code=classification.code,
+                error_message=result.error,
+                raw_response=result.raw_response,
+            )
+    elif dispatch is not None:
+        record_live_order_exchange_result(
+            dispatch,
+            exchange_status=result.status,
+            error_code=None,
+            error_message=result.error,
+            raw_response=result.raw_response,
+        )
     if result.submitted_size is not None:
         order.requested_size = result.submitted_size
     if result.submitted_limit_price is not None:
@@ -3529,14 +3646,29 @@ async def reconcile_live_order_statuses(
     updated = 0
     unresolved_order_ids: list[UUID] = []
     errors: dict[str, str] = {}
+    lookup_started_at = datetime.now(UTC)
     for order in orders:
-        lookup_id: int | str | None = parse_exchange_order_id(order.exchange_order_id)
-        if lookup_id is None:
-            lookup_id = order.client_order_id
+        dispatch = await load_live_order_dispatch(session, order_id=order.id)
+        if dispatch is None:
+            unresolved_order_ids.append(order.id)
+            errors[order.client_order_id] = "Live order dispatch attempt is missing."
+            continue
+        if (
+            dispatch.status == "uncertain"
+            and dispatch.last_status_lookup_at is not None
+            and dispatch.last_status_lookup_at >= lookup_started_at - timedelta(seconds=30)
+        ):
+            unresolved_order_ids.append(order.id)
+            errors[order.client_order_id] = "Exchange status was already checked for this attempt."
+            continue
         try:
-            status_response = await client.order_status(user=user_address, oid=lookup_id)
+            status_response = await client.order_status(
+                user=user_address,
+                oid=dispatch.client_order_id,
+            )
         except Exception as exc:
             message = str(exc) or exc.__class__.__name__
+            record_live_order_status_lookup(dispatch, error=exc)
             order.raw_payload = merge_raw_payload(
                 order.raw_payload,
                 {"orderStatusError": {"message": message, "type": exc.__class__.__name__}},
@@ -3546,14 +3678,20 @@ async def reconcile_live_order_statuses(
             updated += 1
             continue
         mapped_status = mapped_exchange_order_status(status_response)
+        record_live_order_status_lookup(dispatch, response=status_response)
         changed = apply_order_status_response(order, status_response)
         if mapped_status is not None:
-            dispatch = await load_live_order_dispatch(session, order_id=order.id)
-            if dispatch is not None and dispatch.status != "completed":
+            if dispatch.status != "completed":
                 dispatch.status = "completed"
                 dispatch.completed_at = datetime.now(UTC)
-                dispatch.last_error = None
                 changed = True
+            record_live_order_exchange_result(
+                dispatch,
+                exchange_status=mapped_status,
+                error_code=None,
+                error_message=None,
+                raw_response=status_response,
+            )
         else:
             unresolved_order_ids.append(order.id)
             errors[order.client_order_id] = "Exchange order status is missing or unrecognized."
@@ -3790,7 +3928,10 @@ async def reconcile_live_fills(
 ) -> int:
     orders = await load_live_orders_for_fill_matching(session, account_key=account.key)
     orders_by_oid = {order.exchange_order_id: order for order in orders if order.exchange_order_id}
-    orders_by_cloid = {order.client_order_id: order for order in orders}
+    orders_by_cloid = await load_live_orders_by_attempt_cloid(
+        session,
+        account_key=account.key,
+    )
     inserted = 0
     for fill in fills:
         parsed = parse_live_fill(fill, account_key=account.key)
@@ -3838,6 +3979,28 @@ async def load_live_orders_for_fill_matching(
         )
     )
     return list(result.all())
+
+
+async def load_live_orders_by_attempt_cloid(
+    session: AsyncSession,
+    *,
+    account_key: str,
+) -> dict[str, TradingOrder]:
+    """Resolve exchange fill CLOIDs through dispatch attempts, never logical IDs."""
+
+    result = await session.execute(
+        select(TradingOrderDispatch.client_order_id, TradingOrder)
+        .join(TradingOrder, TradingOrder.id == TradingOrderDispatch.order_id)
+        .where(
+            TradingOrder.account_key == account_key,
+            TradingOrder.account_type == "live",
+        )
+    )
+    return {
+        client_order_id: order
+        for client_order_id, order in result.all()
+        if client_order_id
+    }
 
 
 async def load_live_exchange_positions(

@@ -1210,7 +1210,23 @@ class TradingOrderDispatch(Base, TimestampMixin, UpdatedAtMixin):
             "status in ('pending', 'dispatching', 'uncertain', 'completed', 'canceled')",
             name="ck_trading_order_dispatches_status",
         ),
-        UniqueConstraint("order_id", name="ux_trading_order_dispatches_order"),
+        CheckConstraint(
+            "attempt_number > 0",
+            name="ck_trading_order_dispatches_attempt_number",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0",
+            name="ck_trading_order_dispatches_attempt_count",
+        ),
+        CheckConstraint(
+            "status_lookup_count >= 0",
+            name="ck_trading_order_dispatches_status_lookup_count",
+        ),
+        UniqueConstraint(
+            "order_id",
+            "attempt_number",
+            name="ux_trading_order_dispatches_order_attempt",
+        ),
         UniqueConstraint(
             "client_order_id",
             name="ux_trading_order_dispatches_client_order_id",
@@ -1237,6 +1253,11 @@ class TradingOrderDispatch(Base, TimestampMixin, UpdatedAtMixin):
     )
     account_key: Mapped[str] = mapped_column(Text, nullable=False)
     client_order_id: Mapped[str] = mapped_column(Text, nullable=False)
+    attempt_number: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=text("1"),
+    )
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     available_at: Mapped[datetime] = mapped_column(
@@ -1245,6 +1266,18 @@ class TradingOrderDispatch(Base, TimestampMixin, UpdatedAtMixin):
     dispatch_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error: Mapped[str | None] = mapped_column(Text)
+    exchange_status: Mapped[str | None] = mapped_column(Text)
+    exchange_error_code: Mapped[str | None] = mapped_column(Text)
+    exchange_error_message: Mapped[str | None] = mapped_column(Text)
+    exchange_response: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    status_lookup_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=text("0"),
+    )
+    last_status_lookup_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_status_lookup_error: Mapped[str | None] = mapped_column(Text)
+    last_status_response: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
 
 class TradingCloseAllOperation(Base, TimestampMixin, UpdatedAtMixin):

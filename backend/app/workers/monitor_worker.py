@@ -1909,7 +1909,10 @@ async def run_live_copy_work_loop(
                     owner=owner,
                     attempt_count=claimed.attempt_count,
                     error=exc,
-                    retry_base_seconds=retry_base_seconds,
+                    retry_base_seconds=max(
+                        retry_base_seconds,
+                        exc.retry_base_seconds or 0,
+                    ),
                 )
                 logger.info(
                     "live-copy work deferred and was scheduled for durable retry "

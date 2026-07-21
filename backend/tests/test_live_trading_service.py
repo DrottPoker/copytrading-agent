@@ -18,6 +18,7 @@ from app.db.models import (
 )
 from app.integrations.hyperliquid_live_client import LiveOrderResult
 from app.services import live_trading_service
+from app.services.live_execution_state import build_dispatch_client_order_id
 from app.services.live_trading_service import (
     LivePerpState,
     apply_live_order_result,
@@ -80,7 +81,8 @@ async def test_reconciliation_keeps_unrecognized_exchange_status_unresolved(
         id=uuid4(),
         order_id=order.id,
         account_key=order.account_key,
-        client_order_id=order.client_order_id,
+        client_order_id=build_dispatch_client_order_id(order.client_order_id, attempt_number=1),
+        attempt_number=1,
         status="uncertain",
         attempt_count=1,
         available_at=datetime.now(UTC),
@@ -100,7 +102,7 @@ async def test_reconciliation_keeps_unrecognized_exchange_status_unresolved(
     class Client:
         async def order_status(self, *, user: str, oid: int | str) -> dict[str, object]:
             assert user == "0xuser"
-            assert oid == order.client_order_id
+            assert oid == dispatch.client_order_id
             return {
                 "status": "order",
                 "order": {
@@ -197,6 +199,51 @@ def test_apply_live_order_result_updates_submitted_wire_values() -> None:
     assert order.filled_size == Decimal("0.16")
     assert order.filled_notional_usd == Decimal("10.2288")
     assert order.status == "filled"
+
+
+def test_apply_live_order_result_classifies_retryable_ioc_rejection() -> None:
+    order = live_order(status="submitting")
+    dispatch = TradingOrderDispatch(
+        id=uuid4(),
+        order_id=uuid4(),
+        account_key=order.account_key,
+        client_order_id=build_dispatch_client_order_id(order.client_order_id, attempt_number=1),
+        attempt_number=1,
+        status="dispatching",
+        attempt_count=1,
+        available_at=datetime.now(UTC),
+    )
+
+    apply_live_order_result(
+        order,
+        LiveOrderResult(
+            status="rejected",
+            client_order_id=dispatch.client_order_id,
+            exchange_order_id=None,
+            filled_size=None,
+            average_fill_price=None,
+            raw_response={"status": "ok", "response": {"data": {}}},
+            error="Order could not immediately match against resting liquidity.",
+        ),
+        dispatch=dispatch,
+        updated_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+    assert order.status == "rejected"
+    assert order.raw_payload["exchangeReject"]["code"] == "exchange_ioc_no_match"
+    assert is_retryable_live_order_submit_failure(order) is True
+    assert dispatch.exchange_error_code == "exchange_ioc_no_match"
+    assert dispatch.exchange_response == {"status": "ok", "response": {"data": {}}}
+
+
+def test_dispatch_client_order_ids_are_unique_per_logical_attempt() -> None:
+    logical_id = "0x" + "1" * 32
+    first_attempt_id = build_dispatch_client_order_id(logical_id, attempt_number=1)
+    second_attempt_id = build_dispatch_client_order_id(logical_id, attempt_number=2)
+
+    assert first_attempt_id.startswith("0x")
+    assert len(first_attempt_id) == 34
+    assert first_attempt_id != second_attempt_id
 
 
 @pytest.mark.asyncio
