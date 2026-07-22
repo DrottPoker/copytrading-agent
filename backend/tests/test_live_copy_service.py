@@ -26,6 +26,7 @@ from app.services.live_copy_service import (
     live_min_order_notional_usd,
     live_order_exists,
     live_pending_close_size_from_orders,
+    live_price_drift_blocks_action,
     live_skip,
     live_source_position_is_final_close,
     record_live_skip,
@@ -52,6 +53,29 @@ def test_live_copy_account_snapshot_without_reconcile_is_stale() -> None:
         account,
         settings=settings,
         now=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+
+@pytest.mark.parametrize("action", ["reduce", "close", "flip_close"])
+def test_live_price_drift_never_blocks_reduce_only_exits(action: str) -> None:
+    assert not live_price_drift_blocks_action(
+        action=action,
+        price_drift_bps=Decimal("10000"),
+        max_price_drift_bps=Decimal("100"),
+    )
+
+
+@pytest.mark.parametrize("action", ["open", "add", "flip_open"])
+def test_live_price_drift_blocks_only_entries_above_the_limit(action: str) -> None:
+    assert not live_price_drift_blocks_action(
+        action=action,
+        price_drift_bps=Decimal("100"),
+        max_price_drift_bps=Decimal("100"),
+    )
+    assert live_price_drift_blocks_action(
+        action=action,
+        price_drift_bps=Decimal("100.01"),
+        max_price_drift_bps=Decimal("100"),
     )
 
 
@@ -139,6 +163,46 @@ async def test_legacy_bootstrap_excludes_manual_test_source_candidates() -> None
         )
     )
     assert "__manual_testnet__" in sql
+
+
+@pytest.mark.asyncio
+async def test_legacy_bootstrap_does_not_report_existing_attribution_as_recovered(
+    monkeypatch,
+) -> None:
+    class Rows:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def all(self):
+            return self._rows
+
+    class Session:
+        def __init__(self):
+            self.results = iter(
+                [
+                    Rows([("live_test", "BTC", "long", "0xsource")]),
+                    Rows([("live_test", "BTC", "long", "0xsource")]),
+                ]
+            )
+
+        async def execute(self, _statement):
+            return next(self.results)
+
+    async def unexpected_recovery(*_args, **_kwargs):
+        raise AssertionError("Existing attribution must not be recovered again.")
+
+    monkeypatch.setattr(
+        live_copy_service,
+        "recover_live_source_position_attribution",
+        unexpected_recovery,
+    )
+
+    recovered = await live_copy_service.bootstrap_missing_live_source_attribution(
+        Session(),  # type: ignore[arg-type]
+        accounts=[live_account(last_reconciled_at=datetime.now(UTC))],
+    )
+
+    assert recovered == 0
 
 
 @pytest.mark.asyncio

@@ -182,6 +182,17 @@ class LiveEntryAdmission:
         return self.terminal_reason is not None
 
 
+def live_price_drift_blocks_action(
+    *,
+    action: str,
+    price_drift_bps: Decimal,
+    max_price_drift_bps: Decimal,
+) -> bool:
+    """Block only entries whose current mid moved adversely beyond the limit."""
+
+    return action in LIVE_COPY_ENTRY_ACTIONS and price_drift_bps > max_price_drift_bps
+
+
 class LiveCopyPartDeferred(RuntimeError):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
@@ -333,6 +344,26 @@ async def bootstrap_missing_live_source_attribution(
     if not account_keys or not callable(getattr(session, "execute", None)):
         return 0
     accounts_by_key = {account.key: account for account in accounts}
+    existing_result = await session.execute(
+        select(
+            TradingPosition.account_key,
+            TradingPosition.coin,
+            TradingPosition.side,
+            TradingPosition.source_wallet,
+        ).where(
+            TradingPosition.account_key.in_(account_keys),
+            TradingPosition.account_type == "live",
+            TradingPosition.source_wallet != "",
+            TradingPosition.source_wallet != LIVE_EXCHANGE_SOURCE,
+            TradingPosition.source_wallet != LIVE_MANUAL_TEST_SOURCE,
+            TradingPosition.size > POSITION_EPSILON,
+        )
+    )
+    existing_keys = {
+        (str(account_key), str(coin), str(side), str(source_wallet).lower())
+        for account_key, coin, side, source_wallet in existing_result.all()
+        if coin and side and source_wallet
+    }
     result = await session.execute(
         select(
             TradingPosition.account_key,
@@ -364,6 +395,14 @@ async def bootstrap_missing_live_source_attribution(
         account = accounts_by_key.get(str(account_key))
         if account is None or not coin or not side or not source_wallet:
             continue
+        attribution_key = (
+            str(account_key),
+            str(coin),
+            str(side),
+            str(source_wallet).lower(),
+        )
+        if attribution_key in existing_keys:
+            continue
         try:
             position = await recover_live_source_position_attribution(
                 session,
@@ -374,7 +413,9 @@ async def bootstrap_missing_live_source_attribution(
             )
         except LiveCopyPartDeferred:
             continue
-        recovered += int(position is not None)
+        if position is not None:
+            existing_keys.add(attribution_key)
+            recovered += 1
     return recovered
 
 
@@ -2347,7 +2388,11 @@ async def apply_live_open_part(
         )
         if execution_context is None:
             raise LiveCopyPartDeferred("live_execution_price_unavailable")
-        if execution_context.price_drift_bps > settings.trading_copy_max_price_drift_bps:
+        if live_price_drift_blocks_action(
+            action=part.action,
+            price_drift_bps=execution_context.price_drift_bps,
+            max_price_drift_bps=settings.trading_copy_max_price_drift_bps,
+        ):
             return await record_live_skip(
                 session,
                 account=account,
@@ -2549,7 +2594,11 @@ async def apply_live_open_part(
     )
     if execution_context is None:
         raise LiveCopyPartDeferred("live_execution_price_unavailable")
-    if execution_context.price_drift_bps > settings.trading_copy_max_price_drift_bps:
+    if live_price_drift_blocks_action(
+        action=part.action,
+        price_drift_bps=execution_context.price_drift_bps,
+        max_price_drift_bps=settings.trading_copy_max_price_drift_bps,
+    ):
         return await record_live_skip(
             session,
             account=account,
@@ -2764,7 +2813,11 @@ async def apply_live_close_part(
     )
     if execution_context is None:
         raise LiveCopyPartDeferred("live_execution_price_unavailable")
-    if execution_context.price_drift_bps > settings.trading_copy_max_price_drift_bps:
+    if live_price_drift_blocks_action(
+        action=part.action,
+        price_drift_bps=execution_context.price_drift_bps,
+        max_price_drift_bps=settings.trading_copy_max_price_drift_bps,
+    ):
         return await record_live_skip(
             session,
             account=account,

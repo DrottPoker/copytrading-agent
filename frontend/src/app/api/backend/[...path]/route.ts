@@ -47,14 +47,41 @@ export async function OPTIONS() {
 }
 
 async function proxyBackendRequest(request: Request, context: RouteContext) {
+  const requestId = proxyRequestId(request);
+  try {
+    return await proxyBackendRequestWithId(request, context, requestId);
+  } catch (error) {
+    console.error(
+      "backend proxy failure request_id=%s method=%s path=%s error=%s",
+      requestId,
+      request.method,
+      new URL(request.url).pathname,
+      errorMessage(error),
+    );
+    return Response.json(
+      { detail: `Backend proxy failed. Request ID: ${requestId}` },
+      { status: 500, headers: { "X-Request-ID": requestId } },
+    );
+  }
+}
+
+async function proxyBackendRequestWithId(
+  request: Request,
+  context: RouteContext,
+  requestId: string,
+) {
   const params = await context.params;
   const path = (params.path ?? []).map(encodeURIComponent).join("/");
   const requestUrl = new URL(request.url);
   if (!browserMutationOriginIsAllowed(request)) {
-    return Response.json({ detail: "Cross-origin mutation request rejected." }, { status: 403 });
+    return Response.json(
+      { detail: "Cross-origin mutation request rejected." },
+      { status: 403, headers: { "X-Request-ID": requestId } },
+    );
   }
 
   const headers = filteredRequestHeaders(request.headers);
+  headers.set("X-Request-ID", requestId);
   const authHeader = backendAuthHeader();
   if (authHeader) {
     headers.set("Authorization", authHeader);
@@ -78,12 +105,33 @@ async function proxyBackendRequest(request: Request, context: RouteContext) {
         redirect: "manual",
       });
 
+      if (upstreamResponse.status >= 500) {
+        console.error(
+          "backend proxy upstream failure request_id=%s method=%s path=%s status=%s",
+          requestId,
+          request.method,
+          requestUrl.pathname,
+          upstreamResponse.status,
+        );
+      }
+
+      const responseHeaders = filteredResponseHeaders(upstreamResponse.headers);
+      responseHeaders.set("X-Request-ID", requestId);
+
       return new Response(upstreamResponse.body, {
         status: upstreamResponse.status,
         statusText: upstreamResponse.statusText,
-        headers: filteredResponseHeaders(upstreamResponse.headers),
+        headers: responseHeaders,
       });
     } catch (error) {
+      console.error(
+        "backend proxy upstream unavailable request_id=%s method=%s path=%s origin=%s error=%s",
+        requestId,
+        request.method,
+        requestUrl.pathname,
+        upstreamUrl.origin,
+        errorMessage(error),
+      );
       errors.push(`${upstreamUrl.origin}: ${errorMessage(error)}`);
     }
   }
@@ -92,8 +140,16 @@ async function proxyBackendRequest(request: Request, context: RouteContext) {
     {
       detail: `Could not reach backend API. Tried ${errors.join("; ")}`,
     },
-    { status: 502 },
+    { status: 502, headers: { "X-Request-ID": requestId } },
   );
+}
+
+function proxyRequestId(request: Request) {
+  const supplied = request.headers.get("x-request-id")?.trim();
+  if (supplied && /^[A-Za-z0-9._:-]{1,128}$/.test(supplied)) {
+    return supplied;
+  }
+  return crypto.randomUUID();
 }
 
 function backendUpstreamUrls(path: string, search: string) {

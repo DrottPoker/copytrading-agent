@@ -3479,16 +3479,18 @@ function marketStatusTone(status: PaperTradingSummaryResponse["marketDataStatus"
   return "danger";
 }
 
-async function responseError(response: Response, fallback: string) {
+export async function responseError(response: Response, fallback: string) {
+  const requestId = response.headers.get("x-request-id")?.trim();
+  const requestSuffix = requestId ? ` Request ID: ${requestId}.` : "";
   try {
     const payload = (await response.json()) as { detail?: unknown };
     if (typeof payload.detail === "string") {
-      return payload.detail;
+      return `${payload.detail}${requestSuffix}`;
     }
   } catch {
-    return `${fallback} with HTTP ${response.status}.`;
+    return `${fallback} with HTTP ${response.status}.${requestSuffix}`;
   }
-  return `${fallback} with HTTP ${response.status}.`;
+  return `${fallback} with HTTP ${response.status}.${requestSuffix}`;
 }
 
 function shortAddress(address: string) {

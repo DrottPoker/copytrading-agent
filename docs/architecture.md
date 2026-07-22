@@ -839,8 +839,9 @@ Hyperliquid's live perp minimum order value. Paper execution starts the
 configured latency while source account state is fetched in parallel, then
 prices from live mids when enabled, applies adverse slippage, and skips fills
 whose adverse observed drift exceeds the configured max drift limit. Favorable
-price drift is allowed and recorded as 0 bps. New open or add fills are admitted
-only when their durable first observation is within
+price drift is allowed and recorded as 0 bps. Live reduce-only exits bypass the
+entry drift guard so price movement cannot strand copied exposure. New open or
+add fills are admitted only when their durable first observation is within
 `trading_copy_max_entry_age_seconds` of the source timestamp, so snapshot or
 recovery entries cannot open exposure minutes after the source traded. The
 immutable observation timestamp keeps internal queue, preflight, and retry time

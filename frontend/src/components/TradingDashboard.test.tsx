@@ -13,6 +13,7 @@ import {
   liveAllocationSourceVisible,
   liveCopyDecisionStatusPills,
   pnlPerMonitoredHour,
+  responseError,
   resolveCurrentMonitorStatus,
   resolveCurrentSourceStatus,
   summarizeCopySourceStatuses,
@@ -146,6 +147,19 @@ describe("copy source performance", () => {
     expect(
       positions.sort(compareDashboardPositionsOldestFirst).map((position) => position.id),
     ).toEqual(["old-a", "old-b", "newest"]);
+  });
+});
+
+describe("dashboard mutation errors", () => {
+  it("shows the proxy request id for a non-JSON server failure", async () => {
+    const response = new Response("Internal Server Error", {
+      status: 500,
+      headers: { "X-Request-ID": "close-request-123" },
+    });
+
+    await expect(responseError(response, "Manual close failed")).resolves.toBe(
+      "Manual close failed with HTTP 500. Request ID: close-request-123.",
+    );
   });
 });
 

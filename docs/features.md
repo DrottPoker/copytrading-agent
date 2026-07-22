@@ -734,6 +734,7 @@ What it does:
   `trading_copy_max_entry_age_seconds` after the source timestamp. This prevents
   late snapshot or recovery entries from opening exposure while ensuring that
   internal queue and retry time cannot make a promptly received fill stale.
+  The default admission window is 20 seconds.
   Older close and reduce fills can still be processed to catch up existing
   exposure. Live copy stores stale entries as terminal per-fill dispositions
   with separate source, observation, and decision timestamps.
@@ -761,10 +762,11 @@ What it does:
 - Falls back to HTTP `allMids`, then dex-specific `allMids`, then Hyperliquid
   `metaAndAssetCtxs`, for missing or stale cache prices.
 - Applies adverse slippage from `paper_copy_slippage_bps` to the observed price.
-- Skips paper fills when adverse observed price movement is more than
-  `trading_copy_max_price_drift_bps` from the source fill price. The default
-  adverse drift guard is 50 bps. Favorable drift is allowed and recorded as
-  0 bps.
+- Skips paper fills and live entries when adverse observed price movement is
+  more than `trading_copy_max_price_drift_bps` from the source fill price. The
+  default limit is 100 bps. Favorable drift in the execution direction is
+  allowed and recorded as 0 bps. Live reduce-only exits bypass the entry drift
+  guard so adverse price movement cannot strand copied exposure.
 - Shows source price, live mid, adverse drift bps, the per-fill drift limit,
   and min-order adjustment markers in Recent Fills when execution details are
   available.
@@ -995,8 +997,8 @@ Top-tier and standard source pockets both default to 25 percent of account
 equity. The total concurrently used allocation remains capped at 80 percent.
 - `trading_copy_min_order_notional_usd`
 - `trading_copy_adjust_small_orders_to_min_order`
-- `trading_copy_max_entry_age_seconds`
-- `trading_copy_max_price_drift_bps`, defaults to 50 bps
+- `trading_copy_max_entry_age_seconds`, defaults to 20 seconds
+- `trading_copy_max_price_drift_bps`, defaults to 100 bps
 - `trading_copy_use_live_mid_price`
 - `trading_copy_market_price_cache_enabled`
 - `trading_copy_market_price_cache_stale_seconds`
@@ -1204,6 +1206,9 @@ What it does:
   when exchange order id or CLOID proves the exact logical order. Periodic
   reconciliation immediately retries strict position-attribution recovery, then
   the normal reduce-only exit path closes the proven copied exposure.
+- Reports orphan-attribution recovery only when a missing source-position row is
+  actually created. Existing attributed positions are skipped instead of being
+  counted as repaired on every reconciliation pass.
 - Defers the new side of a flip until reconciliation confirms that the copied
   old side has closed.
 - Marks a source lifecycle inactive after it loses both current allocation and

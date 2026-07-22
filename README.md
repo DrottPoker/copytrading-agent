@@ -722,7 +722,8 @@ Sizing policy:
   match Hyperliquid's live perp minimum order value.
 - New entry fills first observed more than
   `trading_copy_max_entry_age_seconds` after the source timestamp are skipped
-  before opening or adding exposure. Admission is fixed from the durable
+  before opening or adding exposure. The default is 20 seconds. Admission is
+  fixed from the durable
   `WalletFill.received_at` timestamp, so the worker's own queue, preflight, or
   retry time cannot later reclassify a promptly received fill as stale. This
   still prevents late snapshot or recovery fills from creating exposure. Close
@@ -774,9 +775,10 @@ Sizing policy:
   timestamp.
 - If the cache is stale or missing a coin, paper copy falls back to HTTP
   `allMids`, then dex-specific `allMids`, then `metaAndAssetCtxs`.
-- Paper fills are skipped when adverse live mid price drift from the source fill
-  price is above `trading_copy_max_price_drift_bps`, which defaults to 50 bps.
-  Favorable drift is allowed and recorded as 0 bps.
+- Paper fills and live entries are skipped when adverse live mid price drift
+  from the source fill price is above `trading_copy_max_price_drift_bps`, which
+  defaults to 100 bps. Favorable drift in the execution direction counts as
+  0 bps. Live reduce-only exits are never blocked by the entry drift guard.
 - Recent paper fill rows show source price, live mid, adverse drift bps, the
   per-fill drift limit, and min-order adjustment markers when execution details
   are available.

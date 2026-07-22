@@ -386,8 +386,8 @@ class Settings(BaseSettings):
     trading_copy_max_total_allocation_pct: Decimal = Field(default=Decimal("0.80"), ge=0, le=1)
     trading_copy_min_order_notional_usd: Decimal = Field(default=Decimal("10"), ge=0)
     trading_copy_adjust_small_orders_to_min_order: bool = True
-    trading_copy_max_entry_age_seconds: int = Field(default=15, ge=0, le=3600)
-    trading_copy_max_price_drift_bps: Decimal = Field(default=Decimal("50"), ge=0, le=10000)
+    trading_copy_max_entry_age_seconds: int = Field(default=20, ge=0, le=3600)
+    trading_copy_max_price_drift_bps: Decimal = Field(default=Decimal("100"), ge=0, le=10000)
     trading_copy_use_live_mid_price: bool = True
     trading_copy_market_price_cache_enabled: bool = True
     trading_copy_market_price_cache_stale_seconds: float = Field(default=2.0, ge=0.1, le=60)

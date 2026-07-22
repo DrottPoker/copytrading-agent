@@ -386,6 +386,11 @@ docker compose -f docker-compose.vps.yml exec backend \
 docker compose -f docker-compose.vps.yml logs --tail=100 backend trading-worker maintenance-worker postgres-backup caddy
 ```
 
+Dashboard mutation proxy failures include an `X-Request-ID` response header and
+write the same `request_id` to the frontend container log. The Trading dashboard
+shows that identifier with failed mutations. Use it to correlate a browser error
+with the upstream backend response without logging credentials or request bodies.
+
 The Alembic head for this update is `a2c4e6f8b0d1`. The current chain adds the
 signed Hyperliquid funding-payment ledger, removes
 the obsolete durable live-entry control, expands wallet fill ingest latency to
