@@ -365,15 +365,36 @@ function allocation(overrides: Partial<PaperCopyAllocation>): PaperCopyAllocatio
 }
 
 describe("displayLivePositions", () => {
-  it("only hides a source position when the same exchange coin exists", () => {
+  it("keeps exchange metrics while attaching the matching source wallet", () => {
     const exchangeBtc = position({ id: "exchange-btc", sourceWallet: "__exchange__" });
     const sourceBtc = position({ id: "source-btc" });
     const sourceEth = position({ id: "source-eth", coin: "ETH" });
 
     expect(displayLivePositions([exchangeBtc, sourceBtc, sourceEth])).toEqual([
-      exchangeBtc,
+      { ...exchangeBtc, sourceWallet: sourceBtc.sourceWallet },
       sourceEth,
     ]);
+  });
+
+  it("does not guess an owner when source attribution is ambiguous", () => {
+    const exchangeBtc = position({ id: "exchange-btc", sourceWallet: "__exchange__" });
+    const firstSource = position({ id: "source-a", sourceWallet: "0xsource-a" });
+    const secondSource = position({ id: "source-b", sourceWallet: "0xsource-b" });
+
+    expect(displayLivePositions([exchangeBtc, firstSource, secondSource])).toEqual([
+      exchangeBtc,
+    ]);
+  });
+
+  it("does not attach a source wallet from the opposite side", () => {
+    const exchangeBtc = position({ id: "exchange-btc", sourceWallet: "__exchange__" });
+    const staleSource = position({
+      id: "source-short",
+      side: "short",
+      sourceWallet: "0xsource-short",
+    });
+
+    expect(displayLivePositions([exchangeBtc, staleSource])).toEqual([exchangeBtc]);
   });
 });
 

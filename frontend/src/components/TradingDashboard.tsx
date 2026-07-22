@@ -2778,20 +2778,51 @@ function liveAccountEquity(account: TradingAccount) {
 }
 
 export function displayLivePositions(positions: TradingPosition[]) {
+  const sourcePositionsByMarket = new Map<string, TradingPosition[]>();
+  for (const position of positions) {
+    if (isLiveExchangePosition(position)) {
+      continue;
+    }
+    const key = livePositionAttributionKey(position);
+    sourcePositionsByMarket.set(key, [
+      ...(sourcePositionsByMarket.get(key) ?? []),
+      position,
+    ]);
+  }
   const exchangePositionKeys = new Set(
     positions
       .filter((position) => isLiveExchangePosition(position))
       .map((position) => livePositionKey(position)),
   );
-  return positions.filter(
-    (position) =>
-      isLiveExchangePosition(position) ||
-      !exchangePositionKeys.has(livePositionKey(position)),
-  );
+  return positions
+    .filter(
+      (position) =>
+        isLiveExchangePosition(position) ||
+        !exchangePositionKeys.has(livePositionKey(position)),
+    )
+    .map((position) => {
+      if (!isLiveExchangePosition(position)) {
+        return position;
+      }
+      const attributedPositions = sourcePositionsByMarket.get(
+        livePositionAttributionKey(position),
+      ) ?? [];
+      if (attributedPositions.length !== 1) {
+        return position;
+      }
+      return {
+        ...position,
+        sourceWallet: attributedPositions[0].sourceWallet,
+      };
+    });
 }
 
 function livePositionKey(position: TradingPosition) {
   return `${position.accountKey.toLowerCase()}:${position.coin.toUpperCase()}`;
+}
+
+function livePositionAttributionKey(position: TradingPosition) {
+  return `${livePositionKey(position)}:${position.side}`;
 }
 
 function isLiveExchangePosition(position: TradingPosition) {
