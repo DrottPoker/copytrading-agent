@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings, get_settings
 from app.db.models import (
     AuditLog,
+    LiveCopyFillState,
     PaperCopyAllocation,
     PaperCopyFill,
     PaperPosition,
@@ -37,6 +38,7 @@ from app.services.live_copy_state_service import (
     POSITION_EPSILON as LIVE_POSITION_EPSILON,
 )
 from app.services.live_copy_state_service import (
+    live_copy_unresolved_exit_predicate,
     live_copy_unresolved_order_predicate,
 )
 from app.services.live_trading_service import (
@@ -2520,7 +2522,10 @@ def live_open_copy_source_select() -> Any:
         TradingOrder.source_wallet != LIVE_MANUAL_TEST_SOURCE,
         live_copy_unresolved_order_predicate(),
     )
-    return position_sources.union_all(unresolved_order_sources)
+    unresolved_exit_sources = select(
+        func.lower(LiveCopyFillState.source_wallet).label("source_wallet")
+    ).where(live_copy_unresolved_exit_predicate())
+    return position_sources.union_all(unresolved_order_sources, unresolved_exit_sources)
 
 
 def select_realtime_slot_sources(

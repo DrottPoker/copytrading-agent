@@ -477,6 +477,110 @@ async def test_duplicate_and_partial_exchange_fills_are_idempotent(
 
 
 @pytest.mark.asyncio
+async def test_reconciliation_repairs_exchange_fill_attribution_from_dispatch_ledger(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    account = live_account()
+    source_wallet = "0xsource"
+    logical_client_order_id = "source-open-order"
+    dispatch_client_order_id = build_dispatch_client_order_id(
+        logical_client_order_id,
+        attempt_number=1,
+    )
+    order = TradingOrder(
+        account_key=account.key,
+        account_type="live",
+        source_wallet=source_wallet,
+        source_fill_id="source-open-fill",
+        sequence_index=0,
+        client_order_id=logical_client_order_id,
+        exchange_order_id="456",
+        coin="BTC",
+        action="open",
+        side="long",
+        is_buy=True,
+        reduce_only=False,
+        order_type="ioc",
+        status="filled",
+        requested_size=Decimal("1"),
+        requested_notional_usd=Decimal("100"),
+        margin_usd=Decimal("100"),
+        leverage=Decimal("1"),
+        margin_mode="cross",
+        limit_price=Decimal("100"),
+        filled_size=Decimal("1"),
+        filled_notional_usd=Decimal("100"),
+        fee_usd=Decimal("0.01"),
+    )
+    raw_fill = {
+        "coin": "BTC",
+        "px": "100",
+        "sz": "1",
+        "time": 1_725_000_000_000,
+        "side": "B",
+        "dir": "Open Long",
+        "closedPnl": "0",
+        "fee": "0.01",
+        "tid": 100,
+        "oid": 456,
+        "cloid": dispatch_client_order_id,
+    }
+
+    async with integration_sessionmaker() as session:
+        session.add_all([account, order])
+        await session.flush()
+        session.add_all(
+            [
+                TradingOrderDispatch(
+                    order_id=order.id,
+                    account_key=account.key,
+                    client_order_id=dispatch_client_order_id,
+                    attempt_number=1,
+                    status="completed",
+                    attempt_count=1,
+                    available_at=datetime.now(UTC),
+                ),
+                TradingFill(
+                    order_id=None,
+                    account_key=account.key,
+                    account_type="live",
+                    source_wallet=LIVE_EXCHANGE_SOURCE,
+                    source_fill_id="exchange-fill-100",
+                    sequence_index=None,
+                    exchange_fill_id="exchange-fill-100",
+                    coin="BTC",
+                    action="open",
+                    side="long",
+                    price=Decimal("100"),
+                    size=Decimal("1"),
+                    notional_usd=Decimal("100"),
+                    fee_usd=Decimal("0.01"),
+                    realized_pnl_usd=Decimal("0"),
+                    raw_payload=raw_fill,
+                    filled_at=datetime(2024, 8, 29, tzinfo=UTC),
+                ),
+            ]
+        )
+        await session.commit()
+
+        inserted = await reconcile_live_fills(session, account=account, fills=[])
+        await session.commit()
+
+    async with integration_sessionmaker() as session:
+        repaired_fill = await session.scalar(select(TradingFill))
+
+    assert inserted == 0
+    assert repaired_fill is not None
+    assert repaired_fill.order_id == order.id
+    assert repaired_fill.source_wallet == source_wallet
+    assert repaired_fill.source_fill_id == order.source_fill_id
+    assert repaired_fill.sequence_index == order.sequence_index
+    assert repaired_fill.raw_payload["sourceAttributionRepair"]["logicalOrderId"] == str(
+        order.id
+    )
+
+
+@pytest.mark.asyncio
 async def test_reconciliation_repairs_account_totals_from_fill_ledger(
     integration_sessionmaker: async_sessionmaker[AsyncSession],
 ) -> None:

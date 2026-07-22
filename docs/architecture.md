@@ -135,10 +135,11 @@ Trading worker responsibilities:
 
 - Refresh paper allocations and select up to `max_realtime_wallets` wallets from
   that same allocation result. When live trading is enabled, source wallets with
-  open live source-attributed positions are retained first, then remaining slots
-  are filled by the highest scored eligible copy candidates. Paper-only open
-  exposure stays in allocation recovery but does not consume a live realtime
-  slot. Paper-only mode retains open paper-position sources first.
+  open live source-attributed positions or unresolved exit lifecycle rows are
+  retained first, then remaining slots are filled by the highest scored eligible
+  copy candidates. Paper-only open exposure stays in allocation recovery but
+  does not consume a live realtime slot. Paper-only mode retains open
+  paper-position sources first.
 - Check the desired realtime subscription list every
   `realtime_subscription_refresh_seconds`; keep the current WebSocket open when
   the list is unchanged and reconnect only when selected wallets change.
@@ -1148,6 +1149,15 @@ from the raw fill and order ledgers:
   source owns the market, and manual fills do not add unexplained exposure.
   Recovery restores at most the proven source size and defers ambiguous cases
   without submitting an order.
+- A pending or retryable `reduce`, `close`, or `flip_close` is itself durable
+  ownership work. It retains the account/source lane, watched-wallet record,
+  realtime subscription priority, and recovery eligibility even if the source
+  position or logical order row is temporarily absent.
+- Reconciliation upgrades an exchange-attributed fill to its copied source only
+  when the stored exchange order id or dispatch CLOID matches a durable logical
+  order for the same account and market. Periodic reconciliation then runs strict
+  attribution bootstrap immediately, allowing normal reduce-only exit recovery
+  to close the proven copied exposure. Unmatched manual fills are never claimed.
 - A continuation entry with no owned source position checks the account-market
   reservation before attribution recovery. An existing reservation owned by a
   different source is terminal for that entry instead of retrying as ambiguous.

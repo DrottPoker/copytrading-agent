@@ -1157,7 +1157,8 @@ What it does:
   grant entry permission. Same-timestamp late arrivals can be candidates but
   are not automatically eligible. Start refreshes eligible baselines before
   entries are enabled, and Stop deactivates flat lanes without dropping exit
-  management for nonzero positions or unresolved orders.
+  management for nonzero positions, unresolved orders, or unresolved exit
+  lifecycle rows.
 - Uses `live_copy_source_states.entry_eligible` as the authoritative
   per-account entry-routing flag. Current selection sets it to true. A retained
   lane stays active with the flag false only while it owns exposure or
@@ -1195,6 +1196,14 @@ What it does:
   aggregate matches the exchange side and size. Competing sources or unexplained
   manual exposure remain retryable without an order. Recovery restores only the
   proven source size.
+- Treats every pending or retryable `reduce`, `close`, and `flip_close` as owned
+  recovery work. The source remains watched, retains realtime and recovery
+  priority, and stays routed to the affected account even when its position or
+  order row is temporarily missing.
+- Repairs exchange-attributed fills from the durable order and dispatch ledger
+  when exchange order id or CLOID proves the exact logical order. Periodic
+  reconciliation immediately retries strict position-attribution recovery, then
+  the normal reduce-only exit path closes the proven copied exposure.
 - Defers the new side of a flip until reconciliation confirms that the copied
   old side has closed.
 - Marks a source lifecycle inactive after it loses both current allocation and
@@ -1244,7 +1253,8 @@ What it does:
   check is available.
 - Never claims orphan exchange exposure from historical existence alone. A
   missing attribution row is recovered only from a complete current-lifecycle
-  proof; ambiguous ownership cannot submit a close.
+  proof, including fills repaired from exact dispatch identity. Ambiguous manual
+  or competing ownership cannot submit a close.
 - Reserves one source per live account and market while exposure or a
   nonterminal entry order exists.
   Another source opening the same market is skipped until the market is free,

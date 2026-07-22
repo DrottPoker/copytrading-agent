@@ -40,6 +40,7 @@ from app.services.live_copy_state_service import (
     load_owned_live_copy_account_source_pairs,
     mark_live_copy_fill_baseline_ignored,
     mark_live_copy_fill_complete_if_durable,
+    mark_live_copy_fill_retryable,
     mark_live_copy_fill_terminal_skip,
     synchronize_live_copy_account_source_activity,
     synchronize_live_copy_source_activity,
@@ -493,6 +494,71 @@ async def test_retained_lane_loader_excludes_zero_and_dust_positions(
         )
 
         assert pairs == {(account_key, "0xowned")}
+
+
+@pytest.mark.asyncio
+async def test_retryable_exit_retains_source_lane_without_position_or_order(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    account_key = "live_orphan_exit"
+    source_wallet = "0xorphan-exit"
+    observed_at = datetime(2026, 7, 22, 12, tzinfo=UTC)
+    close_fill = source_fill(
+        "orphan-close",
+        timestamp_ms=int(observed_at.timestamp() * 1000),
+        direction="Close Long",
+    )
+    close_part = SourceFillPart(
+        action="close",
+        side="long",
+        source_size=Decimal("1"),
+        source_notional_usd=Decimal("10"),
+        sequence_index=0,
+        close_ratio=Decimal("1"),
+        start_position=Decimal("1"),
+    )
+
+    async with integration_sessionmaker() as session:
+        session.add(
+            TradingAccount(
+                key=account_key,
+                account_type="live",
+                label="Orphan exit account",
+                status="exit_only",
+                network="testnet",
+            )
+        )
+        await session.flush()
+        source_state = await ensure_live_copy_source_state(
+            session,
+            account_key=account_key,
+            source_wallet=source_wallet,
+            now=observed_at,
+        )
+        fill_state = (
+            await ensure_live_copy_fill_plan_states(
+                session,
+                source_state=source_state,
+                fill=close_fill,
+                planned_parts=(close_part,),
+                origin=LIVE_COPY_ORIGIN_PERIODIC_RECOVERY,
+                observed_at=observed_at,
+                first_observed_at=observed_at,
+            )
+        )[0]
+        await mark_live_copy_fill_retryable(
+            session,
+            fill_state=fill_state,
+            reason="live_source_attribution_ambiguous",
+            now=observed_at,
+        )
+
+        pairs = await load_owned_live_copy_account_source_pairs(
+            session,
+            account_keys={account_key},
+        )
+
+        assert pairs == {(account_key, source_wallet)}
 
 
 @pytest.mark.asyncio

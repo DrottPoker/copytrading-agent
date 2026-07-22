@@ -82,7 +82,7 @@ def test_live_copy_account_snapshot_inside_interval_is_fresh() -> None:
 
 
 @pytest.mark.asyncio
-async def test_recovery_sources_prioritize_unresolved_orders_before_positions() -> None:
+async def test_recovery_sources_prioritize_unresolved_exits_before_orders_and_positions() -> None:
     class Rows:
         def __init__(self, values: list[str]) -> None:
             self.values = values
@@ -94,6 +94,7 @@ async def test_recovery_sources_prioritize_unresolved_orders_before_positions() 
         def __init__(self) -> None:
             self.results = iter(
                 [
+                    Rows(["0xexit"]),
                     Rows(["0xorder", "0xshared"]),
                     Rows(["0xshared", "0xposition"]),
                     Rows(["0xallocation"]),
@@ -105,10 +106,10 @@ async def test_recovery_sources_prioritize_unresolved_orders_before_positions() 
 
     sources = await live_copy_service.load_live_copy_recovery_sources(
         Session(),  # type: ignore[arg-type]
-        max_sources=4,
+        max_sources=5,
     )
 
-    assert sources == ["0xorder", "0xshared", "0xposition", "0xallocation"]
+    assert sources == ["0xexit", "0xorder", "0xshared", "0xposition", "0xallocation"]
 
 
 @pytest.mark.asyncio
@@ -1234,13 +1235,44 @@ async def test_exit_only_account_retains_unresolved_source_order_without_positio
 
     class RetainedOrderSession:
         def __init__(self) -> None:
-            self.rows = iter([Rows([]), Rows([exit_only.key])])
+            self.rows = iter([Rows([]), Rows([exit_only.key]), Rows([])])
 
         async def scalars(self, _query):
             return next(self.rows)
 
     accounts = await live_copy_service.filter_live_accounts_for_source_allocation(
         RetainedOrderSession(),
+        accounts=[enabled, exit_only],
+        source_wallet="0xsource",
+        allocation=source_allocation(),
+    )
+
+    assert [account.key for account in accounts] == [enabled.key, exit_only.key]
+
+
+@pytest.mark.asyncio
+async def test_exit_only_account_retains_unresolved_exit_without_position_or_order() -> None:
+    enabled = live_account(last_reconciled_at=datetime(2026, 1, 1, tzinfo=UTC))
+    exit_only = live_account(last_reconciled_at=datetime(2026, 1, 1, tzinfo=UTC))
+    exit_only.key = "live_exit_only"
+    exit_only.status = "exit_only"
+
+    class Rows:
+        def __init__(self, account_keys: list[str]) -> None:
+            self.account_keys = account_keys
+
+        def all(self) -> list[str]:
+            return self.account_keys
+
+    class RetainedExitSession:
+        def __init__(self) -> None:
+            self.rows = iter([Rows([]), Rows([]), Rows([exit_only.key])])
+
+        async def scalars(self, _query):
+            return next(self.rows)
+
+    accounts = await live_copy_service.filter_live_accounts_for_source_allocation(
+        RetainedExitSession(),
         accounts=[enabled, exit_only],
         source_wallet="0xsource",
         allocation=source_allocation(),

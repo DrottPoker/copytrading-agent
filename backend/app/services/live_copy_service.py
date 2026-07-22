@@ -37,6 +37,7 @@ from app.services.live_copy_state_service import (
     ensure_live_copy_source_state,
     link_live_copy_fill_state_to_order,
     live_copy_entry_follows_owned_position_lifecycle,
+    live_copy_unresolved_exit_predicate,
     live_copy_unresolved_order_predicate,
     load_live_copy_recovery_candidate_fills,
     load_live_copy_source_eligibility_epochs,
@@ -3233,7 +3234,22 @@ async def load_live_copy_recovery_sources(
 ) -> list[str]:
     if max_sources <= 0:
         return []
-    unresolved_order_result = await session.execute(
+    unresolved_exit_result = await session.execute(
+        select(func.lower(LiveCopyFillState.source_wallet).label("source_wallet"))
+        .where(live_copy_unresolved_exit_predicate())
+        .distinct()
+        .order_by(func.lower(LiveCopyFillState.source_wallet).asc())
+        .limit(max_sources)
+    )
+    sources = [
+        str(row.source_wallet).lower()
+        for row in unresolved_exit_result.all()
+        if row.source_wallet
+    ]
+    remaining = max(max_sources - len(sources), 0)
+    if remaining <= 0:
+        return unique_strings(sources)[:max_sources]
+    unresolved_order_query = (
         select(func.lower(TradingOrder.source_wallet).label("source_wallet"))
         .where(
             TradingOrder.account_type == "live",
@@ -3243,11 +3259,18 @@ async def load_live_copy_recovery_sources(
         )
         .distinct()
         .order_by(func.lower(TradingOrder.source_wallet).asc())
-        .limit(max_sources)
     )
-    sources = [
-        str(row.source_wallet).lower() for row in unresolved_order_result.all() if row.source_wallet
-    ]
+    if sources:
+        unresolved_order_query = unresolved_order_query.where(
+            func.lower(TradingOrder.source_wallet).not_in(sources)
+        )
+    unresolved_order_result = await session.execute(unresolved_order_query.limit(remaining))
+    sources.extend(
+        str(row.source_wallet).lower()
+        for row in unresolved_order_result.all()
+        if row.source_wallet
+    )
+    sources = unique_strings(sources)
     remaining = max(max_sources - len(sources), 0)
     if remaining <= 0:
         return unique_strings(sources)[:max_sources]
@@ -3369,7 +3392,18 @@ async def filter_live_accounts_for_source_allocation(
             live_copy_unresolved_order_predicate(),
         )
     )
-    owned_account_keys = set(position_accounts.all()) | set(unresolved_order_accounts.all())
+    unresolved_exit_accounts = await session.scalars(
+        select(LiveCopyFillState.account_key).where(
+            LiveCopyFillState.account_key.in_(exposure_candidate_keys),
+            LiveCopyFillState.source_wallet == source_wallet,
+            live_copy_unresolved_exit_predicate(),
+        )
+    )
+    owned_account_keys = (
+        set(position_accounts.all())
+        | set(unresolved_order_accounts.all())
+        | set(unresolved_exit_accounts.all())
+    )
     retained_account_keys = entry_enabled_account_keys | owned_account_keys
     return [account for account in accounts if account.key in retained_account_keys]
 

@@ -66,6 +66,9 @@ edge in monitor and paper mode before any live execution is activated.
   coin, so one unresolved market cannot halt independent coins. Lost
   attribution can be restored only from strict current
   executed-fill proof, excluding exchange and manual-test reserved sources.
+  Unresolved exits retain their source lane even without a position or order.
+  Exact exchange order or dispatch CLOID matches can repair fill attribution so
+  strict recovery restores ownership before the reduce-only exit is retried.
   Every multipart plan is committed before exchange submission, with the final
   gate lock order preserved. Separate pipeline decisions remain visible without
   being called fills or orders when no `tradingOrderId` exists.

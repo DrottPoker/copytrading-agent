@@ -91,6 +91,7 @@ LIVE_COPY_ACTIVE_ORDER_STATUSES = frozenset(
         "partially_filled",
     }
 )
+LIVE_COPY_EXIT_ACTIONS = frozenset({"reduce", "close", "flip_close"})
 
 
 def live_copy_unresolved_order_predicate():
@@ -113,6 +114,20 @@ def live_copy_unresolved_order_predicate():
                 materialized_filled_size + literal(POSITION_EPSILON)
                 < func.coalesce(TradingOrder.filled_size, literal(0)),
             ),
+        ),
+    )
+
+
+def live_copy_unresolved_exit_predicate():
+    """Return exit lifecycle rows that must retain source monitoring."""
+
+    return and_(
+        LiveCopyFillState.source_wallet != "",
+        LiveCopyFillState.source_wallet.not_in(LIVE_COPY_RESERVED_SOURCE_WALLETS),
+        LiveCopyFillState.action.in_(LIVE_COPY_EXIT_ACTIONS),
+        LiveCopyFillState.fill_complete.is_(False),
+        LiveCopyFillState.outcome.in_(
+            (LIVE_COPY_OUTCOME_PENDING, LIVE_COPY_OUTCOME_RETRYABLE)
         ),
     )
 
@@ -547,12 +562,17 @@ async def load_owned_live_copy_account_source_pairs(
         TradingOrder.source_wallet.not_in(LIVE_COPY_RESERVED_SOURCE_WALLETS),
         live_copy_unresolved_order_predicate(),
     )
+    exit_query = select(
+        LiveCopyFillState.account_key,
+        LiveCopyFillState.source_wallet,
+    ).where(live_copy_unresolved_exit_predicate())
     if account_keys is not None:
         if not account_keys:
             return set()
         position_query = position_query.where(TradingPosition.account_key.in_(account_keys))
         order_query = order_query.where(TradingOrder.account_key.in_(account_keys))
-    result = await session.execute(union(position_query, order_query))
+        exit_query = exit_query.where(LiveCopyFillState.account_key.in_(account_keys))
+    result = await session.execute(union(position_query, order_query, exit_query))
     return {
         (str(account_key), normalize_live_copy_source_wallet(source_wallet))
         for account_key, source_wallet in result.all()

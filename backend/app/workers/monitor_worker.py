@@ -20,6 +20,7 @@ from app.integrations.redis_client import close_redis_clients, get_redis
 from app.services.discovery_service import run_discovery_import
 from app.services.job_lock_service import JobLockAlreadyHeldError, job_lock
 from app.services.live_copy_service import (
+    bootstrap_missing_live_source_attribution,
     live_copy_processing_enabled,
     load_live_accounts_for_source_copy,
     process_live_copy_fills,
@@ -1451,6 +1452,19 @@ async def run_live_trading_reconciliation_once(
                             account=account,
                             settings=settings,
                         )
+                        recovered_attributions = (
+                            await bootstrap_missing_live_source_attribution(
+                                session,
+                                accounts=[account],
+                            )
+                        )
+                        if recovered_attributions:
+                            logger.warning(
+                                "recovered orphaned live source attribution account=%s "
+                                "positions=%s",
+                                account.key,
+                                recovered_attributions,
+                            )
                         await session.commit()
                         results.append(result)
                     except LiveReconciliationError as exc:

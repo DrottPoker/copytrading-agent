@@ -597,6 +597,10 @@ Live copy lifecycle and recovery:
   A retained lane with owned exposure or unresolved work remains active with
   `entry_eligible=false`, so it can manage the owned lifecycle without opening
   a new market. Reselection sets the flag to true only after a fresh baseline.
+- Pending and retryable `reduce`, `close`, and `flip_close` lifecycle rows retain
+  the source lane, realtime slot, watched-wallet record, account route, and
+  recovery priority even when a source-attributed position or logical order row
+  is temporarily missing.
 - `live_copy_fill_states` stores one durable state per account, source fill, and
   planned fill part. It records the processing origin (`realtime`,
   `snapshot_recovery`, `startup_recovery`, or `periodic_recovery`), outcome,
@@ -634,6 +638,11 @@ Live copy lifecycle and recovery:
   aggregate size, no competing source owns the market, and no unexplained
   manual exposure exists. Only the mathematically proven source size is
   restored. Ambiguous ownership retries without placing an order.
+- Reconciliation repairs a previously exchange-attributed fill when its stored
+  exchange order id or dispatch CLOID now matches exactly one durable logical
+  order. The repaired ledger restores the missing source position before normal
+  reduce-only exit recovery closes it. Unmatched manual fills and unproven
+  exchange exposure remain untouched.
 - A source flip closes the copied old side first. The new-side part waits for
   reconciliation to remove the old side before it can submit an entry.
 - Entry fills that exceed the configured entry TTL receive one terminal stale

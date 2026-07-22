@@ -1,3 +1,4 @@
+import logging
 import re
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -88,6 +89,8 @@ from app.services.trading_safety_service import (
     record_risk_event,
     trip_live_account_risk,
 )
+
+logger = logging.getLogger(__name__)
 
 ZERO = Decimal("0")
 POSITION_EPSILON = Decimal("0.000000000001")
@@ -4068,6 +4071,18 @@ async def reconcile_live_fills(
         session,
         account_key=account.key,
     )
+    repaired_attributions = await repair_unattributed_live_fills_from_order_ledger(
+        session,
+        account_key=account.key,
+        orders_by_oid=orders_by_oid,
+        orders_by_cloid=orders_by_cloid,
+    )
+    if repaired_attributions:
+        logger.warning(
+            "repaired live fill source attribution account=%s fills=%s",
+            account.key,
+            repaired_attributions,
+        )
     inserted = 0
     for fill in fills:
         parsed = parse_live_fill(fill, account_key=account.key)
@@ -4101,6 +4116,76 @@ async def reconcile_live_fills(
             )
     await session.flush()
     return inserted
+
+
+async def repair_unattributed_live_fills_from_order_ledger(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    orders_by_oid: dict[str, TradingOrder],
+    orders_by_cloid: dict[str, TradingOrder],
+) -> int:
+    """Attach exchange-imported fills when durable order identity now proves ownership."""
+
+    identity_filters = []
+    if orders_by_oid:
+        identity_filters.append(
+            TradingFill.raw_payload.op("->>")("oid").in_(tuple(orders_by_oid))
+        )
+    if orders_by_cloid:
+        identity_filters.append(
+            TradingFill.raw_payload.op("->>")("cloid").in_(tuple(orders_by_cloid))
+        )
+    if not identity_filters:
+        return 0
+
+    result = await session.scalars(
+        select(TradingFill)
+        .where(
+            TradingFill.account_key == account_key,
+            TradingFill.account_type == "live",
+            TradingFill.order_id.is_(None),
+            TradingFill.source_wallet == LIVE_EXCHANGE_SOURCE,
+            or_(*identity_filters),
+        )
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
+    repaired = 0
+    for fill in result.all():
+        raw_payload = fill.raw_payload if isinstance(fill.raw_payload, dict) else None
+        if raw_payload is None:
+            continue
+        parsed_fill = parse_live_fill(raw_payload, account_key=account_key)
+        if parsed_fill is None:
+            continue
+        order = match_live_fill_order(
+            parsed_fill,
+            orders_by_oid=orders_by_oid,
+            orders_by_cloid=orders_by_cloid,
+        )
+        if order is None or order.account_key != account_key or order.coin != fill.coin:
+            continue
+        fill.order_id = order.id
+        fill.source_wallet = order.source_wallet
+        fill.source_fill_id = order.source_fill_id
+        fill.sequence_index = order.sequence_index
+        fill.action = order.action
+        fill.side = order.side
+        fill.raw_payload = merge_raw_payload(
+            raw_payload,
+            {
+                "sourceAttributionRepair": {
+                    "logicalOrderId": str(order.id),
+                    "sourceFillId": order.source_fill_id,
+                    "sourceWallet": order.source_wallet,
+                }
+            },
+        )
+        repaired += 1
+    if repaired:
+        await session.flush()
+    return repaired
 
 
 async def reconcile_live_funding_payments(
