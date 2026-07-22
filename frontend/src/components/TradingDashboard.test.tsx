@@ -1,3 +1,4 @@
+import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import type { PaperCopyAllocation } from "@/types/paper";
@@ -13,11 +14,46 @@ import {
   liveAllocationSourceVisible,
   liveCopyDecisionStatusPills,
   pnlPerMonitoredHour,
+  PositionOwnerWallet,
   responseError,
   resolveCurrentMonitorStatus,
   resolveCurrentSourceStatus,
   summarizeCopySourceStatuses,
 } from "./TradingDashboard";
+
+describe("open position owner wallet", () => {
+  it("links the full attributed source wallet from an open position", () => {
+    const sourceWallet = "0x1234567890abcdef1234567890abcdef12345678";
+
+    render(
+      <PositionOwnerWallet
+        accountKey="live-test"
+        sourceLabel="Profitable vault"
+        sourceWallet={sourceWallet}
+      />,
+    );
+
+    expect(screen.getByText("Owner wallet")).toBeInTheDocument();
+    expect(screen.getByText(sourceWallet)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: `Open owner wallet ${sourceWallet}` })).toHaveAttribute(
+      "href",
+      `/wallets/${sourceWallet}`,
+    );
+  });
+
+  it("does not create a wallet link for an unattributed exchange position", () => {
+    render(
+      <PositionOwnerWallet
+        accountKey="live-test"
+        sourceLabel="Exchange position"
+        sourceWallet="__exchange__"
+      />,
+    );
+
+    expect(screen.getByText("No attributed source wallet")).toBeInTheDocument();
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+  });
+});
 
 function copyDecision(overrides: Partial<LiveCopyDecision>): LiveCopyDecision {
   return {

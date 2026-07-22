@@ -1253,7 +1253,6 @@ function PositionRow({
   const unrealizedPnl = numberValue(position.unrealizedPnlUsd ?? 0);
   const realizedPnl = numberValue(position.realizedPnlUsd ?? 0);
   const fundingUsd = numberValue(position.fundingUsd ?? 0);
-  const sourceName = sourceDisplayName(position.sourceLabel, position.sourceWallet);
   const closeTitle =
     livePosition !== null
       ? "Close live position"
@@ -1272,21 +1271,11 @@ function PositionRow({
               {formatLeverage(position.leverage, position.marginMode)}
             </span>
           </div>
-          {isLiveExchangeSource(position.sourceWallet) ? (
-            <p className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink">
-              {sourceName}
-            </p>
-          ) : (
-            <Link
-              href={`/wallets/${position.sourceWallet}`}
-              className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink hover:text-brand"
-            >
-              {sourceName}
-            </Link>
-          )}
-          <p className="mt-1 truncate font-mono text-xs text-muted">
-            {isLiveExchangeSource(position.sourceWallet) ? "exchange" : shortAddress(position.sourceWallet)} | {position.accountKey}
-          </p>
+          <PositionOwnerWallet
+            accountKey={position.accountKey}
+            sourceLabel={position.sourceLabel}
+            sourceWallet={position.sourceWallet}
+          />
         </div>
         <RowStat
           label="Unrealized"
@@ -1341,6 +1330,48 @@ function PositionRow({
         )}
       </div>
     </ListRow>
+  );
+}
+
+export function PositionOwnerWallet({
+  accountKey,
+  sourceLabel,
+  sourceWallet,
+}: {
+  accountKey: string;
+  sourceLabel: string | null;
+  sourceWallet: string;
+}) {
+  const isExchange = isLiveExchangeSource(sourceWallet);
+  const sourceName = sourceDisplayName(sourceLabel, sourceWallet);
+  const identity = (
+    <>
+      <span className="block whitespace-normal break-words text-xs font-semibold text-ink">
+        {sourceName}
+      </span>
+      <span className="block break-all font-mono text-[11px] font-normal text-muted">
+        {isExchange ? "No attributed source wallet" : sourceWallet}
+      </span>
+    </>
+  );
+
+  return (
+    <div className="mt-1 min-w-0">
+      <p className="text-[10px] font-medium uppercase leading-4 text-muted">Owner wallet</p>
+      {isExchange ? (
+        <div>{identity}</div>
+      ) : (
+        <Link
+          href={`/wallets/${sourceWallet}`}
+          aria-label={`Open owner wallet ${sourceWallet}`}
+          title={sourceWallet}
+          className="block min-w-0 max-w-full rounded-sm hover:text-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40"
+        >
+          {identity}
+        </Link>
+      )}
+      <p className="mt-0.5 truncate font-mono text-[11px] text-muted">account {accountKey}</p>
+    </div>
   );
 }
 
