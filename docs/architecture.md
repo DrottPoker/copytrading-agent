@@ -876,6 +876,10 @@ the entry part's immutable first processing claim. An unresolved entry becomes
 the terminal no-order decision `live_entry_preparation_expired`; reduce and
 close parts are not expired by this pre-intent deadline. Once an order exists,
 its original `created_at` and the normal intent-expiry path remain authoritative.
+An exit from a source without an attributed position is ignored without retry
+when another source currently owns that market. Truly incomplete or conflicting
+lifecycle proof remains retryable and never creates an order until ownership is
+proven.
 The renewable `live_execution:{account_key}` fence is shared by order
 submission, reconciliation, and margin-setting synchronization. A busy fence is
 a transient coordination result, not evidence of another visible fill. A fully

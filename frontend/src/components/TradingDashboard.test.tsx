@@ -22,29 +22,27 @@ import {
 } from "./TradingDashboard";
 
 describe("open position owner wallet", () => {
-  it("links the full attributed source wallet from an open position", () => {
+  it("links the source name without printing the full wallet address", () => {
     const sourceWallet = "0x1234567890abcdef1234567890abcdef12345678";
 
     render(
       <PositionOwnerWallet
-        accountKey="live-test"
         sourceLabel="Profitable vault"
         sourceWallet={sourceWallet}
       />,
     );
 
-    expect(screen.getByText("Owner wallet")).toBeInTheDocument();
-    expect(screen.getByText(sourceWallet)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: `Open owner wallet ${sourceWallet}` })).toHaveAttribute(
-      "href",
-      `/wallets/${sourceWallet}`,
-    );
+    expect(screen.getByText("Owner")).toBeInTheDocument();
+    expect(screen.queryByText(sourceWallet)).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open owner wallet Profitable vault" }))
+      .toHaveAttribute("href", `/wallets/${sourceWallet}`);
+    expect(screen.getByRole("link", { name: "Open owner wallet Profitable vault" }))
+      .toHaveAttribute("title", sourceWallet);
   });
 
   it("does not create a wallet link for an unattributed exchange position", () => {
     render(
       <PositionOwnerWallet
-        accountKey="live-test"
         sourceLabel="Exchange position"
         sourceWallet="__exchange__"
       />,
@@ -200,6 +198,30 @@ describe("dashboard mutation errors", () => {
 });
 
 describe("live copy decisions", () => {
+  it("explains known ownership conflicts separately from ambiguous history", () => {
+    const ownedByOtherSource = buildLiveCopyDecisionActivities(
+      [
+        copyDecision({
+          outcome: "baseline_ignored",
+          plannedAction: "close",
+          reason: "live_exit_market_owned_by_other_source",
+        }),
+      ],
+      new Map(),
+    )[0];
+    const ambiguousHistory = buildLiveCopyDecisionActivities(
+      [copyDecision({ outcome: "retryable", reason: "live_source_attribution_ambiguous" })],
+      new Map(),
+    )[0];
+
+    expect(ownedByOtherSource.stats.find((stat) => stat.label === "Reason")?.value).toBe(
+      "exit ignored: position owned by another source wallet",
+    );
+    expect(ambiguousHistory.stats.find((stat) => stat.label === "Reason")?.value).toBe(
+      "ownership could not be proven from live fill history",
+    );
+  });
+
   it("keeps a terminal no-order decision out of fill and order language", () => {
     const decision = copyDecision({
       outcome: "terminal_skip",

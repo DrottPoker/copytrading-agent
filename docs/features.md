@@ -972,6 +972,11 @@ What it does:
   and exchange-only display positions do not affect these counts.
 - The dashboard separates total, realized, and unrealized PnL and uses compact
   responsive list rows instead of wide tables or large cards.
+- Trading summary cards, section headers, and activity rows use the denser
+  trading layout. Desktop activity keeps all available statistics on one row,
+  while narrow screens flow them into two- or three-column grids.
+- Open position ownership is shown as a clickable source name. The full wallet
+  address remains available in the link tooltip without consuming row space.
 - Dashboard pages use a shared top panel with page context first, followed by a
   left-aligned action row for updated state, controls, filters, and status
   pills. The refresh button is anchored to the right, and auto-refresh uses icon
@@ -1195,9 +1200,11 @@ What it does:
   while unrelated coins continue.
 - Restores a missing source-attributed position from matching aggregate exchange
   exposure only when executed fills reconstruct the current lifecycle and its
-  aggregate matches the exchange side and size. Competing sources or unexplained
-  manual exposure remain retryable without an order. Recovery restores only the
-  proven source size.
+  aggregate matches the exchange side and size. Conflicting historical proof or
+  unexplained manual exposure remains retryable without an order. A close from
+  a source that does not own a currently reserved market is instead completed
+  once as `live_exit_market_owned_by_other_source`, without an order or further
+  retries. Recovery restores only the proven source size.
 - Treats every pending or retryable `reduce`, `close`, and `flip_close` as owned
   recovery work. The source remains watched, retains realtime and recovery
   priority, and stays routed to the affected account even when its position or

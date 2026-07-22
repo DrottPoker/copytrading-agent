@@ -765,7 +765,7 @@ function HeroMetric({
   value: string;
 }) {
   return (
-    <DashboardMetric detail={detail} icon={Icon} label={label} tone={tone} value={value} />
+    <DashboardMetric compact detail={detail} icon={Icon} label={label} tone={tone} value={value} />
   );
 }
 
@@ -780,7 +780,7 @@ function ListPanel({
 }) {
   return (
     <section className="ui-panel overflow-hidden">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-3 py-2">
+      <div className="flex min-h-9 flex-wrap items-center justify-between gap-2 border-b border-line px-3 py-1.5">
         <h2 className="text-sm font-semibold text-ink">{title}</h2>
         {meta ? <p className="text-xs text-muted">{meta}</p> : null}
       </div>
@@ -892,8 +892,8 @@ function AccountRow({
   const paperAccount = account.paperAccount;
   return (
     <ListRow>
-      <div className="grid gap-2 sm:grid-cols-[1.2fr_repeat(5,minmax(0,1fr))_auto] sm:items-center">
-        <div className="min-w-0">
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 sm:grid-cols-3 xl:grid-cols-[1.2fr_repeat(5,minmax(0,1fr))_auto] xl:items-center">
+        <div className="col-span-2 min-w-0 sm:col-span-3 xl:col-span-1">
           <div className="flex flex-wrap items-center gap-1">
             <p className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold text-ink">{account.label}</p>
             <StatusPill label={account.accountType} tone={account.accountType === "live" ? "positive" : "neutral"} />
@@ -1064,8 +1064,8 @@ function SourceRow({
               <CompactSourcePill label={source.monitorStatus} tone={monitorTone} />
               <CompactSourcePill label={formatSourceStatus(source.sourceStatus)} tone={sourceTone} />
             </div>
-            <p className="mt-0.5 whitespace-normal break-words font-mono text-[11px] leading-4 text-muted">
-              {shortAddress(source.sourceWallet)} | {sourceMeta}
+            <p className="mt-0.5 whitespace-normal break-words text-[11px] leading-4 text-muted">
+              {sourceMeta}
             </p>
             {sourceDetail !== "active slot" && sourceDetail !== "active live source" ? (
               <p className="mt-0.5 whitespace-normal break-words text-[11px] leading-4 text-muted">
@@ -1261,8 +1261,8 @@ function PositionRow({
         : "Execution price unavailable";
   return (
     <ListRow>
-      <div className="grid gap-2 xl:grid-cols-[1.15fr_repeat(8,minmax(0,0.72fr))_auto] xl:items-center">
-        <div className="min-w-0">
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 sm:grid-cols-3 xl:grid-cols-[1.15fr_repeat(8,minmax(0,0.72fr))_auto] xl:items-center">
+        <div className="col-span-2 min-w-0 sm:col-span-3 xl:col-span-1">
           <div className="flex flex-wrap items-center gap-1">
             <p className="font-semibold text-ink">{position.coin}</p>
             <StatusPill label={position.accountType} tone={position.accountType === "live" ? "positive" : "neutral"} />
@@ -1272,7 +1272,6 @@ function PositionRow({
             </span>
           </div>
           <PositionOwnerWallet
-            accountKey={position.accountKey}
             sourceLabel={position.sourceLabel}
             sourceWallet={position.sourceWallet}
           />
@@ -1320,7 +1319,7 @@ function PositionRow({
             onClick={() => onClose(position)}
             disabled={!canClose || isClosing}
             title={closeTitle}
-            className="ui-button-danger h-8 gap-1.5 px-2.5 text-xs disabled:cursor-not-allowed disabled:border-line disabled:bg-subtle disabled:text-faint"
+            className="ui-button-danger col-span-2 h-7 gap-1.5 px-2 text-xs disabled:cursor-not-allowed disabled:border-line disabled:bg-subtle disabled:text-faint sm:col-span-3 xl:col-span-1"
           >
             {isClosing ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <XCircle className="h-3.5 w-3.5" aria-hidden="true" />}
             Close
@@ -1334,43 +1333,30 @@ function PositionRow({
 }
 
 export function PositionOwnerWallet({
-  accountKey,
   sourceLabel,
   sourceWallet,
 }: {
-  accountKey: string;
   sourceLabel: string | null;
   sourceWallet: string;
 }) {
   const isExchange = isLiveExchangeSource(sourceWallet);
   const sourceName = sourceDisplayName(sourceLabel, sourceWallet);
-  const identity = (
-    <>
-      <span className="block whitespace-normal break-words text-xs font-semibold text-ink">
-        {sourceName}
-      </span>
-      <span className="block break-all font-mono text-[11px] font-normal text-muted">
-        {isExchange ? "No attributed source wallet" : sourceWallet}
-      </span>
-    </>
-  );
 
   return (
-    <div className="mt-1 min-w-0">
-      <p className="text-[10px] font-medium uppercase leading-4 text-muted">Owner wallet</p>
+    <div className="mt-0.5 flex min-w-0 items-baseline gap-1.5 text-xs">
+      <span className="shrink-0 text-[10px] font-medium uppercase text-muted">Owner</span>
       {isExchange ? (
-        <div>{identity}</div>
+        <span className="min-w-0 truncate font-semibold text-ink">No attributed source wallet</span>
       ) : (
         <Link
           href={`/wallets/${sourceWallet}`}
-          aria-label={`Open owner wallet ${sourceWallet}`}
+          aria-label={`Open owner wallet ${sourceName}`}
           title={sourceWallet}
-          className="block min-w-0 max-w-full rounded-sm hover:text-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40"
+          className="min-w-0 truncate rounded-sm font-semibold text-ink hover:text-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40"
         >
-          {identity}
+          {sourceName}
         </Link>
       )}
-      <p className="mt-0.5 truncate font-mono text-[11px] text-muted">account {accountKey}</p>
     </div>
   );
 }
@@ -1380,8 +1366,8 @@ function WalletHistoryRow({ wallet }: { wallet: WalletPerformanceRow }) {
   const isMonitored = wallet.monitorStatus === "monitored";
   return (
     <ListRow>
-      <div className="grid gap-2 xl:grid-cols-[1.05fr_repeat(6,minmax(0,0.75fr))] xl:items-center">
-        <div className="min-w-0">
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 sm:grid-cols-3 xl:grid-cols-[1.05fr_repeat(6,minmax(0,0.75fr))] xl:items-center">
+        <div className="col-span-2 min-w-0 sm:col-span-3 xl:col-span-1">
           <div className="flex flex-wrap items-center gap-1">
             <Link
               href={`/wallets/${wallet.sourceWallet}`}
@@ -1394,10 +1380,7 @@ function WalletHistoryRow({ wallet }: { wallet: WalletPerformanceRow }) {
               tone={isMonitored ? "positive" : "neutral"}
             />
           </div>
-          <p className="mt-1 truncate font-mono text-xs text-muted">
-            {shortAddress(wallet.sourceWallet)}
-          </p>
-          <p className="mt-1 text-xs text-muted">
+          <p className="mt-0.5 text-[11px] leading-4 text-muted">
             {formatPoolRank(wallet.poolRank)}, {formatScore(wallet.score)} score
           </p>
         </div>
@@ -1421,8 +1404,8 @@ function ClosedTradeRow({ trade }: { trade: PaperClosedTrade }) {
   const netPnl = numberValue(trade.netPnlUsd);
   return (
     <ListRow>
-      <div className="grid gap-2 xl:grid-cols-[1.05fr_0.85fr_0.8fr_0.85fr_0.85fr_0.75fr] xl:items-center">
-        <div className="min-w-0">
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 sm:grid-cols-3 xl:grid-cols-[1.05fr_0.85fr_0.8fr_0.85fr_0.85fr_0.75fr] xl:items-center">
+        <div className="col-span-2 min-w-0 sm:col-span-3 xl:col-span-1">
           <div className="flex flex-wrap items-center gap-1">
             <p className="font-semibold text-ink">{trade.coin}</p>
             {trade.side ? <StatusPill label={trade.side} tone={trade.side === "long" ? "positive" : "warning"} /> : null}
@@ -1435,9 +1418,6 @@ function ClosedTradeRow({ trade }: { trade: PaperClosedTrade }) {
           >
             {sourceDisplayName(trade.sourceLabel, trade.sourceWallet)}
           </Link>
-          <p className="mt-1 truncate font-mono text-xs text-muted">
-            {shortAddress(trade.sourceWallet)} | {trade.accountKey}
-          </p>
         </div>
         <RowStat label="Net PnL" value={formatCurrency(trade.netPnlUsd)} detail={`${formatCurrency(trade.realizedPnlUsd)} realized`} tone={netPnl >= 0 ? "positive" : "danger"} />
         <RowStat label="Closed" value={formatShortDateTime(trade.closedAt)} detail={formatTradeDuration(trade.durationMs)} />
@@ -1454,12 +1434,10 @@ function LiveClosedTradeRow({ trade }: { trade: TradingClosedTrade }) {
   const sourceName = sourceDisplayName(trade.sourceLabel, trade.sourceWallet);
   return (
     <ListRow>
-      <div className="grid gap-2 xl:grid-cols-[1.05fr_repeat(7,minmax(0,0.8fr))] xl:items-center">
-        <div className="min-w-0">
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 sm:grid-cols-3 xl:grid-cols-[1.05fr_repeat(7,minmax(0,0.8fr))] xl:items-center">
+        <div className="col-span-2 min-w-0 sm:col-span-3 xl:col-span-1">
           <div className="flex flex-wrap items-center gap-1">
             <p className="font-semibold text-ink">{trade.coin}</p>
-            <StatusPill label="live" tone="positive" />
-            <StatusPill label="closed trade" tone="neutral" />
             <StatusPill label={trade.side} tone={trade.side === "long" ? "positive" : "warning"} />
           </div>
           {isLiveExchangeSource(trade.sourceWallet) ? (
@@ -1474,9 +1452,6 @@ function LiveClosedTradeRow({ trade }: { trade: TradingClosedTrade }) {
               {sourceName}
             </Link>
           )}
-          <p className="mt-1 truncate font-mono text-xs text-muted">
-            {isLiveExchangeSource(trade.sourceWallet) ? "exchange" : shortAddress(trade.sourceWallet)} | {trade.accountKey}
-          </p>
         </div>
         <RowStat label="Net PnL" value={formatCurrency(trade.netPnlUsd)} detail={`${formatCurrency(trade.realizedPnlUsd)} realized`} tone={netPnl >= 0 ? "positive" : "danger"} />
         <RowStat label="Closed" value={formatShortDateTime(trade.closedAt)} detail={formatTradeDuration(trade.durationMs)} />
@@ -1497,7 +1472,7 @@ function LiveClosedTradeRow({ trade }: { trade: TradingClosedTrade }) {
 function FillRow({ fill }: { fill: ExecutionActivityItem }) {
   return (
     <ListRow>
-      <div className="grid gap-2 xl:grid-cols-[1.05fr_0.7fr_0.85fr_0.85fr_0.85fr_0.9fr] xl:items-center">
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 sm:grid-cols-3 xl:grid-cols-[minmax(190px,1.25fr)_repeat(auto-fit,minmax(105px,1fr))] xl:items-start">
         <RowIdentityBlock identity={fill.identity} pills={fill.pills} />
         {fill.stats.map((stat) => (
           <RowStat
@@ -1521,7 +1496,7 @@ function RowIdentityBlock({
   pills: RowPill[];
 }) {
   return (
-    <div className="min-w-0">
+    <div className="col-span-2 min-w-0 sm:col-span-3 xl:col-span-1">
       <div className="flex flex-wrap items-center gap-1">
         {identity.href ? (
           <Link
@@ -1573,7 +1548,7 @@ function fillSkipDetail(fill: PaperCopyFill) {
 }
 
 function ListRow({ children }: { children: ReactNode }) {
-  return <div className="border-b border-line px-3 py-1.5 last:border-b-0">{children}</div>;
+  return <div className="border-b border-line px-3 py-1 last:border-b-0">{children}</div>;
 }
 
 function RowStat({
@@ -1591,9 +1566,9 @@ function RowStat({
     tone === "positive" ? "text-positive" : tone === "danger" ? "text-danger" : "text-ink";
   return (
     <div className="min-w-0">
-      <p className="truncate text-[11px] font-medium uppercase text-muted">{label}</p>
-      <p className={`mt-0.5 whitespace-normal break-words font-mono text-xs font-semibold ${valueClass}`}>{value}</p>
-      {detail ? <p className="mt-0.5 whitespace-normal break-words text-[11px] text-muted">{detail}</p> : null}
+      <p className="truncate text-[10px] font-medium uppercase leading-3 text-muted">{label}</p>
+      <p className={`whitespace-normal break-words font-mono text-xs font-semibold leading-4 ${valueClass}`}>{value}</p>
+      {detail ? <p className="whitespace-normal break-words text-[11px] leading-4 text-muted">{detail}</p> : null}
     </div>
   );
 }
@@ -3510,6 +3485,17 @@ function liveOrderStatusTone(status: string): Tone {
 }
 
 function reasonLabel(value: string) {
+  const labels: Record<string, string> = {
+    live_exit_market_owned_by_other_source:
+      "exit ignored: position owned by another source wallet",
+    live_market_reserved_by_other_source:
+      "entry blocked: market owned by another source wallet",
+    live_source_attribution_ambiguous:
+      "ownership could not be proven from live fill history",
+  };
+  if (labels[value]) {
+    return labels[value];
+  }
   return value.replaceAll("_", " ");
 }
 

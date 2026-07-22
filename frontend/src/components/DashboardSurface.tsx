@@ -12,6 +12,7 @@ const metricToneClasses: Record<DashboardTone, string> = {
 
 export function DashboardMetric({
   action,
+  compact = false,
   detail,
   icon: Icon,
   label,
@@ -19,6 +20,7 @@ export function DashboardMetric({
   value,
 }: {
   action?: ReactNode;
+  compact?: boolean;
   detail: ReactNode;
   icon: LucideIcon;
   label: string;
@@ -26,25 +28,25 @@ export function DashboardMetric({
   value: ReactNode;
 }) {
   return (
-    <article className="ui-metric min-w-0">
+    <article className={`ui-metric min-w-0 ${compact ? "!p-2.5" : ""}`.trim()}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="truncate text-[11px] font-semibold uppercase tracking-[0.05em] text-muted">
             {label}
           </p>
-          <div className="mt-1.5 truncate text-xl font-semibold leading-tight text-ink tabular-nums">
+          <div className={`${compact ? "mt-1 text-lg" : "mt-1.5 text-xl"} truncate font-semibold leading-tight text-ink tabular-nums`}>
             {value}
           </div>
         </div>
         {action ?? (
           <span
-            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md ${metricToneClasses[tone]}`}
+            className={`flex shrink-0 items-center justify-center rounded-md ${compact ? "h-7 w-7" : "h-8 w-8"} ${metricToneClasses[tone]}`}
           >
             <Icon className="h-4 w-4" aria-hidden="true" />
           </span>
         )}
       </div>
-      <div className="mt-2 truncate text-xs leading-5 text-muted">{detail}</div>
+      <div className={`${compact ? "mt-1 leading-4" : "mt-2 leading-5"} truncate text-xs text-muted`}>{detail}</div>
     </article>
   );
 }

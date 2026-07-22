@@ -199,6 +199,12 @@ class LiveCopyPartDeferred(RuntimeError):
         self.reason = reason
 
 
+class LiveCopyPartIgnored(RuntimeError):
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 class LiveCopyPartTerminal(RuntimeError):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
@@ -831,6 +837,16 @@ async def process_live_copy_fills(
                         fill_result = live_skip(exc.reason)
                         lifecycle_terminal = True
                         terminal_entry = True
+                    except LiveCopyPartIgnored as exc:
+                        await mark_live_copy_fill_baseline_ignored(
+                            session,
+                            source_state=lifecycle_state,
+                            fill_state=fill_state,
+                            part=part,
+                            reason=exc.reason,
+                            record_preexisting_market=False,
+                        )
+                        continue
                     except LiveCopyPartDeferred as exc:
                         await mark_live_copy_fill_retryable(
                             session,
@@ -1030,6 +1046,15 @@ async def live_copy_part_is_unowned_source_lifecycle(
         and is_preexisting_source_add(part.start_position, side=part.side)
     )
     if position is None and not baseline_part and continuation_part:
+        if part.action in {"reduce", "close", "flip_close"} and (
+            await live_market_is_reserved_by_other_source(
+                session,
+                account_key=account.key,
+                source_wallet=source_state.source_wallet,
+                coin=coin,
+            )
+        ):
+            raise LiveCopyPartIgnored("live_exit_market_owned_by_other_source")
         position = await recover_live_source_position_attribution(
             session,
             account=account,

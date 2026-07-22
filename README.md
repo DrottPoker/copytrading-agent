@@ -763,6 +763,10 @@ Sizing policy:
 - A market already reserved by another source terminalizes a new entry as
   `live_market_reserved_by_other_source` before attribution recovery. Strict
   attribution proof is never weakened to force an order through.
+- An exit from a source that does not own the market is recorded once as
+  `live_exit_market_owned_by_other_source` without creating an order or retrying.
+  Genuinely incomplete or conflicting lifecycle proof remains retryable as
+  `live_source_attribution_ambiguous`.
 - The time-sensitive copy path uses the most recent authoritative account
   reconciliation snapshot and does not run a full reconciliation before a new
   entry. Dedicated reconciliation remains responsible for refreshing exchange
@@ -906,6 +910,9 @@ Sizing policy:
   by realized PnL, pool rank, and wallet address.
 - Open Positions is sorted by durable opening time ascending with deterministic
   position identity tie-breakers, so price updates cannot move existing rows.
+- Trading uses compact responsive cards and list rows. Open Positions shows the
+  owning source as a clickable name and keeps the full wallet address in the
+  link tooltip instead of printing it in every row.
 - Closed trade history comes from paper `close` and `flip_close` executions.
   Raw fills and skip rows remain available in the API for diagnostics, but they
   are not shown as trade history. Closed trade rows show a liquidation tag when

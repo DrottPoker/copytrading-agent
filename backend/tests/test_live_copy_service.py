@@ -692,8 +692,17 @@ async def test_expired_entry_preparation_terminalizes_only_without_an_order(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("known_other_owner", "expected_reason"),
+    [
+        (False, "unowned_preexisting_lifecycle"),
+        (True, "live_exit_market_owned_by_other_source"),
+    ],
+)
 async def test_unowned_close_becomes_lifecycle_state_without_trading_order(
     monkeypatch,
+    known_other_owner: bool,
+    expected_reason: str,
 ) -> None:
     account = live_account(last_reconciled_at=datetime.now(UTC))
     source_state = live_source_lifecycle_state()
@@ -751,6 +760,10 @@ async def test_unowned_close_becomes_lifecycle_state_without_trading_order(
         return LiveCopyPartClaim(state=fill_state, claimed=True, reason="claimed")
 
     async def unowned_lifecycle(*_args, **_kwargs):
+        if known_other_owner:
+            raise live_copy_service.LiveCopyPartIgnored(
+                "live_exit_market_owned_by_other_source"
+            )
         return True
 
     async def fake_mark_ignored(*_args, **kwargs):
@@ -830,7 +843,7 @@ async def test_unowned_close_becomes_lifecycle_state_without_trading_order(
     )
 
     assert result == PaperCopyBatchResult()
-    assert ignored_reasons == ["unowned_preexisting_lifecycle"]
+    assert ignored_reasons == [expected_reason]
     assert completed_fill_ids == ["close-1"]
 
 
@@ -1405,6 +1418,11 @@ async def test_close_without_owned_or_exchange_position_is_unowned_lifecycle(
         "recover_live_source_position_attribution",
         no_position,
     )
+    monkeypatch.setattr(
+        live_copy_service,
+        "live_market_is_reserved_by_other_source",
+        no_position,
+    )
 
     is_unowned = await live_copy_service.live_copy_part_is_unowned_source_lifecycle(
         object(),
@@ -1427,6 +1445,50 @@ async def test_close_without_owned_or_exchange_position_is_unowned_lifecycle(
 
 
 @pytest.mark.asyncio
+async def test_exit_reserved_by_other_source_is_ignored_without_recovery(monkeypatch) -> None:
+    async def no_position(*_args, **_kwargs):
+        return None
+
+    async def market_reserved(*_args, **_kwargs):
+        return True
+
+    async def unexpected_recovery(*_args, **_kwargs):
+        raise AssertionError("An exit cannot recover attribution from another source's market.")
+
+    monkeypatch.setattr(live_copy_service, "load_live_source_position", no_position)
+    monkeypatch.setattr(
+        live_copy_service,
+        "live_market_is_reserved_by_other_source",
+        market_reserved,
+    )
+    monkeypatch.setattr(
+        live_copy_service,
+        "recover_live_source_position_attribution",
+        unexpected_recovery,
+    )
+
+    with pytest.raises(live_copy_service.LiveCopyPartIgnored) as exc_info:
+        await live_copy_service.live_copy_part_is_unowned_source_lifecycle(
+            object(),
+            account=live_account(last_reconciled_at=datetime(2026, 1, 1, tzinfo=UTC)),
+            source_state=live_source_lifecycle_state(),
+            fill={"externalFillId": "close-1", "coin": "CASHCAT", "timestampMs": 1_000},
+            part=SourceFillPart(
+                action="close",
+                side="long",
+                source_size=Decimal("100"),
+                source_notional_usd=Decimal("4"),
+                sequence_index=0,
+                close_ratio=Decimal("0.5"),
+                start_position=Decimal("200"),
+            ),
+            baseline_part=False,
+        )
+
+    assert exc_info.value.reason == "live_exit_market_owned_by_other_source"
+
+
+@pytest.mark.asyncio
 async def test_ambiguous_exit_remains_retryable(monkeypatch) -> None:
     async def no_position(*_args, **_kwargs):
         return None
@@ -1434,8 +1496,8 @@ async def test_ambiguous_exit_remains_retryable(monkeypatch) -> None:
     async def ambiguous_recovery(*_args, **_kwargs):
         raise live_copy_service.LiveCopyPartDeferred("live_source_attribution_ambiguous")
 
-    async def unexpected_reservation_check(*_args, **_kwargs):
-        raise AssertionError("Exit attribution must not become an entry reservation terminal.")
+    async def market_not_reserved(*_args, **_kwargs):
+        return False
 
     monkeypatch.setattr(live_copy_service, "load_live_source_position", no_position)
     monkeypatch.setattr(
@@ -1446,7 +1508,7 @@ async def test_ambiguous_exit_remains_retryable(monkeypatch) -> None:
     monkeypatch.setattr(
         live_copy_service,
         "live_market_is_reserved_by_other_source",
-        unexpected_reservation_check,
+        market_not_reserved,
     )
 
     with pytest.raises(live_copy_service.LiveCopyPartDeferred) as exc_info:
