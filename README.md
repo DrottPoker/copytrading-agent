@@ -556,8 +556,10 @@ Live activation and account lifecycle:
   This retry uses the persisted leverage without requiring a fresh source
   leverage read. It rechecks current price drift and the normal account,
   lifecycle, reconciliation, risk, and capacity gates. The original 30-second TTL is
-  never renewed, and expiry becomes `live_entry_intent_expired`. Generic
-  leverage-missing skips are not reusable persisted intents.
+  never renewed, and expiry becomes `live_entry_intent_expired`. The operator
+  message distinguishes expiry before any submission from expiry after an
+  earlier exchange attempt or rejection. Generic leverage-missing skips are not
+  reusable persisted intents.
 - Weekly loss usage is net realized PnL after fees and signed Hyperliquid
   funding plus current aggregate
   exchange unrealized PnL. Its percentage base is reconstructed start-of-week

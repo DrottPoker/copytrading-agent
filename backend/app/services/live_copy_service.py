@@ -3107,7 +3107,7 @@ def live_submit_failure_reason(error: LiveOrderSubmitError) -> str:
         return "live_reconciliation_incomplete"
     if "fresh exchange reconciliation snapshot" in message:
         return "live_reconciliation_stale"
-    if "entry intent expired" in message:
+    if "live entry" in message and "expired" in message:
         return "live_entry_intent_expired"
     if "weekly loss" in message:
         return "live_weekly_loss_limit"

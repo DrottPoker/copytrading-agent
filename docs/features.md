@@ -1090,6 +1090,8 @@ What it does:
   leverage read, then rechecks current price drift and the normal account,
   lifecycle, reconciliation, risk, and capacity gates. The original TTL is
   never renewed; expiry terminalizes as `live_entry_intent_expired`.
+  Expiry messages distinguish an intent that never reached submission from a
+  retry window that ended after an earlier exchange attempt or rejection.
   Generic leverage-missing skips are not reusable intents. The trading worker
   recovers durable outbox rows after restart.
 - Persists close-all as a resumable operation with per-position progress. The

@@ -13,6 +13,7 @@ import {
   displayLivePositions,
   liveAllocationSourceVisible,
   liveCopyDecisionStatusPills,
+  liveOrderResultLabel,
   pnlPerMonitoredHour,
   PositionOwnerWallet,
   responseError,
@@ -20,6 +21,28 @@ import {
   resolveCurrentSourceStatus,
   summarizeCopySourceStatuses,
 } from "./TradingDashboard";
+
+describe("live order result messages", () => {
+  it("clarifies legacy expiry rows that already reached the exchange", () => {
+    expect(
+      liveOrderResultLabel(
+        "Live entry intent expired before exchange submission.",
+        "2026-07-25T00:04:00Z",
+      ),
+    ).toBe(
+      "Live entry retry window expired after an earlier exchange submission attempt.",
+    );
+  });
+
+  it("keeps the pre-submission message when no exchange attempt occurred", () => {
+    expect(
+      liveOrderResultLabel(
+        "Live entry intent expired before exchange submission.",
+        null,
+      ),
+    ).toBe("Live entry intent expired before exchange submission.");
+  });
+});
 
 describe("open position owner wallet", () => {
   it("links the source name without printing the full wallet address", () => {

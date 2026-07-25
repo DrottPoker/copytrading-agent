@@ -2128,12 +2128,30 @@ function buildLiveOrderActivity(
       },
       {
         label: "Result",
-        value: error ? reasonLabel(error.replace(/^skip:/, "")) : reasonLabel(order.status),
+        value: liveOrderResultLabel(error, order.submittedAt) ?? reasonLabel(order.status),
         detail: resultDetail,
         tone: error ? "danger" : "neutral",
       },
     ],
   };
+}
+
+export function liveOrderResultLabel(
+  error: string | null | undefined,
+  submittedAt: string | null,
+) {
+  const normalizedError = error?.trim();
+  if (!normalizedError) {
+    return null;
+  }
+  if (
+    submittedAt &&
+    normalizedError.replace(/\.$/, "") ===
+      "Live entry intent expired before exchange submission"
+  ) {
+    return "Live entry retry window expired after an earlier exchange submission attempt.";
+  }
+  return reasonLabel(normalizedError.replace(/^skip:/, ""));
 }
 
 function liveActivitySourceKey(item: TradingFill | TradingOrder) {

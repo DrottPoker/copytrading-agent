@@ -105,6 +105,15 @@ LIVE_ACCOUNT_KEY_MAX_LENGTH = 64
 LIVE_CAPITAL_MODE_UNIFIED = "unified"
 LIVE_CAPITAL_MODE_STANDARD_PER_DEX = "standard_per_dex"
 LIVE_CAPITAL_MODES = {LIVE_CAPITAL_MODE_UNIFIED, LIVE_CAPITAL_MODE_STANDARD_PER_DEX}
+LIVE_ENTRY_EXPIRED_BEFORE_SUBMISSION_ERROR = (
+    "Live entry intent expired before exchange submission."
+)
+LIVE_ENTRY_RETRY_EXPIRED_AFTER_REJECTION_ERROR = (
+    "Live entry retry window expired after Hyperliquid rejected an earlier exchange attempt."
+)
+LIVE_ENTRY_RETRY_EXPIRED_AFTER_ATTEMPT_ERROR = (
+    "Live entry retry window expired after an earlier exchange submission attempt."
+)
 EVM_ADDRESS_PATTERN = re.compile(r"^0x[a-f0-9]{40}$")
 UNIFIED_USER_ABSTRACTION_KEYS = {
     "portfolio",
@@ -2670,13 +2679,14 @@ async def ensure_live_entry_intent_is_fresh(
     ):
         return
 
+    expiry_error = live_entry_expiry_error(order)
     if order is not None and (
         order.status in {"planned", "ready", "failed", "canceled"}
         or (order.status == "rejected" and is_retryable_live_order_submit_failure(order))
     ):
         dispatch = await load_live_order_dispatch(session, order_id=order.id)
         order.status = "canceled"
-        order.error = "Live entry intent expired before exchange submission."
+        order.error = expiry_error
         if dispatch is not None and dispatch.status in {"pending", "dispatching", "uncertain"}:
             dispatch.status = "canceled"
             dispatch.completed_at = datetime.now(UTC)
@@ -2689,9 +2699,19 @@ async def ensure_live_entry_intent_is_fresh(
         )
         await session.commit()
     raise LiveOrderSubmitError(
-        "Live entry intent expired before exchange submission.",
+        expiry_error,
         status_code=409,
     )
+
+
+def live_entry_expiry_error(order: TradingOrder | None) -> str:
+    if order is None:
+        return LIVE_ENTRY_EXPIRED_BEFORE_SUBMISSION_ERROR
+    if order.status == "rejected":
+        return LIVE_ENTRY_RETRY_EXPIRED_AFTER_REJECTION_ERROR
+    if order.submitted_at is not None:
+        return LIVE_ENTRY_RETRY_EXPIRED_AFTER_ATTEMPT_ERROR
+    return LIVE_ENTRY_EXPIRED_BEFORE_SUBMISSION_ERROR
 
 
 async def recover_live_order_dispatches(

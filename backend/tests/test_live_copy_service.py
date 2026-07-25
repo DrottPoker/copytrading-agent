@@ -2580,6 +2580,23 @@ def test_live_copy_combine_batch_results_merges_skip_reasons() -> None:
     assert combined.skip_reasons == {"live_order_submit_error": 3}
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Live entry intent expired before exchange submission.",
+        (
+            "Live entry retry window expired after Hyperliquid rejected "
+            "an earlier exchange attempt."
+        ),
+        "Live entry retry window expired after an earlier exchange submission attempt.",
+    ],
+)
+def test_live_submit_failure_reason_maps_entry_expiry_messages(message: str) -> None:
+    assert live_copy_service.live_submit_failure_reason(
+        LiveOrderSubmitError(message, status_code=409)
+    ) == "live_entry_intent_expired"
+
+
 def test_live_exchange_position_conflict_allows_matching_source_position() -> None:
     conflict = live_exchange_position_conflict(
         source_position=live_position(source_wallet="0xsource", side="long"),

@@ -416,6 +416,51 @@ async def test_expired_retryable_live_entry_cancels_order_and_dispatch() -> None
 
 
 @pytest.mark.asyncio
+async def test_expired_rejected_live_entry_reports_the_prior_exchange_rejection() -> None:
+    settings = Settings(live_trading_entry_intent_ttl_seconds=30)
+    order = live_order(
+        status="rejected",
+        created_at=datetime.now(UTC) - timedelta(seconds=31),
+    )
+    order.error = "Cannot increase position when open interest is at cap."
+    order.submitted_at = datetime.now(UTC) - timedelta(seconds=20)
+    order.raw_payload = {
+        "exchangeReject": {
+            "code": "exchange_open_interest_cap",
+            "transient": True,
+            "retryExhausted": False,
+        }
+    }
+    dispatch = TradingOrderDispatch(
+        id=uuid4(),
+        order_id=order.id,
+        account_key=order.account_key,
+        client_order_id=order.client_order_id,
+        status="pending",
+        attempt_count=2,
+        available_at=datetime.now(UTC),
+    )
+    session = ExpiredIntentSession(dispatch)
+
+    expected_error = (
+        "Live entry retry window expired after Hyperliquid rejected "
+        "an earlier exchange attempt."
+    )
+    with pytest.raises(LiveOrderSubmitError, match=expected_error):
+        await ensure_live_entry_intent_is_fresh(  # type: ignore[arg-type]
+            session,
+            intent=live_intent(created_at=datetime.now(UTC)),
+            order=order,
+            settings=settings,
+        )
+
+    assert order.status == "canceled"
+    assert order.error == expected_error
+    assert dispatch.status == "canceled"
+    assert dispatch.last_error == expected_error
+
+
+@pytest.mark.asyncio
 async def test_fresh_retryable_live_entry_uses_durable_order_created_at() -> None:
     settings = Settings(live_trading_entry_intent_ttl_seconds=30)
     order = live_order(
