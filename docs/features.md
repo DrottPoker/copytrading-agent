@@ -906,9 +906,13 @@ What it does:
   keyboard. Performance analytics include win rate, profit factor, maximum
   drawdown, average win and loss, payoff ratio, expectancy, best and worst trade,
   recovery factor, and win and loss streaks. For live accounts it also shows
-  exchange equity, cash balance, realized PnL, fees, cash-flow-adjusted account
-  return, net external flows, trading PnL, reconciliation state, wallet routing,
-  and vault routing. A compact transaction panel lists every recorded deposit
+  exchange equity, cash balance, net realized PnL after fees and funding,
+  total PnL as net realized plus current unrealized PnL, cash-flow-adjusted
+  account return, reconciliation state, wallet routing, and vault routing.
+  Open margin is the primary exposure KPI with its share of equity; open
+  notional is secondary and shows average leverage. Cash-flow-adjusted PnL and
+  net external flows remain available in account details. A compact transaction
+  panel lists every recorded deposit
   and withdrawal with signed amount, fee, timestamp, ledger identifier, deposit
   and withdrawal totals, net external flow, and manual refresh. Performance is
   labeled from its first verified baseline.

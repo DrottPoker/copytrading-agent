@@ -1295,7 +1295,10 @@ backfill data is unavailable, the previous stored complete exchange snapshot is
 used as a safe baseline and backfill is retried later. Later equity snapshots
 continue the same performance index, so adding capital changes sizing without
 diluting earlier account performance. The Accounts page labels the tracking
-start and exposes account return, net external flows, and trading PnL separately.
+start and keeps cash-flow-adjusted PnL and net external flows in account details.
+Its headline Total PnL and Realized metrics use the same net definitions as the
+Trading page. Open margin is shown before notional with its share of equity,
+while notional carries average leverage.
 `GET /trading/accounts/{account_key}/cash-flows` returns the selected live
 account's complete deposit and withdrawal ledger without attaching the full
 history to the frequently refreshed account summary response. The transaction

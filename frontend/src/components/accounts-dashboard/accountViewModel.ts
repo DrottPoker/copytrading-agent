@@ -279,8 +279,10 @@ function buildLiveAccountView(
   const perpEquity = decimal(account.perpEquityUsd);
   const openMargin = sumNumbers(displayPositions.map((position) => position.marginUsd));
   const balanceScale = Math.max(equity, cash, tradable, perpEquity, openMargin, 1);
-  const realizedPnl = decimal(account.realizedPnlUsd);
   const feeUsd = decimal(account.feeUsd);
+  const fundingUsd = decimal(account.fundingUsd);
+  const realizedPnl = metrics.realizedPnlUsd;
+  const totalPnl = realizedPnl + metrics.unrealizedPnlUsd;
   const timeWeightedReturn =
     account.timeWeightedReturnPct === null ? null : decimal(account.timeWeightedReturnPct);
   const capitalMode = formatCapitalMode(account.capitalMode);
@@ -362,7 +364,7 @@ function buildLiveAccountView(
             value: formatCurrency(account.netExternalFlowsUsd),
           },
           {
-            label: "Trading PnL",
+            label: "Cash-flow-adjusted PnL",
             value: formatCurrency(account.tradingPnlUsd),
           },
         ],
@@ -414,16 +416,14 @@ function buildLiveAccountView(
         value: formatPercent(timeWeightedReturn),
       },
       {
-        detail: `${formatCurrency(account.netExternalFlowsUsd)} net flows`,
-        icon:
-          decimal(account.tradingPnlUsd) >= 0 ? TrendingUp : TrendingDown,
-        label: "Trading PnL",
-        tone:
-          decimal(account.tradingPnlUsd) >= 0 ? "positive" : "danger",
-        value: formatCurrency(account.tradingPnlUsd),
+        detail: "realized + unrealized",
+        icon: totalPnl >= 0 ? TrendingUp : TrendingDown,
+        label: "Total PnL",
+        tone: totalPnl >= 0 ? "positive" : "danger",
+        value: formatCurrency(totalPnl),
       },
       {
-        detail: `${formatCurrency(feeUsd)} fees`,
+        detail: `${formatCurrency(feeUsd)} fees | ${formatCurrency(fundingUsd)} funding`,
         icon: realizedPnl >= 0 ? TrendingUp : TrendingDown,
         label: "Realized",
         tone: realizedPnl >= 0 ? "positive" : "danger",
@@ -438,10 +438,10 @@ function buildLiveAccountView(
         value: formatCurrency(metrics.unrealizedPnlUsd),
       },
       {
-        detail: `${formatPercent(metrics.exposureRatio)} of equity`,
-        icon: Target,
-        label: "Open notional",
-        value: formatCurrency(metrics.openNotionalUsd),
+        detail: `${formatPercent(metrics.allocationUsedPct)} of equity`,
+        icon: Layers,
+        label: "Open margin",
+        value: formatCurrency(metrics.openMarginUsd),
       },
       {
         detail: `${formatMultiple(
@@ -449,9 +449,9 @@ function buildLiveAccountView(
             ? metrics.openNotionalUsd / metrics.openMarginUsd
             : null,
         )} average leverage`,
-        icon: Layers,
-        label: "Open margin",
-        value: formatCurrency(metrics.openMarginUsd),
+        icon: Target,
+        label: "Open notional",
+        value: formatCurrency(metrics.openNotionalUsd),
       },
       {
         detail: reconciliationDetail,
@@ -540,6 +540,10 @@ function buildLiveAccountMetrics({
   const closedNetPnlUsd = sumNumbers(closedTrades.map((trade) => trade.netPnlUsd));
   const winningClosedTradeCount = closedTrades.filter((trade) => decimal(trade.netPnlUsd) > 0).length;
   const skippedFillCount = recentOrders.filter((order) => order.orderType === "skip").length;
+  const netRealizedPnlUsd =
+    decimal(account.realizedPnlUsd) -
+    decimal(account.feeUsd) +
+    decimal(account.fundingUsd);
 
   return {
     allocationUsd: netEquityUsd,
@@ -552,7 +556,7 @@ function buildLiveAccountMetrics({
     netEquityUsd,
     openMarginUsd,
     openNotionalUsd,
-    realizedPnlUsd: decimal(account.realizedPnlUsd),
+    realizedPnlUsd: netRealizedPnlUsd,
     remainingAllocationUsd: Math.max(netEquityUsd - openMarginUsd, 0),
     returnPct:
       account.timeWeightedReturnPct === null

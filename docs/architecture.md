@@ -995,9 +995,14 @@ adapts paper and live account sources into the same account view model, so the
 same panels and row components render the selected account.
 `AccountsDashboard.tsx` owns refresh, account selection, lifecycle actions, and
 create-account orchestration. `accounts-dashboard/accountViewModel.ts` performs
-the paper and live normalization. Focused components own performance analytics,
-risk and exposure, portfolio breakdowns, activity tabs, diagnostics, and the
-create-account dialog. `AccountTransactionsPanel.tsx` loads the selected live
+the paper and live normalization. Its live headline metrics use the same PnL
+semantics as Trading: net realized is gross fill PnL minus fees plus signed
+funding, and total PnL adds current unrealized PnL. Open margin and its equity
+share precede open notional and average leverage. The performance ledger's
+cash-flow-adjusted PnL remains a separately labeled account detail. Focused
+components own performance analytics, risk and exposure, portfolio breakdowns,
+activity tabs, diagnostics, and the create-account dialog.
+`AccountTransactionsPanel.tsx` loads the selected live
 account's full external cash-flow ledger independently from the four-second
 account summary refresh. Its refresh and empty-state actions invoke live account
 reconciliation so missing historical flows are imported before the ledger is
