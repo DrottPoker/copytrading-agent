@@ -1429,6 +1429,13 @@ migration, reconciliation requests Hyperliquid `portfolio` history and selects
 the `allTime.accountValueHistory` series. It separately imports matching
 historical external cash flows, replaces temporary local performance snapshots,
 and rebuilds the chain-linked index from the earliest valid account-value point.
+Hyperliquid `send` ledger events are classified by their source and destination
+addresses, so USDC received from another address is external capital while
+self-addressed transfers between spot and perp dex scopes remain internal. When
+the first deposit predates the first positive portfolio value, reconstruction
+uses a synthetic zero-equity anchor immediately before that deposit and drops
+leading zero-value samples. This prevents initial staged deposits from appearing
+as trading return.
 If either history is missing or incomplete, the previous stored complete
 exchange snapshot becomes the safe zero-return baseline and the historical
 backfill remains eligible for a later retry. Later periods use Modified Dietz

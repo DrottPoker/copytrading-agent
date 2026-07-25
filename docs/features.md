@@ -1118,14 +1118,18 @@ What it does:
   is received and negative funding is paid.
 - Imports Hyperliquid `userNonFundingLedgerUpdates` into an idempotent external
   cash-flow ledger. Deposits, withdrawals, and transfers to or from another
-  account are capital flows. Internal spot/perp and account-class transfers are
-  excluded.
+  account are capital flows, including USDC `send` events classified from their
+  source and destination addresses. Internal spot/perp and account-class
+  transfers are excluded.
 - Establishes a verified performance baseline on the first complete
   reconciliation after the performance ledger is available, then requests
   Hyperliquid `allTime` account-value history and matching historical external
   cash flows. Complete history replaces the temporary zero baseline with
-  chain-linked historical return snapshots. Missing or incomplete history keeps
-  the safe baseline and remains eligible for retry. Later complete
+  chain-linked historical return snapshots. If initial deposits precede the
+  first positive portfolio point, backfill anchors at zero immediately before
+  the earliest deposit and skips leading zero samples so staged starting capital
+  is not counted as profit. Missing or incomplete history keeps the safe
+  baseline and remains eligible for retry. Later complete
   reconciliations continue the cash-flow-adjusted performance index. Partial or
   failed reconciliation does not advance performance.
 - Blocks new live entries after a partial or failed reconciliation until a

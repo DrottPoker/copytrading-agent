@@ -103,7 +103,7 @@ MAX_LIVE_FILL_RECONCILIATION_PAGES = 10
 MAX_LIVE_FILL_HISTORY = 10_000
 MAX_LIVE_FUNDING_RECONCILIATION_PAGES = 10
 MAX_LIVE_CASH_FLOW_RECONCILIATION_PAGES = 10
-LIVE_PERFORMANCE_BACKFILL_VERSION = 1
+LIVE_PERFORMANCE_BACKFILL_VERSION = 2
 LIVE_RECONCILIATION_RUN_RETENTION_DAYS = 30
 LIVE_ACCOUNT_KEY_MAX_LENGTH = 64
 LIVE_CAPITAL_MODE_UNIFIED = "unified"
@@ -3392,9 +3392,7 @@ async def run_live_trading_account_reconciliation(
             historical_cash_flow_result = await fetch_live_cash_flows_by_time(
                 client,
                 user=user_address,
-                start_time_ms=int(
-                    portfolio_history_result.account_values[0][0].timestamp() * 1000
-                ),
+                start_time_ms=0,
                 end_time_ms=int(reconciled_at.timestamp() * 1000),
             )
         perp_snapshot = await fetch_live_perp_states(client, user_address=user_address)
@@ -3482,6 +3480,7 @@ async def run_live_trading_account_reconciliation(
             history_backfilled = await backfill_live_account_performance_history(
                 session,
                 account=account,
+                user_address=user_address,
                 portfolio_history=portfolio_history_result,
                 cash_flow_history=historical_cash_flow_result,
                 reconciled_at=reconciled_at,
@@ -3754,6 +3753,7 @@ async def backfill_live_account_performance_history(
     session: AsyncSession,
     *,
     account: TradingAccount,
+    user_address: str,
     portfolio_history: LivePortfolioHistoryResult,
     cash_flow_history: LiveCashFlowFetchResult | None,
     reconciled_at: datetime,
@@ -3767,11 +3767,16 @@ async def backfill_live_account_performance_history(
         or not cash_flow_history.complete
     ):
         return False
-    account_values = [
-        (recorded_at, equity)
-        for recorded_at, equity in portfolio_history.account_values
-        if recorded_at < reconciled_at
-    ]
+    account_values = live_performance_backfill_account_values(
+        account_key=account.key,
+        user_address=user_address,
+        account_values=[
+            (recorded_at, equity)
+            for recorded_at, equity in portfolio_history.account_values
+            if recorded_at < reconciled_at
+        ],
+        cash_flow_updates=cash_flow_history.updates,
+    )
     if len(account_values) < 2:
         return False
 
@@ -3798,6 +3803,43 @@ async def backfill_live_account_performance_history(
             equity_usd=equity,
         )
     return True
+
+
+def live_performance_backfill_account_values(
+    *,
+    account_key: str,
+    user_address: str,
+    account_values: list[tuple[datetime, Decimal]],
+    cash_flow_updates: tuple[dict[str, Any], ...],
+) -> list[tuple[datetime, Decimal]]:
+    positive_index = next(
+        (index for index, (_, equity) in enumerate(account_values) if equity > ZERO),
+        None,
+    )
+    if positive_index is None:
+        return account_values
+
+    positive_values = account_values[positive_index:]
+    first_positive_at = positive_values[0][0]
+    initial_deposit_times = [
+        parsed["occurred_at"]
+        for update in cash_flow_updates
+        for parsed in [
+            parse_live_account_cash_flow(
+                update,
+                account_key=account_key,
+                user_address=user_address,
+            )
+        ]
+        if parsed is not None
+        and parsed["amount_usd"] > ZERO
+        and parsed["occurred_at"] <= first_positive_at
+    ]
+    if not initial_deposit_times:
+        return account_values
+
+    initial_anchor_at = min(initial_deposit_times) - timedelta(microseconds=1)
+    return [(initial_anchor_at, ZERO), *positive_values]
 
 
 async def ensure_live_account_performance_baseline(
@@ -6158,7 +6200,7 @@ def parse_live_account_cash_flow(
     timestamp_ms = decimal_or_none(update.get("time"))
     if event_type is None or timestamp_ms is None:
         return None
-    if event_type == "spotTransfer":
+    if event_type in {"send", "spotTransfer"}:
         token = string_or_none(delta.get("token"))
         if token is None or token.upper() != "USDC":
             return None
@@ -6182,6 +6224,20 @@ def parse_live_account_cash_flow(
     elif event_type == "withdraw":
         signed_amount = -(absolute_amount + fee)
         flow_type = "withdrawal"
+    elif event_type == "send":
+        if normalized_account is None:
+            return None
+        if (
+            normalized_destination == normalized_account
+            and normalized_user != normalized_account
+        ):
+            signed_amount = absolute_amount
+            flow_type = "send_in"
+        elif normalized_user == normalized_account and normalized_destination != normalized_account:
+            signed_amount = -(absolute_amount + fee)
+            flow_type = "send_out"
+        else:
+            return None
     elif event_type in {"internalTransfer", "spotTransfer", "subAccountTransfer"}:
         if normalized_account is None:
             return None

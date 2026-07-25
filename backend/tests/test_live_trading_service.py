@@ -41,6 +41,7 @@ from app.services.live_trading_service import (
     live_account_key_for_route,
     live_closed_trades_from_fills,
     live_exchange_position_opened_at,
+    live_performance_backfill_account_values,
     live_perp_equity_usd,
     live_position_current_notional,
     live_position_mark_price,
@@ -1758,6 +1759,8 @@ async def test_fetch_live_cash_flows_by_time_uses_bounded_history_window() -> No
 
 
 def test_parse_live_account_cash_flow_tracks_external_capital_only() -> None:
+    account_address = "0x" + "1" * 40
+    other_address = "0x" + "2" * 40
     deposit = parse_live_account_cash_flow(
         {
             "delta": {"type": "deposit", "usdc": "1000"},
@@ -1765,7 +1768,7 @@ def test_parse_live_account_cash_flow_tracks_external_capital_only() -> None:
             "time": 1_750_000_000_000,
         },
         account_key="live_test",
-        user_address="0x" + "1" * 40,
+        user_address=account_address,
     )
     withdrawal = parse_live_account_cash_flow(
         {
@@ -1774,7 +1777,7 @@ def test_parse_live_account_cash_flow_tracks_external_capital_only() -> None:
             "time": 1_750_000_000_100,
         },
         account_key="live_test",
-        user_address="0x" + "1" * 40,
+        user_address=account_address,
     )
     internal = parse_live_account_cash_flow(
         {
@@ -1783,7 +1786,7 @@ def test_parse_live_account_cash_flow_tracks_external_capital_only() -> None:
             "time": 1_750_000_000_200,
         },
         account_key="live_test",
-        user_address="0x" + "1" * 40,
+        user_address=account_address,
     )
     spot_transfer = parse_live_account_cash_flow(
         {
@@ -1791,15 +1794,69 @@ def test_parse_live_account_cash_flow_tracks_external_capital_only() -> None:
                 "type": "spotTransfer",
                 "token": "USDC",
                 "amount": "50",
-                "user": "0x" + "1" * 40,
-                "destination": "0x" + "2" * 40,
+                "user": account_address,
+                "destination": other_address,
                 "fee": "0.1",
             },
             "hash": "0xspot",
             "time": 1_750_000_000_300,
         },
         account_key="live_test",
-        user_address="0x" + "1" * 40,
+        user_address=account_address,
+    )
+    send_in = parse_live_account_cash_flow(
+        {
+            "delta": {
+                "type": "send",
+                "token": "USDC",
+                "amount": "199.8",
+                "user": other_address,
+                "destination": account_address,
+                "sourceDex": "spot",
+                "destinationDex": "",
+                "fee": "0",
+            },
+            "hash": "0xsend-in",
+            "time": 1_750_000_000_400,
+        },
+        account_key="live_test",
+        user_address=account_address,
+    )
+    send_out = parse_live_account_cash_flow(
+        {
+            "delta": {
+                "type": "send",
+                "token": "USDC",
+                "amount": "50",
+                "user": account_address,
+                "destination": other_address,
+                "sourceDex": "",
+                "destinationDex": "spot",
+                "fee": "0.1",
+            },
+            "hash": "0xsend-out",
+            "time": 1_750_000_000_500,
+        },
+        account_key="live_test",
+        user_address=account_address,
+    )
+    internal_send = parse_live_account_cash_flow(
+        {
+            "delta": {
+                "type": "send",
+                "token": "USDC",
+                "amount": "199.8",
+                "user": account_address,
+                "destination": account_address,
+                "sourceDex": "spot",
+                "destinationDex": "xyz",
+                "fee": "0",
+            },
+            "hash": "0xsend-internal",
+            "time": 1_750_000_000_600,
+        },
+        account_key="live_test",
+        user_address=account_address,
     )
 
     assert deposit is not None
@@ -1812,6 +1869,13 @@ def test_parse_live_account_cash_flow_tracks_external_capital_only() -> None:
     assert spot_transfer is not None
     assert spot_transfer["amount_usd"] == Decimal("-50.1")
     assert spot_transfer["flow_type"] == "spot_transfer_out"
+    assert send_in is not None
+    assert send_in["amount_usd"] == Decimal("199.8")
+    assert send_in["flow_type"] == "send_in"
+    assert send_out is not None
+    assert send_out["amount_usd"] == Decimal("-50.1")
+    assert send_out["flow_type"] == "send_out"
+    assert internal_send is None
 
 
 def test_cash_flow_adjusted_return_does_not_dilute_prior_performance() -> None:
@@ -1853,6 +1917,45 @@ def test_parse_live_portfolio_history_uses_sorted_all_time_account_values() -> N
         (datetime.fromtimestamp(1, UTC), Decimal("1000")),
         (datetime.fromtimestamp(2, UTC), Decimal("1100")),
     )
+
+
+def test_performance_backfill_anchors_before_initial_send_deposit() -> None:
+    account_address = "0x" + "1" * 40
+    other_address = "0x" + "2" * 40
+    deposited_at = datetime(2026, 6, 24, 19, 56, tzinfo=UTC)
+    first_history_at = deposited_at + timedelta(hours=2)
+    first_positive_at = deposited_at + timedelta(hours=3)
+    second_history_at = deposited_at + timedelta(days=1)
+
+    account_values = live_performance_backfill_account_values(
+        account_key="live_test",
+        user_address=account_address,
+        account_values=[
+            (first_history_at, Decimal("0")),
+            (first_positive_at, Decimal("199.8")),
+            (second_history_at, Decimal("803.5")),
+        ],
+        cash_flow_updates=(
+            {
+                "delta": {
+                    "type": "send",
+                    "token": "USDC",
+                    "amount": "199.8",
+                    "user": other_address,
+                    "destination": account_address,
+                    "fee": "0",
+                },
+                "hash": "0xinitial-deposit",
+                "time": int(deposited_at.timestamp() * 1000),
+            },
+        ),
+    )
+
+    assert account_values == [
+        (deposited_at - timedelta(microseconds=1), Decimal("0")),
+        (first_positive_at, Decimal("199.8")),
+        (second_history_at, Decimal("803.5")),
+    ]
 
 
 @pytest.mark.asyncio
@@ -1912,6 +2015,7 @@ async def test_performance_backfill_reconstructs_return_without_deposit_dilution
     rebuilt = await backfill_live_account_performance_history(  # type: ignore[arg-type]
         session,
         account=account,
+        user_address="0x" + "1" * 40,
         portfolio_history=LivePortfolioHistoryResult(
             account_values=((started_at, Decimal("1000")), (ended_at, Decimal("2100"))),
             complete=True,

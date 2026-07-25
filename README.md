@@ -1271,10 +1271,16 @@ order sizing if the background loop is late.
 Complete reconciliation also imports Hyperliquid non-funding ledger updates.
 External deposits and withdrawals are stored separately from trading PnL, while
 transfers between spot and perp capital inside the same account remain internal.
+USDC sent in from another Hyperliquid address is treated as an external deposit,
+and USDC sent out to another address is treated as an external withdrawal.
 The first complete reconciliation after the performance migration requests
 Hyperliquid `allTime` account-value history and the matching historical external
 cash flows. It replaces the temporary zero baseline with chain-linked,
 cash-flow-adjusted historical snapshots when both histories are complete. If
+the first external deposit predates the first positive account-value point, the
+backfill anchors at zero immediately before that deposit and ignores leading
+zero-value samples. This preserves the complete initial capital instead of
+mistaking the first partial balance for trading profit. If
 backfill data is unavailable, the previous stored complete exchange snapshot is
 used as a safe baseline and backfill is retried later. Later equity snapshots
 continue the same performance index, so adding capital changes sizing without
