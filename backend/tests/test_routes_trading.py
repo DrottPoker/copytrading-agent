@@ -15,7 +15,7 @@ from app.api.routes_trading import (
     trading_position_read,
 )
 from app.core.config import Settings
-from app.db.models import LiveCopyFillState, TradingPosition
+from app.db.models import LiveCopyFillState, TradingAccountCashFlow, TradingPosition
 from app.schemas.trading import LiveCopyDecisionRead
 from app.services.paper_trading_service import WalletMonitoringSummary
 
@@ -126,6 +126,71 @@ def test_trading_position_read_exposes_position_pnl_and_fill_counts() -> None:
     assert read.add_fill_count == 3
     assert read.close_fill_count == 2
     assert read.entry_execution_delay_ms == 640
+
+
+@pytest.mark.asyncio
+async def test_trading_account_cash_flows_route_returns_complete_signed_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    deposited_at = datetime(2026, 1, 2, 12, tzinfo=UTC)
+    withdrawn_at = deposited_at + timedelta(days=1)
+    withdrawal = TradingAccountCashFlow(
+        id=uuid4(),
+        account_key="live_test",
+        account_type="live",
+        exchange_event_id="withdrawal-1",
+        flow_type="withdrawal",
+        amount_usd=Decimal("-41"),
+        fee_usd=Decimal("1"),
+        occurred_at=withdrawn_at,
+        raw_payload={},
+        created_at=withdrawn_at,
+    )
+    deposit = TradingAccountCashFlow(
+        id=uuid4(),
+        account_key="live_test",
+        account_type="live",
+        exchange_event_id="deposit-1",
+        flow_type="deposit",
+        amount_usd=Decimal("250"),
+        fee_usd=Decimal("0"),
+        occurred_at=deposited_at,
+        raw_payload={},
+        created_at=deposited_at,
+    )
+    session = TradingAccountsRouteSession([[withdrawal, deposit]])
+
+    async def existing_live_account(*_args: Any, **_kwargs: Any) -> object:
+        return object()
+
+    monkeypatch.setattr(routes_trading, "load_live_account", existing_live_account)
+
+    response = await routes_trading.list_trading_account_cash_flows_route(  # type: ignore[arg-type]
+        "live_test",
+        session,
+    )
+
+    assert [item.exchange_event_id for item in response.items] == [
+        "withdrawal-1",
+        "deposit-1",
+    ]
+    assert response.deposits_usd == Decimal("250")
+    assert response.withdrawals_usd == Decimal("41")
+    assert response.net_external_flows_usd == Decimal("209")
+    payload = response.model_dump(mode="json", by_alias=True)
+    assert payload["items"][0]["flowType"] == "withdrawal"
+    assert payload["items"][0]["amountUsd"] == "-41"
+
+    cash_flow_sql = str(
+        session.statements[0].compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    assert "trading_account_cash_flows.account_key = 'live_test'" in cash_flow_sql
+    assert "trading_account_cash_flows.flow_type IN ('deposit', 'withdrawal')" in cash_flow_sql
+    assert "ORDER BY trading_account_cash_flows.occurred_at DESC" in cash_flow_sql
+    assert "LIMIT" not in cash_flow_sql
 
 
 def test_live_copy_decision_read_serializes_the_planned_action_and_lifecycle_fields() -> None:

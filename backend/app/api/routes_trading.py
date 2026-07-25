@@ -13,6 +13,7 @@ from app.db.models import (
     DiscoveryWalletCandidate,
     LiveCopyFillState,
     TradingAccount,
+    TradingAccountCashFlow,
     TradingFill,
     TradingFundingPayment,
     TradingOrder,
@@ -33,6 +34,8 @@ from app.schemas.trading import (
     TradingAccountsResponse,
     TradingAccountStatusRequest,
     TradingCapitalBalanceRead,
+    TradingCashFlowRead,
+    TradingCashFlowsResponse,
     TradingClosedTradeRead,
     TradingFillRead,
     TradingOrderRead,
@@ -910,6 +913,57 @@ async def list_trading_accounts_route(
         ],
         closed_trades=[TradingClosedTradeRead.model_validate(trade) for trade in closed_trades],
         source_metadata=source_metadata,
+        updated_at=datetime.now(UTC),
+    )
+
+
+@router.get(
+    "/accounts/{account_key}/cash-flows",
+    response_model=TradingCashFlowsResponse,
+)
+async def list_trading_account_cash_flows_route(
+    account_key: str,
+    session: Annotated[AsyncSession, Depends(db_session)],
+) -> TradingCashFlowsResponse:
+    try:
+        await load_live_account(session, account_key=account_key)
+    except LiveTradingServiceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    cash_flow_result = await session.scalars(
+        select(TradingAccountCashFlow)
+        .where(
+            TradingAccountCashFlow.account_key == account_key,
+            TradingAccountCashFlow.flow_type.in_(("deposit", "withdrawal")),
+        )
+        .order_by(
+            TradingAccountCashFlow.occurred_at.desc(),
+            TradingAccountCashFlow.id.desc(),
+        )
+    )
+    cash_flows = list(cash_flow_result.all())
+    deposits_usd = sum(
+        (
+            cash_flow.amount_usd
+            for cash_flow in cash_flows
+            if cash_flow.amount_usd > Decimal("0")
+        ),
+        Decimal("0"),
+    )
+    signed_withdrawals_usd = sum(
+        (
+            cash_flow.amount_usd
+            for cash_flow in cash_flows
+            if cash_flow.amount_usd < Decimal("0")
+        ),
+        Decimal("0"),
+    )
+    return TradingCashFlowsResponse(
+        account_key=account_key,
+        items=[TradingCashFlowRead.model_validate(cash_flow) for cash_flow in cash_flows],
+        deposits_usd=deposits_usd,
+        withdrawals_usd=abs(signed_withdrawals_usd),
+        net_external_flows_usd=deposits_usd + signed_withdrawals_usd,
         updated_at=datetime.now(UTC),
     )
 

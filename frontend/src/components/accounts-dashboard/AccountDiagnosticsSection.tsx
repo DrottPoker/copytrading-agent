@@ -6,6 +6,7 @@ import { formatCurrency, formatInteger } from "@/lib/format";
 import type { TradingCapitalBalance } from "@/types/trading";
 
 import type { AccountView, MetricLineView, Tone } from "./types";
+import { AccountTransactionsPanel } from "./AccountTransactionsPanel";
 
 export function AccountDiagnosticsSection({
   accountView,
@@ -16,7 +17,13 @@ export function AccountDiagnosticsSection({
 }) {
   return (
     <>
-      <section className="grid gap-3 xl:grid-cols-[0.8fr_1.2fr]">
+      <section
+        className={
+          accountView.accountType === "live"
+            ? "grid gap-3 xl:grid-cols-2 2xl:grid-cols-[0.8fr_1fr_1.2fr]"
+            : "grid gap-3 xl:grid-cols-[0.8fr_1.2fr]"
+        }
+      >
         <DashboardPanel
           bodyClassName="p-3"
           icon={Activity}
@@ -26,7 +33,23 @@ export function AccountDiagnosticsSection({
           <BalanceBreakdown rows={accountView.balanceLines} />
         </DashboardPanel>
 
-        <DashboardPanel bodyClassName="p-3" icon={Layers} title="Account details">
+        {accountView.accountType === "live" ? (
+          <AccountTransactionsPanel
+            accountKey={accountView.accountKey}
+            cashFlowsVersion={accountView.cashFlowsVersion}
+          />
+        ) : null}
+
+        <DashboardPanel
+          bodyClassName="p-3"
+          className={
+            accountView.accountType === "live"
+              ? "xl:col-span-2 2xl:col-span-1"
+              : ""
+          }
+          icon={Layers}
+          title="Account details"
+        >
           {accountView.detailSections.length > 0 ? (
             <div className="grid gap-4 lg:grid-cols-2">
               {accountView.detailSections.map((section) => (

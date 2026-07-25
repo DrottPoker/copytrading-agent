@@ -160,10 +160,12 @@ export type MarketRow = {
 };
 
 export type AccountView = {
+  accountKey: string;
   accountType: "paper" | "live";
   allocations: PaperCopyAllocation[];
   balanceLines: MetricLineView[];
   capitalBalances: TradingCapitalBalance[];
+  cashFlowsVersion: string | null;
   closedTrades: AccountClosedTradeRow[];
   detailSections: AccountDetailSection[];
   marketRows: MarketRow[];

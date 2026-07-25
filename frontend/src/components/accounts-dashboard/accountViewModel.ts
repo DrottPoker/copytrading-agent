@@ -123,6 +123,7 @@ function buildPaperAccountView(
   const balanceScale = Math.max(startingBalance, cashBalance, netEquityUsd, openMargin, 1);
 
   return {
+    accountKey: account.key,
     accountType: "paper",
     allocations,
     balanceLines: [
@@ -158,6 +159,7 @@ function buildPaperAccountView(
       },
     ],
     capitalBalances: [],
+    cashFlowsVersion: null,
     closedTrades: closedTrades.map(paperClosedTradeRow),
     detailSections: [
       {
@@ -300,6 +302,7 @@ function buildLiveAccountView(
         : "warning";
 
   return {
+    accountKey: account.key,
     accountType: "live",
     allocations: [],
     balanceLines: [
@@ -335,6 +338,7 @@ function buildLiveAccountView(
       },
     ],
     capitalBalances: account.capitalBalances,
+    cashFlowsVersion: account.lastReconciledAt ?? account.updatedAt,
     closedTrades: closedTrades.map((trade) => liveClosedTradeRow(trade, sourceLabels)),
     detailSections: [
       {

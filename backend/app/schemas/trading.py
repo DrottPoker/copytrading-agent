@@ -251,6 +251,25 @@ class TradingSourceMetadataRead(CamelModel):
     last_monitored_at: datetime | None = None
 
 
+class TradingCashFlowRead(CamelModel):
+    id: UUID
+    account_key: str
+    exchange_event_id: str
+    flow_type: Literal["deposit", "withdrawal"]
+    amount_usd: Decimal
+    fee_usd: Decimal
+    occurred_at: datetime
+
+
+class TradingCashFlowsResponse(CamelModel):
+    account_key: str
+    items: list[TradingCashFlowRead] = Field(default_factory=list)
+    deposits_usd: Decimal = Decimal("0")
+    withdrawals_usd: Decimal = Decimal("0")
+    net_external_flows_usd: Decimal = Decimal("0")
+    updated_at: datetime
+
+
 class LiveRiskLimitsRead(CamelModel):
     max_weekly_loss_pct: Decimal
     max_orders_per_minute: int

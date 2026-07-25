@@ -908,7 +908,10 @@ What it does:
   recovery factor, and win and loss streaks. For live accounts it also shows
   exchange equity, cash balance, realized PnL, fees, cash-flow-adjusted account
   return, net external flows, trading PnL, reconciliation state, wallet routing,
-  and vault routing. Performance is labeled from its first verified baseline.
+  and vault routing. A compact transaction panel lists every recorded deposit
+  and withdrawal with signed amount, fee, timestamp, ledger identifier, deposit
+  and withdrawal totals, net external flow, and manual refresh. Performance is
+  labeled from its first verified baseline.
   The live Reconciled card includes a manual refresh icon that posts to
   `POST /trading/accounts/{account_key}/reconcile` and refreshes the selected
   account snapshot. Operators can pass `lookback_minutes` to backfill older
@@ -1126,7 +1129,9 @@ What it does:
   cash-flow ledger. Deposits, withdrawals, and transfers to or from another
   account are capital flows, including USDC `send` events classified from their
   source and destination addresses. Internal spot/perp and account-class
-  transfers are excluded.
+  transfers are excluded. The complete selected-account ledger is available at
+  `GET /trading/accounts/{account_key}/cash-flows`; it is queried separately
+  from the frequently refreshed account summary.
 - Establishes a verified performance baseline on the first complete
   reconciliation after the performance ledger is available, then requests
   Hyperliquid `allTime` account-value history and matching historical external

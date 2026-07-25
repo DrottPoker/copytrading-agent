@@ -169,6 +169,25 @@ export type TradingSourceMetadata = {
   lastMonitoredAt: string | null;
 };
 
+export type TradingCashFlow = {
+  id: string;
+  accountKey: string;
+  exchangeEventId: string;
+  flowType: "deposit" | "withdrawal";
+  amountUsd: string;
+  feeUsd: string;
+  occurredAt: string;
+};
+
+export type TradingCashFlowsResponse = {
+  accountKey: string;
+  items: TradingCashFlow[];
+  depositsUsd: string;
+  withdrawalsUsd: string;
+  netExternalFlowsUsd: string;
+  updatedAt: string;
+};
+
 export type LiveRiskLimits = {
   maxWeeklyLossPct: string;
   maxOrdersPerMinute: number;

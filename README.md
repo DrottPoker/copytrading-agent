@@ -841,7 +841,9 @@ Sizing policy:
   market concentration, source performance, positions, closed trades, activity,
   balances, reconciliation, and routing details. The interactive performance
   chart supports 25, 50, 100, or all loaded trades and pointer or keyboard
-  inspection.
+  inspection. Live-account diagnostics include a compact transaction ledger
+  with every recorded deposit and withdrawal, signed amounts, fees, timestamps,
+  totals, and manual refresh.
   The live Reconciled card includes a manual refresh icon that posts to
   `POST /trading/accounts/{account_key}/reconcile` and refreshes the selected
   account snapshot. Operators can pass `lookback_minutes` to backfill older
@@ -1291,6 +1293,9 @@ used as a safe baseline and backfill is retried later. Later equity snapshots
 continue the same performance index, so adding capital changes sizing without
 diluting earlier account performance. The Accounts page labels the tracking
 start and exposes account return, net external flows, and trading PnL separately.
+`GET /trading/accounts/{account_key}/cash-flows` returns the selected live
+account's complete deposit and withdrawal ledger without attaching the full
+history to the frequently refreshed account summary response.
 Manual reconciliation accepts `lookback_minutes` for historical live fill
 backfills, for example `POST /trading/accounts/{account_key}/reconcile?lookback_minutes=4320`.
 
