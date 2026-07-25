@@ -103,6 +103,7 @@ MAX_LIVE_FILL_RECONCILIATION_PAGES = 10
 MAX_LIVE_FILL_HISTORY = 10_000
 MAX_LIVE_FUNDING_RECONCILIATION_PAGES = 10
 MAX_LIVE_CASH_FLOW_RECONCILIATION_PAGES = 10
+LIVE_CASH_FLOW_BACKFILL_VERSION = 1
 LIVE_PERFORMANCE_BACKFILL_VERSION = 2
 LIVE_RECONCILIATION_RUN_RETENTION_DAYS = 30
 LIVE_ACCOUNT_KEY_MAX_LENGTH = 64
@@ -400,6 +401,17 @@ def live_performance_backfill_version(account: TradingAccount) -> int:
         return 0
     try:
         return int(performance.get("historicalBackfillVersion") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def live_cash_flow_backfill_version(account: TradingAccount) -> int:
+    payload = account.config_payload if isinstance(account.config_payload, dict) else {}
+    cash_flow_tracking = payload.get("cashFlowTracking")
+    if not isinstance(cash_flow_tracking, dict):
+        return 0
+    try:
+        return int(cash_flow_tracking.get("historicalBackfillVersion") or 0)
     except (TypeError, ValueError):
         return 0
 
@@ -3389,11 +3401,15 @@ async def run_live_trading_account_reconciliation(
             and portfolio_history_result.complete
             and portfolio_history_result.account_values
         ):
-            historical_cash_flow_result = await fetch_live_cash_flows_by_time(
-                client,
-                user=user_address,
-                start_time_ms=0,
-                end_time_ms=int(reconciled_at.timestamp() * 1000),
+            historical_cash_flow_result = (
+                cash_flow_result
+                if cash_flow_start_time_ms == 0
+                else await fetch_live_cash_flows_by_time(
+                    client,
+                    user=user_address,
+                    start_time_ms=0,
+                    end_time_ms=int(reconciled_at.timestamp() * 1000),
+                )
             )
         perp_snapshot = await fetch_live_perp_states(client, user_address=user_address)
         spot_state = await fetch_live_spot_state(client, user_address=user_address)
@@ -3425,6 +3441,8 @@ async def run_live_trading_account_reconciliation(
                 ),
             ],
         )
+        if cash_flow_start_time_ms == 0 and cash_flow_result.complete:
+            mark_live_cash_flow_backfill_complete(account, reconciled_at=reconciled_at)
         updated_orders_from_fills = await update_live_orders_from_reconciled_fills(
             session,
             account_key=account.key,
@@ -5703,6 +5721,8 @@ async def live_cash_flow_reconciliation_start_time_ms(
     if lookback_minutes is not None:
         start_at = now - timedelta(minutes=max(lookback_minutes, 1))
         return int(start_at.timestamp() * 1000)
+    if live_cash_flow_backfill_version(account) < LIVE_CASH_FLOW_BACKFILL_VERSION:
+        return 0
     latest_cash_flow_at = await session.scalar(
         select(func.max(TradingAccountCashFlow.occurred_at)).where(
             TradingAccountCashFlow.account_key == account.key,
@@ -5727,6 +5747,22 @@ async def live_cash_flow_reconciliation_start_time_ms(
                 minutes=settings.live_trading_reconciliation_lookback_minutes
             )
     return int(start_at.timestamp() * 1000)
+
+
+def mark_live_cash_flow_backfill_complete(
+    account: TradingAccount,
+    *,
+    reconciled_at: datetime,
+) -> None:
+    account.config_payload = merge_raw_payload(
+        account.config_payload,
+        {
+            "cashFlowTracking": {
+                "historicalBackfillCompletedAt": reconciled_at.isoformat(),
+                "historicalBackfillVersion": LIVE_CASH_FLOW_BACKFILL_VERSION,
+            }
+        },
+    )
 
 
 def build_testnet_live_trade_intent(

@@ -19,9 +19,13 @@ import type {
 export function AccountTransactionsPanel({
   accountKey,
   cashFlowsVersion,
+  isReconciling = false,
+  onReconcile = null,
 }: {
   accountKey: string;
   cashFlowsVersion: string | null;
+  isReconciling?: boolean;
+  onReconcile?: (() => Promise<void>) | null;
 }) {
   const [transactions, setTransactions] =
     useState<TradingCashFlowsResponse | null>(null);
@@ -78,20 +82,28 @@ export function AccountTransactionsPanel({
     : error
       ? "Ledger unavailable"
       : `${formatInteger(transactions?.items.length ?? 0)} transactions`;
+  const isRefreshing = isLoading || isReconciling;
+  const refreshTransactions = () => {
+    if (onReconcile) {
+      void onReconcile();
+      return;
+    }
+    void loadTransactions();
+  };
 
   return (
     <DashboardPanel
       action={
         <button
           type="button"
-          aria-label="Refresh transactions"
+          aria-label={onReconcile ? "Reconcile and refresh transactions" : "Refresh transactions"}
           className="ui-icon-button h-7 w-7 disabled:cursor-not-allowed disabled:opacity-60"
-          disabled={isLoading}
-          onClick={() => void loadTransactions()}
-          title="Refresh transactions"
+          disabled={isRefreshing}
+          onClick={refreshTransactions}
+          title={onReconcile ? "Reconcile and refresh transactions" : "Refresh transactions"}
         >
           <RefreshCw
-            className={`h-3.5 w-3.5 ${isLoading ? "animate-spin" : ""}`}
+            className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`}
             aria-hidden="true"
           />
         </button>
@@ -108,7 +120,11 @@ export function AccountTransactionsPanel({
       ) : transactions ? (
         <>
           <TransactionTotals transactions={transactions} />
-          <TransactionRows transactions={transactions.items} />
+          <TransactionRows
+            isReconciling={isReconciling}
+            onReconcile={onReconcile}
+            transactions={transactions.items}
+          />
         </>
       ) : (
         <TransactionLoadingState />
@@ -171,14 +187,32 @@ function TransactionTotal({
 }
 
 function TransactionRows({
+  isReconciling,
+  onReconcile,
   transactions,
 }: {
+  isReconciling: boolean;
+  onReconcile: (() => Promise<void>) | null;
   transactions: TradingCashFlow[];
 }) {
   if (transactions.length === 0) {
     return (
-      <div className="mt-3 rounded-md border border-dashed border-line py-6 text-center text-xs text-muted">
-        No deposits or withdrawals have been recorded.
+      <div className="mt-3 rounded-md border border-dashed border-line px-3 py-5 text-center">
+        <p className="text-xs text-muted">No cash flows have been imported yet.</p>
+        {onReconcile ? (
+          <button
+            type="button"
+            className="ui-button-secondary mt-3 disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={isReconciling}
+            onClick={() => void onReconcile()}
+          >
+            <RefreshCw
+              className={`h-3.5 w-3.5 ${isReconciling ? "animate-spin" : ""}`}
+              aria-hidden="true"
+            />
+            Reconcile history
+          </button>
+        ) : null}
       </div>
     );
   }

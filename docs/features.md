@@ -1131,7 +1131,11 @@ What it does:
   source and destination addresses. Internal spot/perp and account-class
   transfers are excluded. The complete selected-account ledger is available at
   `GET /trading/accounts/{account_key}/cash-flows`; it is queried separately
-  from the frequently refreshed account summary.
+  from the frequently refreshed account summary. A versioned all-time cash-flow
+  backfill runs once per live account before reconciliation becomes incremental,
+  including for accounts that were created after their initial deposit. The
+  transaction panel refresh and empty-state actions run reconciliation before
+  reloading the ledger.
 - Establishes a verified performance baseline on the first complete
   reconciliation after the performance ledger is available, then requests
   Hyperliquid `allTime` account-value history and matching historical external

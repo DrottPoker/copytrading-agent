@@ -999,9 +999,11 @@ the paper and live normalization. Focused components own performance analytics,
 risk and exposure, portfolio breakdowns, activity tabs, diagnostics, and the
 create-account dialog. `AccountTransactionsPanel.tsx` loads the selected live
 account's full external cash-flow ledger independently from the four-second
-account summary refresh. `AccountPerformanceChart.tsx` owns the interactive SVG
-chart and closed-trade statistics. The Accounts page can change enabled state
-for one account without disabling other accounts.
+account summary refresh. Its refresh and empty-state actions invoke live account
+reconciliation so missing historical flows are imported before the ledger is
+reloaded. `AccountPerformanceChart.tsx` owns the interactive SVG chart and
+closed-trade statistics. The Accounts page can change enabled state for one
+account without disabling other accounts.
 Disabled paper accounts are excluded from new entries and adds, but are still
 included when an existing open position for the source needs a reduce or exit
 fill. Live accounts use `enabled`, `exit_only`, and `disabled` status. The
@@ -1073,7 +1075,10 @@ Generic live-ready tables sit beside the legacy paper tables:
   transfers to or from another account are included. Spot/perp and account-class
   transfers inside the same account are excluded. The account-scoped
   `GET /trading/accounts/{account_key}/cash-flows` endpoint returns the complete
-  ordered ledger and aggregate deposit, withdrawal, and net-flow totals.
+  ordered ledger and aggregate deposit, withdrawal, and net-flow totals. A
+  `cashFlowTracking.historicalBackfillVersion` marker in the account
+  configuration makes the first successful import all-time and later imports
+  incremental. Existing accounts without the marker automatically backfill.
 - `trading_account_performance_snapshots`: verified live equity snapshots with
   period cash flows, period return, cumulative trading PnL, and a chain-linked
   performance index.

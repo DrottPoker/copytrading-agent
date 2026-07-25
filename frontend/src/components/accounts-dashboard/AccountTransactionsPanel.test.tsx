@@ -66,27 +66,62 @@ describe("AccountTransactionsPanel", () => {
     );
   });
 
-  it("can refresh the transaction ledger on demand", async () => {
+  it("reconciles the account before refreshing the transaction ledger", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       json: async () => cashFlows,
       ok: true,
     });
+    const onReconcile = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("fetch", fetchMock);
 
     render(
       <AccountTransactionsPanel
         accountKey="live-main"
         cashFlowsVersion="2026-07-25T12:00:00Z"
+        onReconcile={onReconcile}
       />,
     );
 
     const refreshButton = await screen.findByRole("button", {
-      name: "Refresh transactions",
+      name: "Reconcile and refresh transactions",
     });
     await waitFor(() => expect(refreshButton).toBeEnabled());
     fireEvent.click(refreshButton);
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(onReconcile).toHaveBeenCalledTimes(1));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers historical reconciliation when the imported ledger is empty", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: async () => ({
+          ...cashFlows,
+          depositsUsd: "0",
+          items: [],
+          netExternalFlowsUsd: "0",
+          withdrawalsUsd: "0",
+        }),
+        ok: true,
+      }),
+    );
+    const onReconcile = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <AccountTransactionsPanel
+        accountKey="live-main"
+        cashFlowsVersion="2026-07-25T12:00:00Z"
+        onReconcile={onReconcile}
+      />,
+    );
+
+    const reconcileButton = await screen.findByRole("button", {
+      name: "Reconcile history",
+    });
+    fireEvent.click(reconcileButton);
+
+    await waitFor(() => expect(onReconcile).toHaveBeenCalledTimes(1));
   });
 
   it("shows a bounded error state when the ledger cannot be loaded", async () => {

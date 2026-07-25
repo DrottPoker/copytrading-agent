@@ -37,7 +37,7 @@ export function AccountDashboardContent({
   liveAccountNotice: LiveAccountNotice | null;
   liveTradingEnabled: boolean;
   marketDataStatus: PaperTradingSummaryResponse["marketDataStatus"];
-  onReconcile: (() => void) | null;
+  onReconcile: (() => Promise<void>) | null;
   riskLimits: TradingAccountsResponse["riskLimits"];
 }) {
   const performance = useMemo(
@@ -52,7 +52,7 @@ export function AccountDashboardContent({
               action: (
                 <button
                   type="button"
-                  onClick={onReconcile}
+                  onClick={() => void onReconcile()}
                   disabled={isReconciling}
                   className="ui-icon-button h-7 w-7 disabled:cursor-not-allowed disabled:opacity-60"
                   title="Reconcile live account"
@@ -137,7 +137,9 @@ export function AccountDashboardContent({
 
       <AccountDiagnosticsSection
         accountView={accountView}
+        isReconciling={isReconciling}
         lastRefreshAt={lastRefreshAt}
+        onReconcile={onReconcile}
       />
     </>
   );

@@ -1280,6 +1280,9 @@ External deposits and withdrawals are stored separately from trading PnL, while
 transfers between spot and perp capital inside the same account remain internal.
 USDC sent in from another Hyperliquid address is treated as an external deposit,
 and USDC sent out to another address is treated as an external withdrawal.
+Each live account performs one versioned all-time cash-flow backfill before
+switching to incremental reconciliation. This imports deposits and withdrawals
+that happened before the account was added to the application.
 The first complete reconciliation after the performance migration requests
 Hyperliquid `allTime` account-value history and the matching historical external
 cash flows. It replaces the temporary zero baseline with chain-linked,
@@ -1295,7 +1298,8 @@ diluting earlier account performance. The Accounts page labels the tracking
 start and exposes account return, net external flows, and trading PnL separately.
 `GET /trading/accounts/{account_key}/cash-flows` returns the selected live
 account's complete deposit and withdrawal ledger without attaching the full
-history to the frequently refreshed account summary response.
+history to the frequently refreshed account summary response. The transaction
+panel refresh action runs account reconciliation before reloading this ledger.
 Manual reconciliation accepts `lookback_minutes` for historical live fill
 backfills, for example `POST /trading/accounts/{account_key}/reconcile?lookback_minutes=4320`.
 

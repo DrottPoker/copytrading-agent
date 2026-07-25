@@ -1758,6 +1758,71 @@ async def test_fetch_live_cash_flows_by_time_uses_bounded_history_window() -> No
     assert len(result.updates) == 1
 
 
+@pytest.mark.asyncio
+async def test_cash_flow_reconciliation_backfills_all_time_before_incremental_sync() -> None:
+    account = TradingAccount(
+        key="live_test",
+        account_type="live",
+        label="Live Test",
+        status="disabled",
+        network="mainnet",
+        realized_pnl_usd=Decimal("0"),
+        fee_usd=Decimal("0"),
+        config_payload={},
+    )
+
+    class UnexpectedSession:
+        async def scalar(self, _statement: object) -> datetime | None:
+            raise AssertionError("The ledger must not constrain the first historical backfill.")
+
+    start_time_ms = await live_trading_service.live_cash_flow_reconciliation_start_time_ms(
+        UnexpectedSession(),  # type: ignore[arg-type]
+        account=account,
+        settings=Settings(),
+        now=datetime(2026, 7, 25, tzinfo=UTC),
+    )
+
+    assert start_time_ms == 0
+
+
+@pytest.mark.asyncio
+async def test_cash_flow_reconciliation_becomes_incremental_after_complete_backfill() -> None:
+    reconciled_at = datetime(2026, 7, 25, 12, tzinfo=UTC)
+    latest_cash_flow_at = reconciled_at - timedelta(days=2)
+    account = TradingAccount(
+        key="live_test",
+        account_type="live",
+        label="Live Test",
+        status="disabled",
+        network="mainnet",
+        realized_pnl_usd=Decimal("0"),
+        fee_usd=Decimal("0"),
+        config_payload={"existing": "value"},
+    )
+    live_trading_service.mark_live_cash_flow_backfill_complete(
+        account,
+        reconciled_at=reconciled_at,
+    )
+
+    class CashFlowSession:
+        async def scalar(self, _statement: object) -> datetime:
+            return latest_cash_flow_at
+
+    start_time_ms = await live_trading_service.live_cash_flow_reconciliation_start_time_ms(
+        CashFlowSession(),  # type: ignore[arg-type]
+        account=account,
+        settings=Settings(),
+        now=reconciled_at,
+    )
+
+    assert start_time_ms == int((latest_cash_flow_at - timedelta(minutes=5)).timestamp() * 1000)
+    assert account.config_payload["existing"] == "value"
+    assert account.config_payload["cashFlowTracking"] == {
+        "historicalBackfillCompletedAt": reconciled_at.isoformat(),
+        "historicalBackfillVersion": 1,
+    }
+
+
 def test_parse_live_account_cash_flow_tracks_external_capital_only() -> None:
     account_address = "0x" + "1" * 40
     other_address = "0x" + "2" * 40

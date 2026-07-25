@@ -10,10 +10,14 @@ import { AccountTransactionsPanel } from "./AccountTransactionsPanel";
 
 export function AccountDiagnosticsSection({
   accountView,
+  isReconciling,
   lastRefreshAt,
+  onReconcile,
 }: {
   accountView: AccountView;
+  isReconciling: boolean;
   lastRefreshAt: Date | null;
+  onReconcile: (() => Promise<void>) | null;
 }) {
   return (
     <>
@@ -37,6 +41,8 @@ export function AccountDiagnosticsSection({
           <AccountTransactionsPanel
             accountKey={accountView.accountKey}
             cashFlowsVersion={accountView.cashFlowsVersion}
+            isReconciling={isReconciling}
+            onReconcile={onReconcile}
           />
         ) : null}
 
