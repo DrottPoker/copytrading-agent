@@ -835,9 +835,13 @@ Sizing policy:
   Recent Execution Activity.
 - The Accounts page stores the last selected account in the browser and
   defaults to that account on the next visit, otherwise the first synced account
-  is selected. It shows paper account metrics, charts, allocations, market
-  exposure, source performance, open positions, closed trades, and recent fills,
-  and shows live account equity, balance, reconciliation, and routing details.
+  is selected. Its compact trading workspace shows paper and live account KPIs,
+  cumulative or per-trade performance, profit factor, drawdown, expectancy,
+  payoff, win and loss streaks, allocation, leverage, long and short exposure,
+  market concentration, source performance, positions, closed trades, activity,
+  balances, reconciliation, and routing details. The interactive performance
+  chart supports 25, 50, 100, or all loaded trades and pointer or keyboard
+  inspection.
   The live Reconciled card includes a manual refresh icon that posts to
   `POST /trading/accounts/{account_key}/reconcile` and refreshes the selected
   account snapshot. Operators can pass `lookback_minutes` to backfill older

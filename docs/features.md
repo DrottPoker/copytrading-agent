@@ -898,9 +898,14 @@ What it does:
   tie-breakers. Mark-price and reconciliation updates do not reorder them.
 - The Accounts page filters account data to one selected paper or live account.
   It keeps the last selected account in browser storage and falls back to the
-  first synced account. For paper accounts it shows account KPIs, balance and
-  PnL charts, allocation usage, market exposure, source performance, open
-  positions, closed trades, and recent fills. For live accounts it shows
+  first synced account. The compact account workspace combines an eight-KPI
+  summary, interactive cumulative or per-trade PnL chart, performance analytics,
+  risk and exposure, allocation, market concentration, source performance,
+  tabbed positions, trades and activity, and account diagnostics. The chart can
+  inspect the last 25, 50, 100, or all loaded closed trades with a pointer or
+  keyboard. Performance analytics include win rate, profit factor, maximum
+  drawdown, average win and loss, payoff ratio, expectancy, best and worst trade,
+  recovery factor, and win and loss streaks. For live accounts it also shows
   exchange equity, cash balance, realized PnL, fees, cash-flow-adjusted account
   return, net external flows, trading PnL, reconciliation state, wallet routing,
   and vault routing. Performance is labeled from its first verified baseline.

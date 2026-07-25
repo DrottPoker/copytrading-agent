@@ -992,8 +992,14 @@ the exchange wallet snapshot immediately so equity, balance, and open live
 positions are visible before trading is started. The live Reconciled card can
 also manually refresh the selected live account snapshot. The Accounts page
 adapts paper and live account sources into the same account view model, so the
-same panels and row components render the selected account. The Accounts page can
-change enabled state for one account without disabling other accounts.
+same panels and row components render the selected account.
+`AccountsDashboard.tsx` owns refresh, account selection, lifecycle actions, and
+create-account orchestration. `accounts-dashboard/accountViewModel.ts` performs
+the paper and live normalization. Focused components own performance analytics,
+risk and exposure, portfolio breakdowns, activity tabs, diagnostics, and the
+create-account dialog. `AccountPerformanceChart.tsx` owns the interactive SVG
+chart and closed-trade statistics. The Accounts page can change enabled state
+for one account without disabling other accounts.
 Disabled paper accounts are excluded from new entries and adds, but are still
 included when an existing open position for the source needs a reduce or exit
 fill. Live accounts use `enabled`, `exit_only`, and `disabled` status. The
