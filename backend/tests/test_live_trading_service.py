@@ -9,6 +9,8 @@ from sqlalchemy.dialects import postgresql
 from app.core.config import Settings
 from app.db.models import (
     TradingAccount,
+    TradingAccountCashFlow,
+    TradingAccountPerformanceSnapshot,
     TradingCloseAllItem,
     TradingCloseAllOperation,
     TradingFill,
@@ -21,10 +23,13 @@ from app.integrations.hyperliquid_live_client import LiveOrderResult
 from app.services import live_trading_service
 from app.services.live_execution_state import build_dispatch_client_order_id
 from app.services.live_trading_service import (
+    LiveCashFlowFetchResult,
     LivePerpState,
+    LivePortfolioHistoryResult,
     apply_live_order_result,
     apply_order_status_response,
     attach_live_funding_to_closed_trades,
+    backfill_live_account_performance_history,
     build_testnet_live_trade_intent,
     cash_flow_adjusted_period_return,
     close_all_live_account_positions,
@@ -47,6 +52,7 @@ from app.services.live_trading_service import (
     parse_live_account_cash_flow,
     parse_live_fill,
     parse_live_funding_payment,
+    parse_live_portfolio_history,
     parse_live_position,
     reset_live_order_for_retry,
     resolve_live_account_wallet_address,
@@ -1821,6 +1827,109 @@ def test_cash_flow_adjusted_return_does_not_dilute_prior_performance() -> None:
     )
 
     assert result == Decimal("0.1")
+
+
+def test_parse_live_portfolio_history_uses_sorted_all_time_account_values() -> None:
+    result = parse_live_portfolio_history(
+        [
+            ["perpAllTime", {"accountValueHistory": [[1000, "999"]]}],
+            [
+                "allTime",
+                {
+                    "accountValueHistory": [
+                        [2000, "1100"],
+                        [1000, "1000"],
+                        ["invalid", "100"],
+                    ],
+                    "pnlHistory": [],
+                    "vlm": "0",
+                },
+            ],
+        ]
+    )
+
+    assert result.complete is True
+    assert result.account_values == (
+        (datetime.fromtimestamp(1, UTC), Decimal("1000")),
+        (datetime.fromtimestamp(2, UTC), Decimal("1100")),
+    )
+
+
+@pytest.mark.asyncio
+async def test_performance_backfill_reconstructs_return_without_deposit_dilution() -> None:
+    started_at = datetime(2026, 1, 1, tzinfo=UTC)
+    ended_at = started_at + timedelta(days=1)
+    cash_flow = TradingAccountCashFlow(
+        id=uuid4(),
+        account_key="live_test",
+        account_type="live",
+        exchange_event_id="deposit-1",
+        flow_type="deposit",
+        amount_usd=Decimal("1000"),
+        fee_usd=Decimal("0"),
+        occurred_at=ended_at,
+        raw_payload={},
+    )
+
+    class Rows:
+        def all(self) -> list[TradingAccountCashFlow]:
+            return [cash_flow]
+
+    class PerformanceSession:
+        def __init__(self) -> None:
+            self.snapshots: list[TradingAccountPerformanceSnapshot] = []
+
+        async def execute(self, _statement: object) -> None:
+            self.snapshots.clear()
+
+        async def scalar(
+            self,
+            _statement: object,
+        ) -> TradingAccountPerformanceSnapshot | None:
+            return self.snapshots[-1] if self.snapshots else None
+
+        async def scalars(self, _statement: object) -> Rows:
+            return Rows()
+
+        def add(self, snapshot: TradingAccountPerformanceSnapshot) -> None:
+            self.snapshots.append(snapshot)
+
+        async def flush(self) -> None:
+            return None
+
+    account = TradingAccount(
+        key="live_test",
+        account_type="live",
+        label="Live Test",
+        status="disabled",
+        network="mainnet",
+        realized_pnl_usd=Decimal("0"),
+        fee_usd=Decimal("0"),
+        config_payload={},
+    )
+    session = PerformanceSession()
+
+    rebuilt = await backfill_live_account_performance_history(  # type: ignore[arg-type]
+        session,
+        account=account,
+        portfolio_history=LivePortfolioHistoryResult(
+            account_values=((started_at, Decimal("1000")), (ended_at, Decimal("2100"))),
+            complete=True,
+        ),
+        cash_flow_history=LiveCashFlowFetchResult(
+            updates=(),
+            complete=True,
+            pages=1,
+        ),
+        reconciled_at=ended_at + timedelta(seconds=1),
+    )
+
+    assert rebuilt is True
+    assert len(session.snapshots) == 2
+    latest = session.snapshots[-1]
+    assert latest.net_external_flows_usd == Decimal("1000")
+    assert latest.trading_pnl_usd == Decimal("100")
+    assert latest.time_weighted_return_pct == Decimal("0.1")
 
 
 def test_partial_spot_reconciliation_preserves_last_authoritative_capital() -> None:

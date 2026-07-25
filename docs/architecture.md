@@ -1425,10 +1425,15 @@ performance and copy source rows show current unrealized PnL instead of stale
 fill-time values.
 Every complete reconciliation records a live account performance snapshot after
 the authoritative equity and external cash-flow ledgers are complete. On
-migration, the previous stored complete exchange snapshot becomes the
-zero-return baseline when available. Otherwise the current snapshot is the
-baseline. Later periods use Modified Dietz cash-flow weighting and chain-link
-their returns into the account's time-weighted return.
+migration, reconciliation requests Hyperliquid `portfolio` history and selects
+the `allTime.accountValueHistory` series. It separately imports matching
+historical external cash flows, replaces temporary local performance snapshots,
+and rebuilds the chain-linked index from the earliest valid account-value point.
+If either history is missing or incomplete, the previous stored complete
+exchange snapshot becomes the safe zero-return baseline and the historical
+backfill remains eligible for a later retry. Later periods use Modified Dietz
+cash-flow weighting and chain-link their returns into the account's time-weighted
+return.
 Deposits and withdrawals therefore change capital and sizing without rewriting
 earlier performance. The API reports the tracking start, net external flows,
 cash-flow-adjusted account return, and trading PnL separately. Partial

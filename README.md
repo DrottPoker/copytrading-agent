@@ -1271,13 +1271,15 @@ order sizing if the background loop is late.
 Complete reconciliation also imports Hyperliquid non-funding ledger updates.
 External deposits and withdrawals are stored separately from trading PnL, while
 transfers between spot and perp capital inside the same account remain internal.
-The first complete reconciliation after the performance migration uses the
-previous stored complete exchange snapshot as its verified baseline when one is
-available. Otherwise the new snapshot becomes the baseline. Later equity
-snapshots use chain-linked, cash-flow-adjusted period returns, so adding capital
-changes sizing without diluting earlier account performance. The Accounts page
-labels the tracking start and exposes account return, net external flows, and
-trading PnL separately.
+The first complete reconciliation after the performance migration requests
+Hyperliquid `allTime` account-value history and the matching historical external
+cash flows. It replaces the temporary zero baseline with chain-linked,
+cash-flow-adjusted historical snapshots when both histories are complete. If
+backfill data is unavailable, the previous stored complete exchange snapshot is
+used as a safe baseline and backfill is retried later. Later equity snapshots
+continue the same performance index, so adding capital changes sizing without
+diluting earlier account performance. The Accounts page labels the tracking
+start and exposes account return, net external flows, and trading PnL separately.
 Manual reconciliation accepts `lookback_minutes` for historical live fill
 backfills, for example `POST /trading/accounts/{account_key}/reconcile?lookback_minutes=4320`.
 

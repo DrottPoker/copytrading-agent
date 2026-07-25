@@ -1121,11 +1121,13 @@ What it does:
   account are capital flows. Internal spot/perp and account-class transfers are
   excluded.
 - Establishes a verified performance baseline on the first complete
-  reconciliation after the performance ledger is available. The previous stored
-  complete exchange snapshot is used when available. Otherwise the current
-  snapshot becomes the baseline. Later complete reconciliations create
-  chain-linked, cash-flow-adjusted return snapshots. Partial or failed
-  reconciliation does not advance performance.
+  reconciliation after the performance ledger is available, then requests
+  Hyperliquid `allTime` account-value history and matching historical external
+  cash flows. Complete history replaces the temporary zero baseline with
+  chain-linked historical return snapshots. Missing or incomplete history keeps
+  the safe baseline and remains eligible for retry. Later complete
+  reconciliations continue the cash-flow-adjusted performance index. Partial or
+  failed reconciliation does not advance performance.
 - Blocks new live entries after a partial or failed reconciliation until a
   complete attempt succeeds. Reduce-only exits continue to work.
 - Keeps an enabled account enabled when reconciliation becomes partial or fails.

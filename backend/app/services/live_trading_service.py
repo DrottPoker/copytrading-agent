@@ -103,6 +103,7 @@ MAX_LIVE_FILL_RECONCILIATION_PAGES = 10
 MAX_LIVE_FILL_HISTORY = 10_000
 MAX_LIVE_FUNDING_RECONCILIATION_PAGES = 10
 MAX_LIVE_CASH_FLOW_RECONCILIATION_PAGES = 10
+LIVE_PERFORMANCE_BACKFILL_VERSION = 1
 LIVE_RECONCILIATION_RUN_RETENTION_DAYS = 30
 LIVE_ACCOUNT_KEY_MAX_LENGTH = 64
 LIVE_CAPITAL_MODE_UNIFIED = "unified"
@@ -342,6 +343,13 @@ class LiveCashFlowFetchResult:
 
 
 @dataclass(frozen=True)
+class LivePortfolioHistoryResult:
+    account_values: tuple[tuple[datetime, Decimal], ...]
+    complete: bool
+    error: str | None = None
+
+
+@dataclass(frozen=True)
 class LiveOrderReconciliationResult:
     updated_orders: int = 0
     unresolved_order_ids: tuple[UUID, ...] = ()
@@ -383,6 +391,17 @@ def live_reconciliation_status(account: TradingAccount) -> str:
     if status in {"complete", "partial", "failed"}:
         return status
     return "complete" if account.last_reconciled_at is not None else "never"
+
+
+def live_performance_backfill_version(account: TradingAccount) -> int:
+    payload = account.config_payload if isinstance(account.config_payload, dict) else {}
+    performance = payload.get("performanceTracking")
+    if not isinstance(performance, dict):
+        return 0
+    try:
+        return int(performance.get("historicalBackfillVersion") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def normalize_user_abstraction(value: Any) -> str | None:
@@ -3347,6 +3366,10 @@ async def run_live_trading_account_reconciliation(
             user=user_address,
             start_time_ms=funding_start_time_ms,
         )
+        portfolio_history_result = await fetch_live_portfolio_history(
+            client,
+            user=user_address,
+        )
         cash_flow_start_time_ms = await live_cash_flow_reconciliation_start_time_ms(
             session,
             account=account,
@@ -3360,6 +3383,20 @@ async def run_live_trading_account_reconciliation(
             start_time_ms=cash_flow_start_time_ms,
             end_time_ms=int(reconciled_at.timestamp() * 1000),
         )
+        historical_cash_flow_result: LiveCashFlowFetchResult | None = None
+        if (
+            live_performance_backfill_version(account) < LIVE_PERFORMANCE_BACKFILL_VERSION
+            and portfolio_history_result.complete
+            and portfolio_history_result.account_values
+        ):
+            historical_cash_flow_result = await fetch_live_cash_flows_by_time(
+                client,
+                user=user_address,
+                start_time_ms=int(
+                    portfolio_history_result.account_values[0][0].timestamp() * 1000
+                ),
+                end_time_ms=int(reconciled_at.timestamp() * 1000),
+            )
         perp_snapshot = await fetch_live_perp_states(client, user_address=user_address)
         spot_state = await fetch_live_spot_state(client, user_address=user_address)
         user_abstraction = await fetch_live_user_abstraction(
@@ -3381,7 +3418,14 @@ async def run_live_trading_account_reconciliation(
             session,
             account=account,
             user_address=user_address,
-            updates=list(cash_flow_result.updates),
+            updates=[
+                *cash_flow_result.updates,
+                *(
+                    historical_cash_flow_result.updates
+                    if historical_cash_flow_result is not None
+                    else ()
+                ),
+            ],
         )
         updated_orders_from_fills = await update_live_orders_from_reconciled_fills(
             session,
@@ -3435,10 +3479,18 @@ async def run_live_trading_account_reconciliation(
         )
         previous_reconciliation_status = live_reconciliation_status(account)
         if reconciliation_status == "complete":
-            await ensure_live_account_performance_baseline(
+            history_backfilled = await backfill_live_account_performance_history(
                 session,
                 account=account,
+                portfolio_history=portfolio_history_result,
+                cash_flow_history=historical_cash_flow_result,
+                reconciled_at=reconciled_at,
             )
+            if not history_backfilled:
+                await ensure_live_account_performance_baseline(
+                    session,
+                    account=account,
+                )
         update_live_account_from_state(
             account,
             perp_states=perp_snapshot,
@@ -3557,7 +3609,14 @@ async def run_live_trading_account_reconciliation(
         inserted_fills=inserted_fills,
         fetched_funding_payments=len(funding_result.payments),
         inserted_funding_payments=inserted_funding_payments,
-        fetched_cash_flows=len(cash_flow_result.updates),
+        fetched_cash_flows=(
+            len(cash_flow_result.updates)
+            + (
+                len(historical_cash_flow_result.updates)
+                if historical_cash_flow_result is not None
+                else 0
+            )
+        ),
         inserted_cash_flows=inserted_cash_flows,
         updated_orders=updated_orders,
         open_positions=position_result.open_positions,
@@ -3594,8 +3653,9 @@ async def record_live_account_performance_snapshot(
     *,
     account: TradingAccount,
     recorded_at: datetime,
+    equity_usd: Decimal | None = None,
 ) -> TradingAccountPerformanceSnapshot | None:
-    end_equity = decimal_or_none(account.equity_usd)
+    end_equity = equity_usd if equity_usd is not None else decimal_or_none(account.equity_usd)
     if end_equity is None or end_equity < ZERO:
         return None
     previous = await session.scalar(
@@ -3666,10 +3726,18 @@ async def record_live_account_performance_snapshot(
             is_baseline=False,
         )
     session.add(snapshot)
+    existing_payload = account.config_payload if isinstance(account.config_payload, dict) else {}
+    existing_performance = existing_payload.get("performanceTracking")
+    backfill_version = (
+        live_performance_backfill_version(account)
+        if isinstance(existing_performance, dict)
+        else 0
+    )
     account.config_payload = merge_raw_payload(
         account.config_payload,
         {
             "performanceTracking": {
+                "historicalBackfillVersion": backfill_version,
                 "netExternalFlowsUsd": str(snapshot.net_external_flows_usd),
                 "recordedAt": snapshot.recorded_at.isoformat(),
                 "timeWeightedReturnPct": str(snapshot.time_weighted_return_pct),
@@ -3680,6 +3748,56 @@ async def record_live_account_performance_snapshot(
     )
     await session.flush()
     return snapshot
+
+
+async def backfill_live_account_performance_history(
+    session: AsyncSession,
+    *,
+    account: TradingAccount,
+    portfolio_history: LivePortfolioHistoryResult,
+    cash_flow_history: LiveCashFlowFetchResult | None,
+    reconciled_at: datetime,
+) -> bool:
+    if live_performance_backfill_version(account) >= LIVE_PERFORMANCE_BACKFILL_VERSION:
+        return False
+    if (
+        not portfolio_history.complete
+        or len(portfolio_history.account_values) < 2
+        or cash_flow_history is None
+        or not cash_flow_history.complete
+    ):
+        return False
+    account_values = [
+        (recorded_at, equity)
+        for recorded_at, equity in portfolio_history.account_values
+        if recorded_at < reconciled_at
+    ]
+    if len(account_values) < 2:
+        return False
+
+    await session.execute(
+        delete(TradingAccountPerformanceSnapshot).where(
+            TradingAccountPerformanceSnapshot.account_key == account.key
+        )
+    )
+    payload = account.config_payload if isinstance(account.config_payload, dict) else {}
+    performance = payload.get("performanceTracking")
+    performance_payload = dict(performance) if isinstance(performance, dict) else {}
+    performance_payload["historicalBackfillVersion"] = LIVE_PERFORMANCE_BACKFILL_VERSION
+    account.config_payload = merge_raw_payload(
+        account.config_payload,
+        {"performanceTracking": performance_payload},
+    )
+    await session.flush()
+
+    for recorded_at, equity in account_values:
+        await record_live_account_performance_snapshot(
+            session,
+            account=account,
+            recorded_at=recorded_at,
+            equity_usd=equity,
+        )
+    return True
 
 
 async def ensure_live_account_performance_baseline(
@@ -4184,6 +4302,66 @@ def live_funding_pagination_key(payment: dict[str, Any]) -> tuple[str, ...]:
             resolved_delta.get("fundingRate"),
         )
     )
+
+
+async def fetch_live_portfolio_history(
+    client: HyperliquidClient,
+    *,
+    user: str,
+) -> LivePortfolioHistoryResult:
+    try:
+        payload = await client.portfolio(user=user)
+    except Exception as exc:
+        return LivePortfolioHistoryResult(
+            account_values=(),
+            complete=False,
+            error=str(exc) or exc.__class__.__name__,
+        )
+    return parse_live_portfolio_history(payload)
+
+
+def parse_live_portfolio_history(payload: list[Any]) -> LivePortfolioHistoryResult:
+    all_time_payload: dict[str, Any] | None = None
+    for item in payload:
+        if (
+            isinstance(item, list | tuple)
+            and len(item) >= 2
+            and str(item[0]) == "allTime"
+            and isinstance(item[1], dict)
+        ):
+            all_time_payload = item[1]
+            break
+    if all_time_payload is None:
+        return LivePortfolioHistoryResult(
+            account_values=(),
+            complete=False,
+            error="Hyperliquid portfolio did not include allTime account history.",
+        )
+    raw_history = all_time_payload.get("accountValueHistory")
+    if not isinstance(raw_history, list):
+        return LivePortfolioHistoryResult(
+            account_values=(),
+            complete=False,
+            error="Hyperliquid allTime portfolio history has an unexpected shape.",
+        )
+
+    values_by_time: dict[datetime, Decimal] = {}
+    for item in raw_history:
+        if not isinstance(item, list | tuple) or len(item) < 2:
+            continue
+        recorded_at = ms_to_datetime(decimal_or_none(item[0]))
+        equity = decimal_or_none(item[1])
+        if recorded_at is None or equity is None or equity < ZERO:
+            continue
+        values_by_time[recorded_at] = equity
+    account_values = tuple(sorted(values_by_time.items(), key=lambda item: item[0]))
+    if not account_values:
+        return LivePortfolioHistoryResult(
+            account_values=(),
+            complete=False,
+            error="Hyperliquid allTime portfolio history did not contain valid account values.",
+        )
+    return LivePortfolioHistoryResult(account_values=account_values, complete=True)
 
 
 async def fetch_live_cash_flows_by_time(

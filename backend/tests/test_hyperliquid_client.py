@@ -31,3 +31,22 @@ async def test_user_non_funding_ledger_updates_uses_bounded_info_request(
         "endTime": 2000,
     }
     assert len(result) == 1
+
+
+@pytest.mark.asyncio
+async def test_portfolio_uses_user_info_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = HyperliquidClient()
+    observed: dict[str, Any] = {}
+
+    async def fake_post_info(payload: dict[str, Any]) -> list[list[Any]]:
+        observed.update(payload)
+        return [["allTime", {"accountValueHistory": [], "pnlHistory": [], "vlm": "0"}]]
+
+    monkeypatch.setattr(client, "post_info", fake_post_info)
+
+    result = await client.portfolio(user="0xuser")
+
+    assert observed == {"type": "portfolio", "user": "0xuser"}
+    assert result[0][0] == "allTime"

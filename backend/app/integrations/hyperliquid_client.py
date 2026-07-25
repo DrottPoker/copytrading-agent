@@ -242,6 +242,12 @@ class HyperliquidClient:
     async def user_abstraction(self, *, user: str) -> Any:
         return await self.post_info({"type": "userAbstraction", "user": user})
 
+    async def portfolio(self, *, user: str) -> list[Any]:
+        result = await self.post_info({"type": "portfolio", "user": user})
+        if not isinstance(result, list):
+            raise HyperliquidClientError("Hyperliquid portfolio returned an unexpected shape.")
+        return result
+
 
 def parse_retry_after_seconds(value: str | None) -> float | None:
     if not value:
