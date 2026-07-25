@@ -1060,6 +1060,13 @@ Generic live-ready tables sit beside the legacy paper tables:
 - `trading_fills`: reconciled exchange fill records.
 - `trading_funding_payments`: signed Hyperliquid `userFunding` entries,
   deduplicated per live account and exchange event.
+- `trading_account_cash_flows`: signed external capital movements imported from
+  Hyperliquid `userNonFundingLedgerUpdates`. Deposits, withdrawals, and
+  transfers to or from another account are included. Spot/perp and account-class
+  transfers inside the same account are excluded.
+- `trading_account_performance_snapshots`: verified live equity snapshots with
+  period cash flows, period return, cumulative trading PnL, and a chain-linked
+  performance index.
 - `live_copy_source_states`: one baseline and lifecycle marker per live account
   and source wallet. It records activation, the latest baseline timestamp and
   same-timestamp fill IDs, plus an observability high-water mark and compact
@@ -1246,8 +1253,10 @@ submission.
 Weekly loss usage combines net realized PnL after fees and signed Hyperliquid
 funding with current aggregate
 exchange unrealized PnL. The percentage base is current account equity minus
-weekly net PnL, which reconstructs start-of-week equity. The exchange aggregate
-is added once and is not reconstructed from source-attributed rows.
+weekly net PnL and weekly net external cash flow, which reconstructs
+start-of-week equity without allowing a deposit to dilute an existing loss.
+The exchange aggregate is added once and is not reconstructed from
+source-attributed rows.
 For non-reduce-only orders, leverage and margin mode follow the current source
 position without a local leverage maximum. Leverage must remain a positive
 whole number. The adapter applies `updateLeverage` to the resolved Hyperliquid
@@ -1414,6 +1423,16 @@ flip-close fills used by the counts. Source-attributed live position rows are
 refreshed from the matching exchange mark on reconciliation, so source
 performance and copy source rows show current unrealized PnL instead of stale
 fill-time values.
+Every complete reconciliation records a live account performance snapshot after
+the authoritative equity and external cash-flow ledgers are complete. On
+migration, the previous stored complete exchange snapshot becomes the
+zero-return baseline when available. Otherwise the current snapshot is the
+baseline. Later periods use Modified Dietz cash-flow weighting and chain-link
+their returns into the account's time-weighted return.
+Deposits and withdrawals therefore change capital and sizing without rewriting
+earlier performance. The API reports the tracking start, net external flows,
+cash-flow-adjusted account return, and trading PnL separately. Partial
+reconciliation never advances the performance series.
 If exchange
 reconciliation no longer has a matching market and side, the source-attributed
 row is removed, and if manual exchange activity partially reduced the market,

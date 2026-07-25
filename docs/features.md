@@ -900,8 +900,9 @@ What it does:
   first synced account. For paper accounts it shows account KPIs, balance and
   PnL charts, allocation usage, market exposure, source performance, open
   positions, closed trades, and recent fills. For live accounts it shows
-  exchange equity, cash balance, realized PnL, fees, reconciliation state,
-  wallet routing, and vault routing.
+  exchange equity, cash balance, realized PnL, fees, cash-flow-adjusted account
+  return, net external flows, trading PnL, reconciliation state, wallet routing,
+  and vault routing. Performance is labeled from its first verified baseline.
   The live Reconciled card includes a manual refresh icon that posts to
   `POST /trading/accounts/{account_key}/reconcile` and refreshes the selected
   account snapshot. Operators can pass `lookback_minutes` to backfill older
@@ -1115,6 +1116,16 @@ What it does:
   Hyperliquid `userFunding` entries into an idempotent signed funding ledger.
   Dashboard net realized PnL is `closedPnl - fee + funding`; positive funding
   is received and negative funding is paid.
+- Imports Hyperliquid `userNonFundingLedgerUpdates` into an idempotent external
+  cash-flow ledger. Deposits, withdrawals, and transfers to or from another
+  account are capital flows. Internal spot/perp and account-class transfers are
+  excluded.
+- Establishes a verified performance baseline on the first complete
+  reconciliation after the performance ledger is available. The previous stored
+  complete exchange snapshot is used when available. Otherwise the current
+  snapshot becomes the baseline. Later complete reconciliations create
+  chain-linked, cash-flow-adjusted return snapshots. Partial or failed
+  reconciliation does not advance performance.
 - Blocks new live entries after a partial or failed reconciliation until a
   complete attempt succeeds. Reduce-only exits continue to work.
 - Keeps an enabled account enabled when reconciliation becomes partial or fails.
@@ -1291,8 +1302,10 @@ What it does:
 - Calculates weekly loss usage from net realized PnL after fees and signed
   Hyperliquid funding plus current
   aggregate exchange unrealized PnL. The percentage base reconstructs account
-  equity at the start of the UTC week. Current unrealized PnL is included once
-  without duplicating it through position or fill rows.
+  equity at the start of the UTC week after removing weekly external deposits
+  and withdrawals. A deposit cannot dilute an existing weekly loss. Current
+  unrealized PnL is included once without duplicating it through position or
+  fill rows.
 - Requires positive whole-number leverage for non-reduce-only entries, copies
   source leverage without a local maximum, and copies source cross or isolated
   mode. Hyperliquid's leverage update is sent with the matching `isCross` value
@@ -1480,12 +1493,13 @@ What it does:
   middleware while preserving authenticated non-browser API access.
 - Adds HSTS on the VPS plus content-type, frame, referrer, and permissions
   headers through Caddy.
-- Requires Alembic head `a2c4e6f8b0d1`. This head adds the signed Hyperliquid
-  funding-payment ledger on top of the append-only exchange-attempt ledger and
-  unified durable live-copy work queue
-  and explicit execution timing columns on top of the
-  source and fill lifecycle tables. After upgrade, an operator must run
-  `python -m alembic current` and confirm it shows `a2c4e6f8b0d1` before
+- Requires Alembic head `b3d5f7a9c1e2`. This head adds the external account
+  cash-flow ledger and cash-flow-adjusted performance snapshots on top of the
+  signed Hyperliquid funding-payment ledger, append-only exchange-attempt
+  ledger, unified durable live-copy work queue, and explicit execution timing
+  columns on top of the source and fill lifecycle tables. After upgrade, an
+  operator must run `python -m alembic current` and confirm it shows
+  `b3d5f7a9c1e2` before
   starting the backend or workers. Earlier Phase 6 migrations preserve
   financial history, enforce account lifecycle integrity, remove the obsolete
   global entry-control table, and expand wallet fill ingest latency to

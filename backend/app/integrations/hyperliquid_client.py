@@ -166,6 +166,28 @@ class HyperliquidClient:
             )
         return [item for item in result if isinstance(item, dict)]
 
+    async def user_non_funding_ledger_updates(
+        self,
+        *,
+        user: str,
+        start_time_ms: int,
+        end_time_ms: int | None = None,
+    ) -> list[dict[str, Any]]:
+        payload: dict[str, Any] = {
+            "type": "userNonFundingLedgerUpdates",
+            "user": user,
+            "startTime": start_time_ms,
+        }
+        if end_time_ms is not None:
+            payload["endTime"] = end_time_ms
+
+        result = await self.post_info(payload)
+        if not isinstance(result, list):
+            raise HyperliquidClientError(
+                "Hyperliquid userNonFundingLedgerUpdates returned an unexpected shape."
+            )
+        return [item for item in result if isinstance(item, dict)]
+
     async def order_status(self, *, user: str, oid: int | str) -> dict[str, Any]:
         result = await self.post_info({"type": "orderStatus", "user": user, "oid": oid})
         if not isinstance(result, dict):

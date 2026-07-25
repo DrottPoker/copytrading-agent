@@ -295,6 +295,17 @@ def test_weekly_loss_pct_uses_reconstructed_week_start_equity() -> None:
     ) == Decimal("0.6")
 
 
+def test_weekly_loss_pct_excludes_external_deposit_from_reference_equity() -> None:
+    account = live_account()
+    account.equity_usd = Decimal("1040")
+
+    assert live_account_weekly_loss_pct(
+        account,
+        weekly_net_pnl=Decimal("-60"),
+        weekly_external_cash_flow=Decimal("1000"),
+    ) == Decimal("0.6")
+
+
 @pytest.mark.asyncio
 async def test_weekly_loss_percentage_guard_includes_current_unrealized_loss(
     monkeypatch: pytest.MonkeyPatch,
@@ -319,6 +330,9 @@ async def test_weekly_loss_percentage_guard_includes_current_unrealized_loss(
     async def fake_realized(*_args: object, **_kwargs: object) -> Decimal:
         return Decimal("0")
 
+    async def fake_external_cash_flow(*_args: object, **_kwargs: object) -> Decimal:
+        return Decimal("0")
+
     async def fake_trip(*_args: object, **kwargs: object) -> None:
         observed.update(kwargs)
 
@@ -328,6 +342,11 @@ async def test_weekly_loss_percentage_guard_includes_current_unrealized_loss(
         fake_unrealized,
     )
     monkeypatch.setattr(live_trading_service, "live_account_weekly_net_pnl", fake_realized)
+    monkeypatch.setattr(
+        live_trading_service,
+        "live_account_weekly_external_cash_flow",
+        fake_external_cash_flow,
+    )
     monkeypatch.setattr(live_trading_service, "trip_live_account_risk", fake_trip)
 
     with pytest.raises(LiveOrderSubmitError, match="weekly loss percentage guard"):

@@ -74,6 +74,10 @@ class TradingAccountRead(CamelModel):
     reconciliation_errors: dict[str, str] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
+    time_weighted_return_pct: Decimal | None = None
+    net_external_flows_usd: Decimal = Decimal("0")
+    trading_pnl_usd: Decimal = Decimal("0")
+    performance_tracking_started_at: datetime | None = None
 
 
 class TradingPositionRead(CamelModel):
@@ -293,6 +297,8 @@ class LiveReconciliationResponse(CamelModel):
     inserted_fills: int
     fetched_funding_payments: int = 0
     inserted_funding_payments: int = 0
+    fetched_cash_flows: int = 0
+    inserted_cash_flows: int = 0
     updated_orders: int
     open_positions: int
     removed_positions: int

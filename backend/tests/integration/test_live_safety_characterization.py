@@ -776,6 +776,12 @@ async def test_partial_reconciliation_is_audited_and_does_not_advance_complete_t
         async def user_funding(self, **_kwargs: object) -> list[dict[str, object]]:
             return []
 
+        async def user_non_funding_ledger_updates(
+            self,
+            **_kwargs: object,
+        ) -> list[dict[str, object]]:
+            return []
+
         async def spot_clearinghouse_state(self, *, user: str) -> dict[str, object]:
             assert user == account.wallet_address
             return {

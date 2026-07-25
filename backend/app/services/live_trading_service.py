@@ -16,6 +16,8 @@ from app.db.models import (
     LiveCopyFillState,
     PaperCopyAllocation,
     TradingAccount,
+    TradingAccountCashFlow,
+    TradingAccountPerformanceSnapshot,
     TradingCloseAllItem,
     TradingCloseAllOperation,
     TradingFill,
@@ -100,6 +102,7 @@ ACTIVE_ORDER_STATUSES = RECONCILABLE_ORDER_STATUSES
 MAX_LIVE_FILL_RECONCILIATION_PAGES = 10
 MAX_LIVE_FILL_HISTORY = 10_000
 MAX_LIVE_FUNDING_RECONCILIATION_PAGES = 10
+MAX_LIVE_CASH_FLOW_RECONCILIATION_PAGES = 10
 LIVE_RECONCILIATION_RUN_RETENTION_DAYS = 30
 LIVE_ACCOUNT_KEY_MAX_LENGTH = 64
 LIVE_CAPITAL_MODE_UNIFIED = "unified"
@@ -182,6 +185,8 @@ class LiveReconciliationResult:
     inserted_fills: int = 0
     fetched_funding_payments: int = 0
     inserted_funding_payments: int = 0
+    fetched_cash_flows: int = 0
+    inserted_cash_flows: int = 0
     updated_orders: int = 0
     open_positions: int = 0
     removed_positions: int = 0
@@ -321,6 +326,15 @@ class LiveFillFetchResult:
 @dataclass(frozen=True)
 class LiveFundingFetchResult:
     payments: tuple[dict[str, Any], ...]
+    complete: bool
+    pages: int
+    next_start_time_ms: int | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class LiveCashFlowFetchResult:
+    updates: tuple[dict[str, Any], ...]
     complete: bool
     pages: int
     next_start_time_ms: int | None = None
@@ -2936,10 +2950,16 @@ async def validate_live_entry_risk_guardrails(
             account_key=account.key,
             now=now,
         )
+        weekly_external_cash_flow = await live_account_weekly_external_cash_flow(
+            session,
+            account_key=account.key,
+            now=now,
+        )
         weekly_net_pnl += current_unrealized_pnl
         weekly_loss_pct = live_account_weekly_loss_pct(
             account,
             weekly_net_pnl=weekly_net_pnl,
+            weekly_external_cash_flow=weekly_external_cash_flow,
         )
         if weekly_loss_pct >= settings.live_trading_max_weekly_loss_pct:
             await reject(
@@ -3020,15 +3040,37 @@ async def live_account_weekly_net_pnl(
     return decimal_or_none(value) or ZERO
 
 
+async def live_account_weekly_external_cash_flow(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    now: datetime,
+) -> Decimal:
+    utc_now = now.replace(tzinfo=UTC) if now.tzinfo is None else now.astimezone(UTC)
+    day_start = utc_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start = day_start - timedelta(days=day_start.weekday())
+    value = await session.scalar(
+        select(func.coalesce(func.sum(TradingAccountCashFlow.amount_usd), ZERO)).where(
+            TradingAccountCashFlow.account_key == account_key,
+            TradingAccountCashFlow.occurred_at >= week_start,
+        )
+    )
+    return decimal_or_none(value) or ZERO
+
+
 def live_account_weekly_loss_pct(
     account: TradingAccount,
     *,
     weekly_net_pnl: Decimal,
+    weekly_external_cash_flow: Decimal = ZERO,
 ) -> Decimal:
     if weekly_net_pnl >= ZERO:
         return ZERO
     current_equity = decimal_or_none(account.equity_usd) or ZERO
-    week_start_equity = max(current_equity - weekly_net_pnl, ZERO)
+    week_start_equity = max(
+        current_equity - weekly_net_pnl - weekly_external_cash_flow,
+        ZERO,
+    )
     if week_start_equity <= ZERO:
         return Decimal("1")
     return -weekly_net_pnl / week_start_equity
@@ -3305,6 +3347,19 @@ async def run_live_trading_account_reconciliation(
             user=user_address,
             start_time_ms=funding_start_time_ms,
         )
+        cash_flow_start_time_ms = await live_cash_flow_reconciliation_start_time_ms(
+            session,
+            account=account,
+            settings=settings,
+            now=reconciled_at,
+            lookback_minutes=lookback_minutes,
+        )
+        cash_flow_result = await fetch_live_cash_flows_by_time(
+            client,
+            user=user_address,
+            start_time_ms=cash_flow_start_time_ms,
+            end_time_ms=int(reconciled_at.timestamp() * 1000),
+        )
         perp_snapshot = await fetch_live_perp_states(client, user_address=user_address)
         spot_state = await fetch_live_spot_state(client, user_address=user_address)
         user_abstraction = await fetch_live_user_abstraction(
@@ -3321,6 +3376,12 @@ async def run_live_trading_account_reconciliation(
             session,
             account=account,
             payments=list(funding_result.payments),
+        )
+        inserted_cash_flows = await reconcile_live_account_cash_flows(
+            session,
+            account=account,
+            user_address=user_address,
+            updates=list(cash_flow_result.updates),
         )
         updated_orders_from_fills = await update_live_orders_from_reconciled_fills(
             session,
@@ -3343,6 +3404,7 @@ async def run_live_trading_account_reconciliation(
             unresolved_order_ids=unresolved_order_ids,
             fill_result=fill_result,
             funding_result=funding_result,
+            cash_flow_result=cash_flow_result,
             perp_snapshot=perp_snapshot,
             spot_state=spot_state,
             user_abstraction=user_abstraction,
@@ -3355,6 +3417,7 @@ async def run_live_trading_account_reconciliation(
             unresolved_order_ids=unresolved_order_ids,
             fill_result=fill_result,
             funding_result=funding_result,
+            cash_flow_result=cash_flow_result,
             perp_snapshot=perp_snapshot,
             spot_state=spot_state,
             user_abstraction=user_abstraction,
@@ -3371,6 +3434,11 @@ async def run_live_trading_account_reconciliation(
             with_for_update=True,
         )
         previous_reconciliation_status = live_reconciliation_status(account)
+        if reconciliation_status == "complete":
+            await ensure_live_account_performance_baseline(
+                session,
+                account=account,
+            )
         update_live_account_from_state(
             account,
             perp_states=perp_snapshot,
@@ -3382,6 +3450,12 @@ async def run_live_trading_account_reconciliation(
             incomplete_components=incomplete_components,
             component_errors=component_errors,
         )
+        if reconciliation_status == "complete":
+            await record_live_account_performance_snapshot(
+                session,
+                account=account,
+                recorded_at=reconciled_at,
+            )
         if (
             reconciliation_status != "complete"
             and account.status == "enabled"
@@ -3483,6 +3557,8 @@ async def run_live_trading_account_reconciliation(
         inserted_fills=inserted_fills,
         fetched_funding_payments=len(funding_result.payments),
         inserted_funding_payments=inserted_funding_payments,
+        fetched_cash_flows=len(cash_flow_result.updates),
+        inserted_cash_flows=inserted_cash_flows,
         updated_orders=updated_orders,
         open_positions=position_result.open_positions,
         removed_positions=position_result.removed_positions,
@@ -3513,6 +3589,146 @@ async def recompute_live_account_fill_totals(
     await session.flush()
 
 
+async def record_live_account_performance_snapshot(
+    session: AsyncSession,
+    *,
+    account: TradingAccount,
+    recorded_at: datetime,
+) -> TradingAccountPerformanceSnapshot | None:
+    end_equity = decimal_or_none(account.equity_usd)
+    if end_equity is None or end_equity < ZERO:
+        return None
+    previous = await session.scalar(
+        select(TradingAccountPerformanceSnapshot)
+        .where(TradingAccountPerformanceSnapshot.account_key == account.key)
+        .order_by(TradingAccountPerformanceSnapshot.recorded_at.desc())
+        .limit(1)
+        .with_for_update()
+    )
+    if previous is None:
+        snapshot = TradingAccountPerformanceSnapshot(
+            account_key=account.key,
+            account_type="live",
+            equity_usd=end_equity,
+            period_external_flow_usd=ZERO,
+            net_external_flows_usd=ZERO,
+            trading_pnl_usd=ZERO,
+            period_return_pct=ZERO,
+            time_weighted_return_pct=ZERO,
+            performance_index=Decimal("1"),
+            tracking_started_at=recorded_at,
+            recorded_at=recorded_at,
+            is_baseline=True,
+        )
+    else:
+        flow_result = await session.scalars(
+            select(TradingAccountCashFlow)
+            .where(
+                TradingAccountCashFlow.account_key == account.key,
+                TradingAccountCashFlow.occurred_at > previous.recorded_at,
+                TradingAccountCashFlow.occurred_at <= recorded_at,
+            )
+            .order_by(
+                TradingAccountCashFlow.occurred_at.asc(),
+                TradingAccountCashFlow.id.asc(),
+            )
+        )
+        flows = list(flow_result.all())
+        period_external_flow = sum((flow.amount_usd for flow in flows), ZERO)
+        period_trading_pnl = end_equity - previous.equity_usd - period_external_flow
+        period_return = cash_flow_adjusted_period_return(
+            start_equity=previous.equity_usd,
+            end_equity=end_equity,
+            cash_flows=[(flow.occurred_at, flow.amount_usd) for flow in flows],
+            started_at=previous.recorded_at,
+            ended_at=recorded_at,
+        )
+        performance_index = previous.performance_index
+        if period_return is not None:
+            performance_index = max(
+                previous.performance_index * (Decimal("1") + period_return),
+                ZERO,
+            )
+        snapshot = TradingAccountPerformanceSnapshot(
+            account_key=account.key,
+            account_type="live",
+            equity_usd=end_equity,
+            period_external_flow_usd=period_external_flow,
+            net_external_flows_usd=(
+                previous.net_external_flows_usd + period_external_flow
+            ),
+            trading_pnl_usd=previous.trading_pnl_usd + period_trading_pnl,
+            period_return_pct=period_return,
+            time_weighted_return_pct=performance_index - Decimal("1"),
+            performance_index=performance_index,
+            tracking_started_at=previous.tracking_started_at,
+            recorded_at=recorded_at,
+            is_baseline=False,
+        )
+    session.add(snapshot)
+    account.config_payload = merge_raw_payload(
+        account.config_payload,
+        {
+            "performanceTracking": {
+                "netExternalFlowsUsd": str(snapshot.net_external_flows_usd),
+                "recordedAt": snapshot.recorded_at.isoformat(),
+                "timeWeightedReturnPct": str(snapshot.time_weighted_return_pct),
+                "trackingStartedAt": snapshot.tracking_started_at.isoformat(),
+                "tradingPnlUsd": str(snapshot.trading_pnl_usd),
+            }
+        },
+    )
+    await session.flush()
+    return snapshot
+
+
+async def ensure_live_account_performance_baseline(
+    session: AsyncSession,
+    *,
+    account: TradingAccount,
+) -> TradingAccountPerformanceSnapshot | None:
+    if account.last_reconciled_at is None or account.equity_usd is None:
+        return None
+    existing_snapshot_id = await session.scalar(
+        select(TradingAccountPerformanceSnapshot.id)
+        .where(TradingAccountPerformanceSnapshot.account_key == account.key)
+        .limit(1)
+    )
+    if existing_snapshot_id is not None:
+        return None
+    return await record_live_account_performance_snapshot(
+        session,
+        account=account,
+        recorded_at=account.last_reconciled_at,
+    )
+
+
+def cash_flow_adjusted_period_return(
+    *,
+    start_equity: Decimal,
+    end_equity: Decimal,
+    cash_flows: list[tuple[datetime, Decimal]],
+    started_at: datetime,
+    ended_at: datetime,
+) -> Decimal | None:
+    total_seconds = Decimal(str(max((ended_at - started_at).total_seconds(), 0)))
+    external_flow = sum((amount for _, amount in cash_flows), ZERO)
+    trading_pnl = end_equity - start_equity - external_flow
+    if total_seconds == ZERO:
+        denominator = start_equity
+    else:
+        weighted_flows = ZERO
+        for occurred_at, amount in cash_flows:
+            remaining_seconds = Decimal(
+                str(max(min((ended_at - occurred_at).total_seconds(), float(total_seconds)), 0))
+            )
+            weighted_flows += amount * (remaining_seconds / total_seconds)
+        denominator = start_equity + weighted_flows
+    if denominator <= ZERO:
+        return ZERO if trading_pnl == ZERO else None
+    return trading_pnl / denominator
+
+
 async def still_unresolved_live_order_ids(
     session: AsyncSession,
     *,
@@ -3535,6 +3751,7 @@ def reconciliation_component_errors(
     unresolved_order_ids: tuple[UUID, ...],
     fill_result: LiveFillFetchResult,
     funding_result: LiveFundingFetchResult,
+    cash_flow_result: LiveCashFlowFetchResult,
     perp_snapshot: LivePerpSnapshot,
     spot_state: dict[str, Any],
     user_abstraction: Any,
@@ -3546,6 +3763,10 @@ def reconciliation_component_errors(
         errors["fills"] = fill_result.error or "Live fill history is incomplete."
     if not funding_result.complete:
         errors["funding"] = funding_result.error or "Live funding history is incomplete."
+    if not cash_flow_result.complete:
+        errors["cash_flows"] = (
+            cash_flow_result.error or "Live account cash flow history is incomplete."
+        )
     errors.update(perp_snapshot.component_errors)
     if not perp_snapshot.complete and not any(key.startswith("perp") for key in errors):
         errors["positions"] = "One or more perp position scopes are incomplete."
@@ -3564,6 +3785,7 @@ def reconciliation_components_payload(
     unresolved_order_ids: tuple[UUID, ...],
     fill_result: LiveFillFetchResult,
     funding_result: LiveFundingFetchResult,
+    cash_flow_result: LiveCashFlowFetchResult,
     perp_snapshot: LivePerpSnapshot,
     spot_state: dict[str, Any],
     user_abstraction: Any,
@@ -3589,6 +3811,13 @@ def reconciliation_components_payload(
             "pages": funding_result.pages,
             "nextStartTimeMs": funding_result.next_start_time_ms,
             "error": funding_result.error,
+        },
+        "cashFlows": {
+            "status": "complete" if cash_flow_result.complete else "partial",
+            "fetched": len(cash_flow_result.updates),
+            "pages": cash_flow_result.pages,
+            "nextStartTimeMs": cash_flow_result.next_start_time_ms,
+            "error": cash_flow_result.error,
         },
         "perpCatalog": {
             "status": "complete" if perp_snapshot.catalog_complete else "partial",
@@ -3957,6 +4186,91 @@ def live_funding_pagination_key(payment: dict[str, Any]) -> tuple[str, ...]:
     )
 
 
+async def fetch_live_cash_flows_by_time(
+    client: HyperliquidClient,
+    *,
+    user: str,
+    start_time_ms: int,
+    end_time_ms: int,
+    max_pages: int = MAX_LIVE_CASH_FLOW_RECONCILIATION_PAGES,
+) -> LiveCashFlowFetchResult:
+    updates: list[dict[str, Any]] = []
+    seen_keys: set[tuple[str, ...]] = set()
+    next_start_time_ms = start_time_ms
+    pages = 0
+    for _ in range(max_pages):
+        try:
+            batch = await client.user_non_funding_ledger_updates(
+                user=user,
+                start_time_ms=next_start_time_ms,
+                end_time_ms=end_time_ms,
+            )
+        except Exception as exc:
+            return LiveCashFlowFetchResult(
+                updates=tuple(updates),
+                complete=False,
+                pages=pages,
+                next_start_time_ms=next_start_time_ms,
+                error=str(exc) or exc.__class__.__name__,
+            )
+        pages += 1
+        if not batch:
+            return LiveCashFlowFetchResult(updates=tuple(updates), complete=True, pages=pages)
+        new_updates = []
+        for update in batch:
+            key = live_cash_flow_pagination_key(update)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            new_updates.append(update)
+        updates.extend(new_updates)
+        timestamps = [
+            int(timestamp)
+            for update in batch
+            for timestamp in [decimal_or_none(update.get("time"))]
+            if timestamp is not None
+        ]
+        if len(batch) < 500 or not timestamps:
+            return LiveCashFlowFetchResult(updates=tuple(updates), complete=True, pages=pages)
+        next_page_start_time_ms = max(timestamps)
+        if next_page_start_time_ms < next_start_time_ms or not new_updates:
+            return LiveCashFlowFetchResult(
+                updates=tuple(updates),
+                complete=False,
+                pages=pages,
+                next_start_time_ms=next_start_time_ms,
+                error="Cash flow reconciliation pagination did not advance.",
+            )
+        next_start_time_ms = next_page_start_time_ms
+    return LiveCashFlowFetchResult(
+        updates=tuple(updates),
+        complete=False,
+        pages=pages,
+        next_start_time_ms=next_start_time_ms,
+        error=f"Cash flow reconciliation reached the {max_pages}-page safety limit.",
+    )
+
+
+def live_cash_flow_pagination_key(update: dict[str, Any]) -> tuple[str, ...]:
+    delta = update.get("delta")
+    resolved_delta = delta if isinstance(delta, dict) else {}
+    return tuple(
+        str(value or "")
+        for value in (
+            update.get("hash"),
+            update.get("time"),
+            resolved_delta.get("type"),
+            resolved_delta.get("usdc"),
+            resolved_delta.get("amount"),
+            resolved_delta.get("usdcValue"),
+            resolved_delta.get("token"),
+            resolved_delta.get("user"),
+            resolved_delta.get("destination"),
+            resolved_delta.get("nonce"),
+        )
+    )
+
+
 async def fetch_live_perp_states(
     client: HyperliquidClient,
     *,
@@ -4226,6 +4540,36 @@ async def reconcile_live_funding_payments(
         )
         stmt = stmt.on_conflict_do_nothing(
             constraint="ux_trading_funding_payments_account_event"
+        )
+        result = await session.execute(stmt)
+        inserted += int(int(result.rowcount or 0) > 0)
+    await session.flush()
+    return inserted
+
+
+async def reconcile_live_account_cash_flows(
+    session: AsyncSession,
+    *,
+    account: TradingAccount,
+    user_address: str,
+    updates: list[dict[str, Any]],
+) -> int:
+    inserted = 0
+    for update in updates:
+        parsed = parse_live_account_cash_flow(
+            update,
+            account_key=account.key,
+            user_address=user_address,
+        )
+        if parsed is None:
+            continue
+        stmt = insert(TradingAccountCashFlow).values(
+            account_key=account.key,
+            account_type="live",
+            **parsed,
+        )
+        stmt = stmt.on_conflict_do_nothing(
+            constraint="ux_trading_account_cash_flows_account_event"
         )
         result = await session.execute(stmt)
         inserted += int(int(result.rowcount or 0) > 0)
@@ -5128,6 +5472,43 @@ async def live_funding_reconciliation_start_time_ms(
     return int(start_at.timestamp() * 1000)
 
 
+async def live_cash_flow_reconciliation_start_time_ms(
+    session: AsyncSession,
+    *,
+    account: TradingAccount,
+    settings: Settings,
+    now: datetime,
+    lookback_minutes: int | None = None,
+) -> int:
+    if lookback_minutes is not None:
+        start_at = now - timedelta(minutes=max(lookback_minutes, 1))
+        return int(start_at.timestamp() * 1000)
+    latest_cash_flow_at = await session.scalar(
+        select(func.max(TradingAccountCashFlow.occurred_at)).where(
+            TradingAccountCashFlow.account_key == account.key,
+        )
+    )
+    if latest_cash_flow_at is not None:
+        start_at = latest_cash_flow_at - timedelta(minutes=5)
+    else:
+        created_at = account.created_at
+        utc_now = now.replace(tzinfo=UTC) if now.tzinfo is None else now.astimezone(UTC)
+        day_start = utc_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_start = day_start - timedelta(days=day_start.weekday())
+        prior_snapshot_at = account.last_reconciled_at or created_at
+        start_at = min(
+            prior_snapshot_at or week_start,
+            week_start,
+        )
+        if created_at is not None:
+            start_at = max(start_at, created_at)
+        if prior_snapshot_at is None and created_at is None:
+            start_at = now - timedelta(
+                minutes=settings.live_trading_reconciliation_lookback_minutes
+            )
+    return int(start_at.timestamp() * 1000)
+
+
 def build_testnet_live_trade_intent(
     *,
     account: TradingAccount,
@@ -5583,6 +5964,83 @@ def parse_live_funding_payment(
         "position_size": decimal_or_none(delta.get("szi")),
         "occurred_at": ms_to_datetime(timestamp_ms) or datetime.now(UTC),
         "raw_payload": payment,
+    }
+
+
+def parse_live_account_cash_flow(
+    update: dict[str, Any],
+    *,
+    account_key: str,
+    user_address: str,
+) -> dict[str, Any] | None:
+    delta = update.get("delta")
+    if not isinstance(delta, dict):
+        return None
+    event_type = string_or_none(delta.get("type"))
+    timestamp_ms = decimal_or_none(update.get("time"))
+    if event_type is None or timestamp_ms is None:
+        return None
+    if event_type == "spotTransfer":
+        token = string_or_none(delta.get("token"))
+        if token is None or token.upper() != "USDC":
+            return None
+        amount = decimal_or_none(delta.get("amount") or delta.get("usdcValue"))
+    else:
+        amount = decimal_or_none(delta.get("usdc"))
+    if amount is None or amount == ZERO:
+        return None
+
+    fee = abs(decimal_or_none(delta.get("fee")) or ZERO)
+    absolute_amount = abs(amount)
+    normalized_user = normalize_optional_address(string_or_none(delta.get("user")))
+    normalized_destination = normalize_optional_address(
+        string_or_none(delta.get("destination"))
+    )
+    normalized_account = normalize_optional_address(user_address)
+
+    if event_type == "deposit":
+        signed_amount = absolute_amount
+        flow_type = "deposit"
+    elif event_type == "withdraw":
+        signed_amount = -(absolute_amount + fee)
+        flow_type = "withdrawal"
+    elif event_type in {"internalTransfer", "spotTransfer", "subAccountTransfer"}:
+        if normalized_account is None:
+            return None
+        if (
+            normalized_destination == normalized_account
+            and normalized_user != normalized_account
+        ):
+            signed_amount = absolute_amount
+            flow_type = {
+                "internalTransfer": "internal_transfer_in",
+                "spotTransfer": "spot_transfer_in",
+                "subAccountTransfer": "sub_account_transfer_in",
+            }[event_type]
+        elif normalized_user == normalized_account and normalized_destination != normalized_account:
+            signed_amount = -(absolute_amount + fee)
+            flow_type = {
+                "internalTransfer": "internal_transfer_out",
+                "spotTransfer": "spot_transfer_out",
+                "subAccountTransfer": "sub_account_transfer_out",
+            }[event_type]
+        else:
+            return None
+    else:
+        return None
+
+    identity = "|".join(live_cash_flow_pagination_key(update))
+    exchange_event_id = blake2s(
+        f"{account_key}|{identity}".encode(),
+        digest_size=16,
+    ).hexdigest()
+    return {
+        "exchange_event_id": exchange_event_id,
+        "flow_type": flow_type,
+        "amount_usd": signed_amount,
+        "fee_usd": fee,
+        "occurred_at": ms_to_datetime(timestamp_ms) or datetime.now(UTC),
+        "raw_payload": update,
     }
 
 

@@ -58,6 +58,8 @@ Current schema includes:
   component completeness
 - `trading_fills`, reconciled paper or live execution fills
 - `trading_funding_payments`, idempotent signed Hyperliquid funding ledger for live accounts
+- `trading_account_cash_flows`, idempotent external deposit and withdrawal ledger
+- `trading_account_performance_snapshots`, cash-flow-adjusted live account return history
 - `paper_trading_accounts`
 - `paper_copy_allocations`
 - `paper_positions`
@@ -125,13 +127,16 @@ each exchange submission uses its own deterministic 128-bit CLOID.
 Migration `a2c4e6f8b0d1` adds the live funding-payment ledger. Live
 reconciliation imports signed USDC funding payments from Hyperliquid separately
 from trade fills. Live net realized PnL is Hyperliquid `closedPnl`, minus
-Hyperliquid fill fees, plus signed Hyperliquid funding. This is the current head.
+Hyperliquid fill fees, plus signed Hyperliquid funding.
+
+Migration `b3d5f7a9c1e2` adds the external account cash-flow ledger and
+cash-flow-adjusted live performance snapshots. This is the current head.
 
 ```bash
 python -m alembic current
 ```
 
-The command must show `a2c4e6f8b0d1`. Do not start the backend or workers until
+The command must show `b3d5f7a9c1e2`. Do not start the backend or workers until
 that revision is current.
 
 For an existing VPS deployment after pulling this phase:
@@ -1159,7 +1164,7 @@ docker compose -f docker-compose.vps.yml run --rm backend python -m alembic curr
 docker compose -f docker-compose.vps.yml up -d
 ```
 
-The `current` command must report `a2c4e6f8b0d1` before the backend or workers
+The `current` command must report `b3d5f7a9c1e2` before the backend or workers
 start.
 
 The application images run as non-root users. Backend, frontend, and worker
@@ -1263,6 +1268,16 @@ Enabled and exit-only live accounts reconcile on
 `live_trading_reconciliation_interval_seconds`. Live copy also refreshes a stale
 account snapshot before sizing a new fill, so deposits are picked up before copy
 order sizing if the background loop is late.
+Complete reconciliation also imports Hyperliquid non-funding ledger updates.
+External deposits and withdrawals are stored separately from trading PnL, while
+transfers between spot and perp capital inside the same account remain internal.
+The first complete reconciliation after the performance migration uses the
+previous stored complete exchange snapshot as its verified baseline when one is
+available. Otherwise the new snapshot becomes the baseline. Later equity
+snapshots use chain-linked, cash-flow-adjusted period returns, so adding capital
+changes sizing without diluting earlier account performance. The Accounts page
+labels the tracking start and exposes account return, net external flows, and
+trading PnL separately.
 Manual reconciliation accepts `lookback_minutes` for historical live fill
 backfills, for example `POST /trading/accounts/{account_key}/reconcile?lookback_minutes=4320`.
 

@@ -391,15 +391,16 @@ write the same `request_id` to the frontend container log. The Trading dashboard
 shows that identifier with failed mutations. Use it to correlate a browser error
 with the upstream backend response without logging credentials or request bodies.
 
-The Alembic head for this update is `a2c4e6f8b0d1`. The current chain adds the
-signed Hyperliquid funding-payment ledger, removes
+The Alembic head for this update is `b3d5f7a9c1e2`. The current chain adds the
+signed Hyperliquid funding-payment ledger, the live external cash-flow ledger,
+and cash-flow-adjusted account performance snapshots. It removes
 the obsolete durable live-entry control, expands wallet fill ingest latency to
 `BIGINT`, persists live margin mode, adds the authoritative live-copy lifecycle,
 and adds the unified durable `live_copy_work` queue. It also converts the live
 order outbox into an append-only attempt ledger, backfilling existing dispatches
 as attempt 1. The migration bridges only
 unfinished realtime inbox work into the new queue. It does not replay the full
-historical fill table. The `current` command must show `a2c4e6f8b0d1` before the
+historical fill table. The `current` command must show `b3d5f7a9c1e2` before the
 backend or workers are restarted.
 
 Paper trading state is stored in local Postgres, not in the worker containers.

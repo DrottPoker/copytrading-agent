@@ -2238,6 +2238,8 @@ function buildLiveAccountView(
   const balanceScale = Math.max(equity, cash, tradable, perpEquity, openMargin, 1);
   const realizedPnl = decimal(account.realizedPnlUsd);
   const feeUsd = decimal(account.feeUsd);
+  const timeWeightedReturn =
+    account.timeWeightedReturnPct === null ? null : decimal(account.timeWeightedReturnPct);
   const capitalMode = formatCapitalMode(account.capitalMode);
   const reconciliationLabel =
     account.reconciliationStatus === "complete"
@@ -2306,6 +2308,18 @@ function buildLiveAccountView(
           { label: "Abstraction", value: account.userAbstraction ?? "unknown" },
           { label: "Created", value: formatDate(account.createdAt) },
           { label: "Updated", value: formatDate(account.updatedAt) },
+          {
+            label: "Performance tracking",
+            value: formatDate(account.performanceTrackingStartedAt),
+          },
+          {
+            label: "Net external flows",
+            value: formatCurrency(account.netExternalFlowsUsd),
+          },
+          {
+            label: "Trading PnL",
+            value: formatCurrency(account.tradingPnlUsd),
+          },
         ],
       },
       {
@@ -2336,6 +2350,23 @@ function buildLiveAccountView(
         icon: WalletCards,
         label: "Equity",
         value: formatCurrency(equity),
+      },
+      {
+        detail: account.performanceTrackingStartedAt
+          ? `TWR since ${formatDate(account.performanceTrackingStartedAt)}`
+          : "Starts after a complete reconciliation",
+        icon:
+          timeWeightedReturn !== null && timeWeightedReturn < 0
+            ? TrendingDown
+            : TrendingUp,
+        label: "Account return",
+        tone:
+          timeWeightedReturn === null
+            ? "neutral"
+            : timeWeightedReturn >= 0
+              ? "positive"
+              : "danger",
+        value: formatPercent(timeWeightedReturn),
       },
       {
         detail: "Sizing capital",
@@ -2452,7 +2483,10 @@ function buildLiveAccountMetrics({
     exposureRatio: netEquityUsd > 0 ? openNotionalUsd / netEquityUsd : null,
     netEquityUsd,
     remainingAllocationUsd: Math.max(netEquityUsd - openMarginUsd, 0),
-    returnPct: netEquityUsd > 0 ? decimal(account.realizedPnlUsd) / netEquityUsd : null,
+    returnPct:
+      account.timeWeightedReturnPct === null
+        ? null
+        : decimal(account.timeWeightedReturnPct),
     skippedFillCount,
     winRate: closedTrades.length > 0 ? winningClosedTradeCount / closedTrades.length : null,
   };

@@ -22,6 +22,10 @@ export type TradingAccount = {
   realizedPnlUsd: string;
   feeUsd: string;
   fundingUsd: string;
+  timeWeightedReturnPct: string | null;
+  netExternalFlowsUsd: string;
+  tradingPnlUsd: string;
+  performanceTrackingStartedAt: string | null;
   lastReconciledAt: string | null;
   lifecycleVersion: number;
   statusChangedAt: string | null;

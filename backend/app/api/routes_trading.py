@@ -296,10 +296,28 @@ def enriched_trading_account_read(
         else {}
     )
     incomplete_components = last_attempt.get("incompleteComponents")
+    performance_tracking = (
+        account.config_payload.get("performanceTracking")
+        if isinstance(account.config_payload, dict)
+        else None
+    )
+    performance = performance_tracking if isinstance(performance_tracking, dict) else {}
     return read.model_copy(
         update={
             "capital_mode": mode,
             "funding_usd": funding_usd,
+            "time_weighted_return_pct": decimal_or_none(
+                performance.get("timeWeightedReturnPct")
+            ),
+            "net_external_flows_usd": (
+                decimal_or_none(performance.get("netExternalFlowsUsd")) or Decimal("0")
+            ),
+            "trading_pnl_usd": (
+                decimal_or_none(performance.get("tradingPnlUsd")) or Decimal("0")
+            ),
+            "performance_tracking_started_at": parse_reconciliation_datetime(
+                performance.get("trackingStartedAt")
+            ),
             "user_abstraction": normalize_user_abstraction(
                 last_reconciliation.get("userAbstraction")
                 or last_reconciliation.get("userAbstractionRaw")

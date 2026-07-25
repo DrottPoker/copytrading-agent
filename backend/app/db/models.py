@@ -1440,6 +1440,116 @@ class TradingFundingPayment(Base, TimestampMixin):
     raw_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
 
 
+class TradingAccountCashFlow(Base, TimestampMixin):
+    __tablename__ = "trading_account_cash_flows"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["account_key", "account_type"],
+            ["trading_accounts.key", "trading_accounts.account_type"],
+            name="fk_trading_account_cash_flows_account_key_type_trading_accounts",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "account_type = 'live'",
+            name="ck_trading_account_cash_flows_live",
+        ),
+        CheckConstraint(
+            "amount_usd <> 0",
+            name="ck_trading_account_cash_flows_nonzero",
+        ),
+        UniqueConstraint(
+            "account_key",
+            "exchange_event_id",
+            name="ux_trading_account_cash_flows_account_event",
+        ),
+        Index(
+            "ix_trading_account_cash_flows_account_occurred",
+            "account_key",
+            "occurred_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    account_key: Mapped[str] = mapped_column(Text, nullable=False)
+    account_type: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'live'")
+    )
+    exchange_event_id: Mapped[str] = mapped_column(Text, nullable=False)
+    flow_type: Mapped[str] = mapped_column(Text, nullable=False)
+    amount_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    fee_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False, server_default=text("0"))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    raw_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+
+
+class TradingAccountPerformanceSnapshot(Base, TimestampMixin):
+    __tablename__ = "trading_account_performance_snapshots"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["account_key", "account_type"],
+            ["trading_accounts.key", "trading_accounts.account_type"],
+            name="fk_trading_account_performance_account_type",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "account_type = 'live'",
+            name="ck_trading_account_performance_snapshots_live",
+        ),
+        CheckConstraint(
+            "equity_usd >= 0",
+            name="ck_trading_account_performance_snapshots_equity",
+        ),
+        CheckConstraint(
+            "performance_index >= 0",
+            name="ck_trading_account_performance_snapshots_index",
+        ),
+        UniqueConstraint(
+            "account_key",
+            "recorded_at",
+            name="ux_trading_account_performance_snapshots_account_recorded",
+        ),
+        Index(
+            "ix_trading_account_performance_snapshots_account_recorded",
+            "account_key",
+            "recorded_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    account_key: Mapped[str] = mapped_column(Text, nullable=False)
+    account_type: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'live'")
+    )
+    equity_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    period_external_flow_usd: Mapped[Decimal] = mapped_column(
+        Numeric, nullable=False, server_default=text("0")
+    )
+    net_external_flows_usd: Mapped[Decimal] = mapped_column(
+        Numeric, nullable=False, server_default=text("0")
+    )
+    trading_pnl_usd: Mapped[Decimal] = mapped_column(
+        Numeric, nullable=False, server_default=text("0")
+    )
+    period_return_pct: Mapped[Decimal | None] = mapped_column(Numeric)
+    time_weighted_return_pct: Mapped[Decimal] = mapped_column(
+        Numeric, nullable=False, server_default=text("0")
+    )
+    performance_index: Mapped[Decimal] = mapped_column(
+        Numeric, nullable=False, server_default=text("1")
+    )
+    tracking_started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    is_baseline: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+
+
 class PaperTradingAccount(Base, TimestampMixin, UpdatedAtMixin):
     __tablename__ = "paper_trading_accounts"
 

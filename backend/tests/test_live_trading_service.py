@@ -26,8 +26,10 @@ from app.services.live_trading_service import (
     apply_order_status_response,
     attach_live_funding_to_closed_trades,
     build_testnet_live_trade_intent,
+    cash_flow_adjusted_period_return,
     close_all_live_account_positions,
     create_live_trading_account,
+    fetch_live_cash_flows_by_time,
     fetch_live_fills_by_time,
     fetch_live_funding_by_time,
     is_retryable_live_order_submit_failure,
@@ -42,6 +44,7 @@ from app.services.live_trading_service import (
     live_tradable_equity_usd,
     manual_live_close_recovery_status,
     map_exchange_order_status,
+    parse_live_account_cash_flow,
     parse_live_fill,
     parse_live_funding_payment,
     parse_live_position,
@@ -1713,6 +1716,111 @@ async def test_fetch_live_funding_by_time_paginates_without_duplicates() -> None
     assert result.complete is True
     assert result.pages == 2
     assert client.start_times == [1000, 1499]
+
+
+@pytest.mark.asyncio
+async def test_fetch_live_cash_flows_by_time_uses_bounded_history_window() -> None:
+    class CashFlowClient:
+        async def user_non_funding_ledger_updates(
+            self,
+            *,
+            user: str,
+            start_time_ms: int,
+            end_time_ms: int,
+        ) -> list[dict[str, object]]:
+            assert user == "0xuser"
+            assert start_time_ms == 1000
+            assert end_time_ms == 2000
+            return [
+                {
+                    "delta": {"type": "deposit", "usdc": "100"},
+                    "hash": "0xdeposit",
+                    "time": 1500,
+                }
+            ]
+
+    result = await fetch_live_cash_flows_by_time(  # type: ignore[arg-type]
+        CashFlowClient(),
+        user="0xuser",
+        start_time_ms=1000,
+        end_time_ms=2000,
+    )
+
+    assert result.complete is True
+    assert result.pages == 1
+    assert len(result.updates) == 1
+
+
+def test_parse_live_account_cash_flow_tracks_external_capital_only() -> None:
+    deposit = parse_live_account_cash_flow(
+        {
+            "delta": {"type": "deposit", "usdc": "1000"},
+            "hash": "0xdeposit",
+            "time": 1_750_000_000_000,
+        },
+        account_key="live_test",
+        user_address="0x" + "1" * 40,
+    )
+    withdrawal = parse_live_account_cash_flow(
+        {
+            "delta": {"type": "withdraw", "usdc": "100", "fee": "1"},
+            "hash": "0xwithdrawal",
+            "time": 1_750_000_000_100,
+        },
+        account_key="live_test",
+        user_address="0x" + "1" * 40,
+    )
+    internal = parse_live_account_cash_flow(
+        {
+            "delta": {"type": "spotTransfer", "usdc": "500"},
+            "hash": "0xinternal",
+            "time": 1_750_000_000_200,
+        },
+        account_key="live_test",
+        user_address="0x" + "1" * 40,
+    )
+    spot_transfer = parse_live_account_cash_flow(
+        {
+            "delta": {
+                "type": "spotTransfer",
+                "token": "USDC",
+                "amount": "50",
+                "user": "0x" + "1" * 40,
+                "destination": "0x" + "2" * 40,
+                "fee": "0.1",
+            },
+            "hash": "0xspot",
+            "time": 1_750_000_000_300,
+        },
+        account_key="live_test",
+        user_address="0x" + "1" * 40,
+    )
+
+    assert deposit is not None
+    assert deposit["amount_usd"] == Decimal("1000")
+    assert deposit["flow_type"] == "deposit"
+    assert withdrawal is not None
+    assert withdrawal["amount_usd"] == Decimal("-101")
+    assert withdrawal["flow_type"] == "withdrawal"
+    assert internal is None
+    assert spot_transfer is not None
+    assert spot_transfer["amount_usd"] == Decimal("-50.1")
+    assert spot_transfer["flow_type"] == "spot_transfer_out"
+
+
+def test_cash_flow_adjusted_return_does_not_dilute_prior_performance() -> None:
+    started_at = datetime(2026, 1, 1, tzinfo=UTC)
+    ended_at = started_at + timedelta(hours=1)
+
+    result = cash_flow_adjusted_period_return(
+        start_equity=Decimal("1000"),
+        end_equity=Decimal("2100"),
+        cash_flows=[(ended_at, Decimal("1000"))],
+        started_at=started_at,
+        ended_at=ended_at,
+    )
+
+    assert result == Decimal("0.1")
 
 
 def test_partial_spot_reconciliation_preserves_last_authoritative_capital() -> None:
