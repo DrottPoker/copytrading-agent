@@ -6,6 +6,7 @@ import type { LiveCopyDecision, TradingPosition } from "@/types/trading";
 
 import {
   buildLiveCopyDecisionActivities,
+  buildLiveWalletHistory,
   collectLiveCopySourceWallets,
   compareDashboardPositionsOldestFirst,
   compareCopySourcesByAllocationUsed,
@@ -161,16 +162,62 @@ describe("copy source performance", () => {
     ]);
   });
 
-  it("sorts Wallet PnL History by total PnL descending", () => {
+  it("sorts Wallet PnL History by realized PnL descending", () => {
     const wallets = [
       { sourceWallet: "0xlow", poolRank: 1, realizedPnlUsd: "7.17", totalPnlUsd: "5" },
       { sourceWallet: "0xhigh", poolRank: 10, realizedPnlUsd: "0.79", totalPnlUsd: "6" },
     ];
 
     expect(wallets.sort(compareWalletHistoryByPnl).map((wallet) => wallet.sourceWallet)).toEqual([
-      "0xhigh",
       "0xlow",
+      "0xhigh",
     ]);
+  });
+
+  it("uses all-time live source metadata for Wallet PnL History", () => {
+    const monitoredSeconds = 10 * 24 * 60 * 60;
+    const sourceMetadata = new Map([
+      [
+        "0xhistorical",
+        {
+          allocationPct: null,
+          label: "Historical winner",
+          poolRank: 5,
+          rank: 5,
+          score: "84.1",
+          liveRealizedPnlUsd: "39.30",
+          liveFillCount: 10,
+          monitoredSeconds,
+          monitoredHours: "240",
+          realizedPnlPerMonitoredHourUsd: null,
+          totalPnlPerMonitoredHourUsd: null,
+          firstMonitoredAt: "2026-01-01T00:00:00Z",
+          currentMonitoringStartedAt: null,
+          lastMonitoredAt: "2026-01-11T00:00:00Z",
+        },
+      ],
+    ]);
+
+    const rows = buildLiveWalletHistory([], [], [], sourceMetadata, {
+      status: "connected",
+      desiredWallets: [],
+      monitoredWallets: [],
+      workerRole: "trading",
+      workerInstanceId: "worker-1",
+      updatedAt: "2026-01-11T00:00:00Z",
+    });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      sourceWallet: "0xhistorical",
+      copiedFillCount: 10,
+      realizedPnlUsd: "39.3",
+      totalPnlUsd: "39.3",
+    });
+    expect(Number(rows[0].realizedPnlPerMonitoredHourUsd)).toBeCloseTo(
+      39.3 / 240,
+      10,
+    );
   });
 
   it("keeps open positions oldest first with a deterministic tie break", () => {

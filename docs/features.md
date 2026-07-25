@@ -827,12 +827,13 @@ What it does:
   state. If the source no longer has the same coin and side, paper closes the
   position at the current simulated market price with normal fee and slippage.
 - Paper summary wallet performance includes monitored seconds, monitored hours,
-  and realized and total PnL per monitored hour. Trading dashboard source rows
-  use those fields to show monitored efficiency beside allocation and PnL.
-- Live source performance uses all source-attributed live fills, not the recent
-  activity limit and not paper PnL. Realized and total PnL per monitored hour are
-  calculated from the exact PnL displayed in the live row and the same wallet's
-  accumulated monitored seconds.
+  and realized and total PnL per monitored hour. Trading dashboard source and
+  wallet-history rows show realized PnL per monitored hour beside duration.
+- Live source performance and wallet history use all source-attributed live
+  fills, not the recent activity limit and not paper PnL. Realized and total PnL
+  per monitored hour are calculated from the exact PnL in the live row and the
+  same wallet's accumulated monitored seconds. The displayed US$/h rate uses
+  realized PnL.
 - Retains allocation records for source wallets with open paper positions so
   add, reduce, close, and flip fills can continue after the source falls out of
   the current top 10.
@@ -965,7 +966,7 @@ What it does:
   PnL shown as supporting context.
 - Copy Sources sorts by allocation-used percentage descending, followed by used
   USD, realized PnL, source status, pool rank, and wallet address for deterministic
-  ties. Wallet PnL History sorts by total PnL descending, followed by realized
+  ties. Wallet PnL History sorts by realized PnL descending, followed by total
   PnL, pool rank, and wallet address.
 - The Sources summary and Copy Sources header derive their trading, monitored,
   connecting, offline, and waiting-for-slot counts from the same current

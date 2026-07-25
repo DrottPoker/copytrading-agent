@@ -963,12 +963,12 @@ the worker's desired and confirmed wallet sets even when live-account entries
 are paused, then supplements them with allocation and open-position sources.
 Live source performance metadata aggregates realized PnL and fill count across
 the complete source-attributed `trading_fills` ledger. The dashboard divides
-that realized PnL, or realized plus current unrealized PnL, by the same wallet's
-accumulated monitored seconds. It never combines live PnL with a paper-derived
-per-hour rate. Copy Sources sorts by allocation-used percentage descending,
+that realized PnL by the same wallet's accumulated monitored seconds for the
+displayed US$/h rate. It never combines live PnL with a paper-derived per-hour
+rate. Copy Sources sorts by allocation-used percentage descending,
 followed by used USD, realized PnL, status, pool rank, and wallet-address
-tie-breakers. Wallet PnL History sorts by total PnL descending, followed by
-realized PnL, pool rank, and wallet address.
+tie-breakers. Wallet PnL History sorts by realized PnL descending, followed by
+total PnL, pool rank, and wallet address.
 Open-position rows sort by durable opening time ascending and use position
 identity as a deterministic tie-breaker, so mark updates do not reorder them.
 Dashboard source counters are reduced from the same current source rows as the
@@ -1387,13 +1387,14 @@ live fills and live order attempts. A top-panel mode toggle selects Paper or
 Live mode. The active mode owns all Trading page view models, so accounts,
 copy sources, wallet PnL history, open positions, closed activity, and recent
 execution activity are never mixed across paper and live rows. Live mode derives
-source history from live positions, live fills, live orders, and persisted live
-pre-submit skips, while reusing known wallet labels for display names only. Copy
+source history and realized PnL from all-time source metadata, then supplements
+it with live positions, recent fills, live orders, and persisted live pre-submit
+skips. Known wallet labels are reused for display names only. Copy
 source monitor slots and source eligibility are shared across paper and live
 execution, then rendered with mode-specific exposure, PnL, activity, and
-execution status. Live-only sources from recent fills or orders are excluded
-from Copy Sources and remain visible through Wallet PnL history and Recent
-Execution Activity. Recent Execution Activity uses the same result-oriented row
+execution status. Live-only historical sources are excluded from Copy Sources
+and remain visible through Wallet PnL history. Recent Execution Activity uses
+the same result-oriented row
 semantics in both modes, so filled, skipped, rejected, and failed attempts are
 visible without mixing paper and live rows. Skip activity is sorted by its last
 decision update while retaining the source fill time as context. The frontend keeps mode-specific

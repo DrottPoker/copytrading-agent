@@ -406,9 +406,9 @@ Notes:
 - The worker persists confirmed Hyperliquid `userFills` subscriptions separately
   from desired realtime slots. Allocation refresh records monitored time in
   `wallet_monitoring_stats` only for wallets with a confirmed subscription. The
-  trading dashboard exposes monitored duration and PnL per monitored hour for
-  each source wallet. Paper rows use the paper fill ledger. Live rows use
-  all-time source-attributed `trading_fills`, divided by the same wallet's
+  trading dashboard exposes monitored duration and realized PnL per monitored
+  hour for each source wallet. Paper rows use the paper fill ledger. Live rows
+  use all-time source-attributed `trading_fills`, divided by the same wallet's
   accumulated monitored seconds. Historical monitored time never determines
   current state.
 - Automated sourcing runs through Discovery using `backend/config/discovery.json`.
@@ -830,8 +830,9 @@ Sizing policy:
   candidates. Paper-only retained sources are excluded from Live Copy Sources
   and remain managed by historical fill import and paper recovery. Each mode
   renders its own exposure, PnL, activity, and execution status. Live-only
-  historical sources from recent fills or orders remain visible through Wallet
-  PnL history and Recent Execution Activity.
+  historical sources from the complete source-attributed live fill ledger remain
+  visible through Wallet PnL history. Recent orders remain visible there and in
+  Recent Execution Activity.
 - The Accounts page stores the last selected account in the browser and
   defaults to that account on the next visit, otherwise the first synced account
   is selected. It shows paper account metrics, charts, allocations, market
@@ -913,8 +914,8 @@ Sizing policy:
   cooldown, or missing score.
 - Copy Sources is sorted by allocation-used percentage descending. Used USD,
   realized PnL, source status, pool rank, and wallet address provide deterministic
-  tie-breakers. Wallet PnL History is sorted by total PnL descending, followed
-  by realized PnL, pool rank, and wallet address.
+  tie-breakers. Wallet PnL History is sorted by realized PnL descending, followed
+  by total PnL, pool rank, and wallet address.
 - Open Positions is sorted by durable opening time ascending with deterministic
   position identity tie-breakers, so price updates cannot move existing rows.
 - Trading uses compact responsive cards and list rows. Open Positions shows the

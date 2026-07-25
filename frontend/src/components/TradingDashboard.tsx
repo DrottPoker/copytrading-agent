@@ -1105,8 +1105,8 @@ function SourceRow({
           <CompactSourceStat
             label="Monitored"
             value={formatMonitoringDuration(source.monitoredSeconds)}
-            detail={formatMonitoringPnlPerHour(source.totalPnlPerMonitoredHourUsd)}
-            tone={monitoringTone(source.totalPnlPerMonitoredHourUsd)}
+            detail={formatMonitoringPnlPerHour(source.realizedPnlPerMonitoredHourUsd)}
+            tone={monitoringTone(source.realizedPnlPerMonitoredHourUsd)}
           />
           {mode === "paper" ? (
             <>
@@ -1390,8 +1390,8 @@ function WalletHistoryRow({ wallet }: { wallet: WalletPerformanceRow }) {
         <RowStat
           label="Monitored"
           value={formatMonitoringDuration(wallet.monitoredSeconds)}
-          detail={formatMonitoringPnlPerHour(wallet.totalPnlPerMonitoredHourUsd)}
-          tone={monitoringTone(wallet.totalPnlPerMonitoredHourUsd)}
+          detail={formatMonitoringPnlPerHour(wallet.realizedPnlPerMonitoredHourUsd)}
+          tone={monitoringTone(wallet.realizedPnlPerMonitoredHourUsd)}
         />
         <RowStat label="Open" value={formatCurrency(wallet.openMarginUsd)} detail={`${formatInteger(wallet.openPositionCount)} positions`} />
         <RowStat label="Fills" value={`${formatInteger(wallet.copiedFillCount)} / ${formatInteger(wallet.skippedFillCount)}`} detail={formatDate(wallet.lastFillAt)} />
@@ -2514,7 +2514,7 @@ function buildWalletHistory(wallets: WalletPerformanceRow[]) {
     .sort(compareWalletHistoryByPnl);
 }
 
-function buildLiveWalletHistory(
+export function buildLiveWalletHistory(
   liveFills: TradingFill[],
   liveOrders: TradingOrder[],
   livePositions: TradingPosition[],
@@ -2529,19 +2529,33 @@ function buildLiveWalletHistory(
     ...fillsBySource.keys(),
     ...ordersBySource.keys(),
   ]);
+  for (const [source, metadata] of sourceMetadata) {
+    if ((metadata.liveFillCount ?? 0) > 0) {
+      sources.add(source);
+    }
+  }
   return Array.from(sources)
     .map<WalletPerformanceRow>((source) => {
       const positions = positionsBySource.get(source) ?? [];
       const fills = fillsBySource.get(source) ?? [];
       const orders = ordersBySource.get(source) ?? [];
-      const realizedPnl = sumNumbers(fills.map((fill) => fill.realizedPnlUsd));
-      const unrealizedPnl = sumNumbers(positions.map((position) => position.unrealizedPnlUsd));
+      const metadata = sourceMetadata.get(source);
+      const realizedPnl =
+        metadata?.liveRealizedPnlUsd !== null && metadata?.liveRealizedPnlUsd !== undefined
+          ? numberValue(metadata.liveRealizedPnlUsd)
+          : sumNumbers(fills.map((fill) => fill.realizedPnlUsd));
+      const unrealizedPnl = sumNumbers(
+        positions.map((position) => position.unrealizedPnlUsd),
+      );
+      const totalPnl = realizedPnl + unrealizedPnl;
+      const monitoredSeconds = metadata?.monitoredSeconds ?? 0;
+      const realizedPnlPerHour = pnlPerMonitoredHour(realizedPnl, monitoredSeconds);
+      const totalPnlPerHour = pnlPerMonitoredHour(totalPnl, monitoredSeconds);
       const accountKeys = new Set([
         ...positions.map((position) => position.accountKey),
         ...fills.map((fill) => fill.accountKey),
         ...orders.map((order) => order.accountKey),
       ]);
-      const metadata = sourceMetadata.get(source);
       const isRealtimeMonitored = realtimeMonitoring.monitoredWallets.some(
         (wallet) => wallet.toLowerCase() === source,
       );
@@ -2558,15 +2572,17 @@ function buildLiveWalletHistory(
         monitorStatus: isRealtimeMonitored ? "monitored" : "history",
         accountCount: accountKeys.size,
         openPositionCount: positions.length,
-        copiedFillCount: fills.length,
+        copiedFillCount: metadata?.liveFillCount ?? fills.length,
         skippedFillCount: orders.filter((order) => liveOrderStatusTone(order.status) === "danger").length,
         realizedPnlUsd: String(realizedPnl),
         unrealizedPnlUsd: String(unrealizedPnl),
-        totalPnlUsd: String(realizedPnl + unrealizedPnl),
-        monitoredSeconds: metadata?.monitoredSeconds ?? 0,
-        monitoredHours: metadata?.monitoredHours ?? "0",
-        realizedPnlPerMonitoredHourUsd: metadata?.realizedPnlPerMonitoredHourUsd ?? null,
-        totalPnlPerMonitoredHourUsd: metadata?.totalPnlPerMonitoredHourUsd ?? null,
+        totalPnlUsd: String(totalPnl),
+        monitoredSeconds,
+        monitoredHours: String(monitoredSeconds / 3600),
+        realizedPnlPerMonitoredHourUsd:
+          realizedPnlPerHour === null ? null : String(realizedPnlPerHour),
+        totalPnlPerMonitoredHourUsd:
+          totalPnlPerHour === null ? null : String(totalPnlPerHour),
         firstMonitoredAt: metadata?.firstMonitoredAt ?? null,
         currentMonitoringStartedAt: metadata?.currentMonitoringStartedAt ?? null,
         lastMonitoredAt: metadata?.lastMonitoredAt ?? null,
@@ -3274,13 +3290,13 @@ export function compareWalletHistoryByPnl(
   left: WalletHistorySortValue,
   right: WalletHistorySortValue,
 ) {
-  const totalDiff = numberValue(right.totalPnlUsd) - numberValue(left.totalPnlUsd);
-  if (totalDiff !== 0) {
-    return totalDiff;
-  }
   const realizedDiff = numberValue(right.realizedPnlUsd) - numberValue(left.realizedPnlUsd);
   if (realizedDiff !== 0) {
     return realizedDiff;
+  }
+  const totalDiff = numberValue(right.totalPnlUsd) - numberValue(left.totalPnlUsd);
+  if (totalDiff !== 0) {
+    return totalDiff;
   }
   const rankDiff = (left.poolRank ?? 9999) - (right.poolRank ?? 9999);
   if (rankDiff !== 0) {
