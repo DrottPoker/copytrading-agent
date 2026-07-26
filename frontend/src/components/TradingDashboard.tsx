@@ -1259,6 +1259,14 @@ function PositionRow({
       : canClose
         ? "Close paper position"
         : "Execution price unavailable";
+  const executionScope =
+    position.accountType === "live" &&
+    isLiveExchangeSource(position.sourceWallet) &&
+    position.entryExecutionDelayMs !== null
+      ? "source to exchange"
+      : position.accountType === "paper" || position.entryExecutionDelayMs !== null
+        ? "source to open"
+        : "live position";
   return (
     <ListRow>
       <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 sm:grid-cols-3 xl:grid-cols-[1.15fr_repeat(8,minmax(0,0.72fr))_auto] xl:items-center">
@@ -1302,15 +1310,8 @@ function PositionRow({
         <RowStat
           label="Execution"
           value={formatExecutionMs(position.entryExecutionDelayMs)}
-          detail={
-            position.accountType === "live" &&
-            isLiveExchangeSource(position.sourceWallet) &&
-            position.entryExecutionDelayMs !== null
-              ? "source to exchange"
-              : position.accountType === "paper" || position.entryExecutionDelayMs !== null
-              ? "source to open"
-              : "live position"
-          }
+          detail={positionOpenedDetail(position.openedAt)}
+          title={executionScope}
         />
         <RowStat label="Mark" value={formatPrice(position.markPrice)} detail={formatDate(position.priceUpdatedAt ?? position.updatedAt)} />
         {paperPosition || livePosition ? (
@@ -1554,18 +1555,20 @@ function ListRow({ children }: { children: ReactNode }) {
 function RowStat({
   detail,
   label,
+  title,
   tone = "neutral",
   value,
 }: {
   detail?: string;
   label: string;
+  title?: string;
   tone?: Tone;
   value: string;
 }) {
   const valueClass =
     tone === "positive" ? "text-positive" : tone === "danger" ? "text-danger" : "text-ink";
   return (
-    <div className="min-w-0">
+    <div className="min-w-0" title={title}>
       <p className="truncate text-[10px] font-medium uppercase leading-3 text-muted">{label}</p>
       <p className={`whitespace-normal break-words font-mono text-xs font-semibold leading-4 ${valueClass}`}>{value}</p>
       {detail ? <p className="whitespace-normal break-words text-[11px] leading-4 text-muted">{detail}</p> : null}
@@ -3372,6 +3375,10 @@ function formatShortDateTime(value: string | null | undefined) {
     minute: "2-digit",
     month: "2-digit",
   }).format(new Date(value));
+}
+
+export function positionOpenedDetail(value: string | null | undefined) {
+  return `opened ${formatShortDateTime(value)}`;
 }
 
 function formatTradeDuration(value: number | null | undefined) {

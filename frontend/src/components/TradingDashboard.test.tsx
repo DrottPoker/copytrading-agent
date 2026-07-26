@@ -17,6 +17,7 @@ import {
   liveOrderResultLabel,
   pnlPerMonitoredHour,
   PositionOwnerWallet,
+  positionOpenedDetail,
   responseError,
   resolveCurrentMonitorStatus,
   resolveCurrentSourceStatus,
@@ -74,6 +75,12 @@ describe("open position owner wallet", () => {
 
     expect(screen.getByText("No attributed source wallet")).toBeInTheDocument();
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
+  });
+});
+
+describe("open position timestamp", () => {
+  it("formats the opening day and time for the compact execution detail", () => {
+    expect(positionOpenedDetail("2026-07-26T03:56:00")).toBe("opened 26/07 03:56");
   });
 });
 

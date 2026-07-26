@@ -895,7 +895,9 @@ What it does:
   account so the exchange fill and closed trade row can appear without waiting
   for the next worker loop.
 - Open positions sort by opening time ascending with deterministic identity
-  tie-breakers. Mark-price and reconciliation updates do not reorder them.
+  tie-breakers. Mark-price and reconciliation updates do not reorder them. Each
+  compact Trading position row shows its local opening day and time in the
+  existing Execution detail line, without increasing row height.
 - The Accounts page filters account data to one selected paper or live account.
   It keeps the last selected account in browser storage and falls back to the
   first synced account. The compact account workspace combines an eight-KPI

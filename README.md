@@ -841,7 +841,9 @@ Sizing policy:
   market concentration, source performance, positions, closed trades, activity,
   balances, reconciliation, and routing details. The interactive performance
   chart supports 25, 50, 100, or all loaded trades and pointer or keyboard
-  inspection. Live-account diagnostics include a compact transaction ledger
+  inspection. Trading open-position rows show local opening day and time in the
+  existing Execution detail line without adding row height. Live-account
+  diagnostics include a compact transaction ledger
   with every automatically reconciled external deposit, withdrawal, and
   account-to-account transfer, including signed amounts, fees, timestamps, and
   totals. The panel has no separate reconciliation control.

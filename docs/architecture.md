@@ -971,6 +971,9 @@ tie-breakers. Wallet PnL History sorts by realized PnL descending, followed by
 total PnL, pool rank, and wallet address.
 Open-position rows sort by durable opening time ascending and use position
 identity as a deterministic tie-breaker, so mark updates do not reorder them.
+The same `openedAt` value is formatted in the browser's local time and replaces
+the visible Execution scope detail. The scope remains available as the stat's
+hover title, preserving the existing row height and grid density.
 Dashboard source counters are reduced from the same current source rows as the
 badges, so source-attributed open positions drive the trading count
 even when exchange aggregate positions are preferred in the separate
