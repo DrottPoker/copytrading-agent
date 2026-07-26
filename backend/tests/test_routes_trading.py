@@ -158,7 +158,33 @@ async def test_trading_account_cash_flows_route_returns_complete_signed_ledger(
         raw_payload={},
         created_at=deposited_at,
     )
-    session = TradingAccountsRouteSession([[withdrawal, deposit]])
+    transfer_in = TradingAccountCashFlow(
+        id=uuid4(),
+        account_key="live_test",
+        account_type="live",
+        exchange_event_id="send-in-1",
+        flow_type="send_in",
+        amount_usd=Decimal("999.20"),
+        fee_usd=Decimal("0"),
+        occurred_at=deposited_at - timedelta(days=1),
+        raw_payload={},
+        created_at=deposited_at - timedelta(days=1),
+    )
+    transfer_out = TradingAccountCashFlow(
+        id=uuid4(),
+        account_key="live_test",
+        account_type="live",
+        exchange_event_id="send-out-1",
+        flow_type="send_out",
+        amount_usd=Decimal("-99.20"),
+        fee_usd=Decimal("0.20"),
+        occurred_at=deposited_at - timedelta(days=2),
+        raw_payload={},
+        created_at=deposited_at - timedelta(days=2),
+    )
+    session = TradingAccountsRouteSession(
+        [[withdrawal, deposit, transfer_in, transfer_out]]
+    )
 
     async def existing_live_account(*_args: Any, **_kwargs: Any) -> object:
         return object()
@@ -173,13 +199,17 @@ async def test_trading_account_cash_flows_route_returns_complete_signed_ledger(
     assert [item.exchange_event_id for item in response.items] == [
         "withdrawal-1",
         "deposit-1",
+        "send-in-1",
+        "send-out-1",
     ]
-    assert response.deposits_usd == Decimal("250")
-    assert response.withdrawals_usd == Decimal("41")
-    assert response.net_external_flows_usd == Decimal("209")
+    assert response.deposits_usd == Decimal("1249.20")
+    assert response.withdrawals_usd == Decimal("140.20")
+    assert response.net_external_flows_usd == Decimal("1109.00")
     payload = response.model_dump(mode="json", by_alias=True)
     assert payload["items"][0]["flowType"] == "withdrawal"
     assert payload["items"][0]["amountUsd"] == "-41"
+    assert payload["items"][2]["flowType"] == "send_in"
+    assert payload["items"][3]["flowType"] == "send_out"
 
     cash_flow_sql = str(
         session.statements[0].compile(
@@ -188,7 +218,7 @@ async def test_trading_account_cash_flows_route_returns_complete_signed_ledger(
         )
     )
     assert "trading_account_cash_flows.account_key = 'live_test'" in cash_flow_sql
-    assert "trading_account_cash_flows.flow_type IN ('deposit', 'withdrawal')" in cash_flow_sql
+    assert "flow_type IN" not in cash_flow_sql
     assert "ORDER BY trading_account_cash_flows.occurred_at DESC" in cash_flow_sql
     assert "LIMIT" not in cash_flow_sql
 

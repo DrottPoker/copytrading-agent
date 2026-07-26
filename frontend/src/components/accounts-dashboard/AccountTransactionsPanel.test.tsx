@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { TradingCashFlowsResponse } from "@/types/trading";
@@ -7,7 +7,7 @@ import { AccountTransactionsPanel } from "./AccountTransactionsPanel";
 
 const cashFlows: TradingCashFlowsResponse = {
   accountKey: "live-main",
-  depositsUsd: "250",
+  depositsUsd: "1249.20",
   items: [
     {
       accountKey: "live-main",
@@ -27,10 +27,28 @@ const cashFlows: TradingCashFlowsResponse = {
       id: "flow-1",
       occurredAt: "2026-07-24T12:00:00Z",
     },
+    {
+      accountKey: "live-main",
+      amountUsd: "999.20",
+      exchangeEventId: "send-in-1",
+      feeUsd: "0",
+      flowType: "send_in",
+      id: "flow-3",
+      occurredAt: "2026-07-23T12:00:00Z",
+    },
+    {
+      accountKey: "live-main",
+      amountUsd: "-99.20",
+      exchangeEventId: "send-out-1",
+      feeUsd: "0.20",
+      flowType: "send_out",
+      id: "flow-4",
+      occurredAt: "2026-07-22T12:00:00Z",
+    },
   ],
-  netExternalFlowsUsd: "209",
+  netExternalFlowsUsd: "1109",
   updatedAt: "2026-07-25T12:00:00Z",
-  withdrawalsUsd: "41",
+  withdrawalsUsd: "140.20",
 };
 
 describe("AccountTransactionsPanel", () => {
@@ -38,7 +56,7 @@ describe("AccountTransactionsPanel", () => {
     vi.unstubAllGlobals();
   });
 
-  it("shows every deposit and withdrawal with complete ledger totals", async () => {
+  it("shows deposits, withdrawals, and external transfers with complete totals", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       json: async () => cashFlows,
       ok: true,
@@ -54,45 +72,48 @@ describe("AccountTransactionsPanel", () => {
 
     expect(await screen.findByText("Deposit")).toBeInTheDocument();
     expect(screen.getByText("Withdrawal")).toBeInTheDocument();
+    expect(screen.getByText("Transfer in")).toBeInTheDocument();
+    expect(screen.getByText("Transfer out")).toBeInTheDocument();
     expect(screen.getByText("deposit-1")).toBeInTheDocument();
     expect(screen.getByText("withdrawal-1 | fee 1,00 US$")).toBeInTheDocument();
-    expect(screen.getByText("2 transactions")).toBeInTheDocument();
-    expect(screen.getAllByText("250,00 US$")).toHaveLength(2);
-    expect(screen.getAllByText("−41,00 US$")).toHaveLength(2);
-    expect(screen.getByText("209,00 US$")).toBeInTheDocument();
+    expect(screen.getByText("send-in-1")).toBeInTheDocument();
+    expect(screen.getByText("send-out-1 | fee 0,20 US$")).toBeInTheDocument();
+    expect(screen.getByText("4 transactions")).toBeInTheDocument();
+    expect(screen.getByText("1 249,20 US$")).toBeInTheDocument();
+    expect(screen.getByText("−140,20 US$")).toBeInTheDocument();
+    expect(screen.getByText("1 109,00 US$")).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/backend/trading/accounts/live-main/cash-flows",
       expect.objectContaining({ cache: "no-store" }),
     );
   });
 
-  it("reconciles the account before refreshing the transaction ledger", async () => {
+  it("reloads automatically when account reconciliation advances", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       json: async () => cashFlows,
       ok: true,
     });
-    const onReconcile = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("fetch", fetchMock);
 
-    render(
+    const { rerender } = render(
       <AccountTransactionsPanel
         accountKey="live-main"
         cashFlowsVersion="2026-07-25T12:00:00Z"
-        onReconcile={onReconcile}
       />,
     );
 
-    const refreshButton = await screen.findByRole("button", {
-      name: "Reconcile and refresh transactions",
-    });
-    await waitFor(() => expect(refreshButton).toBeEnabled());
-    fireEvent.click(refreshButton);
+    expect(await screen.findByText("4 transactions")).toBeInTheDocument();
+    rerender(
+      <AccountTransactionsPanel
+        accountKey="live-main"
+        cashFlowsVersion="2026-07-25T12:00:04Z"
+      />,
+    );
 
-    await waitFor(() => expect(onReconcile).toHaveBeenCalledTimes(1));
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
   });
 
-  it("offers historical reconciliation when the imported ledger is empty", async () => {
+  it("keeps the empty state passive while automatic reconciliation owns imports", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({
@@ -106,22 +127,20 @@ describe("AccountTransactionsPanel", () => {
         ok: true,
       }),
     );
-    const onReconcile = vi.fn().mockResolvedValue(undefined);
 
     render(
       <AccountTransactionsPanel
         accountKey="live-main"
         cashFlowsVersion="2026-07-25T12:00:00Z"
-        onReconcile={onReconcile}
       />,
     );
 
-    const reconcileButton = await screen.findByRole("button", {
-      name: "Reconcile history",
-    });
-    fireEvent.click(reconcileButton);
-
-    await waitFor(() => expect(onReconcile).toHaveBeenCalledTimes(1));
+    expect(
+      await screen.findByText(
+        "No external cash flows have been recorded by automatic reconciliation.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 
   it("shows a bounded error state when the ledger cannot be loaded", async () => {

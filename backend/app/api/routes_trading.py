@@ -932,10 +932,7 @@ async def list_trading_account_cash_flows_route(
 
     cash_flow_result = await session.scalars(
         select(TradingAccountCashFlow)
-        .where(
-            TradingAccountCashFlow.account_key == account_key,
-            TradingAccountCashFlow.flow_type.in_(("deposit", "withdrawal")),
-        )
+        .where(TradingAccountCashFlow.account_key == account_key)
         .order_by(
             TradingAccountCashFlow.occurred_at.desc(),
             TradingAccountCashFlow.id.desc(),

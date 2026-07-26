@@ -173,7 +173,17 @@ export type TradingCashFlow = {
   id: string;
   accountKey: string;
   exchangeEventId: string;
-  flowType: "deposit" | "withdrawal";
+  flowType:
+    | "deposit"
+    | "withdrawal"
+    | "send_in"
+    | "send_out"
+    | "internal_transfer_in"
+    | "internal_transfer_out"
+    | "spot_transfer_in"
+    | "spot_transfer_out"
+    | "sub_account_transfer_in"
+    | "sub_account_transfer_out";
   amountUsd: string;
   feeUsd: string;
   occurredAt: string;

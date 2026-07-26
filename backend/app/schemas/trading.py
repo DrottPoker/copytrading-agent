@@ -255,7 +255,18 @@ class TradingCashFlowRead(CamelModel):
     id: UUID
     account_key: str
     exchange_event_id: str
-    flow_type: Literal["deposit", "withdrawal"]
+    flow_type: Literal[
+        "deposit",
+        "withdrawal",
+        "send_in",
+        "send_out",
+        "internal_transfer_in",
+        "internal_transfer_out",
+        "spot_transfer_in",
+        "spot_transfer_out",
+        "sub_account_transfer_in",
+        "sub_account_transfer_out",
+    ]
     amount_usd: Decimal
     fee_usd: Decimal
     occurred_at: datetime

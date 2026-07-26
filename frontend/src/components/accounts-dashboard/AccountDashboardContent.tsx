@@ -137,9 +137,7 @@ export function AccountDashboardContent({
 
       <AccountDiagnosticsSection
         accountView={accountView}
-        isReconciling={isReconciling}
         lastRefreshAt={lastRefreshAt}
-        onReconcile={onReconcile}
       />
     </>
   );

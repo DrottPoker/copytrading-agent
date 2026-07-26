@@ -4,7 +4,6 @@ import {
   ArrowDownToLine,
   ArrowUpFromLine,
   ReceiptText,
-  RefreshCw,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
@@ -19,13 +18,9 @@ import type {
 export function AccountTransactionsPanel({
   accountKey,
   cashFlowsVersion,
-  isReconciling = false,
-  onReconcile = null,
 }: {
   accountKey: string;
   cashFlowsVersion: string | null;
-  isReconciling?: boolean;
-  onReconcile?: (() => Promise<void>) | null;
 }) {
   const [transactions, setTransactions] =
     useState<TradingCashFlowsResponse | null>(null);
@@ -82,32 +77,8 @@ export function AccountTransactionsPanel({
     : error
       ? "Ledger unavailable"
       : `${formatInteger(transactions?.items.length ?? 0)} transactions`;
-  const isRefreshing = isLoading || isReconciling;
-  const refreshTransactions = () => {
-    if (onReconcile) {
-      void onReconcile();
-      return;
-    }
-    void loadTransactions();
-  };
-
   return (
     <DashboardPanel
-      action={
-        <button
-          type="button"
-          aria-label={onReconcile ? "Reconcile and refresh transactions" : "Refresh transactions"}
-          className="ui-icon-button h-7 w-7 disabled:cursor-not-allowed disabled:opacity-60"
-          disabled={isRefreshing}
-          onClick={refreshTransactions}
-          title={onReconcile ? "Reconcile and refresh transactions" : "Refresh transactions"}
-        >
-          <RefreshCw
-            className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`}
-            aria-hidden="true"
-          />
-        </button>
-      }
       bodyClassName="p-3"
       icon={ReceiptText}
       meta={meta}
@@ -120,11 +91,7 @@ export function AccountTransactionsPanel({
       ) : transactions ? (
         <>
           <TransactionTotals transactions={transactions} />
-          <TransactionRows
-            isReconciling={isReconciling}
-            onReconcile={onReconcile}
-            transactions={transactions.items}
-          />
+          <TransactionRows transactions={transactions.items} />
         </>
       ) : (
         <TransactionLoadingState />
@@ -187,32 +154,16 @@ function TransactionTotal({
 }
 
 function TransactionRows({
-  isReconciling,
-  onReconcile,
   transactions,
 }: {
-  isReconciling: boolean;
-  onReconcile: (() => Promise<void>) | null;
   transactions: TradingCashFlow[];
 }) {
   if (transactions.length === 0) {
     return (
       <div className="mt-3 rounded-md border border-dashed border-line px-3 py-5 text-center">
-        <p className="text-xs text-muted">No cash flows have been imported yet.</p>
-        {onReconcile ? (
-          <button
-            type="button"
-            className="ui-button-secondary mt-3 disabled:cursor-not-allowed disabled:opacity-60"
-            disabled={isReconciling}
-            onClick={() => void onReconcile()}
-          >
-            <RefreshCw
-              className={`h-3.5 w-3.5 ${isReconciling ? "animate-spin" : ""}`}
-              aria-hidden="true"
-            />
-            Reconcile history
-          </button>
-        ) : null}
+        <p className="text-xs text-muted">
+          No external cash flows have been recorded by automatic reconciliation.
+        </p>
       </div>
     );
   }
@@ -230,14 +181,14 @@ function TransactionRows({
 }
 
 function TransactionRow({ transaction }: { transaction: TradingCashFlow }) {
-  const isDeposit = transaction.flowType === "deposit";
-  const Icon = isDeposit ? ArrowDownToLine : ArrowUpFromLine;
+  const isInflow = numberValue(transaction.amountUsd) > 0;
+  const Icon = isInflow ? ArrowDownToLine : ArrowUpFromLine;
   const feeUsd = numberValue(transaction.feeUsd);
   return (
     <div className="flex items-center gap-2.5 py-2">
       <span
         className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${
-          isDeposit
+          isInflow
             ? "bg-positive-soft text-positive"
             : "bg-danger-soft text-danger"
         }`}
@@ -247,11 +198,11 @@ function TransactionRow({ transaction }: { transaction: TradingCashFlow }) {
       <div className="min-w-0 flex-1">
         <div className="flex items-center justify-between gap-2">
           <p className="text-xs font-semibold text-ink">
-            {isDeposit ? "Deposit" : "Withdrawal"}
+            {cashFlowLabel(transaction.flowType)}
           </p>
           <p
             className={`shrink-0 font-mono text-xs font-semibold ${
-              isDeposit ? "text-positive" : "text-danger"
+              isInflow ? "text-positive" : "text-danger"
             }`}
           >
             {formatCurrency(transaction.amountUsd)}
@@ -290,4 +241,20 @@ function shortTransactionId(value: string) {
     return value;
   }
   return `${value.slice(0, 8)}...${value.slice(-6)}`;
+}
+
+function cashFlowLabel(flowType: TradingCashFlow["flowType"]) {
+  const labels: Record<TradingCashFlow["flowType"], string> = {
+    deposit: "Deposit",
+    internal_transfer_in: "Internal transfer in",
+    internal_transfer_out: "Internal transfer out",
+    send_in: "Transfer in",
+    send_out: "Transfer out",
+    spot_transfer_in: "Spot transfer in",
+    spot_transfer_out: "Spot transfer out",
+    sub_account_transfer_in: "Sub-account transfer in",
+    sub_account_transfer_out: "Sub-account transfer out",
+    withdrawal: "Withdrawal",
+  };
+  return labels[flowType];
 }

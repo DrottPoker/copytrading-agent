@@ -912,9 +912,10 @@ What it does:
   Open margin is the primary exposure KPI with its share of equity; open
   notional is secondary and shows average leverage. Cash-flow-adjusted PnL and
   net external flows remain available in account details. A compact transaction
-  panel lists every recorded deposit
-  and withdrawal with signed amount, fee, timestamp, ledger identifier, deposit
-  and withdrawal totals, net external flow, and manual refresh. Performance is
+  panel lists every automatically reconciled external deposit, withdrawal, and
+  account-to-account transfer with signed amount, fee, timestamp, ledger
+  identifier, inflow and outflow totals, and net external flow. It has no
+  separate reconciliation control. Performance is
   labeled from its first verified baseline.
   The live Reconciled card includes a manual refresh icon that posts to
   `POST /trading/accounts/{account_key}/reconcile` and refreshes the selected
@@ -1137,9 +1138,9 @@ What it does:
   `GET /trading/accounts/{account_key}/cash-flows`; it is queried separately
   from the frequently refreshed account summary. A versioned all-time cash-flow
   backfill runs once per live account before reconciliation becomes incremental,
-  including for accounts that were created after their initial deposit. The
-  transaction panel refresh and empty-state actions run reconciliation before
-  reloading the ledger.
+  including for accounts that were created after their initial deposit. Normal
+  automatic account reconciliation owns this import. The transaction panel
+  reloads after the account reconciliation timestamp advances.
 - Establishes a verified performance baseline on the first complete
   reconciliation after the performance ledger is available, then requests
   Hyperliquid `allTime` account-value history and matching historical external

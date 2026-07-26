@@ -842,8 +842,9 @@ Sizing policy:
   balances, reconciliation, and routing details. The interactive performance
   chart supports 25, 50, 100, or all loaded trades and pointer or keyboard
   inspection. Live-account diagnostics include a compact transaction ledger
-  with every recorded deposit and withdrawal, signed amounts, fees, timestamps,
-  totals, and manual refresh.
+  with every automatically reconciled external deposit, withdrawal, and
+  account-to-account transfer, including signed amounts, fees, timestamps, and
+  totals. The panel has no separate reconciliation control.
   The live Reconciled card includes a manual refresh icon that posts to
   `POST /trading/accounts/{account_key}/reconcile` and refreshes the selected
   account snapshot. Operators can pass `lookback_minutes` to backfill older
@@ -1300,9 +1301,10 @@ Its headline Total PnL and Realized metrics use the same net definitions as the
 Trading page. Open margin is shown before notional with its share of equity,
 while notional carries average leverage.
 `GET /trading/accounts/{account_key}/cash-flows` returns the selected live
-account's complete deposit and withdrawal ledger without attaching the full
-history to the frequently refreshed account summary response. The transaction
-panel refresh action runs account reconciliation before reloading this ledger.
+account's complete external cash-flow ledger without attaching the full history
+to the frequently refreshed account summary response. The account's normal
+automatic reconciliation imports deposits, withdrawals, and external transfers;
+the panel reloads when the account reconciliation timestamp advances.
 Manual reconciliation accepts `lookback_minutes` for historical live fill
 backfills, for example `POST /trading/accounts/{account_key}/reconcile?lookback_minutes=4320`.
 
