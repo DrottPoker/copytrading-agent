@@ -698,8 +698,8 @@ What it does:
   remaining slots go to highest scored candidates. Top candidates without a
   slot are marked as waiting and cannot open new copy positions until a realtime
   slot is available. Paper-only mode retains open paper-position sources first.
-- Gives all top 10 ranks a 25% account pocket each.
-- Caps total open copied margin at 80% of each paper account equity.
+- Gives all top 10 ranks a 30% account pocket each.
+- Caps total open copied margin at 100% of each paper account equity.
 - Converts new non-snapshot realtime source fills into simulated paper fills.
 - Sizes an open by `source fill notional / source perp equity`, scaled inside
   that wallet's paper allocation pocket.
@@ -1015,8 +1015,8 @@ Config:
 - `trading_copy_standard_allocation_pct`
 - `trading_copy_max_total_allocation_pct`
 
-Top-tier and standard source pockets both default to 25 percent of account
-equity. The total concurrently used allocation remains capped at 80 percent.
+Top-tier and standard source pockets both default to 30 percent of account
+equity. The total concurrently used allocation remains capped at 100 percent.
 - `trading_copy_min_order_notional_usd`
 - `trading_copy_adjust_small_orders_to_min_order`
 - `trading_copy_max_entry_age_seconds`, defaults to 20 seconds

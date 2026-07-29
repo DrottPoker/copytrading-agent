@@ -699,8 +699,8 @@ Sizing policy:
 - Retained sources outside the current top 10 can add to existing matching paper
   positions and can reduce or close them, but cannot open completely new paper
   positions.
-- All top 10 ranks receive a 25% account pocket.
-- Total open copied margin is capped at 80% of each paper account equity.
+- All top 10 ranks receive a 30% account pocket.
+- Total open copied margin is capped at 100% of each paper account equity.
 - Paper order size is based on source fill notional divided by source perp
   equity, scaled inside that source wallet's pocket.
 - Paper fill rows store that source perp equity snapshot as

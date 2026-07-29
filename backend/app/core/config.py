@@ -381,9 +381,9 @@ class Settings(BaseSettings):
     live_trading_reduce_only_when_stopped: bool = True
     trading_copy_top_wallet_count: int = Field(default=10, ge=1, le=10)
     trading_copy_top_tier_wallet_count: int = Field(default=3, ge=0, le=10)
-    trading_copy_top_tier_allocation_pct: Decimal = Field(default=Decimal("0.25"), ge=0, le=1)
-    trading_copy_standard_allocation_pct: Decimal = Field(default=Decimal("0.25"), ge=0, le=1)
-    trading_copy_max_total_allocation_pct: Decimal = Field(default=Decimal("0.80"), ge=0, le=1)
+    trading_copy_top_tier_allocation_pct: Decimal = Field(default=Decimal("0.30"), ge=0, le=1)
+    trading_copy_standard_allocation_pct: Decimal = Field(default=Decimal("0.30"), ge=0, le=1)
+    trading_copy_max_total_allocation_pct: Decimal = Field(default=Decimal("1.00"), ge=0, le=1)
     trading_copy_min_order_notional_usd: Decimal = Field(default=Decimal("10"), ge=0)
     trading_copy_adjust_small_orders_to_min_order: bool = True
     trading_copy_max_entry_age_seconds: int = Field(default=20, ge=0, le=3600)

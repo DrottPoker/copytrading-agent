@@ -811,8 +811,8 @@ sequenceDiagram
 ```
 
 Paper sizing uses `source fill notional / source perp equity` and applies that
-exposure inside each configured source-wallet pocket. Default pockets are 25% for
-each top 10 rank, with an 80% total open copied-margin cap per paper account.
+exposure inside each configured source-wallet pocket. Default pockets are 30% for
+each top 10 rank, with a 100% total open copied-margin cap per paper account.
 Valid source perp equity is required for opens and adds only. Reduce, close, and
 flip-close parts are processed against existing paper positions even when the
 current Hyperliquid source state reports zero or unavailable perp equity after
