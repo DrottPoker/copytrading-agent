@@ -517,8 +517,21 @@ def test_worker_role_capability_mapping(role: str, expected: tuple[str, ...]) ->
     assert monitor_worker.worker_capabilities(SimpleNamespace(worker_role=role)) == expected
 
 
+@pytest.mark.parametrize(
+    ("inserted", "scoring_result", "expected_calls"),
+    [
+        (1, False, ["import", "scoring"]),
+        (1, True, ["import", "scoring", "prune"]),
+        (0, True, ["import"]),
+    ],
+)
 @pytest.mark.asyncio
-async def test_scoring_failure_prevents_prune_after_pool_import(monkeypatch) -> None:
+async def test_pool_import_scores_only_when_new_fills_exist(
+    monkeypatch,
+    inserted: int,
+    scoring_result: bool,
+    expected_calls: list[str],
+) -> None:
     calls: list[str] = []
     stop_event = asyncio.Event()
 
@@ -528,7 +541,7 @@ async def test_scoring_failure_prevents_prune_after_pool_import(monkeypatch) -> 
             scanned=1,
             imported_wallets=1,
             fetched=1,
-            inserted=1,
+            inserted=inserted,
             duplicate=0,
             failed=0,
             limit=10,
@@ -536,7 +549,7 @@ async def test_scoring_failure_prevents_prune_after_pool_import(monkeypatch) -> 
 
     async def fake_scoring(*_args: object, **_kwargs: object) -> bool:
         calls.append("scoring")
-        return False
+        return scoring_result
 
     async def fake_prune(*_args: object, **_kwargs: object) -> None:
         calls.append("prune")
@@ -577,7 +590,7 @@ async def test_scoring_failure_prevents_prune_after_pool_import(monkeypatch) -> 
         settings=settings,
     )
 
-    assert calls == ["import", "scoring"]
+    assert calls == expected_calls
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Setting
 from app.db.session import get_sessionmaker
 from app.schemas.operation import OperationStatusListResponse, OperationStatusRead
+from app.services.job_lock_service import job_lock_is_active
 
 OPERATION_STATUS_PREFIX = "operation_status:"
 
@@ -38,6 +39,8 @@ CANCELABLE_OPERATION_KEYS = frozenset(
     }
 )
 
+OPERATION_START_GRACE = timedelta(seconds=30)
+
 OperationValueBuilder = Callable[[dict[str, Any]], dict[str, Any]]
 
 
@@ -59,7 +62,7 @@ async def list_operation_statuses(
     items = []
     for key in keys:
         status = await get_operation_status(session, key)
-        items.append(status)
+        items.append(await reconcile_stale_operation_status(session, status))
     return OperationStatusListResponse(items=items)
 
 
@@ -214,6 +217,16 @@ async def request_operation_cancellation(
     if key not in CANCELABLE_OPERATION_KEYS:
         raise ValueError(f"Operation {key} cannot be canceled.")
 
+    current = await get_operation_status(session, key)
+    if current.status != "running":
+        raise OperationNotRunningError(
+            f"{OPERATION_LABELS.get(key, key)} is not currently running."
+        )
+    if not operation_start_is_recent(current) and not await job_lock_is_active(session, key=key):
+        run_id = string_or_none(current.payload.get("runId")) or new_operation_run_id()
+        await mark_operation_canceled(session, key=key, run_id=run_id)
+        return await get_operation_status(session, key)
+
     now = now_iso()
 
     def build_value(existing: dict[str, Any]) -> dict[str, Any]:
@@ -243,6 +256,50 @@ async def request_operation_cancellation(
 
     await write_operation_value(session, key, build_value)
     return await get_operation_status(session, key)
+
+
+async def reconcile_stale_operation_status(
+    session: AsyncSession,
+    operation: OperationStatusRead,
+) -> OperationStatusRead:
+    if operation.status != "running" or operation_start_is_recent(operation):
+        return operation
+    if await job_lock_is_active(session, key=operation.key):
+        return operation
+
+    if operation.payload.get("cancelRequested") is True:
+        run_id = string_or_none(operation.payload.get("runId")) or new_operation_run_id()
+        await mark_operation_canceled(session, key=operation.key, run_id=run_id)
+    else:
+        await mark_operation_failed(
+            session,
+            key=operation.key,
+            error="The worker stopped without reporting completion.",
+            payload={
+                **operation.payload,
+                "stage": "interrupted",
+                "stageLabel": "Interrupted",
+                "stageDetail": "No active worker owns this operation.",
+            },
+        )
+    return await get_operation_status(session, operation.key)
+
+
+def operation_start_is_recent(
+    operation: OperationStatusRead,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    if operation.payload.get("stage") != "queued" or operation.updated_at is None:
+        return False
+    try:
+        updated_at = datetime.fromisoformat(operation.updated_at)
+    except ValueError:
+        return False
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=UTC)
+    age = (now or datetime.now(UTC)) - updated_at
+    return timedelta(0) <= age <= OPERATION_START_GRACE
 
 
 async def operation_cancellation_requested(

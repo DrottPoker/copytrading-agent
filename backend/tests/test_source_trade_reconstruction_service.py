@@ -75,10 +75,53 @@ async def test_refresh_candidates_filter_by_fill_revision_before_scanning_fills(
 
 
 @pytest.mark.asyncio
+async def test_reconstruct_wallet_trades_streams_rows_and_reports_progress() -> None:
+    progress_updates: list[int] = []
+    session = StreamSession(
+        [
+            {
+                "wallet_address": "0xabc",
+                "coin": "HYPE",
+                "external_fill_id": "fill-1",
+                "timestamp_ms": 1_800_000_000_000,
+                "notional_usd": Decimal("100"),
+                "fee_usd": Decimal("0.10"),
+                "pnl_usd": Decimal("0"),
+                "size": Decimal("1"),
+                "direction": "Open Long",
+                "start_position": "0",
+                "is_liquidation": False,
+            }
+        ]
+    )
+
+    async def record_progress(processed_fills: int) -> None:
+        progress_updates.append(processed_fills)
+
+    trades = await source_trade_reconstruction_service.reconstruct_wallet_trades(
+        session,  # type: ignore[arg-type]
+        window_start_ms=0,
+        start_24h_ms=0,
+        start_7d_ms=0,
+        include_disabled=False,
+        wallet_address="0xabc",
+        progress_callback=record_progress,
+    )
+
+    assert session.execution_options == {
+        "yield_per": source_trade_reconstruction_service.SOURCE_TRADE_STREAM_BATCH_SIZE
+    }
+    assert progress_updates == [1]
+    assert trades["0xabc"].open_trade_count == 1
+
+
+@pytest.mark.asyncio
 async def test_materialized_trade_sync_persists_candidate_fill_revision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: list[dict[str, Any]] = []
+    progress_updates: list[dict[str, Any]] = []
+    session = CommitSession()
 
     async def fake_candidates(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
         return [
@@ -92,6 +135,10 @@ async def test_materialized_trade_sync_persists_candidate_fill_revision(
 
     async def fake_refresh(*_args: Any, **kwargs: Any) -> None:
         captured.append(kwargs)
+        await kwargs["progress_callback"](50)
+
+    async def fake_progress(progress: dict[str, Any]) -> None:
+        progress_updates.append(progress)
 
     monkeypatch.setattr(
         source_trade_reconstruction_service,
@@ -105,19 +152,59 @@ async def test_materialized_trade_sync_persists_candidate_fill_revision(
     )
 
     refreshed = await source_trade_reconstruction_service.sync_materialized_source_trades(
-        object(),  # type: ignore[arg-type]
+        session,  # type: ignore[arg-type]
         include_disabled=False,
+        progress_callback=fake_progress,
     )
 
     assert refreshed == 1
-    assert captured == [
-        {
-            "wallet_address": "0xabc",
-            "fill_revision": 42,
-            "fill_count": 100,
-            "last_fill_timestamp_ms": 1_800_000_000_000,
-        }
-    ]
+    assert session.commits == 1
+    assert captured[0]["wallet_address"] == "0xabc"
+    assert captured[0]["fill_revision"] == 42
+    assert captured[0]["fill_count"] == 100
+    assert captured[0]["last_fill_timestamp_ms"] == 1_800_000_000_000
+    assert callable(captured[0]["progress_callback"])
+    assert [update["processedFills"] for update in progress_updates] == [0, 50, 100]
+    assert progress_updates[-1]["walletComplete"] is True
+
+
+class StreamSession:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self.rows = rows
+        self.execution_options: dict[str, Any] | None = None
+
+    async def stream(
+        self,
+        _statement: Any,
+        _params: dict[str, Any],
+        *,
+        execution_options: dict[str, Any],
+    ) -> "AsyncCaptureResult":
+        self.execution_options = execution_options
+        return AsyncCaptureResult(self.rows)
+
+
+class AsyncCaptureResult:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self.rows = rows
+
+    def mappings(self) -> "AsyncCaptureResult":
+        return self
+
+    def __aiter__(self):
+        async def iterate_rows():
+            for row in self.rows:
+                yield row
+
+        return iterate_rows()
+
+
+class CommitSession:
+    def __init__(self) -> None:
+        self.commits = 0
+
+    async def commit(self) -> None:
+        self.commits += 1
 
 
 class CaptureSession:

@@ -20,6 +20,10 @@ ZERO = Decimal("0")
 ONE = Decimal("1")
 POSITION_EPSILON = Decimal("0.00000001")
 SOURCE_TRADE_INSERT_BATCH_SIZE = 1000
+SOURCE_TRADE_STREAM_BATCH_SIZE = 5000
+SOURCE_TRADE_PROGRESS_INTERVAL = 25_000
+
+SourceTradeProgressCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -340,8 +344,9 @@ async def reconstruct_wallet_trades(
     start_7d_ms: int,
     include_disabled: bool,
     wallet_address: str | None = None,
+    progress_callback: Callable[[int], Awaitable[None]] | None = None,
 ) -> dict[str, ReconstructedWalletTrades]:
-    result = await session.execute(
+    result = await session.stream(
         text(
             """
             select
@@ -388,12 +393,14 @@ async def reconstruct_wallet_trades(
             "include_disabled": include_disabled,
             "wallet_address": wallet_address,
         },
+        execution_options={"yield_per": SOURCE_TRADE_STREAM_BATCH_SIZE},
     )
 
     trades_by_wallet: dict[str, ReconstructedWalletTrades] = {}
     open_trades: dict[tuple[str, str, str], OpenSourceTrade] = {}
 
-    for row in result.mappings():
+    processed_fills = 0
+    async for row in result.mappings():
         process_trade_fill(
             row,
             trades_by_wallet=trades_by_wallet,
@@ -401,6 +408,12 @@ async def reconstruct_wallet_trades(
             start_24h_ms=start_24h_ms,
             start_7d_ms=start_7d_ms,
         )
+        processed_fills += 1
+        if progress_callback is not None and processed_fills % SOURCE_TRADE_PROGRESS_INTERVAL == 0:
+            await progress_callback(processed_fills)
+
+    if progress_callback is not None:
+        await progress_callback(processed_fills)
 
     for trade in open_trades.values():
         get_wallet_trades(trades_by_wallet, trade.wallet_address).record_open_trade(trade)
@@ -562,26 +575,64 @@ async def sync_materialized_source_trades(
     include_disabled: bool,
     wallet_address: str | None = None,
     cancellation_checkpoint: Callable[[], Awaitable[None]] | None = None,
+    progress_callback: SourceTradeProgressCallback | None = None,
 ) -> int:
     candidates = await load_source_trade_refresh_candidates(
         session,
         include_disabled=include_disabled,
         wallet_address=wallet_address,
     )
-    for candidate in candidates:
+    candidate_count = len(candidates)
+    for candidate_index, candidate in enumerate(candidates, start=1):
+        candidate_wallet = str(candidate["wallet_address"])
+        candidate_fill_count = int(candidate["fill_count"] or 0)
         if cancellation_checkpoint is not None:
             await cancellation_checkpoint()
+
+        async def report_fill_progress(
+            processed_fills: int,
+            progress_wallet: str = candidate_wallet,
+            progress_index: int = candidate_index,
+            progress_fill_count: int = candidate_fill_count,
+        ) -> None:
+            if progress_callback is not None:
+                await progress_callback(
+                    {
+                        "walletAddress": progress_wallet,
+                        "walletIndex": progress_index,
+                        "walletTotal": candidate_count,
+                        "processedFills": processed_fills,
+                        "walletFillCount": progress_fill_count,
+                    }
+                )
+            if cancellation_checkpoint is not None:
+                await cancellation_checkpoint()
+
+        await report_fill_progress(0)
         await refresh_materialized_source_trades_for_wallet(
             session,
-            wallet_address=str(candidate["wallet_address"]),
+            wallet_address=candidate_wallet,
             fill_revision=int(candidate["fill_revision"] or 0),
-            fill_count=int(candidate["fill_count"] or 0),
+            fill_count=candidate_fill_count,
             last_fill_timestamp_ms=(
                 int(candidate["last_fill_timestamp_ms"])
                 if candidate["last_fill_timestamp_ms"] is not None
                 else None
             ),
+            progress_callback=report_fill_progress,
         )
+        await session.commit()
+        if progress_callback is not None:
+            await progress_callback(
+                {
+                    "walletAddress": candidate_wallet,
+                    "walletIndex": candidate_index,
+                    "walletTotal": candidate_count,
+                    "processedFills": candidate_fill_count,
+                    "walletFillCount": candidate_fill_count,
+                    "walletComplete": True,
+                }
+            )
         if cancellation_checkpoint is not None:
             await cancellation_checkpoint()
     return len(candidates)
@@ -648,6 +699,7 @@ async def refresh_materialized_source_trades_for_wallet(
     fill_revision: int,
     fill_count: int,
     last_fill_timestamp_ms: int | None,
+    progress_callback: Callable[[int], Awaitable[None]] | None = None,
 ) -> None:
     trades_by_wallet = await reconstruct_wallet_trades(
         session,
@@ -656,6 +708,7 @@ async def refresh_materialized_source_trades_for_wallet(
         start_7d_ms=2**63 - 1,
         include_disabled=True,
         wallet_address=wallet_address,
+        progress_callback=progress_callback,
     )
     wallet_trades = trades_by_wallet.get(
         wallet_address,

@@ -1090,20 +1090,27 @@ async def run_pool_fill_import_loop(
                     source_wallet=None,
                     price_cache=price_cache,
                 )
-            scoring_succeeded = True
-            if settings.scoring_enabled:
+            fills_changed = result.inserted > 0
+            scoring_succeeded = False
+            if settings.scoring_enabled and fills_changed:
                 scoring_succeeded = await run_wallet_scoring_once(
                     sessionmaker=sessionmaker,
                     redis=redis,
                     settings=settings,
                 )
-            if settings.wallet_prune_after_pool_import_enabled and scoring_succeeded:
+            elif settings.scoring_enabled:
+                logger.info("wallet scoring skipped because pool fill import added no new fills")
+            if (
+                settings.wallet_prune_after_pool_import_enabled
+                and fills_changed
+                and scoring_succeeded
+            ):
                 await run_wallet_prune_once(
                     sessionmaker=sessionmaker,
                     redis=redis,
                     settings=settings,
                 )
-            elif settings.wallet_prune_after_pool_import_enabled:
+            elif settings.wallet_prune_after_pool_import_enabled and fills_changed:
                 logger.warning("wallet prune skipped because scoring did not succeed")
         except OperationCanceledError:
             logger.info("pool fill import canceled at a safe checkpoint")

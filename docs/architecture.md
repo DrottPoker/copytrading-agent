@@ -135,6 +135,11 @@ a stored `running` flag indefinitely. A recently queued run gets a short race
 grace, while an older running status without an active lock can be replaced by a
 new background run.
 
+Operation status reads use the same durable lock as a watchdog. An older
+`running` or cancellation-requested status without an active owner is
+transitioned to `interrupted` or `canceled`, so the dashboard cannot remain
+stuck after a process exit.
+
 
 Trading worker responsibilities:
 
@@ -513,17 +518,19 @@ sequenceDiagram
   API->>DB: manual trigger via POST /wallets/fills/import-pool?force=true
 ```
 
-The maintenance worker runs the pool maintenance cycle every 30 minutes by
-default. A cycle imports all due pool wallets across configured batches,
-recalculates wallet scores, and then runs sharp pruning when
-`wallet_prune_worker_dry_run` is `false`. Manual pool reimport forces a refresh
-regardless of `last_polled_at` and still deduplicates overlapping fills.
+The maintenance worker runs pool reimport every 30 minutes by default. It
+imports all due pool wallets across configured batches. Scoring runs only when
+that import persisted new fills, and sharp pruning runs only after successful
+scoring when `wallet_prune_worker_dry_run` is `false`. Manual pool reimport
+forces a refresh regardless of `last_polled_at` and still deduplicates
+overlapping fills.
 
 Long-running discovery import, pool reimport, and scoring runs have a unique
 operation run ID stored with their progress payload. A cancel request updates
 the durable operation status instead of terminating an API process. The worker
 checks that request between safe units of work, rolls back the current
-uncommitted unit, and records `canceled`. Progress updates preserve an accepted
+uncommitted wallet, and records `canceled`. Completed source-trade wallet
+checkpoints remain committed. Progress updates preserve an accepted
 cancel request, while a later run gets a new ID so stale cancellation state
 cannot stop it.
 
@@ -592,7 +599,7 @@ sequenceDiagram
   UI->>API: POST /scores/recalculate/start
   API->>DB: summarize fill count, recency, and liquidations
   API->>DB: compare wallet fill_revision with source trade revision
-  API->>DB: rebuild source_trades for changed wallets only
+  API->>DB: stream and checkpoint source_trades for changed wallets
   API->>DB: load materialized source trade metrics
   API->>HL: fetch live perp state and userAbstraction for current drawdown
   API->>DB: upsert wallet_scores and remove stale score rows
@@ -611,6 +618,13 @@ the fill table is aggregated, so unchanged wallets do not participate in the
 expensive reconstruction scan. A concurrent mutation advances the watched
 revision and therefore remains pending for the next pass even if it commits
 during an active scoring run.
+
+Each changed wallet is read through a server-side cursor with a 5,000-row fetch
+batch. The service reports progress and checks cancellation every 25,000
+relevant fills. Materialized trades and sync state are committed after each
+wallet, so later failures resume from the next changed wallet. A partial index
+on wallet address, timestamp, and external fill ID supports the filtered source
+trade ordering without blocking normal ingestion during index creation.
 
 Raw fill scoring work is intentionally narrow. Fill count, first fill, latest
 non-liquidation activity, and liquidation event boundaries come from

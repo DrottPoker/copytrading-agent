@@ -88,6 +88,16 @@ class WalletFill(Base, TimestampMixin):
             "timestamp_ms",
             postgresql_where=text("not (raw_json ? 'liquidation')"),
         ),
+        Index(
+            "ix_wallet_fills_source_trade_order",
+            "wallet_address",
+            "timestamp_ms",
+            "external_fill_id",
+            postgresql_where=text(
+                "(raw_json->>'dir') in ('Open Long', 'Close Long', 'Open Short', "
+                "'Close Short', 'Long > Short', 'Short > Long')"
+            ),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(

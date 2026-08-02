@@ -608,6 +608,7 @@ async def load_wallet_score_metrics(
             "progressPercent": 20,
         },
     )
+
     async def cancellation_checkpoint() -> None:
         if operation_run_id is not None:
             await raise_if_operation_cancellation_requested(
@@ -616,12 +617,64 @@ async def load_wallet_score_metrics(
                 run_id=operation_run_id,
             )
 
+    async def source_trade_progress(progress: dict[str, Any]) -> None:
+        wallet_total = max(int(progress.get("walletTotal") or 0), 1)
+        wallet_index = min(max(int(progress.get("walletIndex") or 1), 1), wallet_total)
+        processed_fills = max(int(progress.get("processedFills") or 0), 0)
+        wallet_fill_count = max(int(progress.get("walletFillCount") or 0), 0)
+        wallet_complete = progress.get("walletComplete") is True
+        fill_progress = (
+            Decimal("1")
+            if wallet_complete
+            else (
+                min(
+                    Decimal(processed_fills) / Decimal(wallet_fill_count),
+                    Decimal("0.99"),
+                )
+                if wallet_fill_count > 0
+                else Decimal("0")
+            )
+        )
+        completed_progress = Decimal(wallet_index - 1) + fill_progress
+        progress_percent = min(
+            34,
+            20 + int(completed_progress / Decimal(wallet_total) * Decimal(15)),
+        )
+        if wallet_complete:
+            stage_detail = (
+                f"Checkpointed wallet {wallet_index}/{wallet_total} "
+                f"after {wallet_fill_count:,} stored fills."
+            )
+        else:
+            stage_detail = (
+                f"Rebuilding wallet {wallet_index}/{wallet_total}: "
+                f"{processed_fills:,} source-trade fills processed."
+            )
+        await report_wallet_scoring_progress(
+            session,
+            enabled=report_progress,
+            payload={
+                "windowDays": settings.scoring_window_days,
+                "includeDisabled": include_disabled,
+                "stage": "source_trade_refresh",
+                "stageLabel": "Source trades",
+                "stageDetail": stage_detail,
+                "progressPercent": progress_percent,
+                "walletIndex": wallet_index,
+                "walletTotal": wallet_total,
+                "processedFills": processed_fills,
+                "walletFillCount": wallet_fill_count,
+                "currentWallet": progress.get("walletAddress"),
+            },
+        )
+
     await cancellation_checkpoint()
     refreshed_wallets = await sync_materialized_source_trades(
         session,
         include_disabled=include_disabled,
         wallet_address=wallet_address,
         cancellation_checkpoint=cancellation_checkpoint,
+        progress_callback=source_trade_progress,
     )
     await cancellation_checkpoint()
     reconstructed_trades = await load_materialized_wallet_trades(

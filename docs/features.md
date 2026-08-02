@@ -270,8 +270,9 @@ What it does:
   enabled pool regardless of `last_polled_at`.
 - Worker pool maintenance runs every 30 minutes by default and uses the same
   batch settings as manual reimport.
-- After maintenance worker pool reimport, wallet scoring runs immediately, then configured
-  prune rules run automatically.
+- After maintenance worker pool reimport, wallet scoring runs only when new fills
+  were persisted. Configured prune rules then run only after that scoring run
+  succeeds.
 - Fill imports stop early when the database is near its configured storage limit.
 - Pool import uses a database-backed job lock and row-level `SKIP LOCKED`
   selection to avoid duplicate refresh work across API and worker processes.
@@ -647,7 +648,8 @@ What it does:
   boundary after the corresponding durable execution path. Redis failure or
   latency cannot make an entry stale before execution or block the next durable
   item without bound.
-- Runs prune after pool import only when the dependent scoring run succeeded.
+- Runs scoring and prune after pool import only when new fills were persisted,
+  and runs prune only when the dependent scoring run succeeded.
 
 Purpose:
 
@@ -1638,6 +1640,10 @@ Purpose:
 - A stale `running` status does not permanently disable manual scoring. The
   start route checks the durable `wallet_scoring` job lock and starts a new
   background run when no active lock exists.
+- Operation status polling also compares stale `running` and `Stopping` state
+  with the durable job lock, then records `interrupted` or `canceled` when no
+  worker still owns the operation.
+
 
 Phase A behavior:
 
@@ -1653,13 +1659,19 @@ Phase A behavior:
   database-maintained `fill_revision` changes. Statement-level insert and delete
   triggers update this revision transactionally, so concurrent imports cannot
   be marked synchronized before their fills are reconstructed.
+- Rebuilds each changed wallet through a server-side stream with a 5,000-row
+  fetch batch. It checks progress and cancellation every 25,000 relevant fills
+  and commits materialized source trades plus sync state after each wallet.
+  Completed wallet checkpoints survive a later cancellation or failure, while
+  the current incomplete wallet is rolled back.
 - Uses raw `wallet_fills` only for exact score-window fill count, first fill,
   latest non-liquidation activity, and liquidation event grouping. Trade PnL,
   ROI, notional concentration, activity windows, and realized drawdown come from
   materialized `source_trades`, avoiding repeated global sorts across the raw
   fill history.
 - Reports separate progress stages for fill summary, changed source-trade
-  refresh, live risk, and score persistence.
+  refresh, live risk, and score persistence. Source-trade refresh includes the
+  current wallet and processed-fill count.
 - Stores ignored source fills with timestamp and reason in
   `source_trade_ignored_fills` for diagnostics. Ignored fills do not reduce the
   wallet score because they usually mean the imported window missed the entry.
@@ -1747,7 +1759,8 @@ Phase A behavior:
   history show a liquidation tag on affected closed trades.
 - Caps scores for wallets below the configured minimum trade count so tiny
   samples cannot rank high. The sample-cap max score is configurable.
-- Runs after each maintenance worker pool reimport when pool maintenance is enabled.
+- Runs after maintenance worker pool reimport only when that import persisted
+  new fills.
 - If pool maintenance is disabled, the standalone scoring loop uses
   `scoring_interval_seconds`.
 - Can be triggered manually from the Wallet Pool page. Wallet detail pages expose

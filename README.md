@@ -255,13 +255,18 @@ Notes:
   only when the wallet's database-maintained `fill_revision` changes. Insert and
   delete statement triggers increment the revision in the same transaction as
   the fill mutation, including concurrent realtime imports.
+  Changed wallets are rebuilt through a server-side fill stream in bounded
+  batches. Progress and cancellation are checked every 25,000 relevant fills,
+  and each completed wallet is committed as a durable checkpoint so a later
+  failure does not restart already-finished wallets.
 - Recurring scoring does not recalculate trade PnL, ROI, concentration, or
   realized drawdown from millions of raw fills. Those metrics come from the
   smaller materialized `source_trades` set. The raw-fill query only keeps the
   exact score-window fill count, first fill, latest non-liquidation activity,
   and liquidation event summary.
-- Partial raw-fill indexes support non-liquidation recency and liquidation event
-  ordering without blocking normal fill ingestion while the indexes are built.
+- Partial raw-fill indexes support non-liquidation recency, liquidation event
+  ordering, and source-trade stream ordering without blocking normal fill
+  ingestion while the indexes are built.
 - Wallet detail source trades default to all materialized history for the
   wallet. Callers can still pass `days` to inspect a bounded window.
 - Wallet score values on the same page remain score-window metrics and are
@@ -490,8 +495,9 @@ Notes:
   `current_drawdown_status = "ok"` from its latest score.
 - Pool wallets are incrementally refreshed from their last poll time with a small overlap.
 - Manual pool reimport forces the enabled pool to refresh regardless of last poll time.
-- The maintenance worker runs pool maintenance every 30 minutes by default:
-  pool reimport, wallet scoring, then configured prune rules.
+- The maintenance worker runs pool reimport every 30 minutes by default.
+  Scoring and configured prune rules run after that import only when it persisted
+  new fills.
 - Worker pruning is intentionally sharp by default. `backend/config/prune.json`
   sets `wallet_prune_worker_dry_run` to `false`, so scheduled pruning deletes
   matching wallets and related rows after pool import.
@@ -503,8 +509,11 @@ Notes:
 - `POST /operations/{key}/cancel` records a run-specific cancellation request
   for those three jobs. The active job acknowledges it at a safe checkpoint,
   rolls back uncommitted work, and finishes with `canceled` operation status.
-- Pool maintenance prunes only after scoring reports success. A failed or
-  lock-skipped scoring run cannot silently feed stale scores into prune.
+- Status polling reconciles stored `running` or `Stopping` state with the durable
+  job lock. A status without an active worker becomes `interrupted` or
+  `canceled` instead of remaining stuck.
+- Pool maintenance prunes changed data only after scoring reports success. A
+  failed or lock-skipped scoring run cannot silently feed stale scores into prune.
 - The pool fill importer works through all due wallets in configured batches so older pool wallets are not left unpolled.
 - Snapshot messages are stored safely through the same dedupe key as historical imports.
 - Non-snapshot realtime fills are committed to Postgres, queued for ordered copy
