@@ -519,6 +519,14 @@ recalculates wallet scores, and then runs sharp pruning when
 `wallet_prune_worker_dry_run` is `false`. Manual pool reimport forces a refresh
 regardless of `last_polled_at` and still deduplicates overlapping fills.
 
+Long-running discovery import, pool reimport, and scoring runs have a unique
+operation run ID stored with their progress payload. A cancel request updates
+the durable operation status instead of terminating an API process. The worker
+checks that request between safe units of work, rolls back the current
+uncommitted unit, and records `canceled`. Progress updates preserve an accepted
+cancel request, while a later run gets a new ID so stale cancellation state
+cannot stop it.
+
 ### Fill Retention Cleanup
 
 ```mermaid

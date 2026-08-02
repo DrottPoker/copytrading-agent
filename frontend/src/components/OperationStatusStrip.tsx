@@ -4,6 +4,7 @@ import {
   Activity,
   CheckCircle2,
   Clock3,
+  CircleStop,
   Loader2,
   Play,
   RefreshCcw,
@@ -72,6 +73,7 @@ const OPERATION_CARDS: Array<{
 export function OperationStatusStrip({ initialItems }: { initialItems: OperationStatus[] }) {
   const [items, setItems] = useState(initialItems);
   const [pendingKeys, setPendingKeys] = useState<Set<string>>(new Set());
+  const [cancelPendingKeys, setCancelPendingKeys] = useState<Set<string>>(new Set());
   const [manualErrors, setManualErrors] = useState<Record<string, string>>({});
 
   const refreshStatuses = useCallback(async (signal?: AbortSignal) => {
@@ -108,7 +110,12 @@ export function OperationStatusStrip({ initialItems }: { initialItems: Operation
     setManualErrors((current) => {
       let next = current;
       for (const item of items) {
-        if ((item.status === "running" || item.status === "succeeded") && next[item.key]) {
+        if (
+          (item.status === "running" ||
+            item.status === "succeeded" ||
+            item.status === "canceled") &&
+          next[item.key]
+        ) {
           next = omitKey(next, item.key);
         }
       }
@@ -132,12 +139,44 @@ export function OperationStatusStrip({ initialItems }: { initialItems: Operation
           throw new Error(await responseErrorMessage(response));
         }
       } catch (error) {
-        setManualErrors((current) => ({
-          ...current,
-          [card.key]: error instanceof Error ? error.message : "Manual run failed.",
-        }));
+        const message = error instanceof Error ? error.message : "Manual run failed.";
+        if (!message.toLowerCase().includes("canceled")) {
+          setManualErrors((current) => ({
+            ...current,
+            [card.key]: message,
+          }));
+        }
       } finally {
         setPendingKeys((current) => removeSetKey(current, card.key));
+        await refreshStatuses();
+      }
+    },
+    [refreshStatuses],
+  );
+
+  const cancelOperation = useCallback(
+    async (card: (typeof OPERATION_CARDS)[number]) => {
+      setManualErrors((current) => omitKey(current, card.key));
+      setCancelPendingKeys((current) => addSetKey(current, card.key));
+      setItems((current) => optimisticStoppingStatus(current, card.key));
+
+      try {
+        const response = await fetch(operationCancelUrl(card.key), {
+          cache: "no-store",
+          method: "POST",
+        });
+        if (!response.ok) {
+          throw new Error(await responseErrorMessage(response));
+        }
+        const operation = (await response.json()) as OperationStatus;
+        setItems((current) => upsertOperationStatus(current, operation));
+      } catch (error) {
+        setManualErrors((current) => ({
+          ...current,
+          [card.key]: error instanceof Error ? error.message : "Cancel failed.",
+        }));
+      } finally {
+        setCancelPendingKeys((current) => removeSetKey(current, card.key));
         await refreshStatuses();
       }
     },
@@ -155,10 +194,12 @@ export function OperationStatusStrip({ initialItems }: { initialItems: Operation
         <OperationIndicator
           key={card.key}
           icon={card.icon}
+          isCancelPending={cancelPendingKeys.has(card.key)}
           isPending={pendingKeys.has(card.key)}
           manualError={manualErrors[card.key]}
           manualLabel={card.manualLabel}
           metrics={card.metrics}
+          onCancel={() => void cancelOperation(card)}
           onRun={() => void runOperation(card)}
           operation={operationMap.get(card.key)}
           title={card.title}
@@ -190,6 +231,11 @@ function manualOperationUrl(card: (typeof OPERATION_CARDS)[number]) {
   return url.toString();
 }
 
+function operationCancelUrl(key: string) {
+  const apiBase = frontendConfig.browserApiBaseUrl || "/api/backend";
+  return `${apiBase.replace(/\/$/, "")}/operations/${encodeURIComponent(key)}/cancel`;
+}
+
 function clampInteger(value: number, min: number, max: number) {
   if (!Number.isFinite(value)) {
     return min;
@@ -199,19 +245,23 @@ function clampInteger(value: number, min: number, max: number) {
 
 function OperationIndicator({
   icon: Icon,
+  isCancelPending,
   isPending,
   manualError,
   manualLabel,
   metrics,
+  onCancel,
   onRun,
   operation,
   title,
 }: {
   icon: LucideIcon;
+  isCancelPending: boolean;
   isPending: boolean;
   manualError?: string;
   manualLabel: string;
   metrics: OperationMetric[];
+  onCancel: () => void;
   onRun: () => void;
   operation?: OperationStatus;
   title: string;
@@ -223,6 +273,12 @@ function OperationIndicator({
   const duration = formatDuration(operation?.durationMs);
   const titleText = operation?.label ?? title;
   const isRunning = status === "running" || isPending;
+  const isStopping = isCancelPending || payload.cancelRequested === true;
+  const progress = operationProgressPercent(payload, isRunning);
+  const stageLabel =
+    stringPayloadValue(payload.stageLabel) ?? (isRunning ? "Running" : "Waiting");
+  const stageDetail =
+    stringPayloadValue(payload.stageDetail) ?? operationTimeText(operation);
 
   return (
     <article className="ui-metric">
@@ -239,7 +295,7 @@ function OperationIndicator({
               />
             </span>
             <p className="truncate text-lg font-semibold text-ink">
-              {operationStatusLabel(status)}
+              {operationStatusLabel(status, isStopping)}
             </p>
           </div>
         </div>
@@ -259,12 +315,55 @@ function OperationIndicator({
             )}
             <span>{isRunning ? "Running" : "Run"}</span>
           </button>
+          {isRunning ? (
+            <button
+              type="button"
+              onClick={onCancel}
+              disabled={isStopping}
+              aria-label={`Cancel ${titleText}`}
+              title={`Cancel ${titleText}`}
+              className="ui-button-danger h-8 px-2 text-xs disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isCancelPending ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              ) : (
+                <CircleStop className="h-3.5 w-3.5" aria-hidden="true" />
+              )}
+              <span>{isStopping ? "Stopping" : "Cancel"}</span>
+            </button>
+          ) : null}
           <Icon className="h-5 w-5 text-muted" aria-hidden="true" />
         </div>
       </div>
 
-      <p className="mt-3 truncate text-sm text-muted">{operationTimeText(operation)}</p>
-      <div className="mt-4 grid grid-cols-3 gap-2">
+      <p className="mt-2 truncate text-xs text-muted">{operationTimeText(operation)}</p>
+      {isRunning ? (
+        <div className="mt-2">
+          <div className="flex min-w-0 items-center justify-between gap-3 text-[11px]">
+            <p className="min-w-0 truncate font-medium text-secondary" title={stageDetail}>
+              <span>{stageLabel}</span>
+              <span className="font-normal text-muted"> - {stageDetail}</span>
+            </p>
+            <span className="shrink-0 tabular-nums text-muted">{formatInteger(progress)}%</span>
+          </div>
+          <div
+            className="mt-1 h-1 overflow-hidden rounded-full bg-line"
+            role="progressbar"
+            aria-label={`${titleText} progress`}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={progress}
+          >
+            <div
+              className={`h-full rounded-full transition-all duration-500 ${
+                isStopping ? "bg-warning" : "bg-brand"
+              }`}
+              style={{ width: `${Math.max(3, progress)}%` }}
+            />
+          </div>
+        </div>
+      ) : null}
+      <div className="mt-3 grid grid-cols-3 gap-2">
         {metrics.map((metric) => (
           <div key={metric.key} className="min-w-0">
             <p className="truncate text-[11px] font-medium uppercase text-muted">
@@ -276,7 +375,7 @@ function OperationIndicator({
           </div>
         ))}
       </div>
-      <div className="mt-3 flex min-w-0 items-center justify-between gap-3 border-t border-line pt-3 text-xs text-muted">
+      <div className="mt-2 flex min-w-0 items-center justify-between gap-3 border-t border-line pt-2 text-xs text-muted">
         <span className="truncate">Duration {duration}</span>
         {operation?.lastError ? (
           <span className="truncate text-danger" title={operation.lastError}>
@@ -331,10 +430,16 @@ function operationStatusIcon(status: string) {
   if (status === "failed") {
     return Activity;
   }
+  if (status === "canceled") {
+    return CircleStop;
+  }
   return Clock3;
 }
 
-function operationStatusLabel(status: string) {
+function operationStatusLabel(status: string, isStopping = false) {
+  if (isStopping) {
+    return "Stopping";
+  }
   if (status === "running") {
     return "Running";
   }
@@ -343,6 +448,9 @@ function operationStatusLabel(status: string) {
   }
   if (status === "failed") {
     return "Failed";
+  }
+  if (status === "canceled") {
+    return "Canceled";
   }
   return "No run";
 }
@@ -363,7 +471,34 @@ function operationTimeText(operation?: OperationStatus) {
   if (operation.status === "failed") {
     return `Failed ${formatDate(operation.completedAt ?? operation.updatedAt)}`;
   }
+  if (operation.status === "canceled") {
+    return `Canceled ${formatDate(operation.completedAt ?? operation.updatedAt)}`;
+  }
   return "No run recorded";
+}
+
+function operationProgressPercent(
+  payload: Record<string, unknown>,
+  isRunning: boolean,
+) {
+  const savedProgress = numericPayloadValue(payload.progressPercent);
+  if (savedProgress !== null) {
+    return clampPercent(savedProgress);
+  }
+  const batchIndex = numericPayloadValue(payload.batchIndex);
+  const batchSize = numericPayloadValue(payload.batchSize);
+  if (batchIndex !== null && batchSize !== null && batchSize > 0) {
+    return clampPercent((batchIndex / batchSize) * 100);
+  }
+  return isRunning ? 0 : 100;
+}
+
+function clampPercent(value: number) {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function stringPayloadValue(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function operationProgressText(payload: Record<string, unknown>) {
@@ -436,13 +571,48 @@ function optimisticRunningStatus(
     lastSuccessAt: existing?.lastSuccessAt ?? null,
     durationMs: null,
     lastError: null,
-    payload: existing?.payload ?? {},
+    payload: {
+      ...(existing?.payload ?? {}),
+      stage: "queued",
+      stageLabel: "Queued",
+      stageDetail: "Waiting for the backend task to start.",
+      progressPercent: 0,
+    },
   };
 
   if (existing) {
     return items.map((item) => (item.key === card.key ? updated : item));
   }
   return [...items, updated];
+}
+
+function optimisticStoppingStatus(items: OperationStatus[], key: string) {
+  const existing = items.find((item) => item.key === key);
+  if (!existing) {
+    return items;
+  }
+  return items.map((item) =>
+    item.key === key
+      ? {
+          ...item,
+          status: "running",
+          payload: {
+            ...item.payload,
+            cancelRequested: true,
+            stage: "cancel_requested",
+            stageLabel: "Stopping",
+            stageDetail: "Finishing the current safe checkpoint before stopping.",
+          },
+        }
+      : item,
+  );
+}
+
+function upsertOperationStatus(items: OperationStatus[], operation: OperationStatus) {
+  if (items.some((item) => item.key === operation.key)) {
+    return items.map((item) => (item.key === operation.key ? operation : item));
+  }
+  return [...items, operation];
 }
 
 function addSetKey(current: Set<string>, key: string) {

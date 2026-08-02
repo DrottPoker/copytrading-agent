@@ -30,6 +30,7 @@ from app.services.fill_import_service import (
     import_wallet_fills,
     list_wallet_fills,
 )
+from app.services.operation_status_service import OperationCanceledError
 from app.services.pool_fill_import_service import import_due_pool_wallet_fills
 from app.services.source_trade_reconstruction_service import list_reconstructed_source_trades
 from app.services.wallet_cleanup_service import (
@@ -94,16 +95,22 @@ async def import_due_pool_wallet_fills_route(
     include_items: Annotated[bool, Query()] = True,
     force: Annotated[bool, Query()] = True,
 ) -> PoolFillImportResponse:
-    response = await import_due_pool_wallet_fills(
-        session,
-        limit=limit or settings.pool_fill_import_batch_size,
-        days=settings.pool_fill_import_days,
-        max_pages=settings.pool_fill_import_max_pages,
-        min_wallet_interval_seconds=settings.pool_fill_import_min_wallet_interval_seconds,
-        overlap_seconds=settings.pool_fill_import_overlap_seconds,
-        max_batches=max_batches or settings.pool_fill_import_max_batches,
-        force=force,
-    )
+    try:
+        response = await import_due_pool_wallet_fills(
+            session,
+            limit=limit or settings.pool_fill_import_batch_size,
+            days=settings.pool_fill_import_days,
+            max_pages=settings.pool_fill_import_max_pages,
+            min_wallet_interval_seconds=settings.pool_fill_import_min_wallet_interval_seconds,
+            overlap_seconds=settings.pool_fill_import_overlap_seconds,
+            max_batches=max_batches or settings.pool_fill_import_max_batches,
+            force=force,
+        )
+    except OperationCanceledError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
     if not include_items:
         response.items = []
     return response

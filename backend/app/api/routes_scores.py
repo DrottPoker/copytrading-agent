@@ -16,9 +16,11 @@ from app.schemas.score import (
 )
 from app.services.job_lock_service import JobLockAlreadyHeldError, job_lock_is_active
 from app.services.operation_status_service import (
+    OperationCanceledError,
     get_operation_status,
     mark_operation_failed,
     mark_operation_started,
+    new_operation_run_id,
 )
 from app.services.wallet_score_service import (
     WalletScoreDetailNotFoundError,
@@ -67,11 +69,17 @@ async def recalculate_scores_route(
     settings: Annotated[Settings, Depends(get_settings)],
     include_disabled: Annotated[bool, Query()] = False,
 ) -> WalletScoreRunResponse:
-    return await recalculate_wallet_scores(
-        session,
-        settings=settings,
-        include_disabled=include_disabled,
-    )
+    try:
+        return await recalculate_wallet_scores(
+            session,
+            settings=settings,
+            include_disabled=include_disabled,
+        )
+    except OperationCanceledError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
 
 
 @router.post("/recalculate/start", response_model=OperationStatusRead)
@@ -88,7 +96,9 @@ async def start_recalculate_scores_route(
     ):
         return current_status
 
+    operation_run_id = new_operation_run_id()
     payload = {
+        "runId": operation_run_id,
         "windowDays": settings.scoring_window_days,
         "includeDisabled": include_disabled,
         "stage": "queued",
@@ -101,6 +111,7 @@ async def start_recalculate_scores_route(
         recalculate_scores_background,
         include_disabled,
         settings,
+        operation_run_id,
     )
     return await get_operation_status(session, "wallet_scoring")
 
@@ -108,6 +119,7 @@ async def start_recalculate_scores_route(
 async def recalculate_scores_background(
     include_disabled: bool,
     settings: Settings,
+    operation_run_id: str,
 ) -> None:
     sessionmaker = get_sessionmaker(settings)
     if sessionmaker is None:
@@ -119,7 +131,10 @@ async def recalculate_scores_background(
                 session,
                 settings=settings,
                 include_disabled=include_disabled,
+                operation_run_id=operation_run_id,
             )
+        except OperationCanceledError:
+            logger.info("wallet scoring background task canceled")
         except JobLockAlreadyHeldError:
             logger.info("wallet scoring background task skipped because its lock is active")
         except Exception as exc:

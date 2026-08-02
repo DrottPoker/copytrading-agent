@@ -17,10 +17,14 @@ from app.services.fill_import_service import (
 )
 from app.services.job_lock_service import job_lock
 from app.services.operation_status_service import (
+    OperationCanceledError,
+    mark_operation_canceled,
     mark_operation_failed,
     mark_operation_progress,
     mark_operation_started,
     mark_operation_succeeded,
+    new_operation_run_id,
+    raise_if_operation_cancellation_requested,
 )
 
 logger = logging.getLogger(__name__)
@@ -43,6 +47,7 @@ async def import_due_pool_wallet_fills(
     max_batches: int = 1,
     force: bool = False,
     client: HyperliquidClient | None = None,
+    operation_run_id: str | None = None,
 ) -> PoolFillImportResponse:
     async with job_lock(session, key="pool_fill_import", ttl_seconds=12 * 60 * 60):
         return await _import_due_pool_wallet_fills_locked(
@@ -55,6 +60,7 @@ async def import_due_pool_wallet_fills(
             max_batches=max_batches,
             force=force,
             client=client,
+            operation_run_id=operation_run_id,
         )
 
 
@@ -69,8 +75,11 @@ async def _import_due_pool_wallet_fills_locked(
     max_batches: int = 1,
     force: bool = False,
     client: HyperliquidClient | None = None,
+    operation_run_id: str | None = None,
 ) -> PoolFillImportResponse:
+    resolved_run_id = operation_run_id or new_operation_run_id()
     payload = {
+        "runId": resolved_run_id,
         "limit": limit,
         "days": days,
         "maxPages": max_pages,
@@ -78,9 +87,18 @@ async def _import_due_pool_wallet_fills_locked(
         "overlapSeconds": overlap_seconds,
         "maxBatches": max_batches,
         "force": force,
+        "stage": "starting",
+        "stageLabel": "Preparing reimport",
+        "stageDetail": "Loading the next due wallet batch.",
+        "progressPercent": 0,
     }
     await mark_operation_started(session, key="pool_fill_import", payload=payload)
     try:
+        await raise_if_operation_cancellation_requested(
+            session,
+            key="pool_fill_import",
+            run_id=resolved_run_id,
+        )
         result = await _import_due_pool_wallet_fill_batches(
             session=session,
             limit=limit,
@@ -92,7 +110,21 @@ async def _import_due_pool_wallet_fills_locked(
             force=force,
             base_payload=payload,
             client=client,
+            operation_run_id=resolved_run_id,
         )
+        await raise_if_operation_cancellation_requested(
+            session,
+            key="pool_fill_import",
+            run_id=resolved_run_id,
+        )
+    except OperationCanceledError:
+        await session.rollback()
+        await mark_operation_canceled(
+            session,
+            key="pool_fill_import",
+            run_id=resolved_run_id,
+        )
+        raise
     except Exception as exc:
         await session.rollback()
         await mark_operation_failed(
@@ -108,6 +140,10 @@ async def _import_due_pool_wallet_fills_locked(
         key="pool_fill_import",
         payload={
             **payload,
+            "stage": "completed",
+            "stageLabel": "Complete",
+            "stageDetail": f"Imported {result.imported_wallets} wallets.",
+            "progressPercent": 100,
             "scanned": result.scanned,
             "importedWallets": result.imported_wallets,
             "fetched": result.fetched,
@@ -128,6 +164,7 @@ async def _import_due_pool_wallet_fills(
     min_wallet_interval_seconds: int,
     overlap_seconds: int,
     force: bool,
+    operation_run_id: str,
     exclude_addresses: set[str] | None = None,
     client: HyperliquidClient | None = None,
     progress_base_payload: dict[str, Any] | None = None,
@@ -144,6 +181,7 @@ async def _import_due_pool_wallet_fills(
                 min_wallet_interval_seconds=min_wallet_interval_seconds,
                 overlap_seconds=overlap_seconds,
                 force=force,
+                operation_run_id=operation_run_id,
                 exclude_addresses=exclude_addresses,
                 client=hyperliquid_client,
                 progress_base_payload=progress_base_payload,
@@ -161,6 +199,11 @@ async def _import_due_pool_wallet_fills(
     items: list[PoolFillImportItem] = []
 
     for index, target in enumerate(targets, start=1):
+        await raise_if_operation_cancellation_requested(
+            session,
+            key="pool_fill_import",
+            run_id=operation_run_id,
+        )
         request = WalletFillImportRequest(
             days=days,
             max_pages=max_pages,
@@ -178,6 +221,14 @@ async def _import_due_pool_wallet_fills(
                 payload=request,
                 client=client,
             )
+            await raise_if_operation_cancellation_requested(
+                session,
+                key="pool_fill_import",
+                run_id=operation_run_id,
+            )
+        except OperationCanceledError:
+            await session.rollback()
+            raise
         except FillImportStorageLimitError as exc:
             await session.rollback()
             logger.warning("pool fill import stopped wallet=%s error=%s", target.address, exc)
@@ -266,6 +317,7 @@ async def _import_due_pool_wallet_fill_batches(
     force: bool,
     base_payload: dict[str, Any],
     client: HyperliquidClient | None,
+    operation_run_id: str,
 ) -> PoolFillImportResponse:
     totals = PoolFillImportResponse(
         scanned=0,
@@ -291,10 +343,16 @@ async def _import_due_pool_wallet_fill_batches(
                 force=force,
                 base_payload=base_payload,
                 client=hyperliquid_client,
+                operation_run_id=operation_run_id,
             )
 
     processed_addresses: set[str] = set()
     for batch_number in range(1, max_batches + 1):
+        await raise_if_operation_cancellation_requested(
+            session,
+            key="pool_fill_import",
+            run_id=operation_run_id,
+        )
         batch = await _import_due_pool_wallet_fills(
             session=session,
             limit=limit,
@@ -303,11 +361,17 @@ async def _import_due_pool_wallet_fill_batches(
             min_wallet_interval_seconds=min_wallet_interval_seconds,
             overlap_seconds=overlap_seconds,
             force=force,
+            operation_run_id=operation_run_id,
             exclude_addresses=processed_addresses,
             client=client,
             progress_base_payload=base_payload,
             progress_batch_number=batch_number,
             prior_totals=totals,
+        )
+        await raise_if_operation_cancellation_requested(
+            session,
+            key="pool_fill_import",
+            run_id=operation_run_id,
         )
         totals.scanned += batch.scanned
         totals.imported_wallets += batch.imported_wallets
@@ -324,6 +388,15 @@ async def _import_due_pool_wallet_fill_batches(
             payload={
                 **base_payload,
                 "batch": batch_number,
+                "stage": "batch_complete",
+                "stageLabel": "Completing batch",
+                "stageDetail": f"Completed batch {batch_number} of up to {max_batches}.",
+                "progressPercent": pool_fill_progress_percent(
+                    base_payload=base_payload,
+                    batch_number=batch_number,
+                    batch_index=limit,
+                    batch_size=limit,
+                ),
                 "scanned": totals.scanned,
                 "importedWallets": totals.imported_wallets,
                 "fetched": totals.fetched,
@@ -397,6 +470,17 @@ def pool_fill_progress_payload(
         "batchIndex": batch_index,
         "batchSize": batch_size,
         "currentWallet": current_wallet,
+        "stage": "wallet_import",
+        "stageLabel": "Importing fills",
+        "stageDetail": (
+            f"Wallet {batch_index} of {batch_size} in batch {batch_number or 1}."
+        ),
+        "progressPercent": pool_fill_progress_percent(
+            base_payload=base_payload,
+            batch_number=batch_number,
+            batch_index=batch_index,
+            batch_size=batch_size,
+        ),
         "scanned": prior.scanned + batch_size,
         "importedWallets": prior.imported_wallets + len(items),
         "fetched": prior.fetched + sum(item.fetched for item in items),
@@ -404,6 +488,21 @@ def pool_fill_progress_payload(
         "duplicate": prior.duplicate + sum(item.duplicate for item in items),
         "failed": prior.failed + failed,
     }
+
+
+def pool_fill_progress_percent(
+    *,
+    base_payload: dict[str, Any],
+    batch_number: int | None,
+    batch_index: int,
+    batch_size: int,
+) -> int:
+    batch_count = max(1, int(base_payload.get("maxBatches") or 1))
+    resolved_batch = max(1, batch_number or 1)
+    resolved_size = max(1, batch_size)
+    completed = (resolved_batch - 1) * resolved_size + batch_index
+    total = batch_count * resolved_size
+    return min(95, 5 + round(completed / total * 90))
 
 
 async def load_due_pool_fill_targets(

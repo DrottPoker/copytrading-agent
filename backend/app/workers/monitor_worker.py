@@ -50,6 +50,7 @@ from app.services.live_trading_service import (
 )
 from app.services.market_price_cache import MarketPriceCache, dex_from_coin
 from app.services.operation_status_service import (
+    OperationCanceledError,
     mark_operation_failed,
     mark_operation_started,
     mark_operation_succeeded,
@@ -1008,6 +1009,8 @@ async def run_discovery_import_loop(
                     "limit": result.limit,
                 },
             )
+        except OperationCanceledError:
+            logger.info("discovery import canceled at a safe checkpoint")
         except JobLockAlreadyHeldError as exc:
             logger.info("discovery import skipped: %s", exc)
         except Exception as exc:
@@ -1102,6 +1105,8 @@ async def run_pool_fill_import_loop(
                 )
             elif settings.wallet_prune_after_pool_import_enabled:
                 logger.warning("wallet prune skipped because scoring did not succeed")
+        except OperationCanceledError:
+            logger.info("pool fill import canceled at a safe checkpoint")
         except JobLockAlreadyHeldError as exc:
             logger.info("pool fill import skipped: %s", exc)
         except Exception as exc:
@@ -1162,6 +1167,9 @@ async def run_wallet_scoring_once(
             payload=result.model_dump(mode="json"),
         )
         return True
+    except OperationCanceledError:
+        logger.info("wallet scoring canceled at a safe checkpoint")
+        return False
     except JobLockAlreadyHeldError as exc:
         logger.info("wallet scoring skipped: %s", exc)
         return False

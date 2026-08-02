@@ -28,8 +28,10 @@ from app.services.discovery_service import (
     run_discovery_prefilter,
 )
 from app.services.operation_status_service import (
+    OperationCanceledError,
     get_operation_status,
     mark_operation_started,
+    new_operation_run_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -69,6 +71,11 @@ async def run_discovery_import_route(
         if not include_backfill_items and response.backfill is not None:
             response.backfill.items = []
         return response
+    except OperationCanceledError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
     except UnknownDiscoverySourceError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -89,7 +96,9 @@ async def start_discovery_import_route(
     if current_status.status == "running":
         return current_status
 
+    operation_run_id = new_operation_run_id()
     payload = {
+        "runId": operation_run_id,
         "sources": sources or settings.discovery_default_sources,
         "limit": limit or settings.discovery_import_limit,
         "runPipeline": run_pipeline,
@@ -107,6 +116,7 @@ async def start_discovery_import_route(
         limit,
         run_pipeline,
         settings,
+        operation_run_id,
     )
     return await get_operation_status(session, "discovery_import")
 
@@ -116,6 +126,7 @@ async def run_discovery_import_background(
     limit: int | None,
     run_pipeline: bool,
     settings: Settings,
+    operation_run_id: str,
 ) -> None:
     sessionmaker = get_sessionmaker(settings)
     if sessionmaker is None:
@@ -129,7 +140,10 @@ async def run_discovery_import_background(
                 limit=limit,
                 run_pipeline=run_pipeline,
                 settings=settings,
+                operation_run_id=operation_run_id,
             )
+        except OperationCanceledError:
+            logger.info("discovery import background task canceled")
         except Exception:
             logger.exception("discovery import background task failed")
 

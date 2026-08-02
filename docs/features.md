@@ -74,6 +74,12 @@ Behavior:
   states.
 - Keeps wide data tables horizontally scrollable without collapsing columns or
   hiding source data on small screens.
+- Shows compact stage text and a progress bar for active discovery import, pool
+  reimport, and wallet scoring jobs on the home dashboard.
+- Gives each active job its own Cancel action. Cancellation is cooperative and
+  database-backed, so API-triggered and maintenance-worker jobs stop at a safe
+  source, wallet, batch, or persistence checkpoint instead of terminating in
+  the middle of a database write.
 
 ### Ops Health Monitoring
 

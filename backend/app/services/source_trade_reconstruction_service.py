@@ -1,4 +1,4 @@
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -561,6 +561,7 @@ async def sync_materialized_source_trades(
     *,
     include_disabled: bool,
     wallet_address: str | None = None,
+    cancellation_checkpoint: Callable[[], Awaitable[None]] | None = None,
 ) -> int:
     candidates = await load_source_trade_refresh_candidates(
         session,
@@ -568,6 +569,8 @@ async def sync_materialized_source_trades(
         wallet_address=wallet_address,
     )
     for candidate in candidates:
+        if cancellation_checkpoint is not None:
+            await cancellation_checkpoint()
         await refresh_materialized_source_trades_for_wallet(
             session,
             wallet_address=str(candidate["wallet_address"]),
@@ -579,6 +582,8 @@ async def sync_materialized_source_trades(
                 else None
             ),
         )
+        if cancellation_checkpoint is not None:
+            await cancellation_checkpoint()
     return len(candidates)
 
 

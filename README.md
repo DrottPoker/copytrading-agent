@@ -498,6 +498,11 @@ Notes:
 - Discovery import, pool import, scoring, pruning, and paper-copy recovery use
   database-backed job locks so worker services and manual dashboard actions do
   not run the same long job concurrently.
+- The home dashboard shows live stage text and compact progress bars for
+  discovery import, pool reimport, and scoring.
+- `POST /operations/{key}/cancel` records a run-specific cancellation request
+  for those three jobs. The active job acknowledges it at a safe checkpoint,
+  rolls back uncommitted work, and finishes with `canceled` operation status.
 - Pool maintenance prunes only after scoring reports success. A failed or
   lock-skipped scoring run cannot silently feed stale scores into prune.
 - The pool fill importer works through all due wallets in configured batches so older pool wallets are not left unpolled.

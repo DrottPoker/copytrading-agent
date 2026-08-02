@@ -1,6 +1,7 @@
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
@@ -29,7 +30,25 @@ DEFAULT_OPERATION_KEYS = (
     "wallet_prune",
 )
 
+CANCELABLE_OPERATION_KEYS = frozenset(
+    {
+        "discovery_import",
+        "pool_fill_import",
+        "wallet_scoring",
+    }
+)
+
 OperationValueBuilder = Callable[[dict[str, Any]], dict[str, Any]]
+
+
+class OperationCanceledError(Exception):
+    def __init__(self, key: str) -> None:
+        super().__init__(f"{OPERATION_LABELS.get(key, key)} was canceled.")
+        self.key = key
+
+
+class OperationNotRunningError(Exception):
+    pass
 
 
 async def list_operation_statuses(
@@ -45,7 +64,7 @@ async def list_operation_statuses(
 
 
 async def get_operation_status(session: AsyncSession, key: str) -> OperationStatusRead:
-    setting = await session.get(Setting, setting_key(key))
+    setting = await session.get(Setting, setting_key(key), populate_existing=True)
     label = OPERATION_LABELS.get(key, key)
     if setting is None or not isinstance(setting.value, dict):
         return OperationStatusRead(
@@ -75,10 +94,19 @@ async def mark_operation_started(
     *,
     key: str,
     payload: dict[str, Any] | None = None,
-) -> None:
+) -> str:
     now = now_iso()
+    resolved_run_id = string_or_none((payload or {}).get("runId")) or new_operation_run_id()
 
     def build_value(existing: dict[str, Any]) -> dict[str, Any]:
+        next_payload = {**(payload or {}), "runId": resolved_run_id}
+        existing_payload = dict_payload(existing.get("payload"))
+        if (
+            existing.get("status") == "running"
+            and existing_payload.get("runId") == resolved_run_id
+            and existing_payload.get("cancelRequested") is True
+        ):
+            next_payload = preserve_cancellation(existing_payload, next_payload)
         return {
             **existing,
             "key": key,
@@ -89,10 +117,11 @@ async def mark_operation_started(
             "updatedAt": now,
             "lastError": None,
             "durationMs": None,
-            "payload": payload or {},
+            "payload": next_payload,
         }
 
     await write_operation_value(session, key, build_value)
+    return resolved_run_id
 
 
 async def mark_operation_succeeded(
@@ -105,6 +134,7 @@ async def mark_operation_succeeded(
 
     def build_value(existing: dict[str, Any]) -> dict[str, Any]:
         started_at = string_or_none(existing.get("startedAt")) or now
+        next_payload = preserve_run_id(existing, payload)
         return {
             **existing,
             "key": key,
@@ -116,7 +146,7 @@ async def mark_operation_succeeded(
             "lastSuccessAt": now,
             "durationMs": duration_ms(started_at, now),
             "lastError": None,
-            "payload": payload or {},
+            "payload": next_payload,
         }
 
     await write_operation_value(session, key, build_value)
@@ -131,6 +161,10 @@ async def mark_operation_progress(
     now = now_iso()
 
     def build_value(existing: dict[str, Any]) -> dict[str, Any]:
+        next_payload = preserve_run_id(existing, payload)
+        existing_payload = dict_payload(existing.get("payload"))
+        if existing_payload.get("cancelRequested") is True:
+            next_payload = preserve_cancellation(existing_payload, next_payload)
         return {
             **existing,
             "key": key,
@@ -138,7 +172,7 @@ async def mark_operation_progress(
             "status": "running",
             "updatedAt": now,
             "lastError": None,
-            "payload": payload or {},
+            "payload": next_payload,
         }
 
     await write_operation_value(session, key, build_value)
@@ -155,6 +189,7 @@ async def mark_operation_failed(
 
     def build_value(existing: dict[str, Any]) -> dict[str, Any]:
         started_at = string_or_none(existing.get("startedAt")) or now
+        next_payload = preserve_run_id(existing, payload)
         return {
             **existing,
             "key": key,
@@ -165,17 +200,123 @@ async def mark_operation_failed(
             "updatedAt": now,
             "durationMs": duration_ms(started_at, now),
             "lastError": error,
-            "payload": payload or {},
+            "payload": next_payload,
+        }
+
+    await write_operation_value(session, key, build_value)
+
+
+async def request_operation_cancellation(
+    session: AsyncSession,
+    *,
+    key: str,
+) -> OperationStatusRead:
+    if key not in CANCELABLE_OPERATION_KEYS:
+        raise ValueError(f"Operation {key} cannot be canceled.")
+
+    now = now_iso()
+
+    def build_value(existing: dict[str, Any]) -> dict[str, Any]:
+        if existing.get("status") != "running":
+            raise OperationNotRunningError(
+                f"{OPERATION_LABELS.get(key, key)} is not currently running."
+            )
+        payload = dict_payload(existing.get("payload"))
+        payload.update(
+            {
+                "cancelRequested": True,
+                "cancelRequestedAt": now,
+                "stage": "cancel_requested",
+                "stageLabel": "Stopping",
+                "stageDetail": "Finishing the current safe checkpoint before stopping.",
+            }
+        )
+        return {
+            **existing,
+            "key": key,
+            "label": OPERATION_LABELS.get(key, key),
+            "status": "running",
+            "updatedAt": now,
+            "lastError": None,
+            "payload": payload,
+        }
+
+    await write_operation_value(session, key, build_value)
+    return await get_operation_status(session, key)
+
+
+async def operation_cancellation_requested(
+    session: AsyncSession,
+    *,
+    key: str,
+    run_id: str,
+) -> bool:
+    value = await load_current_operation_value(session, key)
+    if value.get("status") != "running":
+        return False
+    payload = dict_payload(value.get("payload"))
+    return payload.get("runId") == run_id and payload.get("cancelRequested") is True
+
+
+async def raise_if_operation_cancellation_requested(
+    session: AsyncSession,
+    *,
+    key: str,
+    run_id: str,
+) -> None:
+    if await operation_cancellation_requested(session, key=key, run_id=run_id):
+        raise OperationCanceledError(key)
+
+
+async def mark_operation_canceled(
+    session: AsyncSession,
+    *,
+    key: str,
+    run_id: str,
+) -> None:
+    now = now_iso()
+
+    def build_value(existing: dict[str, Any]) -> dict[str, Any]:
+        started_at = string_or_none(existing.get("startedAt")) or now
+        payload = dict_payload(existing.get("payload"))
+        payload.update(
+            {
+                "runId": run_id,
+                "cancelRequested": True,
+                "stage": "canceled",
+                "stageLabel": "Canceled",
+                "stageDetail": "Stopped safely at the latest completed checkpoint.",
+            }
+        )
+        return {
+            **existing,
+            "key": key,
+            "label": OPERATION_LABELS.get(key, key),
+            "status": "canceled",
+            "startedAt": started_at,
+            "completedAt": now,
+            "updatedAt": now,
+            "durationMs": duration_ms(started_at, now),
+            "lastError": None,
+            "payload": payload,
         }
 
     await write_operation_value(session, key, build_value)
 
 
 async def load_operation_value(session: AsyncSession, key: str) -> dict[str, Any]:
-    setting = await session.get(Setting, setting_key(key))
+    setting = await session.get(Setting, setting_key(key), populate_existing=True)
     if setting is None or not isinstance(setting.value, dict):
         return {}
     return dict(setting.value)
+
+
+async def load_current_operation_value(session: AsyncSession, key: str) -> dict[str, Any]:
+    sessionmaker = get_sessionmaker()
+    if sessionmaker is not None:
+        async with sessionmaker() as status_session:
+            return await load_operation_value(status_session, key)
+    return await load_operation_value(session, key)
 
 
 async def load_operation_value_for_update(session: AsyncSession, key: str) -> dict[str, Any]:
@@ -228,6 +369,43 @@ async def upsert_operation_value(
 
 def setting_key(key: str) -> str:
     return f"{OPERATION_STATUS_PREFIX}{key}"
+
+
+def new_operation_run_id() -> str:
+    return uuid4().hex
+
+
+def dict_payload(value: object) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def preserve_run_id(
+    existing: dict[str, Any],
+    payload: dict[str, Any] | None,
+) -> dict[str, Any]:
+    next_payload = dict(payload or {})
+    existing_run_id = string_or_none(dict_payload(existing.get("payload")).get("runId"))
+    if "runId" not in next_payload and existing_run_id is not None:
+        next_payload["runId"] = existing_run_id
+    return next_payload
+
+
+def preserve_cancellation(
+    existing_payload: dict[str, Any],
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    next_payload = dict(payload)
+    for field in ("cancelRequested", "cancelRequestedAt"):
+        if field in existing_payload:
+            next_payload[field] = existing_payload[field]
+    next_payload.update(
+        {
+            "stage": "cancel_requested",
+            "stageLabel": "Stopping",
+            "stageDetail": "Finishing the current safe checkpoint before stopping.",
+        }
+    )
+    return next_payload
 
 
 def now_iso() -> str:

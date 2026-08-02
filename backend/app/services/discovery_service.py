@@ -41,10 +41,14 @@ from app.services.hyperliquid_leaderboard_source import (
 )
 from app.services.job_lock_service import job_lock
 from app.services.operation_status_service import (
+    OperationCanceledError,
+    mark_operation_canceled,
     mark_operation_failed,
     mark_operation_progress,
     mark_operation_started,
     mark_operation_succeeded,
+    new_operation_run_id,
+    raise_if_operation_cancellation_requested,
 )
 from app.services.source_trade_reconstruction_service import (
     ReconstructedWalletTrades,
@@ -324,6 +328,7 @@ async def run_discovery_import(
     run_pipeline: bool = True,
     settings: Settings | None = None,
     use_lock: bool = True,
+    operation_run_id: str | None = None,
 ) -> DiscoveryImportResponse:
     if use_lock:
         async with job_lock(session, key="discovery_import", ttl_seconds=12 * 60 * 60):
@@ -334,9 +339,11 @@ async def run_discovery_import(
                 run_pipeline=run_pipeline,
                 settings=settings,
                 use_lock=False,
+                operation_run_id=operation_run_id,
             )
 
     resolved_settings = settings or get_settings()
+    resolved_run_id = operation_run_id or new_operation_run_id()
     requested_sources = normalize_requested_sources(
         sources or resolved_settings.discovery_default_sources
     )
@@ -352,9 +359,15 @@ async def run_discovery_import(
         progress_current=0,
         progress_total=100,
     )
+    payload["runId"] = resolved_run_id
 
     await mark_operation_started(session, key="discovery_import", payload=payload)
     try:
+        await raise_if_operation_cancellation_requested(
+            session,
+            key="discovery_import",
+            run_id=resolved_run_id,
+        )
         response = await _run_discovery_import(
             session,
             sources=requested_sources,
@@ -362,7 +375,21 @@ async def run_discovery_import(
             run_pipeline=run_pipeline,
             operation_payload=payload,
             settings=resolved_settings,
+            operation_run_id=resolved_run_id,
         )
+        await raise_if_operation_cancellation_requested(
+            session,
+            key="discovery_import",
+            run_id=resolved_run_id,
+        )
+    except OperationCanceledError:
+        await session.rollback()
+        await mark_operation_canceled(
+            session,
+            key="discovery_import",
+            run_id=resolved_run_id,
+        )
+        raise
     except Exception as exc:
         await session.rollback()
         await mark_operation_failed(
@@ -612,6 +639,7 @@ async def _run_discovery_import(
     run_pipeline: bool,
     operation_payload: dict[str, Any],
     settings: Settings,
+    operation_run_id: str,
 ) -> DiscoveryImportResponse:
     runs: list[DiscoveryImportRun] = []
     candidate_models: list[DiscoveryWalletCandidate] = []
@@ -621,6 +649,11 @@ async def _run_discovery_import(
 
     source_count = max(1, len(sources))
     for source_index, source in enumerate(sources, start=1):
+        await raise_if_operation_cancellation_requested(
+            session,
+            key="discovery_import",
+            run_id=operation_run_id,
+        )
         await update_discovery_operation_progress(
             session,
             operation_payload,
@@ -653,6 +686,11 @@ async def _run_discovery_import(
                 source,
                 limit=limit,
                 settings=settings,
+            )
+            await raise_if_operation_cancellation_requested(
+                session,
+                key="discovery_import",
+                run_id=operation_run_id,
             )
             upsert_result = await upsert_discovery_candidates(
                 session,
@@ -700,6 +738,9 @@ async def _run_discovery_import(
                     "sourceCount": source_count,
                 },
             )
+        except OperationCanceledError:
+            await session.rollback()
+            raise
         except Exception as exc:
             error_message = str(exc) or exc.__class__.__name__
             await session.rollback()
@@ -736,6 +777,11 @@ async def _run_discovery_import(
                 },
             )
 
+    await raise_if_operation_cancellation_requested(
+        session,
+        key="discovery_import",
+        run_id=operation_run_id,
+    )
     run_ids = [run.id for run in runs if run.status == "succeeded"]
     if (
         run_pipeline
@@ -786,6 +832,11 @@ async def _run_discovery_import(
 
         async def on_backfill_progress(event: dict[str, Any]) -> None:
             nonlocal backfill_processed
+            await raise_if_operation_cancellation_requested(
+                session,
+                key="discovery_import",
+                run_id=operation_run_id,
+            )
             if event.get("event") in {"candidate_finished", "candidate_failed"}:
                 backfill_processed = min(backfill_total, backfill_processed + 1)
             current_wallet = str(event.get("walletAddress") or "")
@@ -825,6 +876,11 @@ async def _run_discovery_import(
                 "backfillTotal": backfill_total,
             },
         )
+        await raise_if_operation_cancellation_requested(
+            session,
+            key="discovery_import",
+            run_id=operation_run_id,
+        )
         backfill_response = await backfill_all_discovery_candidates(
             session,
             run_ids=run_ids,
@@ -854,6 +910,11 @@ async def _run_discovery_import(
             },
         )
 
+    await raise_if_operation_cancellation_requested(
+        session,
+        key="discovery_import",
+        run_id=operation_run_id,
+    )
     await session.commit()
 
     if runs:
@@ -2024,6 +2085,9 @@ async def backfill_discovery_candidates(
                             ),
                         }
                     )
+            except OperationCanceledError:
+                await session.rollback()
+                raise
             except FillImportStorageLimitError as exc:
                 await session.rollback()
                 failed += 1

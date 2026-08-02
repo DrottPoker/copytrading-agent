@@ -23,10 +23,14 @@ from app.schemas.score import (
 from app.schemas.wallet import normalize_wallet_address
 from app.services.job_lock_service import job_lock
 from app.services.operation_status_service import (
+    OperationCanceledError,
+    mark_operation_canceled,
     mark_operation_failed,
     mark_operation_progress,
     mark_operation_started,
     mark_operation_succeeded,
+    new_operation_run_id,
+    raise_if_operation_cancellation_requested,
 )
 from app.services.source_trade_reconstruction_service import (
     ReconstructedWalletTrades,
@@ -151,6 +155,7 @@ async def recalculate_wallet_scores(
     settings: Settings | None = None,
     include_disabled: bool = False,
     use_lock: bool = True,
+    operation_run_id: str | None = None,
 ) -> WalletScoreRunResponse:
     if use_lock:
         async with job_lock(session, key="wallet_scoring", ttl_seconds=30 * 60):
@@ -159,10 +164,13 @@ async def recalculate_wallet_scores(
                 settings=settings,
                 include_disabled=include_disabled,
                 use_lock=False,
+                operation_run_id=operation_run_id,
             )
 
     resolved_settings = settings or get_settings()
+    resolved_run_id = operation_run_id or new_operation_run_id()
     payload = {
+        "runId": resolved_run_id,
         "windowDays": resolved_settings.scoring_window_days,
         "includeDisabled": include_disabled,
         "stage": "historical_metrics",
@@ -172,11 +180,30 @@ async def recalculate_wallet_scores(
     }
     await mark_operation_started(session, key="wallet_scoring", payload=payload)
     try:
+        await raise_if_operation_cancellation_requested(
+            session,
+            key="wallet_scoring",
+            run_id=resolved_run_id,
+        )
         result = await _recalculate_wallet_scores(
             session,
             settings=resolved_settings,
             include_disabled=include_disabled,
+            operation_run_id=resolved_run_id,
         )
+        await raise_if_operation_cancellation_requested(
+            session,
+            key="wallet_scoring",
+            run_id=resolved_run_id,
+        )
+    except OperationCanceledError:
+        await session.rollback()
+        await mark_operation_canceled(
+            session,
+            key="wallet_scoring",
+            run_id=resolved_run_id,
+        )
+        raise
     except asyncio.CancelledError:
         await session.rollback()
         await mark_operation_failed(
@@ -230,6 +257,7 @@ async def _recalculate_wallet_scores(
     *,
     settings: Settings | None = None,
     include_disabled: bool = False,
+    operation_run_id: str,
 ) -> WalletScoreRunResponse:
     resolved_settings = settings or get_settings()
     now = datetime.now(UTC)
@@ -239,6 +267,12 @@ async def _recalculate_wallet_scores(
         now=now,
         include_disabled=include_disabled,
         report_progress=True,
+        operation_run_id=operation_run_id,
+    )
+    await raise_if_operation_cancellation_requested(
+        session,
+        key="wallet_scoring",
+        run_id=operation_run_id,
     )
 
     await mark_operation_progress(
@@ -255,7 +289,13 @@ async def _recalculate_wallet_scores(
     )
 
     records: list[dict[str, Any]] = []
-    for metric in metrics:
+    for index, metric in enumerate(metrics):
+        if index % 50 == 0:
+            await raise_if_operation_cancellation_requested(
+                session,
+                key="wallet_scoring",
+                run_id=operation_run_id,
+            )
         breakdown = calculate_wallet_score(metric, settings=resolved_settings, now=now)
         records.append(
             {
@@ -281,6 +321,11 @@ async def _recalculate_wallet_scores(
             }
         )
 
+    await raise_if_operation_cancellation_requested(
+        session,
+        key="wallet_scoring",
+        run_id=operation_run_id,
+    )
     if records:
         stmt = insert(WalletScore).values(records)
         update_columns = {
@@ -299,6 +344,11 @@ async def _recalculate_wallet_scores(
             .where(WatchedWallet.address == WalletScore.wallet_address)
             .exists()
         )
+    )
+    await raise_if_operation_cancellation_requested(
+        session,
+        key="wallet_scoring",
+        run_id=operation_run_id,
     )
     await session.commit()
 
@@ -434,6 +484,7 @@ async def load_wallet_score_metrics(
     include_disabled: bool,
     wallet_address: str | None = None,
     report_progress: bool = False,
+    operation_run_id: str | None = None,
 ) -> list[WalletScoreMetrics]:
     window_start_ms = timestamp_ms(now - timedelta(days=settings.scoring_window_days))
     start_24h_ms = timestamp_ms(now - timedelta(days=1))
@@ -527,6 +578,12 @@ async def load_wallet_score_metrics(
     )
 
     base_metrics = [base_metrics_from_row(row) for row in result.mappings().all()]
+    if operation_run_id is not None:
+        await raise_if_operation_cancellation_requested(
+            session,
+            key="wallet_scoring",
+            run_id=operation_run_id,
+        )
     await report_wallet_scoring_progress(
         session,
         enabled=report_progress,
@@ -551,11 +608,22 @@ async def load_wallet_score_metrics(
             "progressPercent": 20,
         },
     )
+    async def cancellation_checkpoint() -> None:
+        if operation_run_id is not None:
+            await raise_if_operation_cancellation_requested(
+                session,
+                key="wallet_scoring",
+                run_id=operation_run_id,
+            )
+
+    await cancellation_checkpoint()
     refreshed_wallets = await sync_materialized_source_trades(
         session,
         include_disabled=include_disabled,
         wallet_address=wallet_address,
+        cancellation_checkpoint=cancellation_checkpoint,
     )
+    await cancellation_checkpoint()
     reconstructed_trades = await load_materialized_wallet_trades(
         session,
         window_start_ms=window_start_ms,
@@ -595,6 +663,7 @@ async def load_wallet_score_metrics(
         settings=settings,
         include_disabled=include_disabled,
         report_progress=report_progress,
+        operation_run_id=operation_run_id,
     )
 
 
@@ -605,6 +674,7 @@ async def metrics_with_current_drawdowns(
     settings: Settings,
     include_disabled: bool = False,
     report_progress: bool = False,
+    operation_run_id: str | None = None,
 ) -> list[WalletScoreMetrics]:
     scorable_metrics = [metric for metric in metrics if metric.trade_count > 0]
     if not scorable_metrics:
@@ -658,6 +728,12 @@ async def metrics_with_current_drawdowns(
                 return unavailable_current_drawdown_metric(metric)
 
         for start in range(0, len(prioritized_metrics), concurrency):
+            if operation_run_id is not None:
+                await raise_if_operation_cancellation_requested(
+                    session,
+                    key="wallet_scoring",
+                    run_id=operation_run_id,
+                )
             remaining_seconds = deadline - asyncio.get_running_loop().time()
             if remaining_seconds <= 0:
                 break
@@ -683,6 +759,12 @@ async def metrics_with_current_drawdowns(
                     len(resolved_metrics),
                     len(prioritized_metrics),
                     timeout_seconds,
+                )
+            if operation_run_id is not None:
+                await raise_if_operation_cancellation_requested(
+                    session,
+                    key="wallet_scoring",
+                    run_id=operation_run_id,
                 )
 
             processed = len(resolved_metrics)
