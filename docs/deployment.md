@@ -383,25 +383,34 @@ docker compose -f docker-compose.vps.yml run --rm backend python -m alembic curr
 docker compose -f docker-compose.vps.yml ps
 docker compose -f docker-compose.vps.yml exec backend \
   python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read().decode())"
+docker compose -f docker-compose.vps.yml exec backend python -c "import base64,json,os,urllib.request; auth=base64.b64encode((os.environ['DASHBOARD_AUTH_USERNAME']+':'+os.environ['DASHBOARD_AUTH_PASSWORD']).encode()).decode(); req=urllib.request.Request('http://127.0.0.1:8000/operations/status',headers={'Authorization':'Basic '+auth}); print(json.dumps(json.load(urllib.request.urlopen(req,timeout=10)),indent=2))"
 docker compose -f docker-compose.vps.yml logs --tail=100 backend trading-worker maintenance-worker postgres-backup caddy
 ```
 
+
+`/operations/status` requires dashboard Basic Auth; `/health` does not. Job
+locks renew at least every 30 seconds and become stale after 90 seconds without
+a renewal. This allows the first status poll or job trigger after a container
+replacement to reconcile abandoned `Running` or `Stopping` state.
 Dashboard mutation proxy failures include an `X-Request-ID` response header and
 write the same `request_id` to the frontend container log. The Trading dashboard
 shows that identifier with failed mutations. Use it to correlate a browser error
 with the upstream backend response without logging credentials or request bodies.
 
-The Alembic head for this update is `b3d5f7a9c1e2`. The current chain adds the
-signed Hyperliquid funding-payment ledger, the live external cash-flow ledger,
-and cash-flow-adjusted account performance snapshots. It removes
-the obsolete durable live-entry control, expands wallet fill ingest latency to
-`BIGINT`, persists live margin mode, adds the authoritative live-copy lifecycle,
-and adds the unified durable `live_copy_work` queue. It also converts the live
-order outbox into an append-only attempt ledger, backfilling existing dispatches
-as attempt 1. The migration bridges only
-unfinished realtime inbox work into the new queue. It does not replay the full
-historical fill table. The `current` command must show `b3d5f7a9c1e2` before the
-backend or workers are restarted.
+The Alembic head for this update is `f3b7d9a1c5e8`. The chain includes the
+funding-payment ledger, external account cash-flow ledger, cash-flow-adjusted
+performance snapshots, append-only live order attempts, and unified durable
+`live_copy_work` queue. It also adds transactional wallet fill revisions,
+partial scoring indexes, and the ordered source-trade stream index.
+
+The live-copy queue migration bridges only unfinished realtime inbox work. It
+does not replay the full historical fill table. The scoring migrations rebuild
+revision metadata and create indexes over the existing fill table, so they can
+take time on a multi-million-row deployment.
+
+The `current` command must show `f3b7d9a1c5e8` before the backend or workers
+are restarted.
+
 
 Paper trading state is stored in local Postgres, not in the worker containers.
 After the trading worker restarts it reloads open paper positions, replays

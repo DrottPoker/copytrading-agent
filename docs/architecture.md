@@ -125,8 +125,11 @@ health from both heartbeat freshness and the actual loop payload.
 
 Long-running maintenance jobs still take job-specific rows in `job_locks`, so
 manual API triggers and workers do not run the same operation concurrently.
-Active jobs renew their TTL. A failed scoring stage reports failure to its caller,
-and score-dependent prune does not run after that failure.
+Active jobs renew their TTL at least every 30 seconds. A job lock whose
+`updated_at` has not advanced for 90 seconds is stale and can be taken over
+without waiting for its longer safety TTL. A failed scoring stage reports
+failure to its caller, and score-dependent prune does not run after that
+failure.
 Long-running operation status is also stored in `settings`. Status writes use a
 short transaction with an advisory lock and row-level locking so progress
 updates do not overwrite each other when API and worker activity overlap.

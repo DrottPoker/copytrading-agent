@@ -130,13 +130,18 @@ from trade fills. Live net realized PnL is Hyperliquid `closedPnl`, minus
 Hyperliquid fill fees, plus signed Hyperliquid funding.
 
 Migration `b3d5f7a9c1e2` adds the external account cash-flow ledger and
-cash-flow-adjusted live performance snapshots. This is the current head.
+cash-flow-adjusted live performance snapshots.
+
+Migration `d6a8c1e4f9b2` adds transactional wallet fill revisions so scoring
+refreshes only changed wallets. Migration `e1f4a7c9d2b6` adds partial raw-fill
+indexes for scoring. Migration `f3b7d9a1c5e8` adds the ordered source-trade
+stream index and is the current head.
 
 ```bash
 python -m alembic current
 ```
 
-The command must show `b3d5f7a9c1e2`. Do not start the backend or workers until
+The command must show `f3b7d9a1c5e8`. Do not start the backend or workers until
 that revision is current.
 
 For an existing VPS deployment after pulling this phase:
@@ -504,6 +509,9 @@ Notes:
 - Discovery import, pool import, scoring, pruning, and paper-copy recovery use
   database-backed job locks so worker services and manual dashboard actions do
   not run the same long job concurrently.
+  Job owners renew these leases at least every 30 seconds. A row without a
+  renewal for 90 seconds is stale and can be taken over even when its long
+  safety TTL has not expired.
 - The home dashboard shows live stage text and compact progress bars for
   discovery import, pool reimport, and scoring.
 - `POST /operations/{key}/cancel` records a run-specific cancellation request
@@ -1201,7 +1209,7 @@ docker compose -f docker-compose.vps.yml run --rm backend python -m alembic curr
 docker compose -f docker-compose.vps.yml up -d
 ```
 
-The `current` command must report `b3d5f7a9c1e2` before the backend or workers
+The `current` command must report `f3b7d9a1c5e8` before the backend or workers
 start.
 
 The application images run as non-root users. Backend, frontend, and worker

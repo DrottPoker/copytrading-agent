@@ -30,7 +30,7 @@ def test_disabled_backup_status_is_neutral() -> None:
 
 def test_job_lock_renewal_interval_is_bounded() -> None:
     assert job_lock_renewal_interval_seconds(9) == 5
-    assert job_lock_renewal_interval_seconds(1800) == 300
+    assert job_lock_renewal_interval_seconds(1800) == 30
     assert job_lock_renewal_interval_seconds(90) == 30
 
 

@@ -277,6 +277,9 @@ What it does:
 - Pool import uses a database-backed job lock and row-level `SKIP LOCKED`
   selection to avoid duplicate refresh work across API and worker processes.
   Long-running job locks renew their TTL while the owning job is still active.
+  Renewal runs at least every 30 seconds. Locks without a renewal for 90 seconds
+  are treated as stale, so a killed or replaced container cannot freeze an
+  operation until the original multi-hour TTL expires.
 
 Config:
 

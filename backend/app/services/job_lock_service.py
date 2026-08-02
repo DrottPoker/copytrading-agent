@@ -11,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_sessionmaker
 
 logger = logging.getLogger(__name__)
+JOB_LOCK_RENEWAL_MAX_INTERVAL_SECONDS = 30
+JOB_LOCK_STALE_AFTER_SECONDS = 90
 
 
 class JobLockAlreadyHeldError(RuntimeError):
@@ -78,10 +80,17 @@ async def try_acquire_job_lock(
               updated_at = now()
             where job_locks.locked_until <= now()
               or job_locks.owner = excluded.owner
+              or job_locks.updated_at <=
+                now() - (:stale_after_seconds * interval '1 second')
             returning key
             """
         ),
-        {"key": key, "owner": owner, "ttl_seconds": ttl_seconds},
+        {
+            "key": key,
+            "owner": owner,
+            "ttl_seconds": ttl_seconds,
+            "stale_after_seconds": JOB_LOCK_STALE_AFTER_SECONDS,
+        },
     )
     acquired = result.scalar_one_or_none() is not None
     await session.commit()
@@ -97,10 +106,15 @@ async def job_lock_is_active(session: AsyncSession, *, key: str) -> bool:
               from job_locks
               where key = :key
                 and locked_until > now()
+                and updated_at >
+                  now() - (:stale_after_seconds * interval '1 second')
             )
             """
         ),
-        {"key": key},
+        {
+            "key": key,
+            "stale_after_seconds": JOB_LOCK_STALE_AFTER_SECONDS,
+        },
     )
     return bool(result)
 
@@ -196,7 +210,7 @@ async def renew_job_lock(
 
 
 def job_lock_renewal_interval_seconds(ttl_seconds: int) -> int:
-    return max(5, min(300, ttl_seconds // 3))
+    return max(5, min(JOB_LOCK_RENEWAL_MAX_INTERVAL_SECONDS, ttl_seconds // 3))
 
 
 async def rollback_session(session: AsyncSession) -> None:
