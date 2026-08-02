@@ -159,6 +159,18 @@ def test_prune_config_loads_low_score_rule(monkeypatch: pytest.MonkeyPatch) -> N
     assert settings.wallet_prune_low_score_operator == "lt"
 
 
+def test_scoring_config_bounds_live_current_drawdown_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_live_env_overrides(monkeypatch)
+    config = load_app_config()
+    settings = Settings(_env_file=None, **config)
+
+    assert settings.scoring_current_drawdown_enabled is True
+    assert settings.scoring_current_drawdown_concurrency == 8
+    assert settings.scoring_current_drawdown_run_timeout_seconds == 300
+
+
 def test_paper_config_does_not_seed_accounts(monkeypatch: pytest.MonkeyPatch) -> None:
     _clear_live_env_overrides(monkeypatch)
     config = load_app_config()

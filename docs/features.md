@@ -159,6 +159,8 @@ What it does:
   readable.
 - Shows last seen fill time.
 - Shows each wallet's current `poolRank`, based on the latest score ordering.
+- The Wallet Pool scoring coverage compares scored enabled wallets with all
+  enabled wallets. Disabled wallets do not make the coverage look incomplete.
 - Wallet detail pages also show that wallet's current pool rank.
 - Deleting a wallet removes every wallet-owned research and materialization row
   defined by the shared dependency policy. Discovery records and completed
@@ -1627,6 +1629,9 @@ Purpose:
 - Dashboard-triggered scoring uses `POST /scores/recalculate/start` so the HTTP
   request returns immediately and progress is tracked through operation status.
   `POST /scores/recalculate` remains available for synchronous API calls.
+- A stale `running` status does not permanently disable manual scoring. The
+  start route checks the durable `wallet_scoring` job lock and starts a new
+  background run when no active lock exists.
 
 Phase A behavior:
 
@@ -1678,6 +1683,13 @@ Phase A behavior:
   and `current_drawdown_status` on `wallet_scores`. Current drawdown is open
   unrealized perp loss divided by account value. Unified wallets use unified
   USDC from `spotClearinghouseState`; standard wallets use perps account value.
+- Live current-drawdown enrichment is bounded by
+  `scoring_current_drawdown_run_timeout_seconds`, default 300 seconds. It
+  evaluates the strongest history-based candidates first and reports batch
+  progress. Scorable wallets not completed inside the budget are persisted
+  with `current_drawdown_status = "unavailable"`, the configured missing-state
+  penalty, and otherwise current history-based metrics. This lets the score run
+  complete and allows score-dependent prune to continue.
 - It also stores `open_position_stress_pct`, a normalized live margin stress
   metric from unrealized loss, margin usage, and notional exposure. By default,
   notional exposure reaches full stress at 10x account value.

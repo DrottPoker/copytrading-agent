@@ -24,6 +24,7 @@ from app.schemas.wallet import normalize_wallet_address
 from app.services.job_lock_service import job_lock
 from app.services.operation_status_service import (
     mark_operation_failed,
+    mark_operation_progress,
     mark_operation_started,
     mark_operation_succeeded,
 )
@@ -45,6 +46,7 @@ ONE = Decimal("1")
 HUNDRED = Decimal("100")
 SCORE_QUANT = Decimal("0.01")
 RATIO_QUANT = Decimal("0.0001")
+CURRENT_DRAWDOWN_WALLET_TIMEOUT_SECONDS = 45
 logger = logging.getLogger(__name__)
 
 
@@ -163,6 +165,10 @@ async def recalculate_wallet_scores(
     payload = {
         "windowDays": resolved_settings.scoring_window_days,
         "includeDisabled": include_disabled,
+        "stage": "historical_metrics",
+        "stageLabel": "Historical metrics",
+        "stageDetail": "Aggregating fills and reconstructed source trades.",
+        "progressPercent": 5,
     }
     await mark_operation_started(session, key="wallet_scoring", payload=payload)
     try:
@@ -171,13 +177,32 @@ async def recalculate_wallet_scores(
             settings=resolved_settings,
             include_disabled=include_disabled,
         )
+    except asyncio.CancelledError:
+        await session.rollback()
+        await mark_operation_failed(
+            session,
+            key="wallet_scoring",
+            error="Wallet scoring was interrupted before completion.",
+            payload={
+                **payload,
+                "stage": "interrupted",
+                "stageLabel": "Interrupted",
+                "stageDetail": "The scoring task stopped before scores were persisted.",
+            },
+        )
+        raise
     except Exception as exc:
         await session.rollback()
         await mark_operation_failed(
             session,
             key="wallet_scoring",
             error=str(exc) or exc.__class__.__name__,
-            payload=payload,
+            payload={
+                **payload,
+                "stage": "failed",
+                "stageLabel": "Failed",
+                "stageDetail": str(exc) or exc.__class__.__name__,
+            },
         )
         raise
 
@@ -186,6 +211,10 @@ async def recalculate_wallet_scores(
         key="wallet_scoring",
         payload={
             **payload,
+            "stage": "completed",
+            "stageLabel": "Completed",
+            "stageDetail": f"Persisted {result.scored_wallets} wallet scores.",
+            "progressPercent": 100,
             "totalWallets": result.total_wallets,
             "scoredWallets": result.scored_wallets,
             "skippedWallets": result.skipped_wallets,
@@ -209,6 +238,19 @@ async def _recalculate_wallet_scores(
         settings=resolved_settings,
         now=now,
         include_disabled=include_disabled,
+    )
+
+    await mark_operation_progress(
+        session,
+        key="wallet_scoring",
+        payload={
+            "windowDays": resolved_settings.scoring_window_days,
+            "includeDisabled": include_disabled,
+            "stage": "persisting_scores",
+            "stageLabel": "Persisting scores",
+            "stageDetail": f"Writing {len(metrics)} wallet scores.",
+            "progressPercent": 95,
+        },
     )
 
     records: list[dict[str, Any]] = []
@@ -581,6 +623,7 @@ async def load_wallet_score_metrics(
         session,
         metrics=reconstructed_metrics,
         settings=settings,
+        include_disabled=include_disabled,
     )
 
 
@@ -589,32 +632,134 @@ async def metrics_with_current_drawdowns(
     *,
     metrics: list[WalletScoreMetrics],
     settings: Settings,
+    include_disabled: bool = False,
 ) -> list[WalletScoreMetrics]:
     scorable_metrics = [metric for metric in metrics if metric.trade_count > 0]
     if not scorable_metrics:
         return metrics
 
+    score_time = datetime.now(UTC)
+    prioritized_metrics = sorted(
+        scorable_metrics,
+        key=lambda metric: (
+            -calculate_wallet_score(metric, settings=settings, now=score_time).score,
+            metric.wallet_address,
+        ),
+    )
     addresses = [metric.wallet_address for metric in scorable_metrics]
     known_dexes_by_address = await load_known_wallet_perp_dexes_for_addresses(
         session,
         addresses=addresses,
     )
-    semaphore = asyncio.Semaphore(settings.scoring_current_drawdown_concurrency)
+    concurrency = settings.scoring_current_drawdown_concurrency
+    timeout_seconds = settings.scoring_current_drawdown_run_timeout_seconds
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    resolved_metrics: dict[str, WalletScoreMetrics] = {}
 
     async with HyperliquidClient() as client:
 
         async def load_metric(metric: WalletScoreMetrics) -> WalletScoreMetrics:
-            if metric.trade_count <= 0:
-                return metric
-            async with semaphore:
-                return await metric_with_current_drawdown(
-                    metric,
-                    client=client,
-                    known_dexes=known_dexes_by_address.get(metric.wallet_address.lower(), ()),
-                    settings=settings,
+            try:
+                return await asyncio.wait_for(
+                    metric_with_current_drawdown(
+                        metric,
+                        client=client,
+                        known_dexes=known_dexes_by_address.get(metric.wallet_address.lower(), ()),
+                        settings=settings,
+                    ),
+                    timeout=min(
+                        timeout_seconds,
+                        CURRENT_DRAWDOWN_WALLET_TIMEOUT_SECONDS,
+                    ),
+                )
+            except TimeoutError:
+                logger.warning(
+                    "wallet current drawdown scoring timed out wallet=%s",
+                    metric.wallet_address,
+                )
+                return unavailable_current_drawdown_metric(metric)
+            except Exception:
+                logger.exception(
+                    "wallet current drawdown scoring failed wallet=%s",
+                    metric.wallet_address,
+                )
+                return unavailable_current_drawdown_metric(metric)
+
+        for start in range(0, len(prioritized_metrics), concurrency):
+            remaining_seconds = deadline - asyncio.get_running_loop().time()
+            if remaining_seconds <= 0:
+                break
+            batch = prioritized_metrics[start : start + concurrency]
+            tasks = [asyncio.create_task(load_metric(metric)) for metric in batch]
+            try:
+                done, pending = await asyncio.wait(tasks, timeout=remaining_seconds)
+            except BaseException:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
+            for task in done:
+                metric = task.result()
+                resolved_metrics[metric.wallet_address] = metric
+            if pending:
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+                logger.warning(
+                    "wallet current drawdown scoring reached runtime budget "
+                    "processed=%s total=%s timeout_seconds=%s",
+                    len(resolved_metrics),
+                    len(prioritized_metrics),
+                    timeout_seconds,
                 )
 
-        return list(await asyncio.gather(*(load_metric(metric) for metric in metrics)))
+            processed = len(resolved_metrics)
+            try:
+                await mark_operation_progress(
+                    session,
+                    key="wallet_scoring",
+                    payload={
+                        "windowDays": settings.scoring_window_days,
+                        "includeDisabled": include_disabled,
+                        "stage": "current_drawdown",
+                        "stageLabel": "Live risk",
+                        "stageDetail": (
+                            f"Checked live current drawdown for {processed} of "
+                            f"{len(prioritized_metrics)} wallets."
+                        ),
+                        "progressPercent": min(
+                            90,
+                            35 + round(processed / len(prioritized_metrics) * 55),
+                        ),
+                        "batchIndex": processed,
+                        "batchSize": len(prioritized_metrics),
+                    },
+                )
+            except Exception:
+                logger.exception("failed to update wallet scoring progress")
+            if pending:
+                break
+
+    return [
+        (resolved_metrics.get(metric.wallet_address) or unavailable_current_drawdown_metric(metric))
+        if metric.trade_count > 0
+        else metric
+        for metric in metrics
+    ]
+
+
+def unavailable_current_drawdown_metric(metric: WalletScoreMetrics) -> WalletScoreMetrics:
+    return replace(
+        metric,
+        current_perp_equity_usd=None,
+        current_account_value_usd=None,
+        current_unrealized_pnl_usd=None,
+        current_drawdown_pct=None,
+        current_margin_usage_pct=None,
+        current_notional_exposure_pct=None,
+        open_position_stress_pct=None,
+        current_drawdown_status="unavailable",
+    )
 
 
 async def metric_with_current_drawdown(

@@ -43,6 +43,9 @@ export default async function WalletsPage({ searchParams }: WalletsPageProps) {
   const eligibleCount = wallets.items.filter((wallet) => wallet.eligible).length;
   const copyCount = wallets.items.filter((wallet) => wallet.copyEnabled).length;
   const scoredCount = wallets.items.filter((wallet) => wallet.score).length;
+  const enabledScoredCount = wallets.items.filter(
+    (wallet) => wallet.enabled && wallet.score,
+  ).length;
   const sortedWallets = [...wallets.items].sort(
     (left, right) => numberValue(right.score?.score ?? -1) - numberValue(left.score?.score ?? -1),
   );
@@ -84,8 +87,10 @@ export default async function WalletsPage({ searchParams }: WalletsPageProps) {
         <PoolMetric
           icon={ShieldCheck}
           label="Scored"
-          value={`${formatInteger(scoredCount)}/${formatInteger(wallets.total)}`}
-          detail={`${formatInteger(databaseStats?.scores.above70)} score >= 70`}
+          value={`${formatInteger(enabledScoredCount)}/${formatInteger(enabledCount)}`}
+          detail={`${formatInteger(scoredCount)} stored, ${formatInteger(
+            databaseStats?.scores.above70,
+          )} score >= 70`}
         />
         <PoolMetric
           icon={Activity}

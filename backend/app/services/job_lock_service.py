@@ -88,6 +88,23 @@ async def try_acquire_job_lock(
     return acquired
 
 
+async def job_lock_is_active(session: AsyncSession, *, key: str) -> bool:
+    result = await session.scalar(
+        text(
+            """
+            select exists(
+              select 1
+              from job_locks
+              where key = :key
+                and locked_until > now()
+            )
+            """
+        ),
+        {"key": key},
+    )
+    return bool(result)
+
+
 async def release_job_lock(
     session: AsyncSession,
     *,

@@ -1,4 +1,5 @@
 import logging
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
@@ -13,6 +14,7 @@ from app.schemas.score import (
     WalletScoreListResponse,
     WalletScoreRunResponse,
 )
+from app.services.job_lock_service import JobLockAlreadyHeldError, job_lock_is_active
 from app.services.operation_status_service import (
     get_operation_status,
     mark_operation_failed,
@@ -27,6 +29,7 @@ from app.services.wallet_score_service import (
 
 router = APIRouter(prefix="/scores", tags=["scores"])
 logger = logging.getLogger(__name__)
+SCORING_QUEUE_GRACE = timedelta(seconds=30)
 
 
 @router.get("", response_model=WalletScoreListResponse)
@@ -79,7 +82,10 @@ async def start_recalculate_scores_route(
     include_disabled: Annotated[bool, Query()] = False,
 ) -> OperationStatusRead:
     current_status = await get_operation_status(session, "wallet_scoring")
-    if current_status.status == "running":
+    if current_status.status == "running" and (
+        scoring_start_is_recently_queued(current_status)
+        or await job_lock_is_active(session, key="wallet_scoring")
+    ):
         return current_status
 
     payload = {
@@ -114,6 +120,8 @@ async def recalculate_scores_background(
                 settings=settings,
                 include_disabled=include_disabled,
             )
+        except JobLockAlreadyHeldError:
+            logger.info("wallet scoring background task skipped because its lock is active")
         except Exception as exc:
             await session.rollback()
             await mark_operation_failed(
@@ -129,3 +137,20 @@ async def recalculate_scores_background(
                 },
             )
             logger.exception("wallet scoring background task failed")
+
+
+def scoring_start_is_recently_queued(
+    operation: OperationStatusRead,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    if operation.payload.get("stage") != "queued" or operation.updated_at is None:
+        return False
+    try:
+        updated_at = datetime.fromisoformat(operation.updated_at)
+    except ValueError:
+        return False
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=UTC)
+    current_time = now or datetime.now(UTC)
+    return current_time - updated_at <= SCORING_QUEUE_GRACE

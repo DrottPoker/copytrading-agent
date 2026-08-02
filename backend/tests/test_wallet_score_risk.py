@@ -1,9 +1,12 @@
+import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
 
 from app.core.config import Settings
+from app.services import wallet_score_service
 from app.services.source_trade_reconstruction_service import (
     OpenSourceTrade,
     ReconstructedWalletTrades,
@@ -17,6 +20,7 @@ from app.services.wallet_score_service import (
     forced_exit_fill_ratio_score,
     forced_exit_severity_penalty,
     metric_with_current_drawdown,
+    metrics_with_current_drawdowns,
     metrics_with_reconstructed_trades,
 )
 
@@ -71,6 +75,60 @@ async def test_current_drawdown_uses_unified_account_value_when_perp_equity_is_z
     assert updated.current_margin_usage_pct == Decimal("0.0500")
     assert updated.current_notional_exposure_pct == Decimal("0.5000")
     assert updated.current_drawdown_status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_current_drawdown_runtime_budget_keeps_scoring_completable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = risk_settings()
+    settings.scoring_current_drawdown_concurrency = 1
+    settings.scoring_current_drawdown_run_timeout_seconds = 1
+    first = wallet_metrics(current_drawdown_pct=Decimal("0"))
+    pending = replace(
+        wallet_metrics(current_drawdown_pct=Decimal("0")),
+        wallet_address="0x2222222222222222222222222222222222222222",
+    )
+
+    async def fake_known_dexes(*_args: object, **_kwargs: object) -> dict[str, tuple[str, ...]]:
+        return {}
+
+    async def fake_live_metric(
+        metric: WalletScoreMetrics,
+        **_kwargs: object,
+    ) -> WalletScoreMetrics:
+        if metric.wallet_address == first.wallet_address:
+            return replace(metric, current_drawdown_status="ok")
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    async def fake_progress(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    class FakeClient:
+        async def __aenter__(self) -> "FakeClient":
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    monkeypatch.setattr(
+        wallet_score_service,
+        "load_known_wallet_perp_dexes_for_addresses",
+        fake_known_dexes,
+    )
+    monkeypatch.setattr(wallet_score_service, "metric_with_current_drawdown", fake_live_metric)
+    monkeypatch.setattr(wallet_score_service, "mark_operation_progress", fake_progress)
+    monkeypatch.setattr(wallet_score_service, "HyperliquidClient", FakeClient)
+
+    result = await metrics_with_current_drawdowns(
+        object(),  # type: ignore[arg-type]
+        metrics=[first, pending],
+        settings=settings,
+    )
+
+    assert result[0].current_drawdown_status == "ok"
+    assert result[1].current_drawdown_status == "unavailable"
 
 
 def test_forced_exit_severity_scales_with_notional_even_when_profitable() -> None:

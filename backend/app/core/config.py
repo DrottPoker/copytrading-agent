@@ -197,6 +197,9 @@ SCORING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ),
     ("risk", "current_drawdown", "enabled"): "scoring_current_drawdown_enabled",
     ("risk", "current_drawdown", "concurrency"): "scoring_current_drawdown_concurrency",
+    ("risk", "current_drawdown", "run_timeout_seconds"): (
+        "scoring_current_drawdown_run_timeout_seconds"
+    ),
     ("risk", "current_drawdown", "missing_penalty"): ("scoring_current_drawdown_missing_penalty"),
     ("risk", "current_drawdown", "penalty_start_ratio"): (
         "scoring_current_drawdown_penalty_start_ratio"
@@ -507,6 +510,7 @@ class Settings(BaseSettings):
     scoring_confidence_penalty_max: Decimal = Field(default=Decimal("20"), ge=0, le=100)
     scoring_current_drawdown_enabled: bool = True
     scoring_current_drawdown_concurrency: int = Field(default=8, ge=1, le=25)
+    scoring_current_drawdown_run_timeout_seconds: int = Field(default=300, ge=1, le=3600)
     scoring_current_drawdown_missing_penalty: Decimal = Field(
         default=Decimal("18"),
         ge=0,

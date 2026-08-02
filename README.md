@@ -463,6 +463,10 @@ Notes:
   current-drawdown final score caps. By default, current drawdown penalty scales
   from 5% to 75% drawdown, and the final score cap scales from 25% to 100%
   drawdown.
+- Live current-drawdown enrichment has a five-minute run budget and checks
+  the strongest history-based candidates first. Wallets not completed inside
+  that budget still receive refreshed history scores with live risk marked
+  unavailable, so scoring and score-dependent prune cannot remain blocked.
 - Wallet detail pages include a Detailed scoring modal next to the score header.
   It shows gross score, penalty, final score before sample cap, component
   weights, weighted scores, live risk score cap, and the input-level subscores

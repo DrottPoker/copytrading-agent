@@ -130,6 +130,11 @@ and score-dependent prune does not run after that failure.
 Long-running operation status is also stored in `settings`. Status writes use a
 short transaction with an advisory lock and row-level locking so progress
 updates do not overwrite each other when API and worker activity overlap.
+Manual scoring start checks the durable `wallet_scoring` lock instead of trusting
+a stored `running` flag indefinitely. A recently queued run gets a short race
+grace, while an older running status without an active lock can be replaced by a
+new background run.
+
 
 Trading worker responsibilities:
 
@@ -603,6 +608,12 @@ If live state is incomplete or account value is zero, the scoring run keeps the
 history-only risk component and applies the configured missing-state penalty.
 Scoring only checks default perp plus dexes already observed in stored fills, so
 full HIP-3 discovery remains limited to single-wallet current-state views.
+The live-risk phase has a configured total runtime budget and processes wallets
+in descending history-based score order. Completed live checks retain their
+current-state metrics. Remaining scorable wallets are persisted as live-state
+unavailable with the missing-state penalty, so a slow upstream cannot prevent
+score persistence or the following prune stage. Batch progress refreshes the
+operation status while the run is active.
 By default, current drawdown risk penalty starts at 5 percent and reaches full
 penalty at 75 percent. The final score cap starts at 25 percent current drawdown
 and reaches zero at 100 percent.
