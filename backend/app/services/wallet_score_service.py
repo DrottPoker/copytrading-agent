@@ -238,6 +238,7 @@ async def _recalculate_wallet_scores(
         settings=resolved_settings,
         now=now,
         include_disabled=include_disabled,
+        report_progress=True,
     )
 
     await mark_operation_progress(
@@ -410,6 +411,21 @@ async def get_wallet_score_detail(
     )
 
 
+async def report_wallet_scoring_progress(
+    session: AsyncSession,
+    *,
+    enabled: bool,
+    payload: dict[str, Any],
+) -> None:
+    if not enabled:
+        return
+    await mark_operation_progress(
+        session,
+        key="wallet_scoring",
+        payload=payload,
+    )
+
+
 async def load_wallet_score_metrics(
     session: AsyncSession,
     *,
@@ -417,6 +433,7 @@ async def load_wallet_score_metrics(
     now: datetime,
     include_disabled: bool,
     wallet_address: str | None = None,
+    report_progress: bool = False,
 ) -> list[WalletScoreMetrics]:
     window_start_ms = timestamp_ms(now - timedelta(days=settings.scoring_window_days))
     start_24h_ms = timestamp_ms(now - timedelta(days=1))
@@ -434,152 +451,69 @@ async def load_wallet_score_metrics(
                   or address = cast(:wallet_address as text)
                 )
             ),
-            fills as (
-              select
-                wf.wallet_address,
-                wf.id,
-                wf.external_fill_id,
-                wf.coin,
-                wf.timestamp_ms,
-                coalesce(wf.notional_usd, 0) as notional_usd,
-                coalesce(wf.pnl_usd, 0) as pnl_usd,
-                coalesce(wf.fee_usd, 0) as fee_usd,
-                coalesce(wf.pnl_usd, 0) - coalesce(wf.fee_usd, 0) as net_pnl_usd,
-                wf.raw_json,
-                to_timestamp(wf.timestamp_ms / 1000.0)::date as fill_day
-              from wallet_fills wf
-              join target_wallets tw on tw.address = wf.wallet_address
-              where wf.timestamp_ms >= :window_start_ms
-            ),
             wallet_agg as (
               select
                 tw.address as wallet_address,
-                count(f.id) as fill_count,
-                count(distinct f.coin) as unique_coin_count,
-                count(distinct f.fill_day) as active_days,
-                coalesce(sum(f.notional_usd), 0) as total_notional_usd,
-                coalesce(avg(f.notional_usd), 0) as average_fill_notional_usd,
-                coalesce(sum(f.pnl_usd), 0) as total_pnl_usd,
-                coalesce(sum(f.fee_usd), 0) as total_fee_usd,
-                coalesce(sum(f.net_pnl_usd), 0) as net_pnl_usd,
-                coalesce(sum(case when f.net_pnl_usd > 0 then f.net_pnl_usd else 0 end), 0)
-                  as gross_profit_usd,
-                abs(coalesce(sum(case when f.net_pnl_usd < 0 then f.net_pnl_usd else 0 end), 0))
-                  as gross_loss_usd,
-                coalesce(sum(case when f.pnl_usd > 0 then 1 else 0 end), 0)
-                  as profitable_fill_count,
-                coalesce(sum(case when f.pnl_usd < 0 then 1 else 0 end), 0)
-                  as losing_fill_count,
-                min(f.timestamp_ms) as first_fill_time_ms,
-                max(
-                  case
-                    when not (f.raw_json ? 'liquidation') then f.timestamp_ms
-                    else null
-                  end
-                ) as last_activity_time_ms,
-                count(f.id) filter (where f.timestamp_ms >= :start_24h_ms) as fills_24h,
-                coalesce(sum(f.notional_usd) filter (where f.timestamp_ms >= :start_24h_ms), 0)
-                  as notional_24h,
-                coalesce(sum(f.net_pnl_usd) filter (where f.timestamp_ms >= :start_24h_ms), 0)
-                  as net_pnl_24h,
-                count(f.id) filter (where f.timestamp_ms >= :start_7d_ms) as fills_7d,
-                coalesce(sum(f.notional_usd) filter (where f.timestamp_ms >= :start_7d_ms), 0)
-                  as notional_7d,
-                coalesce(sum(f.net_pnl_usd) filter (where f.timestamp_ms >= :start_7d_ms), 0)
-                  as net_pnl_7d
+                count(wf.timestamp_ms) as fill_count,
+                min(wf.timestamp_ms) as first_fill_time_ms
               from target_wallets tw
-              left join fills f on f.wallet_address = tw.address
+              left join wallet_fills wf
+                on wf.wallet_address = tw.address
+               and wf.timestamp_ms >= :window_start_ms
               group by tw.address
             ),
-            coin_notional as (
-              select wallet_address, coin, sum(notional_usd) as coin_notional_usd
-              from fills
-              group by wallet_address, coin
-            ),
-            coin_agg as (
-              select wallet_address, max(coin_notional_usd) as max_coin_notional_usd
-              from coin_notional
-              group by wallet_address
-            ),
-            ordered_fills as (
+            last_activity as (
               select
-                wallet_address,
-                timestamp_ms,
-                id,
-                net_pnl_usd,
-                sum(net_pnl_usd) over (
-                  partition by wallet_address
-                  order by timestamp_ms, id
-                  rows between unbounded preceding and current row
-                ) as cumulative_pnl
-              from fills
-            ),
-            running_peaks as (
-              select
-                wallet_address,
-                cumulative_pnl,
-                max(cumulative_pnl) over (
-                  partition by wallet_address
-                  order by timestamp_ms, id
-                  rows between unbounded preceding and current row
-                ) as peak_pnl
-              from ordered_fills
-            ),
-            drawdown_agg as (
-              select
-                wallet_address,
-                abs(coalesce(min(cumulative_pnl - peak_pnl), 0)) as max_drawdown_usd
-              from running_peaks
-              group by wallet_address
-            ),
-            liquidation_fills as (
-              select
-                wallet_address,
-                timestamp_ms,
-                id,
-                notional_usd
-              from fills
-              where raw_json ? 'liquidation'
-            ),
-            liquidation_ordered as (
-              select
-                wallet_address,
-                timestamp_ms,
-                notional_usd,
-                lag(timestamp_ms) over (
-                  partition by wallet_address
-                  order by timestamp_ms, id
-                ) as previous_timestamp_ms
-              from liquidation_fills
+                tw.address as wallet_address,
+                (
+                  select max(wf.timestamp_ms)
+                  from wallet_fills wf
+                  where wf.wallet_address = tw.address
+                    and wf.timestamp_ms >= :window_start_ms
+                    and not (wf.raw_json ? 'liquidation')
+                ) as last_activity_time_ms
+              from target_wallets tw
             ),
             liquidation_agg as (
               select
-                wallet_address,
+                ordered.wallet_address,
                 count(*) as liquidation_fill_count,
-                coalesce(sum(notional_usd), 0) as liquidation_notional_usd,
+                coalesce(sum(ordered.notional_usd), 0) as liquidation_notional_usd,
                 coalesce(
                   sum(
                     case
-                      when previous_timestamp_ms is null then 1
-                      when timestamp_ms - previous_timestamp_ms > :liquidation_event_gap_ms then 1
+                      when ordered.previous_timestamp_ms is null then 1
+                      when ordered.timestamp_ms - ordered.previous_timestamp_ms
+                        > :liquidation_event_gap_ms then 1
                       else 0
                     end
                   ),
                   0
                 ) as liquidation_event_count
-              from liquidation_ordered
-              group by wallet_address
+              from (
+                select
+                  wf.wallet_address,
+                  wf.timestamp_ms,
+                  coalesce(wf.notional_usd, 0) as notional_usd,
+                  lag(wf.timestamp_ms) over (
+                    partition by wf.wallet_address
+                    order by wf.timestamp_ms, wf.id
+                  ) as previous_timestamp_ms
+                from wallet_fills wf
+                join target_wallets tw on tw.address = wf.wallet_address
+                where wf.timestamp_ms >= :window_start_ms
+                  and wf.raw_json ? 'liquidation'
+              ) ordered
+              group by ordered.wallet_address
             )
             select
               wa.*,
-              coalesce(ca.max_coin_notional_usd, 0) as max_coin_notional_usd,
-              coalesce(da.max_drawdown_usd, 0) as max_drawdown_usd,
+              activity.last_activity_time_ms,
               coalesce(la.liquidation_fill_count, 0) as liquidation_fill_count,
               coalesce(la.liquidation_event_count, 0) as liquidation_event_count,
               coalesce(la.liquidation_notional_usd, 0) as liquidation_notional_usd
             from wallet_agg wa
-            left join coin_agg ca on ca.wallet_address = wa.wallet_address
-            left join drawdown_agg da on da.wallet_address = wa.wallet_address
+            left join last_activity activity on activity.wallet_address = wa.wallet_address
             left join liquidation_agg la on la.wallet_address = wa.wallet_address
             order by wa.wallet_address
             """
@@ -588,14 +522,36 @@ async def load_wallet_score_metrics(
             "include_disabled": include_disabled,
             "wallet_address": wallet_address,
             "window_start_ms": window_start_ms,
-            "start_24h_ms": start_24h_ms,
-            "start_7d_ms": start_7d_ms,
             "liquidation_event_gap_ms": settings.scoring_forced_exit_event_gap_seconds * 1000,
         },
     )
 
-    base_metrics = [metrics_from_row(row) for row in result.mappings().all()]
-    await sync_materialized_source_trades(
+    base_metrics = [base_metrics_from_row(row) for row in result.mappings().all()]
+    await report_wallet_scoring_progress(
+        session,
+        enabled=report_progress,
+        payload={
+            "windowDays": settings.scoring_window_days,
+            "includeDisabled": include_disabled,
+            "stage": "fill_summary",
+            "stageLabel": "Fill summary",
+            "stageDetail": f"Summarized raw fill activity for {len(base_metrics)} wallets.",
+            "progressPercent": 15,
+        },
+    )
+    await report_wallet_scoring_progress(
+        session,
+        enabled=report_progress,
+        payload={
+            "windowDays": settings.scoring_window_days,
+            "includeDisabled": include_disabled,
+            "stage": "source_trade_refresh",
+            "stageLabel": "Source trades",
+            "stageDetail": "Refreshing materialized trades for changed wallets only.",
+            "progressPercent": 20,
+        },
+    )
+    refreshed_wallets = await sync_materialized_source_trades(
         session,
         include_disabled=include_disabled,
         wallet_address=wallet_address,
@@ -616,6 +572,20 @@ async def load_wallet_score_metrics(
         )
         for metrics in base_metrics
     ]
+    await report_wallet_scoring_progress(
+        session,
+        enabled=report_progress,
+        payload={
+            "windowDays": settings.scoring_window_days,
+            "includeDisabled": include_disabled,
+            "stage": "historical_metrics_complete",
+            "stageLabel": "Historical metrics",
+            "stageDetail": (
+                f"Loaded reconstructed trades; refreshed {refreshed_wallets} changed wallets."
+            ),
+            "progressPercent": 35,
+        },
+    )
     if not settings.scoring_current_drawdown_enabled:
         return reconstructed_metrics
 
@@ -624,6 +594,7 @@ async def load_wallet_score_metrics(
         metrics=reconstructed_metrics,
         settings=settings,
         include_disabled=include_disabled,
+        report_progress=report_progress,
     )
 
 
@@ -633,6 +604,7 @@ async def metrics_with_current_drawdowns(
     metrics: list[WalletScoreMetrics],
     settings: Settings,
     include_disabled: bool = False,
+    report_progress: bool = False,
 ) -> list[WalletScoreMetrics]:
     scorable_metrics = [metric for metric in metrics if metric.trade_count > 0]
     if not scorable_metrics:
@@ -715,9 +687,9 @@ async def metrics_with_current_drawdowns(
 
             processed = len(resolved_metrics)
             try:
-                await mark_operation_progress(
+                await report_wallet_scoring_progress(
                     session,
-                    key="wallet_scoring",
+                    enabled=report_progress,
                     payload={
                         "windowDays": settings.scoring_window_days,
                         "includeDisabled": include_disabled,
@@ -2488,7 +2460,7 @@ def calculate_profit_factor(gross_profit_usd: Decimal, gross_loss_usd: Decimal) 
     return gross_profit_usd / gross_loss_usd
 
 
-def metrics_from_row(row: Any) -> WalletScoreMetrics:
+def base_metrics_from_row(row: Any) -> WalletScoreMetrics:
     return WalletScoreMetrics(
         wallet_address=str(row["wallet_address"]),
         fill_count=int(row["fill_count"] or 0),
@@ -2496,23 +2468,23 @@ def metrics_from_row(row: Any) -> WalletScoreMetrics:
         ignored_fill_count=0,
         open_trade_count=0,
         close_fill_count=0,
-        unique_coin_count=int(row["unique_coin_count"] or 0),
-        active_days=int(row["active_days"] or 0),
-        total_notional_usd=decimal_value(row["total_notional_usd"]),
-        average_trade_notional_usd=decimal_value(row["average_fill_notional_usd"]),
+        unique_coin_count=0,
+        active_days=0,
+        total_notional_usd=ZERO,
+        average_trade_notional_usd=ZERO,
         median_trade_notional_usd=None,
         p25_trade_notional_usd=None,
         copyable_trade_ratio=None,
         average_fills_per_trade=None,
         average_trade_roi=None,
         median_trade_roi=None,
-        total_pnl_usd=decimal_value(row["total_pnl_usd"]),
-        total_fee_usd=decimal_value(row["total_fee_usd"]),
-        net_pnl_usd=decimal_value(row["net_pnl_usd"]),
-        gross_profit_usd=decimal_value(row["gross_profit_usd"]),
-        gross_loss_usd=decimal_value(row["gross_loss_usd"]),
-        profitable_trade_count=int(row["profitable_fill_count"] or 0),
-        losing_trade_count=int(row["losing_fill_count"] or 0),
+        total_pnl_usd=ZERO,
+        total_fee_usd=ZERO,
+        net_pnl_usd=ZERO,
+        gross_profit_usd=ZERO,
+        gross_loss_usd=ZERO,
+        profitable_trade_count=0,
+        losing_trade_count=0,
         effective_winning_trade_count=None,
         largest_win_profit_share=None,
         trade_roi_stddev=None,
@@ -2523,8 +2495,8 @@ def metrics_from_row(row: Any) -> WalletScoreMetrics:
         liquidation_trade_count=0,
         liquidation_close_fill_count=0,
         liquidation_notional_usd=decimal_value(row["liquidation_notional_usd"]),
-        max_coin_notional_usd=decimal_value(row["max_coin_notional_usd"]),
-        max_drawdown_usd=decimal_value(row["max_drawdown_usd"]),
+        max_coin_notional_usd=ZERO,
+        max_drawdown_usd=ZERO,
         current_perp_equity_usd=None,
         current_account_value_usd=None,
         current_unrealized_pnl_usd=None,
@@ -2539,12 +2511,12 @@ def metrics_from_row(row: Any) -> WalletScoreMetrics:
         last_trade_time_ms=(
             int(row["last_activity_time_ms"]) if row["last_activity_time_ms"] is not None else None
         ),
-        trades_24h=int(row["fills_24h"] or 0),
-        notional_24h=decimal_value(row["notional_24h"]),
-        net_pnl_24h=decimal_value(row["net_pnl_24h"]),
-        trades_7d=int(row["fills_7d"] or 0),
-        notional_7d=decimal_value(row["notional_7d"]),
-        net_pnl_7d=decimal_value(row["net_pnl_7d"]),
+        trades_24h=0,
+        notional_24h=ZERO,
+        net_pnl_24h=ZERO,
+        trades_7d=0,
+        notional_7d=ZERO,
+        net_pnl_7d=ZERO,
     )
 
 

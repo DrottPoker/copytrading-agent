@@ -571,6 +571,7 @@ async def sync_materialized_source_trades(
         await refresh_materialized_source_trades_for_wallet(
             session,
             wallet_address=str(candidate["wallet_address"]),
+            fill_revision=int(candidate["fill_revision"] or 0),
             fill_count=int(candidate["fill_count"] or 0),
             last_fill_timestamp_ms=(
                 int(candidate["last_fill_timestamp_ms"])
@@ -591,7 +592,7 @@ async def load_source_trade_refresh_candidates(
         text(
             """
             with target_wallets as (
-              select address
+              select address, fill_revision
               from watched_wallets
               where (:include_disabled or enabled is true)
                 and (
@@ -599,25 +600,31 @@ async def load_source_trade_refresh_candidates(
                   or address = cast(:wallet_address as text)
                 )
             ),
+            candidates as materialized (
+              select
+                tw.address,
+                tw.fill_revision
+              from target_wallets tw
+              left join source_trade_sync_states sts on sts.wallet_address = tw.address
+              where sts.wallet_address is null
+                 or sts.fill_revision <> tw.fill_revision
+            ),
             fill_state as (
               select
-                tw.address as wallet_address,
-                count(wf.id) as fill_count,
+                candidates.address as wallet_address,
+                candidates.fill_revision,
+                count(wf.timestamp_ms) as fill_count,
                 max(wf.timestamp_ms) as last_fill_timestamp_ms
-              from target_wallets tw
-              left join wallet_fills wf on wf.wallet_address = tw.address
-              group by tw.address
+              from candidates
+              left join wallet_fills wf on wf.wallet_address = candidates.address
+              group by candidates.address, candidates.fill_revision
             )
             select
               fs.wallet_address,
+              fs.fill_revision,
               fs.fill_count,
               fs.last_fill_timestamp_ms
             from fill_state fs
-            left join source_trade_sync_states sts on sts.wallet_address = fs.wallet_address
-            where sts.wallet_address is null
-               or sts.fill_count <> fs.fill_count
-               or coalesce(sts.last_fill_timestamp_ms, -1)
-                  <> coalesce(fs.last_fill_timestamp_ms, -1)
             order by fs.wallet_address
             """
         ),
@@ -633,6 +640,7 @@ async def refresh_materialized_source_trades_for_wallet(
     session: AsyncSession,
     *,
     wallet_address: str,
+    fill_revision: int,
     fill_count: int,
     last_fill_timestamp_ms: int | None,
 ) -> None:
@@ -662,6 +670,7 @@ async def refresh_materialized_source_trades_for_wallet(
 
     stmt = insert(SourceTradeSyncState).values(
         wallet_address=wallet_address,
+        fill_revision=fill_revision,
         fill_count=fill_count,
         last_fill_timestamp_ms=last_fill_timestamp_ms,
         unmatched_close_fill_count=wallet_trades.unmatched_close_fill_count,
@@ -671,6 +680,7 @@ async def refresh_materialized_source_trades_for_wallet(
         stmt.on_conflict_do_update(
             index_elements=["wallet_address"],
             set_={
+                "fill_revision": stmt.excluded.fill_revision,
                 "fill_count": stmt.excluded.fill_count,
                 "last_fill_timestamp_ms": stmt.excluded.last_fill_timestamp_ms,
                 "unmatched_close_fill_count": stmt.excluded.unmatched_close_fill_count,

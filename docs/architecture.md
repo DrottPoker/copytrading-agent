@@ -582,8 +582,9 @@ sequenceDiagram
 
   Worker->>API: periodic scoring service call
   UI->>API: POST /scores/recalculate/start
-  API->>DB: aggregate wallet_fills over scoring window
-  API->>DB: refresh changed source_trades from fill directions
+  API->>DB: summarize fill count, recency, and liquidations
+  API->>DB: compare wallet fill_revision with source trade revision
+  API->>DB: rebuild source_trades for changed wallets only
   API->>DB: load materialized source trade metrics
   API->>HL: fetch live perp state and userAbstraction for current drawdown
   API->>DB: upsert wallet_scores and remove stale score rows
@@ -593,6 +594,21 @@ sequenceDiagram
   UI->>API: GET /scores/{address}/detail
   API-->>UI: detailed component explanations for wallet scoring modal
 ```
+
+`wallet_fills` insert and delete statement triggers increment
+`watched_wallets.fill_revision` in the same transaction as the mutation.
+`source_trade_sync_states.fill_revision` stores the revision used for the last
+successful reconstruction. A mismatch selects that wallet for refresh before
+the fill table is aggregated, so unchanged wallets do not participate in the
+expensive reconstruction scan. A concurrent mutation advances the watched
+revision and therefore remains pending for the next pass even if it commits
+during an active scoring run.
+
+Raw fill scoring work is intentionally narrow. Fill count, first fill, latest
+non-liquidation activity, and liquidation event boundaries come from
+`wallet_fills`. All trade-level PnL, ROI, concentration, activity-window, and
+realized-drawdown metrics come from `source_trades`. This avoids redundant global
+window sorts over the multi-million-row raw fill table.
 
 Risk score combines realized reconstructed-trade risk with current open perp
 drawdown and margin stress when `scoring_current_drawdown_enabled` is true.

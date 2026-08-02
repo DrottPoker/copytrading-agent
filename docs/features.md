@@ -1644,7 +1644,16 @@ Phase A behavior:
 - Scores wallets with no fills as 0 so they are visible but not rankable.
 - Reconstructs source perp trades from `raw_json.dir`, materializes them in
   `source_trades`, and refreshes a wallet's materialized trades only when its
-  fill count or latest fill timestamp changes.
+  database-maintained `fill_revision` changes. Statement-level insert and delete
+  triggers update this revision transactionally, so concurrent imports cannot
+  be marked synchronized before their fills are reconstructed.
+- Uses raw `wallet_fills` only for exact score-window fill count, first fill,
+  latest non-liquidation activity, and liquidation event grouping. Trade PnL,
+  ROI, notional concentration, activity windows, and realized drawdown come from
+  materialized `source_trades`, avoiding repeated global sorts across the raw
+  fill history.
+- Reports separate progress stages for fill summary, changed source-trade
+  refresh, live risk, and score persistence.
 - Stores ignored source fills with timestamp and reason in
   `source_trade_ignored_fills` for diagnostics. Ignored fills do not reduce the
   wallet score because they usually mean the imported window missed the entry.

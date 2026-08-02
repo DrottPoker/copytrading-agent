@@ -59,6 +59,7 @@ class WatchedWallet(Base, TimestampMixin, UpdatedAtMixin):
         Boolean, nullable=False, server_default=text("false")
     )
     polling_tier: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pool'"))
+    fill_revision: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
     cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     copy_eligibility_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_polled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -74,6 +75,19 @@ class WalletFill(Base, TimestampMixin):
         Index("ix_wallet_fills_wallet_timestamp", "wallet_address", "timestamp_ms"),
         Index("ix_wallet_fills_wallet_coin_timestamp", "wallet_address", "coin", "timestamp_ms"),
         Index("ix_wallet_fills_timestamp", "timestamp_ms"),
+        Index(
+            "ix_wallet_fills_liquidation_wallet_timestamp",
+            "wallet_address",
+            "timestamp_ms",
+            "id",
+            postgresql_where=text("raw_json ? 'liquidation'"),
+        ),
+        Index(
+            "ix_wallet_fills_nonliquidation_wallet_timestamp",
+            "wallet_address",
+            "timestamp_ms",
+            postgresql_where=text("not (raw_json ? 'liquidation')"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -526,6 +540,7 @@ class SourceTradeSyncState(Base):
     __tablename__ = "source_trade_sync_states"
 
     wallet_address: Mapped[str] = mapped_column(Text, primary_key=True)
+    fill_revision: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
     fill_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     last_fill_timestamp_ms: Mapped[int | None] = mapped_column(BigInteger)
     unmatched_close_fill_count: Mapped[int] = mapped_column(

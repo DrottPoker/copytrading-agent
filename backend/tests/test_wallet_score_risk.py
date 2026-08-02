@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -26,6 +27,38 @@ from app.services.wallet_score_service import (
 
 ZERO = Decimal("0")
 HUNDRED = Decimal("100")
+
+
+def test_raw_fill_summary_defers_trade_metrics_to_materialized_trades() -> None:
+    source = inspect.getsource(wallet_score_service.load_wallet_score_metrics)
+
+    assert "ordered_fills" not in source
+    assert "running_peaks" not in source
+    assert "coin_notional" not in source
+    assert "max_drawdown_usd" not in source
+
+    metrics = wallet_score_service.base_metrics_from_row(
+        {
+            "wallet_address": "0x1111111111111111111111111111111111111111",
+            "fill_count": 250,
+            "first_fill_time_ms": 1_700_000_000_000,
+            "last_activity_time_ms": 1_800_000_000_000,
+            "liquidation_fill_count": 2,
+            "liquidation_event_count": 1,
+            "liquidation_notional_usd": Decimal("1250"),
+        }
+    )
+
+    assert metrics.fill_count == 250
+    assert metrics.liquidation_fill_count == 2
+    assert metrics.liquidation_event_count == 1
+    assert metrics.liquidation_notional_usd == Decimal("1250")
+    assert metrics.total_notional_usd == ZERO
+    assert metrics.net_pnl_usd == ZERO
+    assert metrics.max_coin_notional_usd == ZERO
+    assert metrics.max_drawdown_usd == ZERO
+    assert metrics.trades_24h == 0
+    assert metrics.trades_7d == 0
 
 
 def test_large_current_drawdown_is_penalized_without_zeroing_score_too_early() -> None:
