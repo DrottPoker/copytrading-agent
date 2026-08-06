@@ -1437,6 +1437,14 @@ do not grow without bound.
 Live fill reconciliation also updates source-attributed live positions for
 matched copied orders. Those source positions let exit-only accounts continue
 to reduce or close copied exposure without allowing new entries.
+An exchange close without a matching order can reuse a source wallet only when
+there is exactly one matching source position and its remaining size covers the
+fill. Reconciliation also replays the durable source-attributed fill inventory
+to repair historical exchange closes under the same one-owner and sufficient-
+size rules. It leaves mixed or ambiguous exposure under `__exchange__` rather
+than guessing. The raw Hyperliquid `liquidation` key is retained on
+`trading_fills`; API liquidation flags and Trading badges are derived from that
+exchange evidence for both recent fills and reconstructed closed live trades.
 Live copy reserves one source per live account and market while source exposure
 or a nonterminal entry order exists. A different source opening the same market
 is skipped until that market is free, even on the same side, because

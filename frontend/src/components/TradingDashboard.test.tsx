@@ -2,10 +2,11 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import type { PaperCopyAllocation } from "@/types/paper";
-import type { LiveCopyDecision, TradingPosition } from "@/types/trading";
+import type { LiveCopyDecision, TradingClosedTrade, TradingFill, TradingPosition } from "@/types/trading";
 
 import {
   buildLiveCopyDecisionActivities,
+  buildLiveFillActivity,
   buildLiveWalletHistory,
   collectLiveCopySourceWallets,
   compareDashboardPositionsOldestFirst,
@@ -15,6 +16,7 @@ import {
   liveAllocationSourceVisible,
   liveCopyDecisionStatusPills,
   liveOrderResultLabel,
+  LiveClosedTradeRow,
   pnlPerMonitoredHour,
   PositionOwnerWallet,
   positionOpenedDetail,
@@ -23,6 +25,82 @@ import {
   resolveCurrentSourceStatus,
   summarizeCopySourceStatuses,
 } from "./TradingDashboard";
+
+describe("live liquidation activity", () => {
+  it("shows a proven liquidation and its attributed source wallet", () => {
+    const sourceWallet = "0x1234567890abcdef1234567890abcdef12345678";
+    const fill: TradingFill = {
+      id: "fill-1",
+      orderId: null,
+      accountKey: "live-test",
+      accountType: "live",
+      sourceWallet,
+      sourceFillId: "exchange-fill-1",
+      sequenceIndex: null,
+      exchangeFillId: "exchange-fill-1",
+      coin: "CASHCAT",
+      action: "close",
+      side: "short",
+      price: "0.1553",
+      size: "267",
+      notionalUsd: "41.47",
+      feeUsd: "0.02",
+      realizedPnlUsd: "-12.20",
+      isLiquidation: true,
+      filledAt: "2026-08-06T00:56:00Z",
+      createdAt: "2026-08-06T00:56:01Z",
+    };
+
+    const activity = buildLiveFillActivity(
+      fill,
+      new Map([[sourceWallet.toLowerCase(), "Hyperdash profitable #81"]]),
+    );
+
+    expect(activity.identity.label).toBe("Hyperdash profitable #81");
+    expect(activity.identity.href).toBe(`/wallets/${sourceWallet}`);
+    expect(activity.pills).toContainEqual({ label: "liquidated", tone: "danger" });
+    expect(activity.stats.find((stat) => stat.label === "Result")).toMatchObject({
+      value: "liquidated",
+      detail: "forced exchange liquidation",
+      tone: "danger",
+    });
+  });
+
+  it("shows the source wallet and liquidation marker in closed trades", () => {
+    const sourceWallet = "0x1234567890abcdef1234567890abcdef12345678";
+    const trade: TradingClosedTrade = {
+      id: "trade-1",
+      accountKey: "live-test",
+      sourceWallet,
+      sourceLabel: "Hyperdash profitable #81",
+      coin: "CASHCAT",
+      side: "short",
+      entryPrice: "0.109602",
+      exitPrice: "0.1553",
+      size: "267",
+      entryNotionalUsd: "29.26",
+      exitNotionalUsd: "41.47",
+      feeUsd: "0.02",
+      fundingUsd: "0",
+      realizedPnlUsd: "-12.20",
+      netPnlUsd: "-12.22",
+      openedAt: "2026-08-05T12:00:00Z",
+      closedAt: "2026-08-06T00:56:00Z",
+      durationMs: 46560000,
+      openFillCount: 1,
+      closeFillCount: 1,
+      isLiquidation: true,
+    };
+
+    render(<LiveClosedTradeRow trade={trade} />);
+
+    expect(screen.getByText("liquidated")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Hyperdash profitable #81" })).toHaveAttribute(
+      "href",
+      `/wallets/${sourceWallet}`,
+    );
+  });
+});
 
 describe("live order result messages", () => {
   it("clarifies legacy expiry rows that already reached the exchange", () => {

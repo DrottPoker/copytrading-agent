@@ -93,6 +93,7 @@ export type TradingFill = {
   notionalUsd: string;
   feeUsd: string;
   realizedPnlUsd: string;
+  isLiquidation: boolean;
   filledAt: string;
   createdAt: string;
 };
@@ -152,6 +153,7 @@ export type TradingClosedTrade = {
   durationMs: number | null;
   openFillCount: number;
   closeFillCount: number;
+  isLiquidation: boolean;
 };
 
 export type TradingSourceMetadata = {

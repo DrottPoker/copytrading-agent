@@ -859,7 +859,15 @@ Sizing policy:
 - Closed live trade history includes copied source trades and manual exchange
   position closes. If only an exchange close fill is available locally, the
   backend shows a close-only row and estimates the entry price from Hyperliquid
-  realized PnL.
+  realized PnL. Unmatched exchange closes inherit the source wallet only when
+  the current source position or the complete source-attributed fill inventory
+  proves one owner with enough remaining size. Historical unattributed closes
+  are repaired during normal account reconciliation. Ambiguous closes remain
+  explicitly unattributed instead of guessing a wallet.
+- Live fills and reconstructed closed live trades expose a liquidation flag
+  only when the raw Hyperliquid fill contains its `liquidation` marker. The
+  Trading page shows a compact red `liquidated` badge and a forced-liquidation
+  result while retaining the attributed wallet link when ownership is proven.
 - Copy source selection is shared across paper and live execution, but live mode
   reserves realtime capacity only for open live exposure and current eligible
   candidates. Paper-only retained sources are excluded from Live Copy Sources

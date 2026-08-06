@@ -1417,6 +1417,10 @@ class TradingFill(Base, TimestampMixin):
     raw_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     filled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
+    @property
+    def is_liquidation(self) -> bool:
+        return isinstance(self.raw_payload, dict) and "liquidation" in self.raw_payload
+
 
 class TradingFundingPayment(Base, TimestampMixin):
     __tablename__ = "trading_funding_payments"

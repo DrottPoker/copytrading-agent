@@ -37,6 +37,7 @@ from app.services.live_trading_service import (
     fetch_live_cash_flows_by_time,
     fetch_live_fills_by_time,
     fetch_live_funding_by_time,
+    infer_live_exchange_fill_source_attributions,
     is_retryable_live_order_submit_failure,
     live_account_key_for_route,
     live_closed_trades_from_fills,
@@ -602,7 +603,7 @@ def test_live_closed_trades_from_fills_includes_exchange_close_only_fill() -> No
     assert len(trades) == 1
     trade = trades[0]
     assert trade.source_wallet == "__exchange__"
-    assert trade.source_label == "Exchange position"
+    assert trade.source_label == "Unattributed exchange close"
     assert trade.coin == "ETH"
     assert trade.side == "short"
     assert trade.entry_price is not None
@@ -614,6 +615,159 @@ def test_live_closed_trades_from_fills_includes_exchange_close_only_fill() -> No
     assert trade.close_fill_count == 1
     assert trade.opened_at == closed_at
     assert trade.closed_at == closed_at
+    assert trade.is_liquidation is False
+
+
+def test_live_closed_trades_marks_proven_exchange_liquidation() -> None:
+    closed_at = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    fill = live_fill(
+        action="close",
+        filled_at=closed_at,
+        fee_usd=Decimal("0.01"),
+        notional_usd=Decimal("40"),
+        price=Decimal("0.16"),
+        realized_pnl_usd=Decimal("-12"),
+        sequence_index=1,
+        size=Decimal("250"),
+        source_wallet="__exchange__",
+        coin="CASHCAT",
+        side="short",
+        raw_payload={"liquidation": {"liquidatedUser": "0xaccount"}},
+    )
+
+    trades = live_closed_trades_from_fills([fill])
+
+    assert len(trades) == 1
+    assert trades[0].is_liquidation is True
+    assert trades[0].source_label == "Unattributed liquidation"
+
+
+def test_live_closed_trades_keeps_attributed_exchange_close_without_open_fill() -> None:
+    source_wallet = "0xcashcatowner"
+    fill = live_fill(
+        action="close",
+        filled_at=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
+        fee_usd=Decimal("0.01"),
+        notional_usd=Decimal("40"),
+        price=Decimal("0.16"),
+        realized_pnl_usd=Decimal("-12"),
+        sequence_index=1,
+        size=Decimal("250"),
+        source_wallet=source_wallet,
+        coin="CASHCAT",
+        side="short",
+        raw_payload={
+            "liquidation": {"liquidatedUser": "0xaccount"},
+            "sourceAttributionRepair": {
+                "method": "source_fill_inventory",
+                "sourceWallet": source_wallet,
+            },
+        },
+    )
+
+    trades = live_closed_trades_from_fills([fill])
+
+    assert len(trades) == 1
+    assert trades[0].source_wallet == source_wallet
+    assert trades[0].source_label is None
+    assert trades[0].is_liquidation is True
+
+
+def test_live_exchange_fill_attribution_uses_unique_source_inventory() -> None:
+    opened_at = datetime(2026, 1, 1, 10, 0, tzinfo=UTC)
+    source_wallet = "0xcashcatowner"
+    fills = [
+        live_fill(
+            action="open",
+            filled_at=opened_at,
+            fee_usd=Decimal("0.01"),
+            notional_usd=Decimal("100"),
+            price=Decimal("0.2"),
+            realized_pnl_usd=Decimal("0"),
+            sequence_index=0,
+            size=Decimal("500"),
+            source_wallet=source_wallet,
+            coin="CASHCAT",
+            side="short",
+        ),
+        live_fill(
+            action="close",
+            filled_at=opened_at + timedelta(minutes=5),
+            fee_usd=Decimal("0.01"),
+            notional_usd=Decimal("40"),
+            price=Decimal("0.16"),
+            realized_pnl_usd=Decimal("-10"),
+            sequence_index=1,
+            size=Decimal("250"),
+            source_wallet="__exchange__",
+            coin="CASHCAT",
+            side="short",
+        ),
+        live_fill(
+            action="close",
+            filled_at=opened_at + timedelta(minutes=6),
+            fee_usd=Decimal("0.01"),
+            notional_usd=Decimal("45"),
+            price=Decimal("0.18"),
+            realized_pnl_usd=Decimal("-8"),
+            sequence_index=2,
+            size=Decimal("250"),
+            source_wallet="__exchange__",
+            coin="CASHCAT",
+            side="short",
+        ),
+    ]
+
+    attributions = infer_live_exchange_fill_source_attributions(fills)
+
+    assert attributions == {
+        fills[1].id: source_wallet,
+        fills[2].id: source_wallet,
+    }
+
+
+def test_live_exchange_fill_attribution_stays_unattributed_when_ambiguous() -> None:
+    opened_at = datetime(2026, 1, 1, 10, 0, tzinfo=UTC)
+    fills = [
+        live_fill(
+            action="open",
+            filled_at=opened_at,
+            fee_usd=Decimal("0"),
+            notional_usd=Decimal("100"),
+            price=Decimal("100"),
+            realized_pnl_usd=Decimal("0"),
+            sequence_index=0,
+            size=Decimal("1"),
+            source_wallet="0xsourcea",
+            coin="BTC",
+        ),
+        live_fill(
+            action="open",
+            filled_at=opened_at + timedelta(seconds=1),
+            fee_usd=Decimal("0"),
+            notional_usd=Decimal("100"),
+            price=Decimal("100"),
+            realized_pnl_usd=Decimal("0"),
+            sequence_index=1,
+            size=Decimal("1"),
+            source_wallet="0xsourceb",
+            coin="BTC",
+        ),
+        live_fill(
+            action="close",
+            filled_at=opened_at + timedelta(minutes=1),
+            fee_usd=Decimal("0"),
+            notional_usd=Decimal("100"),
+            price=Decimal("100"),
+            realized_pnl_usd=Decimal("-1"),
+            sequence_index=2,
+            size=Decimal("1"),
+            source_wallet="__exchange__",
+            coin="BTC",
+        ),
+    ]
+
+    assert infer_live_exchange_fill_source_attributions(fills) == {}
 
 
 def test_live_closed_trades_from_fills_skips_incomplete_close_only_fill() -> None:
@@ -2213,6 +2367,7 @@ def live_fill(
     source_wallet: str = "0xsource",
     coin: str = "HYPE",
     side: str = "long",
+    raw_payload: dict[str, object] | None = None,
 ) -> TradingFill:
     return TradingFill(
         id=uuid4(),
@@ -2231,6 +2386,7 @@ def live_fill(
         notional_usd=notional_usd,
         fee_usd=fee_usd,
         realized_pnl_usd=realized_pnl_usd,
+        raw_payload=raw_payload,
         filled_at=filled_at,
         created_at=filled_at,
     )

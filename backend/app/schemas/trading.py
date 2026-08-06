@@ -132,6 +132,7 @@ class TradingFillRead(CamelModel):
     notional_usd: Decimal
     fee_usd: Decimal
     realized_pnl_usd: Decimal
+    is_liquidation: bool = False
     filled_at: datetime
     created_at: datetime
 
@@ -234,6 +235,7 @@ class TradingClosedTradeRead(CamelModel):
     duration_ms: int | None = None
     open_fill_count: int
     close_fill_count: int
+    is_liquidation: bool = False
 
 
 class TradingSourceMetadataRead(CamelModel):

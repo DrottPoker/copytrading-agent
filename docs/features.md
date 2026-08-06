@@ -888,7 +888,15 @@ What it does:
 - Closed live trade history includes copied source trades and manual exchange
   position closes. If only an exchange close fill is available locally, the
   backend shows a close-only row and estimates the entry price from Hyperliquid
-  realized PnL.
+  realized PnL. Account reconciliation attributes unmatched exchange closes to
+  a source wallet only when a unique open source position or the durable fill
+  inventory proves the owner and covers the close size. It also repairs older
+  unattributed rows from that inventory. Ambiguous rows stay labeled as
+  unattributed exchange closes.
+- Live recent fills and reconstructed closed trades include `isLiquidation`
+  only from Hyperliquid's raw `liquidation` marker. The Trading page renders a
+  compact red `liquidated` badge, a forced exchange liquidation result, and the
+  source wallet link when attribution is proven.
 - Copy source selection is shared across paper and live execution, but live mode
   reserves realtime capacity only for open live exposure and current eligible
   candidates. Paper-only retained sources are excluded from Live Copy Sources

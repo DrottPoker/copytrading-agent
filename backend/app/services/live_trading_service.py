@@ -236,6 +236,7 @@ class LiveClosedTrade:
     duration_ms: int | None
     open_fill_count: int
     close_fill_count: int
+    is_liquidation: bool
 
 
 @dataclass
@@ -258,6 +259,7 @@ class LiveTradeAccumulator:
     realized_pnl_usd: Decimal = ZERO
     open_fill_count: int = 0
     close_fill_count: int = 0
+    is_liquidation: bool = False
 
 
 @dataclass(frozen=True)
@@ -4655,6 +4657,16 @@ async def reconcile_live_fills(
             account.key,
             repaired_attributions,
         )
+    inventory_repairs = await repair_unattributed_live_fills_from_source_inventory(
+        session,
+        account_key=account.key,
+    )
+    if inventory_repairs:
+        logger.warning(
+            "repaired live fill source attribution from inventory account=%s fills=%s",
+            account.key,
+            inventory_repairs,
+        )
     inserted = 0
     for fill in fills:
         parsed = parse_live_fill(fill, account_key=account.key)
@@ -4669,10 +4681,18 @@ async def reconcile_live_fills(
             matched_order.exchange_order_id = (
                 matched_order.exchange_order_id or parsed["exchange_order_id"]
             )
+        attributed_position = None
+        if matched_order is None:
+            attributed_position = await resolve_unique_live_fill_source_position(
+                session,
+                account_key=account.key,
+                parsed_fill=parsed,
+            )
         row = live_fill_row(
             parsed,
             account=account,
             order=matched_order,
+            attributed_position=attributed_position,
         )
         stmt = insert(TradingFill).values(**row)
         stmt = stmt.on_conflict_do_nothing(constraint="ux_trading_fills_exchange_fill_id")
@@ -4684,6 +4704,7 @@ async def reconcile_live_fills(
                 session,
                 account=account,
                 order=matched_order,
+                attributed_position=attributed_position,
                 parsed_fill=parsed,
             )
     await session.flush()
@@ -4758,6 +4779,134 @@ async def repair_unattributed_live_fills_from_order_ledger(
     if repaired:
         await session.flush()
     return repaired
+
+
+async def repair_unattributed_live_fills_from_source_inventory(
+    session: AsyncSession,
+    *,
+    account_key: str,
+) -> int:
+    """Attach unmatched exchange closes when fill inventory proves one owner."""
+
+    has_unattributed_close = await session.scalar(
+        select(
+            exists().where(
+                TradingFill.account_key == account_key,
+                TradingFill.account_type == "live",
+                TradingFill.source_wallet == LIVE_EXCHANGE_SOURCE,
+                TradingFill.action.in_(("reduce", "close", "flip_close")),
+            )
+        )
+    )
+    if not has_unattributed_close:
+        return 0
+
+    result = await session.scalars(
+        select(TradingFill)
+        .where(
+            TradingFill.account_key == account_key,
+            TradingFill.account_type == "live",
+        )
+        .order_by(
+            TradingFill.filled_at.asc(),
+            TradingFill.created_at.asc(),
+            TradingFill.id.asc(),
+        )
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
+    fills = list(result.all())
+    attributions = infer_live_exchange_fill_source_attributions(fills)
+    repaired_at = datetime.now(UTC).isoformat()
+    repaired = 0
+    for fill in fills:
+        source_wallet = attributions.get(fill.id)
+        if source_wallet is None:
+            continue
+        fill.source_wallet = source_wallet
+        fill.raw_payload = merge_raw_payload(
+            fill.raw_payload,
+            {
+                "sourceAttributionRepair": {
+                    "method": "source_fill_inventory",
+                    "repairedAt": repaired_at,
+                    "sourceWallet": source_wallet,
+                }
+            },
+        )
+        repaired += 1
+    await session.flush()
+    return repaired
+
+
+def infer_live_exchange_fill_source_attributions(
+    fills: list[TradingFill],
+) -> dict[UUID, str]:
+    inventories: dict[tuple[str, str, str], dict[str, Decimal]] = {}
+    attributions: dict[UUID, str] = {}
+    for fill in sorted(fills, key=live_fill_chronology_key):
+        fill_size = decimal_or_none(fill.size) or ZERO
+        if fill_size <= ZERO:
+            continue
+        market_key = (fill.account_key, fill.coin, fill.side)
+        market_inventory = inventories.setdefault(market_key, {})
+        source_wallet = fill.source_wallet.lower()
+
+        if live_fill_is_open(fill):
+            if not is_internal_live_source(source_wallet):
+                market_inventory[source_wallet] = (
+                    market_inventory.get(source_wallet, ZERO) + fill_size
+                )
+            continue
+        if not live_fill_is_close(fill):
+            continue
+
+        if source_wallet == LIVE_EXCHANGE_SOURCE:
+            owners = [
+                wallet for wallet, size in market_inventory.items() if size > POSITION_EPSILON
+            ]
+            if len(owners) != 1:
+                continue
+            source_wallet = owners[0]
+            if fill_size > market_inventory[source_wallet] + POSITION_EPSILON:
+                continue
+            attributions[fill.id] = source_wallet
+
+        owned_size = market_inventory.get(source_wallet, ZERO)
+        if owned_size > ZERO:
+            market_inventory[source_wallet] = max(owned_size - fill_size, ZERO)
+    return attributions
+
+
+def is_internal_live_source(source_wallet: str) -> bool:
+    return source_wallet.startswith("__")
+
+
+async def resolve_unique_live_fill_source_position(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    parsed_fill: dict[str, Any],
+) -> TradingPosition | None:
+    if parsed_fill["action"] not in {"reduce", "close", "flip_close"}:
+        return None
+    result = await session.scalars(
+        select(TradingPosition)
+        .where(
+            TradingPosition.account_key == account_key,
+            TradingPosition.account_type == "live",
+            TradingPosition.source_wallet != LIVE_EXCHANGE_SOURCE,
+            TradingPosition.coin == parsed_fill["coin"],
+            TradingPosition.side == parsed_fill["side"],
+            TradingPosition.size > POSITION_EPSILON,
+        )
+        .with_for_update()
+    )
+    positions = list(result.all())
+    if len(positions) != 1:
+        return None
+    position = positions[0]
+    return position if parsed_fill["size"] <= position.size + POSITION_EPSILON else None
 
 
 async def reconcile_live_funding_payments(
@@ -4955,6 +5104,7 @@ def live_closed_trades_from_fills(
         trade.realized_pnl_usd += (decimal_or_none(fill.realized_pnl_usd) or ZERO) * fill_ratio
         trade.fee_usd += (decimal_or_none(fill.fee_usd) or ZERO) * fill_ratio
         trade.close_fill_count += 1
+        trade.is_liquidation = trade.is_liquidation or live_fill_is_liquidation(fill)
         trade.closed_at = fill.filled_at
         trade.last_close_fill_id = str(fill.id)
         if trade.remaining_size <= POSITION_EPSILON:
@@ -4964,7 +5114,10 @@ def live_closed_trades_from_fills(
 
 
 def live_exchange_close_only_trade(fill: TradingFill) -> LiveClosedTrade | None:
-    if fill.source_wallet != LIVE_EXCHANGE_SOURCE or not live_fill_is_close(fill):
+    if not live_fill_is_close(fill):
+        return None
+    is_unattributed = fill.source_wallet == LIVE_EXCHANGE_SOURCE
+    if not is_unattributed and not live_fill_has_reconciled_exchange_attribution(fill):
         return None
     fill_size = decimal_or_none(fill.size) or ZERO
     if fill_size <= ZERO:
@@ -4982,11 +5135,20 @@ def live_exchange_close_only_trade(fill: TradingFill) -> LiveClosedTrade | None:
         size=fill_size,
     )
     entry_notional_usd = entry_price * fill_size if entry_price is not None else exit_notional_usd
+    is_liquidation = live_fill_is_liquidation(fill)
     return LiveClosedTrade(
         id=f"live-closed:{fill.account_key}:{fill.source_wallet}:{fill.coin}:{fill.side}:{fill.id}",
         account_key=fill.account_key,
         source_wallet=fill.source_wallet,
-        source_label="Exchange position",
+        source_label=(
+            (
+                "Unattributed liquidation"
+                if is_liquidation
+                else "Unattributed exchange close"
+            )
+            if is_unattributed
+            else None
+        ),
         coin=fill.coin,
         side=fill.side,
         entry_price=entry_price,
@@ -5003,6 +5165,7 @@ def live_exchange_close_only_trade(fill: TradingFill) -> LiveClosedTrade | None:
         duration_ms=0,
         open_fill_count=0,
         close_fill_count=1,
+        is_liquidation=is_liquidation,
     )
 
 
@@ -5068,6 +5231,7 @@ def finish_live_closed_trade(trade: LiveTradeAccumulator) -> LiveClosedTrade:
         duration_ms=max(duration_ms, 0),
         open_fill_count=trade.open_fill_count,
         close_fill_count=trade.close_fill_count,
+        is_liquidation=trade.is_liquidation,
     )
 
 
@@ -5119,18 +5283,41 @@ def live_fill_is_close(fill: TradingFill) -> bool:
     return "close" in fill.action or "reduce" in fill.action
 
 
+def live_fill_is_liquidation(fill: TradingFill) -> bool:
+    return isinstance(fill.raw_payload, dict) and "liquidation" in fill.raw_payload
+
+
+def live_fill_has_reconciled_exchange_attribution(fill: TradingFill) -> bool:
+    if fill.order_id is not None or not isinstance(fill.raw_payload, dict):
+        return False
+    direct = fill.raw_payload.get("sourceAttribution")
+    if isinstance(direct, dict) and direct.get("method") == "unique_open_source_position":
+        return True
+    repair = fill.raw_payload.get("sourceAttributionRepair")
+    return isinstance(repair, dict) and repair.get("method") == "source_fill_inventory"
+
+
 async def apply_live_source_fill_to_position(
     session: AsyncSession,
     *,
     account: TradingAccount,
     order: TradingOrder | None,
+    attributed_position: TradingPosition | None,
     parsed_fill: dict[str, Any],
 ) -> None:
     fee_usd = parsed_fill["fee_usd"]
     realized_pnl_usd = parsed_fill["realized_pnl_usd"]
     account.fee_usd += fee_usd
     account.realized_pnl_usd += realized_pnl_usd
-    if order is None or order.source_wallet == LIVE_EXCHANGE_SOURCE:
+    if order is None:
+        if attributed_position is not None:
+            await apply_live_close_fill_to_position(
+                session,
+                position=attributed_position,
+                parsed_fill=parsed_fill,
+            )
+        return
+    if order.source_wallet == LIVE_EXCHANGE_SOURCE:
         return
 
     position = await load_live_source_position(
@@ -6319,12 +6506,31 @@ def live_fill_row(
     *,
     account: TradingAccount,
     order: TradingOrder | None,
+    attributed_position: TradingPosition | None,
 ) -> dict[str, Any]:
+    attributed_source_wallet = (
+        attributed_position.source_wallet if attributed_position is not None else None
+    )
+    raw_payload = parsed_fill["raw_payload"]
+    if attributed_source_wallet is not None:
+        raw_payload = merge_raw_payload(
+            raw_payload,
+            {
+                "sourceAttribution": {
+                    "method": "unique_open_source_position",
+                    "sourceWallet": attributed_source_wallet,
+                }
+            },
+        )
     return {
         "order_id": order.id if order is not None else None,
         "account_key": account.key,
         "account_type": "live",
-        "source_wallet": order.source_wallet if order is not None else LIVE_EXCHANGE_SOURCE,
+        "source_wallet": (
+            order.source_wallet
+            if order is not None
+            else attributed_source_wallet or LIVE_EXCHANGE_SOURCE
+        ),
         "source_fill_id": order.source_fill_id
         if order is not None
         else parsed_fill["exchange_fill_id"],
@@ -6338,7 +6544,7 @@ def live_fill_row(
         "notional_usd": parsed_fill["notional_usd"],
         "fee_usd": parsed_fill["fee_usd"],
         "realized_pnl_usd": parsed_fill["realized_pnl_usd"],
-        "raw_payload": parsed_fill["raw_payload"],
+        "raw_payload": raw_payload,
         "filled_at": parsed_fill["filled_at"],
     }
 

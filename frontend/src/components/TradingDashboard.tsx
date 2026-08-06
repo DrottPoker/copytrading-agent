@@ -1430,7 +1430,7 @@ function ClosedTradeRow({ trade }: { trade: PaperClosedTrade }) {
   );
 }
 
-function LiveClosedTradeRow({ trade }: { trade: TradingClosedTrade }) {
+export function LiveClosedTradeRow({ trade }: { trade: TradingClosedTrade }) {
   const netPnl = numberValue(trade.netPnlUsd);
   const sourceName = sourceDisplayName(trade.sourceLabel, trade.sourceWallet);
   return (
@@ -1440,6 +1440,7 @@ function LiveClosedTradeRow({ trade }: { trade: TradingClosedTrade }) {
           <div className="flex flex-wrap items-center gap-1">
             <p className="font-semibold text-ink">{trade.coin}</p>
             <StatusPill label={trade.side} tone={trade.side === "long" ? "positive" : "warning"} />
+            {trade.isLiquidation ? <StatusPill label="liquidated" tone="danger" /> : null}
           </div>
           {isLiveExchangeSource(trade.sourceWallet) ? (
             <p className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink">
@@ -2037,7 +2038,7 @@ function decisionTimestampMs(decision: LiveCopyDecision) {
   return dateMs(decision.decisionAt ?? decision.updatedAt);
 }
 
-function buildLiveFillActivity(
+export function buildLiveFillActivity(
   fill: TradingFill,
   sourceLabels: Map<string, string>,
 ): ExecutionActivityItem {
@@ -2050,7 +2051,9 @@ function buildLiveFillActivity(
     identity: {
       href: isExchange ? null : `/wallets/${fill.sourceWallet}`,
       label: isExchange
-        ? "Exchange fill"
+        ? fill.isLiquidation
+          ? "Unattributed liquidation"
+          : "Exchange fill"
         : sourceDisplayName(sourceLabels.get(fill.sourceWallet.toLowerCase()), fill.sourceWallet),
       meta: `${isExchange ? "exchange" : shortAddress(fill.sourceWallet)} | ${fill.accountKey}`,
     },
@@ -2059,6 +2062,7 @@ function buildLiveFillActivity(
       { label: "live", tone: "positive" },
       { label: fill.action, tone: actionTone },
       { label: fill.side, tone: fill.side === "long" ? "positive" : "warning" },
+      ...(fill.isLiquidation ? [{ label: "liquidated", tone: "danger" as Tone }] : []),
     ],
     sortAt: fill.filledAt,
     stats: [
@@ -2072,9 +2076,13 @@ function buildLiveFillActivity(
       { label: "Price", value: formatPrice(fill.price), detail: `fee ${formatCurrency(fill.feeUsd)}` },
       {
         label: "Result",
-        value: "filled",
-        detail: fill.sourceFillId ? `source ${shortIdentifier(fill.sourceFillId)}` : "reconciled live fill",
-        tone: "positive",
+        value: fill.isLiquidation ? "liquidated" : "filled",
+        detail: fill.isLiquidation
+          ? "forced exchange liquidation"
+          : fill.sourceFillId
+            ? `source ${shortIdentifier(fill.sourceFillId)}`
+            : "reconciled live fill",
+        tone: fill.isLiquidation ? "danger" : "positive",
       },
     ],
   };

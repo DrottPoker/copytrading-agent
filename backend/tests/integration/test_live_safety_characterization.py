@@ -581,6 +581,66 @@ async def test_reconciliation_repairs_exchange_fill_attribution_from_dispatch_le
 
 
 @pytest.mark.asyncio
+async def test_reconciliation_attributes_liquidation_to_unique_open_source_position(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    account = live_account()
+    source_wallet = "0xcashcatowner"
+    source_position = TradingPosition(
+        account_key=account.key,
+        account_type="live",
+        source_wallet=source_wallet,
+        coin="CASHCAT",
+        side="short",
+        size=Decimal("267"),
+        entry_price=Decimal("0.109602"),
+        notional_usd=Decimal("29.263734"),
+        leverage=Decimal("2"),
+        margin_mode="isolated",
+        margin_usd=Decimal("14.631867"),
+        realized_pnl_usd=Decimal("0"),
+        fee_usd=Decimal("0"),
+        opened_at=datetime(2026, 8, 5, 12, 0, tzinfo=UTC),
+    )
+    liquidation_fill = {
+        "coin": "CASHCAT",
+        "px": "0.1553",
+        "sz": "267",
+        "time": 1_775_606_160_000,
+        "side": "B",
+        "dir": "Close Short",
+        "closedPnl": "-12.20",
+        "fee": "0.02",
+        "tid": 567,
+        "liquidation": {"liquidatedUser": account.wallet_address},
+    }
+
+    async with integration_sessionmaker() as session:
+        session.add_all([account, source_position])
+        await session.commit()
+        inserted = await reconcile_live_fills(
+            session,
+            account=account,
+            fills=[liquidation_fill],
+        )
+        await session.commit()
+
+    async with integration_sessionmaker() as session:
+        stored_fill = await session.scalar(select(TradingFill))
+        remaining_position = await session.scalar(select(TradingPosition))
+
+    assert inserted == 1
+    assert stored_fill is not None
+    assert stored_fill.source_wallet == source_wallet
+    assert stored_fill.is_liquidation is True
+    assert stored_fill.raw_payload["sourceAttribution"] == {
+        "method": "unique_open_source_position",
+        "sourceWallet": source_wallet,
+    }
+    assert remaining_position is None
+
+
+@pytest.mark.asyncio
 async def test_reconciliation_repairs_account_totals_from_fill_ledger(
     integration_sessionmaker: async_sessionmaker[AsyncSession],
 ) -> None:
