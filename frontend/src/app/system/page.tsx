@@ -296,7 +296,7 @@ function HealthContent({ ops, operations }: { ops: OpsHealthResponse; operations
                       <td className="font-mono text-xs text-fg-2">
                         {signer.signerAddress ? `${shortAddress(signer.signerAddress)} for ${shortAddress(signer.masterAddress)}` : "Not configured"}
                       </td>
-                      <td className="wrap max-w-[420px] text-xs text-fg-2">
+                      <td className="wrap max-w-[26.25rem] text-xs text-fg-2">
                         {signer.description}
                         {signer.error ? <span className="block text-negative">Last attempt failed: {signer.error}</span> : null}
                       </td>
@@ -367,7 +367,7 @@ function WorkerBlock({ worker }: { worker: OpsWorkerHeartbeat }) {
                   <td className={cx("num", loop.consecutiveFailures > 0 && "text-negative")}>
                     {formatInteger(loop.consecutiveFailures)}
                   </td>
-                  <td className="wrap max-w-[360px] text-xs text-negative">{loop.lastError ?? ""}</td>
+                  <td className="wrap max-w-[22.5rem] text-xs text-negative">{loop.lastError ?? ""}</td>
                 </tr>
               ))}
             </tbody>
@@ -489,7 +489,7 @@ function DatabaseContent({ stats }: { stats: DatabaseStatsResponse }) {
       </div>
 
       <Panel title="Tables" meta={`${formatInteger(stats.tables.length)} tables, largest first`}>
-        <div className="max-h-[520px] overflow-auto">
+        <div className="max-h-[32.5rem] overflow-auto">
           <table className="data-table">
             <thead>
               <tr>
@@ -538,7 +538,7 @@ function DatabaseContent({ stats }: { stats: DatabaseStatsResponse }) {
       </Panel>
 
       <Panel title="Indexes" meta="30 largest">
-        <div className="max-h-[520px] overflow-auto">
+        <div className="max-h-[32.5rem] overflow-auto">
           <table className="data-table">
             <thead>
               <tr>
@@ -588,7 +588,7 @@ function Distribution({ title, values }: { title: string; values: Record<string,
       <SectionLabel>{title}</SectionLabel>
       <ul className="grid gap-1.5">
         {entries.map(([key, value]) => (
-          <li key={key} className="grid grid-cols-[minmax(0,1fr)_80px_44px] items-center gap-2 text-xs">
+          <li key={key} className="grid grid-cols-[minmax(0,1fr)_5rem_2.75rem] items-center gap-2 text-xs">
             <span className="truncate text-fg-2">{humanize(key)}</span>
             <Meter value={total > 0 ? value / total : 0} tone="neutral" />
             <span className="text-right tabular-nums">{formatInteger(value)}</span>

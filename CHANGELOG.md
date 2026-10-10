@@ -40,6 +40,15 @@ used to live in the README.
 - Business logic moved out of components into tested modules under
   `frontend/src/lib`.
 
+### Larger text
+
+- Text is larger across the dashboard: tables and body text 14px instead of
+  13px, and secondary lines, table headers, and status text 13px instead of
+  11px. Muted text has more contrast in both themes.
+- A text size setting in the sidebar makes the whole interface about 9% or 19%
+  larger. It is stored in the browser.
+- Figure labels and sub lines wrap to two lines instead of being cut off.
+
 ### Fixes
 
 - A canceled background job showed "Stopping" forever because the cancel flag

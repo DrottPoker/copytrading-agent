@@ -104,11 +104,11 @@ function Paged<T>({
 
 function SourceCell({ href, label, title }: { href: string | null; label: string; title?: string }) {
   return href ? (
-    <Link href={href} className="block max-w-[180px] truncate hover:underline" title={title}>
+    <Link href={href} className="block max-w-[11.25rem] truncate hover:underline" title={title}>
       {label}
     </Link>
   ) : (
-    <span className="block max-w-[180px] truncate text-fg-3">{label}</span>
+    <span className="block max-w-[11.25rem] truncate text-fg-3">{label}</span>
   );
 }
 
@@ -221,7 +221,7 @@ function ExecutionsTable({ rows }: { rows: ExecutionRow[] }) {
           </td>
           <td className="num text-fg-2">{row.feeUsd === null ? "-" : formatUsd(row.feeUsd)}</td>
           <td className="num">{row.realizedPnlUsd === null ? <span className="text-fg-4">-</span> : <Pnl value={row.realizedPnlUsd} />}</td>
-          <td className="wrap min-w-[220px] max-w-[380px] text-xs text-fg-3">{row.detail ?? ""}</td>
+          <td className="wrap min-w-[13.75rem] max-w-[23.75rem] text-xs text-fg-3">{row.detail ?? ""}</td>
         </tr>
       )}
     />
@@ -279,7 +279,7 @@ function DecisionsTable({ decisions }: { decisions: DecisionItem[] }) {
                 ))}
               </span>
             </td>
-            <td className="wrap max-w-[260px]">
+            <td className="wrap max-w-[16.25rem]">
               <span className={cx(reason?.tone ? toneText[reason.tone] : undefined, reason?.tone === "neutral" && "text-fg")}>
                 {reason?.value}
               </span>
@@ -289,7 +289,7 @@ function DecisionsTable({ decisions }: { decisions: DecisionItem[] }) {
               {retries?.value}
               <span className="sub">{retries?.detail}</span>
             </td>
-            <td className="wrap max-w-[220px]">
+            <td className="wrap max-w-[13.75rem]">
               <span className={exchange?.tone ? toneText[exchange.tone] : undefined}>{exchange?.value} attempts</span>
               <span className="sub">{exchange?.detail}</span>
             </td>
@@ -297,7 +297,7 @@ function DecisionsTable({ decisions }: { decisions: DecisionItem[] }) {
               {observed?.value}
               <span className="sub">{observed?.detail}</span>
             </td>
-            <td className="wrap max-w-[300px]">
+            <td className="wrap max-w-[18.75rem]">
               <span className={pipeline?.tone ? toneText[pipeline.tone] : undefined}>{pipeline?.value}</span>
               <span className="sub">{pipeline?.detail}</span>
             </td>

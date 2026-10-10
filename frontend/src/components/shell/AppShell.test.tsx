@@ -1,4 +1,4 @@
-import { act, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AppShell } from "./AppShell";
@@ -64,6 +64,24 @@ describe("AppShell", () => {
     expect(await screen.findByText("Wallet scoring")).toBeInTheDocument();
     expect(screen.getByText("40%")).toBeInTheDocument();
     expect(screen.getByRole("main")).toHaveAttribute("id", "main-content");
+  });
+
+  it("scales the interface with the text size setting and remembers it", () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+
+    render(
+      <AppShell>
+        <p>Route content</p>
+      </AppShell>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Larger text size" }));
+    expect(document.documentElement.dataset.textSize).toBe("larger");
+    expect(window.localStorage.getItem("copyagent.textSize")).toBe("larger");
+
+    fireEvent.click(screen.getByRole("button", { name: "Normal text size" }));
+    expect(document.documentElement.dataset.textSize).toBeUndefined();
+    expect(window.localStorage.getItem("copyagent.textSize")).toBeNull();
   });
 
   it("reports an unreachable backend only after repeated failures", async () => {

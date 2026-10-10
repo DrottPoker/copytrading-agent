@@ -124,7 +124,7 @@ export default async function DiscoveryPage({ searchParams }: { searchParams?: P
         />
       </StatStrip>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(320px,1fr)]">
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(20rem,1fr)]">
         <Panel title="Sources" meta="where candidates come from and how many make it through">
           {sources.items.length === 0 ? (
             <EmptyState title="No discovery sources configured" />
@@ -269,7 +269,7 @@ export default async function DiscoveryPage({ searchParams }: { searchParams?: P
                   <td className="num">{formatInteger(run.insertedCount)}</td>
                   <td className="num text-fg-2">{formatInteger(run.updatedCount)}</td>
                   <td className="num text-fg-2">{formatInteger(run.skippedCount)}</td>
-                  <td className="wrap max-w-[360px] text-xs text-negative">{run.error ?? ""}</td>
+                  <td className="wrap max-w-[22.5rem] text-xs text-negative">{run.error ?? ""}</td>
                 </tr>
               ))}
             </tbody>
@@ -375,11 +375,11 @@ function CandidateRow({ candidate }: { candidate: DiscoveryCandidate }) {
     <tr>
       <td>
         {candidate.status === "promoted" ? (
-          <Link href={`/wallets/${candidate.walletAddress}`} className="block max-w-[200px] truncate font-medium hover:underline">
+          <Link href={`/wallets/${candidate.walletAddress}`} className="block max-w-[12.5rem] truncate font-medium hover:underline">
             {name || candidate.walletAddress}
           </Link>
         ) : name ? (
-          <span className="block max-w-[200px] truncate font-medium">{name}</span>
+          <span className="block max-w-[12.5rem] truncate font-medium">{name}</span>
         ) : null}
         <Address address={candidate.walletAddress} />
       </td>
@@ -393,7 +393,7 @@ function CandidateRow({ candidate }: { candidate: DiscoveryCandidate }) {
       <td>
         <StatusDot tone={candidateTone(candidate.status)} label={humanize(candidate.status)} />
         {candidate.failReason ? (
-          <span className="sub max-w-[200px] truncate" title={humanize(candidate.failReason)}>
+          <span className="sub max-w-[12.5rem] truncate" title={humanize(candidate.failReason)}>
             {humanize(candidate.failReason)}
           </span>
         ) : null}

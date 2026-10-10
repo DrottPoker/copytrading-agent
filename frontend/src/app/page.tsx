@@ -128,7 +128,7 @@ export default async function OverviewPage() {
               Everything looks healthy. Workers, data sources, and accounts report no problems.
             </div>
           ) : (
-            <ul className="max-h-[340px] divide-y divide-line overflow-y-auto">
+            <ul className="max-h-[21.25rem] divide-y divide-line overflow-y-auto">
               {attention.map((item, index) => (
                 <li key={`${item.title}:${index}`}>
                   <Link href={item.href} className="group flex items-start gap-2.5 px-3.5 py-2 hover:bg-surface-2">
@@ -382,7 +382,7 @@ function TopWalletsTable({ copySources, wallets }: { copySources: Set<string>; w
             return (
               <tr key={wallet.id}>
                 <td className="num text-fg-3">{wallet.poolRank ?? index + 1}</td>
-                <td className="max-w-[220px]">
+                <td className="max-w-[13.75rem]">
                   <Link href={`/wallets/${wallet.address}`} className="block truncate font-medium hover:underline">
                     {wallet.label || wallet.address}
                   </Link>

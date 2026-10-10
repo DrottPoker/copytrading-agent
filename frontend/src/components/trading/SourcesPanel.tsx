@@ -80,7 +80,7 @@ export function SourcesPanel({
             : "Live sources appear when live trading is enabled and the account is started."}
         </EmptyState>
       ) : (
-        <div className="max-h-[560px] overflow-auto">
+        <div className="max-h-[35rem] overflow-auto">
           <table className="data-table">
             <thead>
               <tr>
@@ -114,7 +114,7 @@ export function SourcesPanel({
                   <td>
                     <Link
                       href={`/wallets/${source.sourceWallet}`}
-                      className="block max-w-[190px] truncate font-medium hover:underline"
+                      className="block max-w-[11.875rem] truncate font-medium hover:underline"
                       title={source.sourceWallet}
                     >
                       {sourceDisplayName(source.sourceLabel, source.sourceWallet)}
@@ -132,11 +132,11 @@ export function SourcesPanel({
                   </td>
                   <td>
                     <StatusDot tone={STATE_TONES[source.sourceState]} label={SOURCE_STATE_LABELS[source.sourceState]} />
-                    <span className="sub max-w-[230px] truncate" title={source.sourceStateDetail}>
+                    <span className="sub max-w-[14.375rem] truncate" title={source.sourceStateDetail}>
                       {source.sourceStateDetail}
                     </span>
                   </td>
-                  <td className="min-w-[150px]">
+                  <td className="min-w-[9.375rem]">
                     <div className="flex items-center gap-2">
                       <Meter
                         className="w-16"

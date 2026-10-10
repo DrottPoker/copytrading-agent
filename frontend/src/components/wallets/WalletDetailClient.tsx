@@ -301,7 +301,7 @@ function Fills({ fills, total }: { fills: WalletFill[]; total: number }) {
       <p className="border-b border-line px-3.5 py-2 text-xs text-fg-3">
         The latest {formatInteger(fills.length)} of {formatInteger(total)} stored fills.
       </p>
-      <div className="max-h-[560px] overflow-auto">
+      <div className="max-h-[35rem] overflow-auto">
         <table className="data-table">
           <thead>
             <tr>

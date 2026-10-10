@@ -229,7 +229,7 @@ function ScorePanel({
         {SCORE_COMPONENTS.map((component) => {
           const value = decimal(component.value(score));
           return (
-            <li key={component.key} className="grid grid-cols-[minmax(0,1fr)_120px_44px] items-center gap-3 px-3.5 py-2">
+            <li key={component.key} className="grid grid-cols-[minmax(0,1fr)_7.5rem_2.75rem] items-center gap-3 px-3.5 py-2">
               <div className="min-w-0">
                 <p className="text-sm font-medium">{component.label}</p>
                 <p className="truncate text-xs text-fg-3" title={component.description}>

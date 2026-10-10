@@ -257,7 +257,7 @@ export function ActivityFeed({ initialEvents }: { initialEvents: LiveEvent[] }) 
                       <td>
                         <StatusDot tone={eventTone(event)} label={eventTypeLabel(event.type)} />
                       </td>
-                      <td className="wrap min-w-[320px]">{event.message}</td>
+                      <td className="wrap min-w-[20rem]">{event.message}</td>
                       <td>
                         {wallet ? (
                           <Link

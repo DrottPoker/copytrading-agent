@@ -246,7 +246,7 @@ export function WalletsTable({
               {pageItems.map((wallet) => (
                 <tr key={wallet.id}>
                   <td>
-                    <Link href={`/wallets/${wallet.address}`} className="block max-w-[220px] truncate font-medium hover:underline">
+                    <Link href={`/wallets/${wallet.address}`} className="block max-w-[13.75rem] truncate font-medium hover:underline">
                       {walletDisplayName(wallet)}
                     </Link>
                     <Address address={wallet.address} />
@@ -258,7 +258,7 @@ export function WalletsTable({
                   <td className="num text-fg-3">
                     <TimeAgo value={wallet.lastSeenFillAt} fallback="never" />
                   </td>
-                  <td className="max-w-[360px]">
+                  <td className="max-w-[22.5rem]">
                     <span className="block truncate text-xs text-fg-3" title={wallet.notes ?? undefined}>
                       {wallet.notes ?? ""}
                     </span>
@@ -328,7 +328,7 @@ export function WalletsTable({
                     <td>
                       <Link
                         href={`/wallets/${wallet.address}`}
-                        className="block max-w-[220px] truncate font-medium hover:underline"
+                        className="block max-w-[13.75rem] truncate font-medium hover:underline"
                         title={wallet.notes ?? undefined}
                       >
                         {walletDisplayName(wallet)}

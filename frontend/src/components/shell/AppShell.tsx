@@ -24,7 +24,14 @@ import { ConfirmProvider } from "@/components/ui/client";
 import { cx } from "@/lib/cx";
 
 import { SystemStatusBar } from "./SystemStatusBar";
-import { applyThemePreference, readThemePreference, type ThemePreference } from "./theme";
+import {
+  applyTextSize,
+  applyThemePreference,
+  readTextSize,
+  readThemePreference,
+  type TextSize,
+  type ThemePreference,
+} from "./theme";
 
 type NavItem = {
   href: string;
@@ -94,7 +101,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       >
         Skip to content
       </a>
-      <div className="min-h-screen lg:grid lg:grid-cols-[212px_minmax(0,1fr)]">
+      <div className="min-h-screen lg:grid lg:grid-cols-[14.5rem_minmax(0,1fr)]">
         <aside className="hidden border-r border-line bg-surface lg:block">
           <div className="sticky top-0 flex h-screen flex-col">
             <Sidebar pathname={pathname} />
@@ -165,7 +172,7 @@ function Sidebar({ pathname }: { pathname: string }) {
                       href={item.href}
                       aria-current={active ? "page" : undefined}
                       className={cx(
-                        "flex h-8 items-center gap-2.5 rounded-md px-2 text-sm transition-colors",
+                        "flex h-9 items-center gap-2.5 rounded-md px-2.5 text-sm transition-colors",
                         active
                           ? "bg-surface-3 font-medium text-fg"
                           : "text-fg-2 hover:bg-surface-2 hover:text-fg",
@@ -185,7 +192,8 @@ function Sidebar({ pathname }: { pathname: string }) {
           </div>
         ))}
       </nav>
-      <div className="border-t border-line px-3 py-2.5">
+      <div className="grid gap-2 border-t border-line px-3 py-3">
+        <TextSizeToggle />
         <ThemeToggle />
       </div>
     </>
@@ -246,11 +254,56 @@ function ThemeToggle() {
                 applyThemePreference(option.value);
               }}
               className={cx(
-                "inline-flex h-6 w-7 items-center justify-center rounded",
+                "inline-flex h-7 w-8 items-center justify-center rounded",
                 active ? "bg-surface text-fg shadow-sm" : "text-fg-3 hover:text-fg",
               )}
             >
               <Icon className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+const TEXT_SIZE_OPTIONS: Array<{ className: string; label: string; value: TextSize }> = [
+  { className: "text-xs", label: "Normal text size", value: "normal" },
+  { className: "text-sm", label: "Large text size", value: "large" },
+  { className: "text-base", label: "Larger text size", value: "larger" },
+];
+
+function TextSizeToggle() {
+  const [size, setSize] = useState<TextSize>("normal");
+
+  useEffect(() => {
+    setSize(readTextSize());
+  }, []);
+
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="text-xs text-fg-3">Text size</span>
+      <div className="inline-flex rounded-md border border-line bg-surface-2 p-0.5" role="group" aria-label="Text size">
+        {TEXT_SIZE_OPTIONS.map((option) => {
+          const active = size === option.value;
+          return (
+            <button
+              key={option.value}
+              type="button"
+              aria-pressed={active}
+              aria-label={option.label}
+              title={option.label}
+              onClick={() => {
+                setSize(option.value);
+                applyTextSize(option.value);
+              }}
+              className={cx(
+                "inline-flex h-7 w-8 items-center justify-center rounded font-semibold leading-none",
+                option.className,
+                active ? "bg-surface text-fg shadow-sm" : "text-fg-3 hover:text-fg",
+              )}
+            >
+              A
             </button>
           );
         })}

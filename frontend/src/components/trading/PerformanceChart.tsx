@@ -11,8 +11,8 @@ import type { PerformancePoint } from "@/lib/trading/performance";
 type ChartMode = "cumulative" | "trade";
 type ChartRange = 25 | 50 | 100 | "all";
 
-const HEIGHT = 220;
-const PADDING = { bottom: 24, left: 56, right: 12, top: 12 };
+const HEIGHT = 240;
+const PADDING = { bottom: 28, left: 66, right: 12, top: 12 };
 
 /** Cumulative or per trade net PnL of closed trades, inspectable with pointer and arrow keys. */
 export function PerformanceChart({ points }: { points: PerformancePoint[] }) {
@@ -51,7 +51,7 @@ export function PerformanceChart({ points }: { points: PerformancePoint[] }) {
 
   if (points.length === 0) {
     return (
-      <div className="flex h-[220px] items-center justify-center rounded-md border border-dashed border-line px-4 text-center text-sm text-fg-3">
+      <div className="flex h-[240px] items-center justify-center rounded-md border border-dashed border-line px-4 text-center text-sm text-fg-3">
         The curve appears after the account closes its first trade.
       </div>
     );
@@ -147,7 +147,7 @@ export function PerformanceChart({ points }: { points: PerformancePoint[] }) {
         <svg
           ref={svgRef}
           aria-label={`Chart of ${formatInteger(visible.length)} closed trades. Use the arrow keys to inspect trades.`}
-          className="block h-[220px] w-full touch-none outline-none focus-visible:ring-2 focus-visible:ring-info/40"
+          className="block h-[240px] w-full touch-none outline-none focus-visible:ring-2 focus-visible:ring-info/40"
           onKeyDown={handleKeyDown}
           onPointerLeave={() => setActiveIndex(null)}
           onPointerMove={(event: ReactPointerEvent<SVGSVGElement>) => selectFromClientX(event.clientX)}
@@ -173,10 +173,10 @@ export function PerformanceChart({ points }: { points: PerformancePoint[] }) {
               />
               <text
                 fill="var(--chart-axis)"
-                fontSize="10"
+                fontSize="12"
                 textAnchor="end"
                 x={PADDING.left - 8}
-                y={yFor(tick) + 3}
+                y={yFor(tick) + 4}
                 style={{ fontVariantNumeric: "tabular-nums" }}
               >
                 {formatUsd(tick, { compact: true, decimals: Math.abs(tick) < 10 ? 2 : 0 })}
@@ -212,10 +212,10 @@ export function PerformanceChart({ points }: { points: PerformancePoint[] }) {
             y2={HEIGHT - PADDING.bottom}
           />
           <circle cx={xFor(resolved)} cy={yFor(activeValue)} fill="var(--surface)" r="3.5" stroke={stroke} strokeWidth="2" />
-          <text fill="var(--chart-axis)" fontSize="10" x={PADDING.left} y={HEIGHT - 6}>
+          <text fill="var(--chart-axis)" fontSize="12" x={PADDING.left} y={HEIGHT - 8}>
             {formatDateTime(visible[0].closedAt)}
           </text>
-          <text fill="var(--chart-axis)" fontSize="10" textAnchor="end" x={width - PADDING.right} y={HEIGHT - 6}>
+          <text fill="var(--chart-axis)" fontSize="12" textAnchor="end" x={width - PADDING.right} y={HEIGHT - 8}>
             {formatDateTime(visible[visible.length - 1].closedAt)}
           </text>
         </svg>

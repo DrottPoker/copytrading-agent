@@ -133,14 +133,14 @@ const PRUNE: TaskDefinition<WalletPruneAllResponse> = {
           <tbody>
             {result.rules.map((rule) => (
               <tr key={rule.key}>
-                <td className="wrap max-w-[280px]">
+                <td className="wrap max-w-[17.5rem]">
                   <span className="font-medium">{rule.label}</span>
                   <span className="sub">{rule.rule}</span>
                 </td>
                 <td className="num">{formatInteger(rule.scannedWallets)}</td>
                 <td className="num">{formatInteger(rule.candidateWallets)}</td>
                 <td className="num">{formatInteger(rule.archivedWallets ?? 0)}</td>
-                <td className="wrap max-w-[420px] text-xs text-fg-2">
+                <td className="wrap max-w-[26.25rem] text-xs text-fg-2">
                   {rule.items.length === 0 ? (
                     <span className="text-fg-4">none</span>
                   ) : (

@@ -118,7 +118,7 @@ export function ScoreDetailsDialog({
                               ? "-"
                               : `${item.effect === "subtract" && decimal(item.contribution) > 0 ? "-" : ""}${formatNumber(item.contribution, 2)}`}
                           </td>
-                          <td className="wrap min-w-[280px] text-xs text-fg-3">{item.detail}</td>
+                          <td className="wrap min-w-[17.5rem] text-xs text-fg-3">{item.detail}</td>
                         </tr>
                       ))}
                     </tbody>

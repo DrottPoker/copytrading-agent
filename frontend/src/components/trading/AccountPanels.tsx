@@ -146,7 +146,7 @@ export function RiskPanel({ view }: { view: AccountView }) {
       ) : (
         <ul className="grid gap-1.5">
           {marketRows.slice(0, 6).map((row) => (
-            <li key={row.coin} className="grid grid-cols-[64px_minmax(0,1fr)_84px_76px] items-center gap-2 text-xs">
+            <li key={row.coin} className="grid grid-cols-[4rem_minmax(0,1fr)_5.25rem_4.75rem] items-center gap-2 text-xs">
               <span className="truncate font-medium">
                 {row.coin}
                 <span className="ml-1 font-normal text-fg-4">

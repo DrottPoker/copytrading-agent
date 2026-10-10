@@ -97,8 +97,14 @@ Behavior:
   and failures, amber for warnings, and blue for work in progress. Buttons and
   selections are neutral.
 - Type is IBM Plex Sans with IBM Plex Mono for addresses and identifiers,
-  self-hosted from npm packages so builds need no font download. Tables use
-  tabular figures and right-aligned numbers.
+  self-hosted from npm packages so builds need no font download. Tables and
+  body text are 14px, secondary lines and table headers 13px, and the smallest
+  labels 12px. Tables use tabular figures and right-aligned numbers.
+- A text size setting in the sidebar scales the whole interface, text and
+  spacing together, to Normal, Large (about 9% bigger), or Larger (about 19%
+  bigger). The choice is stored in the browser and applied before the first
+  paint. Wide tables scroll sideways at the larger sizes instead of hiding
+  columns.
 - Numbers use en-US formatting: `$1,234.56`, a real minus sign for negative
   values, compact `$601.2M` for large totals, `12.3%`, and `2.5×`. Times show as
   short dates (`Oct 10, 23:51`) or relative times (`4m ago`) with the full

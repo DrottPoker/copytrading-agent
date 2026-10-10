@@ -103,7 +103,7 @@ function AnalyticsContent({ analytics }: { analytics: AnalyticsResponse }) {
         <Panel title="Average component scores" bodyClassName="px-3.5 py-3">
           <ul className="grid gap-2.5">
             {averages.map(([label, value]) => (
-              <li key={label} className="grid grid-cols-[110px_minmax(0,1fr)_40px] items-center gap-3 text-sm">
+              <li key={label} className="grid grid-cols-[6.875rem_minmax(0,1fr)_2.5rem] items-center gap-3 text-sm">
                 <span className="text-fg-2">{label}</span>
                 <Meter value={decimal(value) / 100} tone={scoreTone(value)} />
                 <span className={cx("text-right tabular-nums", toneText[scoreTone(value)])}>{formatScore(value)}</span>
@@ -334,7 +334,7 @@ function Buckets({
   return (
     <ul className="grid gap-1.5">
       {buckets.map((bucket) => (
-        <li key={bucket.label} className="grid grid-cols-[84px_minmax(0,1fr)_44px] items-center gap-3 text-sm">
+        <li key={bucket.label} className="grid grid-cols-[5.25rem_minmax(0,1fr)_2.75rem] items-center gap-3 text-sm">
           <span className="truncate text-fg-2">{humanizeLabels ? humanize(bucket.label) : bucket.label}</span>
           <Meter
             value={bucket.count / max}
@@ -430,7 +430,7 @@ function WalletTable({ rows, variant }: { rows: AnalyticsWalletRow[]; variant: "
 
 function WalletLink({ address, label }: { address: string; label: string | null }) {
   return (
-    <Link href={`/wallets/${address}`} className="block max-w-[220px] truncate font-medium hover:underline" title={address}>
+    <Link href={`/wallets/${address}`} className="block max-w-[13.75rem] truncate font-medium hover:underline" title={address}>
       {label?.trim() || shortAddress(address)}
     </Link>
   );

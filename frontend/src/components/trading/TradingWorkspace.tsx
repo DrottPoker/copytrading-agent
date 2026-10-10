@@ -561,7 +561,7 @@ export function TradingWorkspace({
             )}
           </StatStrip>
 
-          <div className="grid gap-4 xl:grid-cols-[minmax(0,1.65fr)_minmax(320px,1fr)]">
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1.65fr)_minmax(20rem,1fr)]">
             <PerformancePanel analytics={analytics} points={timeline} />
             <RiskPanel view={view} />
           </div>
@@ -622,7 +622,7 @@ function AccountSwitcher({
             aria-selected={active}
             onClick={() => onSelect(account.key)}
             className={cx(
-              "min-w-[200px] shrink-0 rounded-lg border px-3 py-2 text-left transition-colors",
+              "min-w-[12.5rem] shrink-0 rounded-lg border px-3 py-2 text-left transition-colors",
               active ? "border-fg bg-surface" : "border-line bg-surface hover:border-line-strong",
             )}
           >

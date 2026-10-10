@@ -101,7 +101,7 @@ export function Stat({
   return (
     <div className="min-w-0 border-b border-r border-line px-3.5 py-2.5">
       <div className="flex min-w-0 items-center justify-between gap-2">
-        <p className="truncate text-xs text-fg-3" title={hint}>
+        <p className="line-clamp-2 text-xs text-fg-3" title={hint}>
           {hint ? <span className="cursor-help border-b border-dotted border-fg-4">{label}</span> : label}
         </p>
         {action}
@@ -115,7 +115,7 @@ export function Stat({
         {value}
       </p>
       {sub ? (
-        <p className="truncate text-xs text-fg-3" title={typeof sub === "string" ? sub : undefined}>
+        <p className="line-clamp-2 text-xs text-fg-3" title={typeof sub === "string" ? sub : undefined}>
           {sub}
         </p>
       ) : null}
@@ -138,7 +138,7 @@ export function Badge({
     <span
       title={title}
       className={cx(
-        "inline-flex h-[18px] max-w-full shrink-0 items-center whitespace-nowrap rounded px-1.5 text-2xs font-medium",
+        "inline-flex h-5 max-w-full shrink-0 items-center whitespace-nowrap rounded px-1.5 text-2xs font-medium",
         toneSoft[tone],
         className,
       )}
@@ -166,7 +166,7 @@ export function StatusDot({
       <span
         aria-hidden="true"
         className={cx(
-          "h-1.5 w-1.5 shrink-0 rounded-full",
+          "h-2 w-2 shrink-0 rounded-full",
           toneDot[tone],
           pulse && cx("animate-pulse-dot", toneText[tone]),
         )}

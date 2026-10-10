@@ -46,7 +46,7 @@ export function PositionsPanel({
           Positions appear here when a copied wallet opens a trade that passes the sizing and risk checks.
         </EmptyState>
       ) : (
-        <div className="max-h-[520px] overflow-auto">
+        <div className="max-h-[32.5rem] overflow-auto">
           <table className="data-table">
             <thead>
               <tr>
@@ -78,7 +78,7 @@ export function PositionsPanel({
                   </td>
                   <td>
                     {position.sourceHref ? (
-                      <Link href={position.sourceHref} className="block max-w-[180px] truncate hover:underline" title={position.sourceWallet}>
+                      <Link href={position.sourceHref} className="block max-w-[11.25rem] truncate hover:underline" title={position.sourceWallet}>
                         {position.sourceLabel}
                       </Link>
                     ) : (

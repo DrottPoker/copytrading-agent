@@ -308,7 +308,10 @@ variables for a light and a dark theme, mapped into Tailwind CSS v4 through an
 the active theme. There is no JavaScript Tailwind config. A small inline script
 in the root layout sets `data-theme` before the first paint from the stored
 preference or the operating system, and the `dark` variant is keyed to that
-attribute. The type scale sits at 13px for tables and body text. Fonts are IBM
+attribute. The type scale is in rem, with tables and body text at 14px for the
+default 16px root. The text size setting sets `data-text-size` on the root
+element, which raises the root size to 17.5px or 19px; every rem based size,
+including spacing and fixed column widths, follows it. Fonts are IBM
 Plex Sans and IBM Plex Mono from `@fontsource` packages, so builds work without
 network access. `.data-table` and `.kv` are the shared table and key-value list
 styles.
