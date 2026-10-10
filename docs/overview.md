@@ -1,132 +1,127 @@
 # Project Overview
 
-Hyperliquid Copy Agent is a paper-first wallet monitoring and copytrading research
-system for Hyperliquid.
+Hyperliquid Copy Agent looks for traders on Hyperliquid who make money in a way
+we can copy, and copies their perpetual futures trades. It starts every idea in
+a paper account with simulated money. Real orders are only possible after
+someone deliberately turns live trading on.
 
-The project is designed to monitor a large pool of wallets, import their historical
-fills, listen to realtime fills for a limited active set, and eventually rank wallets
-by how copyable their behavior is after delay, fees, slippage, and risk controls.
-The current research focus is perp trading, so spot-only wallet history is filtered
-out of imports and can be pruned from the pool.
+This page explains the system in plain language. The details live in
+[features.md](features.md), [architecture.md](architecture.md), and
+[risk-model.md](risk-model.md).
 
-Live trading is intentionally disabled by default. The system is built to prove
-edge in monitor and paper mode before any live execution is activated.
+## The Idea
 
-## What It Does Today
+Every trade on Hyperliquid is public. If a wallet has traded well for a long
+time, we can follow it and open the same positions, scaled down to our account.
+Two things decide whether that works:
 
-- Manages a watched wallet pool.
-- Imports historical Hyperliquid fills into Postgres.
-- Stores perp fills by default and filters out spot-only history.
-- Deduplicates fills by wallet and external fill ID.
-- Monitors realtime Hyperliquid `userFills` for selected wallets.
-- Stores realtime snapshots and new fills safely.
-- Simulates paper copy fills for the top scored realtime wallets.
-- Publishes system and fill events through Redis.
-- Shows wallet data, imported fills, and live events in the dashboard.
-- Shows paper accounts, allocations, positions, and recent paper fills.
-- Runs paper copy by default and supports guarded live copy, durable live order
-  recovery, and authoritative live reconciliation in the trading worker when
-  intentionally enabled.
-- `watched_wallets.copy_eligibility_started_at` is the global source-selection
-  epoch. `LiveCopySourceState` is per live account/source. Normal entries need
-  both an immutable first observation at or after `activated_at` and an
-  authoritative source timestamp at or after activation. Baseline IDs only
-  scope recovery candidates, so same-timestamp late arrivals are not
-  automatically eligible. Only a narrowly proven same-side owned continuation
-  can cross a fresh retained baseline.
-- `LiveCopySourceState.entry_eligible` is the authoritative per-account routing
-  truth. Current selection sets it to true. Owned-only retention keeps the lane
-  active with the flag false, and reselection requires a fresh baseline before
-  setting it true again.
-- Temporary reconciliation and source-state prerequisites retry with bounded
-  backoff instead of producing fake live order failures. Recovery retains
-  nonzero positions and unresolved orders, including filled orders whose fills
-  are not fully materialized. Completed dispositions are excluded before limits.
-- The renewable `live_execution:{account_key}` fence serializes order
-  submission, reconciliation, and margin sync. A busy fence is transient and
-  does not imply another visible fill. Fully validated entries skipped only
-  because the fence is busy persist their complete intent, retry with the same
-  client order ID and original TTL without requiring a fresh source leverage
-  read, and recheck price drift plus normal live gates. Expiry terminalizes as
-  `live_entry_intent_expired`; generic leverage-missing rows never guess or
-  become reusable intents.
-- Entries first observed after the configured live-copy age limit become
-  terminal stale no-order decisions. Promptly observed entries keep that
-  admission through internal queueing, while pre-order preparation is bounded
-  from its first processing claim. An unresolved entry becomes
-  `live_entry_preparation_expired` without an order; exits remain retryable.
-  Their origin, source
-  timestamp, observation timestamps, and update time are exposed for
-  diagnostics, and the dashboard shows ingest lag, total source-to-decision
-  age, and processing lag when available. These rows stay in Copy Decisions and
-  do not appear in Recent Execution Activity because no `TradingOrder` is
-  created.
-- Live source events use canonical numeric fill ordering with close-before-open
-  sequencing. Durable work blocks only later work from the same wallet and
-  coin, so one unresolved market cannot halt independent coins. Lost
-  attribution can be restored only from strict current
-  executed-fill proof, excluding exchange and manual-test reserved sources.
-  Unresolved exits retain their source lane even without a position or order.
-  Exact exchange order or dispatch CLOID matches can repair fill attribution so
-  strict recovery restores ownership before the reduce-only exit is retried.
-  Every multipart plan is committed before exchange submission, with the final
-  gate lock order preserved. Separate pipeline decisions remain visible without
-  being called fills or orders when no `tradingOrderId` exists.
-- Existing `TradingOrder` history is never hidden by lifecycle recovery, and
-  `live_copy_source_states` remains audit state protected by `RESTRICT`, outside
-  wallet cleanup ownership.
-- Protects backend routes with dashboard Basic Auth by default.
-- Coordinates long-running jobs with database-backed locks.
-- Discovers new candidates from Hyperliquid leaderboards, leaderboard
-  subaccounts, Hyperliquid 7D and 30D vault leaders, vault addresses, and
-  HyperTracker PnL segments, plus the HyperTracker avg daily perp PnL
-  leaderboard and configured Hyperdash profitable cohorts before backfill and
-  scoring decide pool admission.
-- Treats Hyperliquid vault addresses and vault leader addresses as separate
-  candidates, because a vault can trade independently from the leader wallet.
-- Skips vault candidates below the discovery `min_account_value_usd` threshold,
-  then ranks remaining vaults by the vault source window's ROI first, 7D or 30D,
-  and TVL second.
+- The trader has to be good over a long enough period, not just lucky once.
+- Their trades have to survive copying: we see them a moment later, pay fees
+  and slippage, and trade much smaller amounts. A trader whose edge disappears
+  under those conditions is not worth copying, however good their own results
+  look.
 
-## Core Idea
+The system is built to answer both questions with data before real money is
+involved.
 
-There are two separate data flows:
+## How It Works
 
-- Historical polling is for scoring and research across the full wallet pool.
-- Realtime monitoring is for active wallets and open position management.
-- Raw `WalletFill` rows are the complete source audit record. Live execution
-  decisions are tracked separately per account, source fill, and lifecycle part
-  so retries, terminal decisions, and baseline history remain distinguishable.
+1. **Find candidates.** The system collects wallets from Hyperliquid
+   leaderboards and vaults, HyperTracker, and Hyperdash, and filters out
+   accounts below 1,000 USD and wallets that trade only spot.
+2. **Import their history.** For each wallet in the pool it downloads past
+   trades and stores them, so wallets can be judged on what they actually did.
+3. **Rank them.** Each wallet gets a score from its own history: the return
+   and drawdown of its account value over time, how consistent and recent its
+   trading is, whether it averages down into losers, and how well its trades
+   would copy at our size. Wallets with fewer than 20 closed trades in the
+   last 60 days are capped at a low score, and scores below 40 trades are
+   pulled toward a neutral middle so a short lucky streak cannot top the list.
+4. **Pick the sources.** The five best ranked wallets become the copy sources.
+   Each gets an equal share of the account to copy with.
+5. **Follow them live.** The system subscribes to those wallets' trades in
+   realtime over WebSocket. Up to ten wallets can be followed this way, so the
+   rest of the pool is refreshed by slower periodic polling.
+6. **Copy the trades.** When a source opens or adds to a position, the system
+   works out how big our position should be given our share and the source's
+   account size, and buys the difference. When the source reduces or closes,
+   we close the same share. Entries are skipped if they arrive too late or the
+   price has already moved too far; exits are never skipped for those reasons.
+7. **Limit the damage.** Exposure caps, loss limits, and per-source limits stop
+   new entries when something goes wrong, while still letting existing
+   positions close. See [risk-model.md](risk-model.md).
+8. **Keep the pool fresh.** Wallets that stop trading, lose money, or score
+   poorly are archived. Their history is kept so past selections can be
+   checked, and they can be readmitted after 30 days.
 
-This separation matters because Hyperliquid limits user-specific realtime WebSocket
-subscriptions, while historical polling can cover many more wallets at a slower,
-controlled pace.
+## Paper and Live
 
-## Current Mode
+Paper and live copy run the same decision rules on the same source trades.
+The only difference is what happens at the end:
 
-The current application runs in paper mode:
+- **Paper** simulates the order. It fills against the real Hyperliquid order
+  book, so large orders can fill partly or not at all, and it charges fees,
+  hourly funding, and liquidates positions that run out of margin. Paper
+  accounts also stop taking new entries when they hit the same loss limits as
+  live accounts.
+- **Live** sends a real order to Hyperliquid and then checks the exchange to
+  confirm what actually happened. It refuses to trade if its picture of the
+  exchange account is stale or incomplete.
 
-- Monitoring is enabled.
-- Paper copy simulation is enabled by default.
-- Live trading is disabled unless `LIVE_TRADING_ENABLED=true` is set in `.env`.
-- Scheduled pruning is sharp by default and archives matching non-active
-  wallets after pool import when configured prune rules match. Archived wallets
-  keep their trade history and score snapshots so the selection can be
-  backtested. Sources with open paper positions are exempt until the copied
-  exposure is closed.
-- Current scoring feeds paper allocation for the top 10 monitored wallets, but it
-  is still a research ranking signal until paper results are validated over time.
+Because the rules are shared, a paper account is a fair preview of what the
+live account would do. Paper is on by default. Live trading is off until
+`LIVE_TRADING_ENABLED=true` is set in `.env`, and each live account must then
+be started on its own.
 
-## Main Interfaces
+## Two Speeds of Data
 
-- Backend API: `http://127.0.0.1:8000`
-- Dashboard: `http://127.0.0.1:3000`
-- Wallet Pool: `http://127.0.0.1:3000/wallets`
-- Live Feed: `http://127.0.0.1:3000/live-feed`
-- Ops Health: `http://127.0.0.1:3000/ops`
-- Trading: `http://127.0.0.1:3000/trading`
+Hyperliquid only allows a limited number of realtime subscriptions, so the
+system works at two speeds:
 
-Browser dashboard API calls use the Next.js proxy at `/api/backend`. Server-side
-dashboard calls use `SERVER_API_BASE_URL`, defaulting to `http://127.0.0.1:8000`
-locally. Docker Compose injects the fixed internal service address
-`http://backend:8000`; it is not a user-tweakable `.env` setting.
+- **Slow and wide:** periodic polling keeps the history of the whole wallet
+  pool up to date for ranking and research.
+- **Fast and narrow:** realtime subscriptions cover only the wallets being
+  copied and wallets we still hold a copied position from, so their exits are
+  followed as they happen. After a restart, recovery replays the trades that
+  arrived while the system was down.
+
+## What You See
+
+The dashboard at http://localhost:3000 has these pages:
+
+- **Overview:** system health, the wallet pool, realtime slots, and database
+  status at a glance.
+- **Accounts:** one account at a time, with performance, risk, exposure, and
+  transactions. Accounts are created, started, stopped, and reset here.
+- **Trading:** copy sources, open positions, copy decisions, and recent fills
+  for paper and live accounts.
+- **Wallets:** the wallet pool with scores and trade history.
+- **Discovery:** candidate wallets from each source and whether they were
+  admitted to the pool.
+- **Analytics:** score distribution, the discovery funnel, drawdown state,
+  and paper performance by source and coin.
+- **Live feed:** trades and system events as they happen.
+- **Database:** storage use and cleanup tools.
+- **Operations:** health of the workers, data sources, rate limits, and
+  backups.
+
+## Words Used in This Project
+
+- **Source wallet:** a trader we copy.
+- **Allocation:** the share of our account set aside for one source.
+- **Target position:** the position size we aim for when copying a source:
+  our allocation divided by the source's account value, times the source's
+  position.
+- **Minimum order:** Hyperliquid does not accept orders below 10 USD. Small
+  source trades often fall below this at our size, which is why sizing and
+  scoring both account for it.
+- **Exit-only:** an account that may close positions but not open new ones,
+  usually because a loss limit was hit.
+- **Reconciliation:** comparing our records with the exchange account and
+  correcting our records to match it.
+
+## Where to Go Next
+
+- To run it locally: [development.md](development.md).
+- To run it on a server or enable live trading: [deployment.md](deployment.md).
+- To understand the safety limits: [risk-model.md](risk-model.md).

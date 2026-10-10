@@ -414,21 +414,23 @@ write the same `request_id` to the frontend container log. The Trading dashboard
 shows that identifier with failed mutations. Use it to correlate a browser error
 with the upstream backend response without logging credentials or request bodies.
 
-The Alembic head for this update is `c4e8a2f6b1d3`. The chain includes the
+The Alembic head for this update is `d7f1b3c5e9a2`. The chain includes the
 funding-payment ledger, external account cash-flow ledger, cash-flow-adjusted
 performance snapshots, append-only live order attempts, and unified durable
 `live_copy_work` queue. It also adds transactional wallet fill revisions,
-partial scoring indexes, the ordered source-trade stream index, and the
-equity scoring and wallet archive schema. That last migration marks every
-materialized source trade set for one rebuild, so the first scoring run after
-the update takes longer than usual.
+partial scoring indexes, the ordered source-trade stream index, the equity
+scoring and wallet archive schema (`c4e8a2f6b1d3`), and the paper market
+simulation and paper risk state (`d7f1b3c5e9a2`). The equity scoring migration
+marks every materialized source trade set for one rebuild, so the first scoring
+run after it takes longer than usual. The paper migration only adds columns and
+small tables; existing paper positions get cross margin mode and zero funding.
 
 The live-copy queue migration bridges only unfinished realtime inbox work. It
 does not replay the full historical fill table. The scoring migrations rebuild
 revision metadata and create indexes over the existing fill table, so they can
 take time on a multi-million-row deployment.
 
-The `current` command must show `c4e8a2f6b1d3` before the backend or workers
+The `current` command must show `d7f1b3c5e9a2` before the backend or workers
 are restarted.
 
 Run the score backtest against the live database from a one-off container. It
@@ -482,6 +484,143 @@ After the services are healthy:
 5. Set `LIVE_TRADING_ENABLED=true` in `.env` if live execution is intended, then
    restart the backend and trading worker.
 6. Start the individual live accounts that should copy trades.
+
+## Container Hardening
+
+The application images run as non-root users. Backend, frontend, and worker
+containers use read-only root filesystems, writable `tmpfs` mounts only where
+needed, `no-new-privileges`, and all Linux capabilities dropped. Redis has an
+explicit healthcheck, but it is not a startup dependency for the backend or
+workers, because Redis only serves presentation events. Caddy adds HSTS on the
+VPS and sets content-type, frame, referrer, and permissions security headers.
+Keep state and backups in the declared volumes rather than writing into an
+application container.
+
+## Live Trading Activation
+
+The repository uses mainnet market data for monitoring and paper trading while
+live execution defaults to disabled:
+
+```dotenv
+LIVE_TRADING_ENABLED=false
+```
+
+Set it to `true` and restart the backend and trading worker to activate live
+execution and automatic live copy. Startup then requires
+`HYPERLIQUID_PRIVATE_KEY` and `HYPERLIQUID_WALLET_ADDRESS`. There are no
+acknowledgement flags, time-based arming values, global database gate, coin
+allowlist, or coin blocklist. The market-policy function currently allows every
+coin. The private key is not stored in Postgres.
+
+Default live risk limits are 10 percent loss over a rolling 24 hours, 20
+percent over a rolling 7 days, 25 percent drawdown from the peak performance
+index, 5 percent of account equity lost by a single source over 7 days, and 50
+orders per minute, plus a 90-second maximum reconciliation snapshot age and a
+30-second entry intent TTL. Shared copy policy in `backend/config/trading.json`
+caps notional exposure at 3x the source allocation per source and 3x account
+equity in total. Source leverage is copied as the exchange setting.
+
+Do not enable live trading before paper trading proves edge after delay, fees,
+slippage, and exit behavior.
+
+The live backend has a shared `TradeIntent` core, generic trading
+account/order/fill tables, and a Hyperliquid SDK adapter for IOC reduce-only or
+entry orders. The trading worker can reconcile enabled live accounts by reading
+Hyperliquid order status, fills, default perp state, all discovered perp dex
+states, `userAbstraction`, and spot/core USDC balances. In unified mode, live
+account equity, cash, Start trading validation, and live copy sizing use unified
+USDC from `spotClearinghouseState`. In `standard_per_dex` mode, live copy sizing
+uses tradable perp equity on the same perp dex as the copied market, while spot
+USDC remains visible but not used for opening perp entries. It can also execute
+live copy orders when global live trading, copy execution, and account-level
+trading are all enabled. Live copy uses shared allocation, minimum notional,
+min-order adjustment, price drift, and mid-price cache policy from
+`backend/config/trading.json`, while live order submission uses live-only
+execution and risk guardrails from `backend/config/live_trading.json`. Before
+submission, the live adapter routes prefixed HIP-3 markets such as `xyz:SNDK`
+through the matching SDK `perp_dexs` metadata and resolves whichever SDK order
+coin name is present for that market, either `SNDK` or `xyz:SNDK`. It then
+normalizes order size and limit price to Hyperliquid perp tick and lot precision
+from that market metadata. Markets still missing from the live SDK metadata are
+rejected before submission, so SDK lookup misses are stored as actionable live
+order errors instead of raw Python key errors. If lot rounding
+would push an adjusted entry below the configured minimum notional, the adapter
+rounds to the next valid lot only when min-order adjustment is enabled. Live
+entries also add `live_trading_min_order_notional_buffer_usd` before wire
+rounding so orders near the exchange minimum do not fall back under the limit
+after tick and lot normalization.
+Live entries use IOC-limit orders with `live_trading_limit_slippage_bps` applied
+to the live mid-price. The default is 20 bps so copied entries are more likely
+to cross resting liquidity, while `live_trading_max_slippage_bps` remains the
+hard guard against overly aggressive prices. If this value is too tight,
+Hyperliquid can reject the order with "Order could not immediately match
+against any resting orders."
+Partial live reduce and close copy orders below the configured minimum notional
+are skipped locally with `live_close_below_min_order_notional`. When current
+source state remains open, later partial closes aggregate earlier below-min
+skips for the same live account, source, coin, and side until the combined
+reduce can be submitted. When current source state shows the source is flat or
+on the opposite side, live copy treats that close fill as final and closes the
+full remaining copied source position. If that final close is below the
+configured minimum, the backend submits a reduce-only dust close with wire size
+adjusted up to the minimum notional.
+Reduce-only dust closes are adjusted independently from the small-entry
+adjustment toggle because exits must be able to clear residual exposure.
+Recovery can retry older local `live_close_below_min_order_notional` skip rows
+so existing dust positions are not left open after this final-close check.
+If a copied source-position row is missing, recovery reconstructs the current
+executed market lifecycle before restoring attribution. Historical existence
+alone is insufficient. Unexplained manual or competing exposure defers the
+source fill without submitting a reduce-only order.
+Enabled and exit-only live accounts reconcile on
+`live_trading_reconciliation_interval_seconds`. Live copy also refreshes a stale
+account snapshot before sizing a new fill, so deposits are picked up before copy
+order sizing if the background loop is late.
+Complete reconciliation also imports Hyperliquid non-funding ledger updates.
+External deposits and withdrawals are stored separately from trading PnL, while
+transfers between spot and perp capital inside the same account remain internal.
+USDC sent in from another Hyperliquid address is treated as an external deposit,
+and USDC sent out to another address is treated as an external withdrawal.
+Each live account performs one versioned all-time cash-flow backfill before
+switching to incremental reconciliation. This imports deposits and withdrawals
+that happened before the account was added to the application.
+The first complete reconciliation after the performance migration requests
+Hyperliquid `allTime` account-value history and the matching historical external
+cash flows. It replaces the temporary zero baseline with chain-linked,
+cash-flow-adjusted historical snapshots when both histories are complete. If
+the first external deposit predates the first positive account-value point, the
+backfill anchors at zero immediately before that deposit and ignores leading
+zero-value samples. This preserves the complete initial capital instead of
+mistaking the first partial balance for trading profit. If
+backfill data is unavailable, the previous stored complete exchange snapshot is
+used as a safe baseline and backfill is retried later. Later equity snapshots
+continue the same performance index, so adding capital changes sizing without
+diluting earlier account performance. The Accounts page labels the tracking
+start and keeps cash-flow-adjusted PnL and net external flows in account details.
+Its headline Total PnL and Realized metrics use the same net definitions as the
+Trading page. Open margin is shown before notional with its share of equity,
+while notional carries average leverage.
+`GET /trading/accounts/{account_key}/cash-flows` returns the selected live
+account's complete external cash-flow ledger without attaching the full history
+to the frequently refreshed account summary response. The account's normal
+automatic reconciliation imports deposits, withdrawals, and external transfers;
+the panel reloads when the account reconciliation timestamp advances.
+Manual reconciliation accepts `lookback_minutes` for historical live fill
+backfills, for example `POST /trading/accounts/{account_key}/reconcile?lookback_minutes=4320`.
+
+Source wallets can also be unified. When their per-dex `clearinghouseState`
+reports zero perp equity, paper and live copy check `userAbstraction` and use
+unified USDC from `spotClearinghouseState` for source exposure sizing if the
+source account is in unified mode.
+
+Manual live test orders are only available through `POST /trading/testnet/orders`
+when `hyperliquid_network` is `testnet`. Use them with small notional values and
+run `POST /trading/accounts/{account_key}/reconcile` after submission to confirm
+the exchange fill and position state were observed.
+
+Current wallet scoring feeds paper copy allocation, but it is still a research
+ranking signal. Do not use it for live allocation until paper performance has
+been validated with latency, slippage, exits, and account-level risk controls.
 
 ## Backups
 
