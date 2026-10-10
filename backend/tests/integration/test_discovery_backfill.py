@@ -1,0 +1,190 @@
+"""Discovery candidate backfill: equity precheck and fill paging on a real database."""
+
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from typing import Any
+
+import pytest
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.core.config import Settings
+from app.db.models import DiscoveryWalletCandidate, WalletFill
+from app.schemas.fill import WalletFillImportRequest
+from app.services import discovery_service
+from app.services.discovery_service import backfill_discovery_candidates
+from app.services.fill_import_service import import_address_fills
+
+pytestmark = pytest.mark.integration
+
+DAY_MS = 86_400_000
+DRAWDOWN_WALLET = "0x" + "d" * 40
+LOSING_WALLET = "0x" + "e" * 40
+HEALTHY_WALLET = "0x" + "f" * 40
+
+
+def curve(values: list[tuple[str, str]]) -> list[Any]:
+    """Daily perp portfolio history ending now, from (account value, cumulative PnL)."""
+
+    end_ms = int(datetime.now(UTC).timestamp() * 1000)
+    start_ms = end_ms - (len(values) - 1) * DAY_MS
+    points = [(start_ms + index * DAY_MS, value, pnl) for index, (value, pnl) in enumerate(values)]
+    return [
+        [
+            "perpMonth",
+            {
+                "accountValueHistory": [[time_ms, value] for time_ms, value, _ in points],
+                "pnlHistory": [[time_ms, pnl] for time_ms, _, pnl in points],
+                "vlm": "0",
+            },
+        ]
+    ]
+
+
+PORTFOLIOS = {
+    # 2000 to 1000 is a 50% drawdown, past the 40% discovery limit.
+    DRAWDOWN_WALLET: curve([("2000", "0"), ("2000", "0"), ("1000", "-1000"), ("1100", "-900")]),
+    # A steady loss with a small drawdown: rejected only for its negative return.
+    LOSING_WALLET: curve([("2000", "0"), ("1960", "-40"), ("1920", "-80"), ("1900", "-100")]),
+    HEALTHY_WALLET: curve([("2000", "0"), ("2050", "50"), ("2100", "100"), ("2150", "150")]),
+}
+
+
+def hyperliquid_fill(tid: int, time_ms: int) -> dict[str, Any]:
+    return {
+        "coin": "BTC",
+        "px": "100",
+        "sz": "1",
+        "side": "B",
+        "time": time_ms,
+        "startPosition": "0",
+        "dir": "Open Long",
+        "closedPnl": "0",
+        "hash": f"0x{tid:064x}",
+        "oid": tid,
+        "crossed": True,
+        "fee": "0.01",
+        "tid": tid,
+        "feeToken": "USDC",
+    }
+
+
+class FakeHyperliquidClient:
+    instances: list[FakeHyperliquidClient] = []
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        self.portfolio_requests: list[str] = []
+        self.fill_requests: list[tuple[str, int]] = []
+        FakeHyperliquidClient.instances.append(self)
+
+    async def __aenter__(self) -> FakeHyperliquidClient:
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        return None
+
+    async def portfolio(self, *, user: str) -> list[Any]:
+        self.portfolio_requests.append(user)
+        return PORTFOLIOS[user]
+
+    async def user_fills_by_time(self, *, user: str, start_time_ms: int, **_: object) -> list:
+        self.fill_requests.append((user, start_time_ms))
+        return []
+
+
+def settings() -> Settings:
+    return Settings(
+        _env_file=None,
+        scoring_equity_min_points=3,
+        scoring_equity_min_coverage_days=2,
+        scoring_equity_min_account_value_usd=Decimal("10"),
+        fill_import_storage_guard_enabled=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_candidates_failing_the_equity_curve_never_fetch_fills(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    FakeHyperliquidClient.instances = []
+    monkeypatch.setattr(discovery_service, "HyperliquidClient", FakeHyperliquidClient)
+    async with integration_sessionmaker() as session:
+        session.add_all(
+            [
+                DiscoveryWalletCandidate(
+                    wallet_address=address,
+                    source="test",
+                    status="accepted",
+                    backfill_status="not_started",
+                )
+                for address in (DRAWDOWN_WALLET, LOSING_WALLET, HEALTHY_WALLET)
+            ]
+        )
+        await session.commit()
+
+        result = await backfill_discovery_candidates(
+            session,
+            source=None,
+            limit=10,
+            retry_failed=False,
+            settings=settings(),
+        )
+        candidates = {
+            candidate.wallet_address: candidate
+            for candidate in (await session.scalars(select(DiscoveryWalletCandidate))).all()
+        }
+
+    [client] = FakeHyperliquidClient.instances
+    fetched_fills_for = {user for user, _ in client.fill_requests}
+    assert sorted(client.portfolio_requests) == sorted(PORTFOLIOS)
+    assert fetched_fills_for == {HEALTHY_WALLET}
+    assert result.reject_reasons["max_drawdown_too_high"] == 1
+    assert result.reject_reasons["equity_return_not_positive"] == 1
+    assert candidates[DRAWDOWN_WALLET].fail_reason == "max_drawdown_too_high"
+    assert candidates[DRAWDOWN_WALLET].max_drawdown_pct == Decimal("0.500000")
+    assert candidates[DRAWDOWN_WALLET].backfill_fetched_count == 0
+    assert candidates[LOSING_WALLET].fail_reason == "equity_return_not_positive"
+    # The healthy wallet passed the curve and was judged on its fills (none here).
+    assert candidates[HEALTHY_WALLET].fail_reason == "no_perp_fills"
+
+
+class PagedFillClient:
+    """Two full pages whose boundary falls inside a burst of same-millisecond fills."""
+
+    def __init__(self, start_ms: int) -> None:
+        self.burst_ms = start_ms + 1_000_000
+        first_page = [hyperliquid_fill(tid, start_ms + tid) for tid in range(1, 1998)]
+        burst = [hyperliquid_fill(tid, self.burst_ms) for tid in range(1998, 2006)]
+        self.pages = [first_page + burst[:3], burst + [hyperliquid_fill(2006, self.burst_ms + 5)]]
+        self.requests: list[int] = []
+
+    async def user_fills_by_time(self, *, start_time_ms: int, **_: object) -> list:
+        self.requests.append(start_time_ms)
+        return self.pages[len(self.requests) - 1] if len(self.requests) <= len(self.pages) else []
+
+
+@pytest.mark.asyncio
+async def test_fills_sharing_the_last_timestamp_of_a_page_are_not_lost(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    start_ms = int((datetime.now(UTC) - timedelta(days=30)).timestamp() * 1000)
+    client = PagedFillClient(start_ms)
+    async with integration_sessionmaker() as session:
+        result = await import_address_fills(
+            session,
+            address=HEALTHY_WALLET,
+            payload=WalletFillImportRequest(
+                start_time_ms=start_ms,
+                max_pages=3,
+                target_fills=10000,
+            ),
+            client=client,  # type: ignore[arg-type]
+        )
+        await session.commit()
+        stored = await session.scalar(select(func.count()).select_from(WalletFill))
+
+    # The second page restarts at the burst timestamp instead of one millisecond after it.
+    assert client.requests[1] == client.burst_ms
+    assert stored == 2006
+    assert result.inserted == 2006

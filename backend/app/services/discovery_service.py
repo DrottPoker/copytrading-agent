@@ -56,6 +56,7 @@ from app.services.source_trade_reconstruction_service import (
 )
 from app.services.wallet_cleanup_service import delete_wallet_data_rows
 from app.services.wallet_equity_service import (
+    WalletEquityMetrics,
     fetch_wallet_equity_metrics,
     store_wallet_equity_metrics,
 )
@@ -280,6 +281,21 @@ class CandidateTradeMetrics:
     max_drawdown_pct: Decimal | None
     average_trade_notional_usd: Decimal
     last_trade_time_ms: int | None
+
+
+# A candidate rejected on its equity curve before any fill was fetched.
+EMPTY_CANDIDATE_TRADE_METRICS = CandidateTradeMetrics(
+    fill_count=0,
+    closed_trade_count=0,
+    open_trade_count=0,
+    ignored_fill_count=0,
+    net_pnl_usd=Decimal("0"),
+    profit_factor=None,
+    win_rate=None,
+    max_drawdown_pct=None,
+    average_trade_notional_usd=Decimal("0"),
+    last_trade_time_ms=None,
+)
 
 
 async def list_discovery_sources(
@@ -2058,37 +2074,55 @@ async def backfill_discovery_candidates(
             await session.commit()
 
             try:
-                import_result = await import_address_fills(
-                    session=session,
+                # The equity curve costs one light request, while fills cost weight per
+                # row returned, so candidates it rejects never fetch their fills.
+                equity = await fetch_wallet_equity_metrics(
+                    hyperliquid_client,
                     address=candidate.wallet_address,
-                    payload=WalletFillImportRequest(
-                        days=settings.discovery_candidate_backfill_days,
-                        max_pages=settings.discovery_candidate_backfill_max_pages,
-                        target_fills=settings.discovery_candidate_backfill_target_fills,
-                    ),
-                    client=hyperliquid_client,
+                    settings=settings,
                 )
-                metrics = await load_candidate_trade_metrics(
-                    session,
-                    address=candidate.wallet_address,
-                    days=settings.discovery_candidate_backfill_days,
-                )
-                decision = evaluate_candidate_trade_quality(metrics, settings=settings)
-                if decision.status == "accepted":
-                    metrics = await candidate_metrics_with_equity_drawdown(
-                        session,
-                        metrics=metrics,
+                fetched = inserted = duplicate = 0
+                equity_rejection = evaluate_candidate_equity(equity, settings=settings)
+                if equity_rejection is not None:
+                    metrics = replace(
+                        EMPTY_CANDIDATE_TRADE_METRICS,
+                        max_drawdown_pct=equity.max_drawdown_pct,
+                    )
+                    decision = equity_rejection
+                else:
+                    import_result = await import_address_fills(
+                        session=session,
                         address=candidate.wallet_address,
+                        payload=WalletFillImportRequest(
+                            days=settings.discovery_candidate_backfill_days,
+                            max_pages=settings.discovery_candidate_backfill_max_pages,
+                            target_fills=settings.discovery_candidate_backfill_target_fills,
+                        ),
                         client=hyperliquid_client,
-                        settings=settings,
+                    )
+                    fetched = import_result.fetched
+                    inserted = import_result.inserted
+                    duplicate = import_result.duplicate
+                    metrics = await load_candidate_trade_metrics(
+                        session,
+                        address=candidate.wallet_address,
+                        days=settings.discovery_candidate_backfill_days,
                     )
                     decision = evaluate_candidate_trade_quality(metrics, settings=settings)
+                    if decision.status == "accepted":
+                        metrics = await candidate_metrics_with_equity(
+                            session,
+                            metrics=metrics,
+                            address=candidate.wallet_address,
+                            equity=equity,
+                        )
+                        decision = evaluate_candidate_trade_quality(metrics, settings=settings)
                 update_candidate_backfill_state(
                     candidate,
                     metrics=metrics,
-                    fetched=import_result.fetched,
-                    inserted=import_result.inserted,
-                    duplicate=import_result.duplicate,
+                    fetched=fetched,
+                    inserted=inserted,
+                    duplicate=duplicate,
                     decision=decision,
                 )
 
@@ -2112,9 +2146,9 @@ async def backfill_discovery_candidates(
                 items.append(
                     backfill_item_from_candidate(
                         candidate,
-                        fetched=import_result.fetched,
-                        inserted=import_result.inserted,
-                        duplicate=import_result.duplicate,
+                        fetched=fetched,
+                        inserted=inserted,
+                        duplicate=duplicate,
                         pool_action=pool_action,
                     )
                 )
@@ -2125,8 +2159,7 @@ async def backfill_discovery_candidates(
                             "walletAddress": candidate.wallet_address,
                             "label": (
                                 f"Finished {short_wallet_address(candidate.wallet_address)}: "
-                                f"{import_result.inserted} new fills, "
-                                f"{import_result.duplicate} duplicates."
+                                f"{inserted} new fills, {duplicate} duplicates."
                             ),
                         }
                     )
@@ -2579,13 +2612,36 @@ async def load_candidate_trade_metrics(
     )
 
 
-async def candidate_metrics_with_equity_drawdown(
+def evaluate_candidate_equity(
+    equity: WalletEquityMetrics,
+    *,
+    settings: Settings,
+) -> PrefilterDecision | None:
+    """Reject on the equity curve before fills are fetched; None without a readable curve."""
+
+    if not equity.is_ok:
+        return None
+    if (
+        settings.discovery_quality_max_drawdown_pct is not None
+        and equity.max_drawdown_pct is not None
+        and equity.max_drawdown_pct > settings.discovery_quality_max_drawdown_pct
+    ):
+        return PrefilterDecision(status="rejected", fail_reason="max_drawdown_too_high")
+    if (
+        settings.discovery_quality_require_positive_equity_return
+        and equity.return_pct is not None
+        and equity.return_pct <= Decimal("0")
+    ):
+        return PrefilterDecision(status="rejected", fail_reason="equity_return_not_positive")
+    return None
+
+
+async def candidate_metrics_with_equity(
     session: AsyncSession,
     *,
     metrics: CandidateTradeMetrics,
     address: str,
-    client: HyperliquidClient,
-    settings: Settings,
+    equity: WalletEquityMetrics,
 ) -> CandidateTradeMetrics:
     """Add the candidate's equity-curve drawdown and keep the curve for scoring.
 
@@ -2593,7 +2649,6 @@ async def candidate_metrics_with_equity_drawdown(
     is not rejected for it; scoring applies its own fallback later.
     """
 
-    equity = await fetch_wallet_equity_metrics(client, address=address, settings=settings)
     await store_wallet_equity_metrics(
         session,
         address=address,

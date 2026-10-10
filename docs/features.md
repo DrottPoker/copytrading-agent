@@ -266,16 +266,26 @@ What it does:
   stores fill/trade metrics on the candidate, and applies trade-quality rules.
 - Hyperliquid 429 responses are retried with backoff; if rate limits persist, the
   current backfill batch stops cleanly instead of failing the full API request.
-- Quality checks require at least 20 closed trades. Candidates that pass the
-  trade checks get their equity curve read from Hyperliquid `portfolio`; the
-  curve is stored for scoring and an equity drawdown above 40% rejects the
-  candidate with `max_drawdown_too_high`. Without readable equity history the
-  drawdown check is skipped and scoring applies its own fallback.
+- Each candidate's equity curve is read from Hyperliquid `portfolio` before any
+  fill is fetched. The curve costs one request of weight 20, while fills cost
+  extra weight for every 20 rows returned, so a full history of 10,000 fills
+  costs about 600. An equity drawdown above 40% rejects the candidate with
+  `max_drawdown_too_high`, and with `quality.require_positive_equity_return`
+  (on by default) a curve without a positive return rejects it with
+  `equity_return_not_positive`, both without fetching fills. Without readable
+  equity history these checks are skipped and the trade checks decide.
+- Quality checks require at least 20 closed trades. The curve read before the
+  fills is stored for scoring when the candidate passes the trade checks.
+- Fill imports page forward in pages of 2,000. A full page that ends inside a
+  burst of fills sharing one millisecond is continued from that millisecond,
+  and fills already read are skipped, so no fill at a page boundary is lost.
 - Candidates that pass backfill quality checks are inserted directly into the
   wallet pool and marked as `promoted`.
 - An archived wallet that appears in a discovery source is skipped with
   `archived_cooldown` for 30 days after archiving. After that it is evaluated
   again from scratch and readmitted to the pool if it passes.
+- Equity reject reasons are `max_drawdown_too_high` and
+  `equity_return_not_positive`.
 - Trade-quality reject reasons include `no_perp_fills`, `too_few_closed_trades`,
   `net_pnl_not_positive`, `profit_factor_below_min`,
   `max_drawdown_too_high`, `avg_trade_notional_too_small`, and

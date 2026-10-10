@@ -63,6 +63,9 @@ DISCOVERY_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("quality", "min_profit_factor"): "discovery_quality_min_profit_factor",
     ("quality", "min_win_rate"): "discovery_quality_min_win_rate",
     ("quality", "max_drawdown_pct"): "discovery_quality_max_drawdown_pct",
+    ("quality", "require_positive_equity_return"): (
+        "discovery_quality_require_positive_equity_return"
+    ),
     ("quality", "min_average_trade_notional_usd"): (
         "discovery_quality_min_average_trade_notional_usd"
     ),
@@ -495,6 +498,7 @@ class Settings(BaseSettings):
     discovery_quality_min_win_rate: Decimal | None = None
     # Peak-to-trough drawdown of the candidate's equity curve.
     discovery_quality_max_drawdown_pct: Decimal | None = Decimal("0.40")
+    discovery_quality_require_positive_equity_return: bool = True
     discovery_quality_min_average_trade_notional_usd: Decimal | None = Decimal("50")
     discovery_quality_max_average_trade_notional_usd: Decimal | None = Decimal("250000")
     discovery_promotion_batch_size: int = Field(default=25, ge=1, le=250)

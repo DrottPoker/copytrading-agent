@@ -6,6 +6,18 @@ used to live in the README.
 
 ## 2026-10-10
 
+### Faster discovery backfill
+
+- Discovery reads each candidate's equity curve (one light request) before its
+  fills, and rejects candidates with an equity drawdown above 40% or, with the
+  new `quality.require_positive_equity_return` setting, without a positive
+  return, before any fill is fetched. Fills cost Hyperliquid rate-limit weight
+  per row returned, and in a measured run more than half of the fetched rows
+  belonged to candidates that were rejected afterwards. The curve is reused for
+  scoring, so no candidate costs more than before.
+- Fill imports no longer lose fills that share the last millisecond of a full
+  page; the next page starts at that millisecond and skips fills already read.
+
 ### Review fixes
 
 - An exit that the order book could not fill in paper is now retried by paper

@@ -162,6 +162,7 @@ async def import_address_fills(
 
     hyperliquid_client = client or HyperliquidClient()
     records: list[dict[str, Any]] = []
+    seen_fill_ids: set[str] = set()
     raw_fetched_count = 0
     pages_fetched = 0
     next_start_time_ms = start_time_ms
@@ -188,8 +189,14 @@ async def import_address_fills(
                 settings=settings,
                 received_at=page_observed_at,
             )
-            if record is not None:
-                records.append(record)
+            if record is None:
+                continue
+            fill_id = record.get("external_fill_id")
+            if fill_id is not None:
+                if fill_id in seen_fill_ids:
+                    continue
+                seen_fill_ids.add(fill_id)
+            records.append(record)
 
         max_timestamp_ms = max(fill_timestamp_ms(fill) for fill in page)
         if (
@@ -198,7 +205,11 @@ async def import_address_fills(
             or max_timestamp_ms >= end_time_ms
         ):
             break
-        next_start_time_ms = max_timestamp_ms + 1
+        # A full page can end inside a burst of fills sharing one timestamp, so the
+        # next page starts at that timestamp; fills already read are skipped above.
+        next_start_time_ms = (
+            max_timestamp_ms if max_timestamp_ms > next_start_time_ms else max_timestamp_ms + 1
+        )
 
     inserted_count = 0
     latest_fill_time_ms = max((record["timestamp_ms"] for record in records), default=None)

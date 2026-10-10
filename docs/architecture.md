@@ -935,11 +935,12 @@ sequenceDiagram
   Stats-->>Worker: source candidates
   Worker->>DB: upsert discovery candidates with dedupe
   Worker->>DB: run source-metric prefilter
-  Worker->>HL: userFillsByTime for accepted candidates during backfill
+  Worker->>HL: portfolio for each accepted candidate
+  Worker->>DB: reject on equity drawdown or return before any fill is fetched
+  Worker->>HL: userFillsByTime for candidates that pass the equity checks
   HL-->>Worker: recent perp fills
-  Worker->>DB: insert fills and reconstruct source trades
-  Worker->>HL: portfolio for candidates that pass the trade checks
-  Worker->>DB: store the equity curve and check equity drawdown
+  Worker->>DB: insert fills, reconstruct source trades, and run the trade checks
+  Worker->>DB: store the equity curve for candidates that pass
   Worker->>DB: insert approved candidates into wallet pool or readmit archived ones
   Worker->>Redis: publish discovery import/backfill events
 ```
