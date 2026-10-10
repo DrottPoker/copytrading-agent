@@ -24,6 +24,10 @@ used to live in the README.
   scoring, so no candidate costs more than before.
 - Fill imports no longer lose fills that share the last millisecond of a full
   page; the next page starts at that millisecond and skips fills already read.
+- A discovery run now finishes candidates an interrupted earlier run left
+  behind. Before, a deploy, restart, or rate-limit pause during backfill left
+  the remaining candidates unprocessed for good, because later imports skip
+  existing candidates and only backfilled their own.
 
 ### Review fixes
 

@@ -281,6 +281,11 @@ What it does:
   and fills already read are skipped, so no fill at a page boundary is lost.
 - Candidates that pass backfill quality checks are inserted directly into the
   wallet pool and marked as `promoted`.
+- Each discovery run also finishes what an interrupted earlier run left behind,
+  for example after a deploy, a worker restart, or a rate-limit pause: imported
+  candidates that were never prefiltered are evaluated, and every accepted
+  candidate without fills is backfilled. Later imports skip existing
+  candidates, so these would otherwise never be processed.
 - An archived wallet that appears in a discovery source is skipped with
   `archived_cooldown` for 30 days after archiving. After that it is evaluated
   again from scratch and readmitted to the pool if it passes.

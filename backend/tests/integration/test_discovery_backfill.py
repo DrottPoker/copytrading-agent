@@ -3,6 +3,7 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, select
@@ -12,7 +13,11 @@ from app.core.config import Settings
 from app.db.models import DiscoveryWalletCandidate, WalletFill
 from app.schemas.fill import WalletFillImportRequest
 from app.services import discovery_service
-from app.services.discovery_service import backfill_discovery_candidates
+from app.services.discovery_service import (
+    DiscoverySourceResult,
+    backfill_discovery_candidates,
+    run_discovery_import,
+)
 from app.services.fill_import_service import import_address_fills
 
 pytestmark = pytest.mark.integration
@@ -188,3 +193,61 @@ async def test_fills_sharing_the_last_timestamp_of_a_page_are_not_lost(
     assert client.requests[1] == client.burst_ms
     assert stored == 2006
     assert result.inserted == 2006
+
+
+@pytest.mark.asyncio
+async def test_a_discovery_run_finishes_candidates_an_interrupted_run_left_behind(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def no_new_candidates(*_args: object, **_kwargs: object) -> DiscoverySourceResult:
+        return DiscoverySourceResult(
+            fetched=0,
+            skipped=0,
+            skip_reasons={},
+            candidates=[],
+            metadata={},
+        )
+
+    FakeHyperliquidClient.instances = []
+    monkeypatch.setattr(discovery_service, "HyperliquidClient", FakeHyperliquidClient)
+    monkeypatch.setattr(discovery_service, "fetch_discovery_source", no_new_candidates)
+    interrupted_run = uuid4()
+    async with integration_sessionmaker() as session:
+        session.add_all(
+            [
+                # Prefiltered but never backfilled before the worker stopped.
+                DiscoveryWalletCandidate(
+                    wallet_address=HEALTHY_WALLET,
+                    source="hyperliquid_leaderboard_week",
+                    status="accepted",
+                    backfill_status="not_started",
+                    last_import_run_id=interrupted_run,
+                ),
+                # Imported but never prefiltered before the worker stopped.
+                DiscoveryWalletCandidate(
+                    wallet_address=DRAWDOWN_WALLET,
+                    source="hyperliquid_leaderboard_week",
+                    status="discovered",
+                    source_account_value_usd=Decimal("50000"),
+                    source_pnl_usd=Decimal("5000"),
+                    source_roi_pct=Decimal("0.1"),
+                    last_import_run_id=interrupted_run,
+                ),
+            ]
+        )
+        await session.commit()
+
+        await run_discovery_import(
+            session,
+            sources=["hyperliquid_leaderboard_week"],
+            settings=settings(),
+        )
+        candidates = {
+            candidate.wallet_address: candidate
+            for candidate in (await session.scalars(select(DiscoveryWalletCandidate))).all()
+        }
+
+    assert candidates[HEALTHY_WALLET].backfill_status == "succeeded"
+    assert candidates[DRAWDOWN_WALLET].backfill_status == "succeeded"
+    assert candidates[DRAWDOWN_WALLET].fail_reason == "max_drawdown_too_high"

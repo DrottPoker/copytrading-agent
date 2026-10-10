@@ -283,6 +283,9 @@ class CandidateTradeMetrics:
     last_trade_time_ms: int | None
 
 
+# Upper bound for evaluating candidates earlier runs imported but never prefiltered.
+DISCOVERY_LEFTOVER_PREFILTER_LIMIT = 5000
+
 # A candidate rejected on its equity curve before any fill was fetched.
 EMPTY_CANDIDATE_TRADE_METRICS = CandidateTradeMetrics(
     fill_count=0,
@@ -829,6 +832,15 @@ async def _run_discovery_import(
             settings=settings,
             commit=False,
         )
+        # Candidates an interrupted earlier run imported but never evaluated are
+        # skipped by every later import, so they are evaluated here.
+        await prefilter_discovery_candidates(
+            session,
+            status="discovered",
+            limit=DISCOVERY_LEFTOVER_PREFILTER_LIMIT,
+            settings=settings,
+            commit=False,
+        )
         await session.flush()
         await update_discovery_operation_progress(
             session,
@@ -850,7 +862,7 @@ async def _run_discovery_import(
             },
         )
 
-        backfill_total = max(0, prefilter_response.accepted)
+        backfill_total = await count_unbackfilled_accepted_candidates(session)
         backfill_processed = 0
 
         async def on_backfill_progress(event: dict[str, Any]) -> None:
@@ -904,9 +916,11 @@ async def _run_discovery_import(
             key="discovery_import",
             run_id=operation_run_id,
         )
+        # Every accepted candidate without fills, including those an interrupted
+        # earlier run left behind, so a restart or rate-limit pause loses none.
         backfill_response = await backfill_all_discovery_candidates(
             session,
-            run_ids=run_ids,
+            run_ids=None,
             settings=settings,
             progress_callback=on_backfill_progress,
         )
@@ -2243,10 +2257,20 @@ async def backfill_discovery_candidates(
     )
 
 
+async def count_unbackfilled_accepted_candidates(session: AsyncSession) -> int:
+    value = await session.scalar(
+        select(func.count()).where(
+            DiscoveryWalletCandidate.status == "accepted",
+            DiscoveryWalletCandidate.backfill_status == "not_started",
+        )
+    )
+    return int(value or 0)
+
+
 async def backfill_all_discovery_candidates(
     session: AsyncSession,
     *,
-    run_ids: list[UUID],
+    run_ids: list[UUID] | None,
     settings: Settings,
     progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
 ) -> DiscoveryBackfillResponse:
