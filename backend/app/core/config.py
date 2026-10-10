@@ -408,8 +408,9 @@ class Settings(BaseSettings):
     live_trading_max_source_loss_pct: Decimal = Field(default=Decimal("0.05"), ge=0, le=1)
     live_trading_max_orders_per_minute: int = Field(default=50, ge=0, le=10000)
     live_trading_reduce_only_when_stopped: bool = True
-    trading_copy_top_wallet_count: int = Field(default=5, ge=1, le=10)
-    trading_copy_max_total_allocation_pct: Decimal = Field(default=Decimal("1.00"), gt=0, le=1)
+    trading_copy_top_wallet_count: int = Field(default=10, ge=1, le=10)
+    # Split equally over the copied sources; may exceed 1 because exposure caps bound the risk.
+    trading_copy_max_total_allocation_pct: Decimal = Field(default=Decimal("2.00"), gt=0)
     trading_copy_max_source_exposure_multiple: Decimal = Field(default=Decimal("3"), gt=0, le=100)
     trading_copy_max_total_exposure_multiple: Decimal = Field(default=Decimal("3"), gt=0, le=100)
     trading_copy_min_order_notional_usd: Decimal = Field(default=Decimal("10"), ge=0)
@@ -890,6 +891,15 @@ class Settings(BaseSettings):
         account_keys = [account.key for account in self.paper_copy_accounts]
         if len(account_keys) != len(set(account_keys)):
             raise ValueError("paper_copy_accounts keys must be unique.")
+        if (
+            self.trading_copy_max_total_allocation_pct
+            > self.trading_copy_max_total_exposure_multiple
+        ):
+            # Allocation beyond the total exposure cap could never be used.
+            raise ValueError(
+                "trading_copy_max_total_allocation_pct must not exceed "
+                "trading_copy_max_total_exposure_multiple."
+            )
         if (
             self.trading_copy_source_state_cache_max_age_seconds > 0
             and self.trading_copy_source_state_refresh_seconds

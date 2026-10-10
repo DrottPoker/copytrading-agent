@@ -6,6 +6,13 @@ used to live in the README.
 
 ## 2026-10-10
 
+### Ten copied sources
+
+- The top 10 ranked wallets are copied, each with 20% of the account, a 200%
+  allocation budget. The exposure caps (3x a source's allocation and 3x the
+  account) still bound the total size, and the budget may not exceed the total
+  exposure cap.
+
 ### Faster discovery backfill
 
 - Discovery reads each candidate's equity curve (one light request) before its

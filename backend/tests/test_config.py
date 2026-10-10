@@ -2,8 +2,10 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from app.core.config import Settings, load_app_config
+from app.services.trading_core import copy_allocation_pct
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
@@ -171,8 +173,8 @@ def test_shared_trading_config_is_loaded_from_dedicated_file(
     _clear_live_env_overrides(monkeypatch)
     config = load_app_config()
 
-    assert config["trading_copy_top_wallet_count"] == 5
-    assert Decimal(str(config["trading_copy_max_total_allocation_pct"])) == Decimal("1.0")
+    assert config["trading_copy_top_wallet_count"] == 10
+    assert Decimal(str(config["trading_copy_max_total_allocation_pct"])) == Decimal("2.0")
     assert Decimal(str(config["trading_copy_max_source_exposure_multiple"])) == Decimal("3")
     assert Decimal(str(config["trading_copy_max_total_exposure_multiple"])) == Decimal("3")
     assert Decimal(str(config["trading_copy_min_order_notional_usd"])) == Decimal("10")
@@ -276,3 +278,19 @@ def test_source_state_refresh_must_be_shorter_than_the_cache_age() -> None:
         trading_copy_source_state_refresh_seconds=5,
     )
     assert disabled.trading_copy_source_state_cache_max_age_seconds == 0
+
+
+def test_each_of_the_ten_copied_sources_gets_twenty_percent() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.trading_copy_top_wallet_count == 10
+    assert copy_allocation_pct(settings) == Decimal("0.2")
+
+
+def test_allocation_budget_cannot_exceed_the_total_exposure_cap() -> None:
+    with pytest.raises(ValidationError, match="must not exceed"):
+        Settings(
+            _env_file=None,
+            trading_copy_max_total_allocation_pct=Decimal("4"),
+            trading_copy_max_total_exposure_multiple=Decimal("3"),
+        )

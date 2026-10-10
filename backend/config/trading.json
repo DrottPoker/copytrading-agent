@@ -1,7 +1,7 @@
 {
   "copy": {
-    "top_wallet_count": 5,
-    "max_total_allocation_pct": 1.0,
+    "top_wallet_count": 10,
+    "max_total_allocation_pct": 2.0,
     "max_source_exposure_multiple": 3,
     "max_total_exposure_multiple": 3,
     "min_order_notional_usd": 10,

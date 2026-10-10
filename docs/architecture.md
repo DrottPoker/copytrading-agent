@@ -1088,7 +1088,7 @@ sequenceDiagram
 Paper and live share one decision module, `copy_decision.py`, described in
 [Shared Copy Decisions](#shared-copy-decisions). Its entry sizing uses
 `plan_entry_sizing` in `trading_core.py`. Each copied source gets an equal share of the allocation
-budget (20% for the default five sources). The target position is allocation /
+budget (20% each for the default ten sources, a 200% budget). The target position is allocation /
 source perp equity times the source position after the fill, taken from the
 fill's `startPosition` plus its size. Orders are placed at the source fill, and
 each entry buys only the gap to the target: an opening is always at least one

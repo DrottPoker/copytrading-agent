@@ -67,9 +67,12 @@ orders fare in a thin market; it now fills against the real order book.
 
 ## Position Sizing
 
-Each of the five copy sources gets an equal share of the account
-(`trading_copy_top_wallet_count`, `trading_copy_max_total_allocation_pct`).
-For a source, the **target position** is:
+Each of the ten copy sources gets 20% of the account: a 200% budget
+(`trading_copy_max_total_allocation_pct`) split equally over
+`trading_copy_top_wallet_count`. The shares add up to twice the account, so
+the exposure caps below, not the shares, bound the total size. When many
+sources are positioned at once, the total cap is reached first and later
+entries are trimmed or skipped. For a source, the **target position** is:
 
 ```text
 target notional = allocation / source account value * source position notional
@@ -128,7 +131,7 @@ An entry is skipped when:
   the source opened before we started following it;
 - we hold the opposite side in that market;
 - the source's allocation is inactive, for example a retained source that has
-  dropped out of the top five.
+  dropped out of the top ten.
 
 None of these filters apply to exits.
 
@@ -209,8 +212,8 @@ a strategy we want live.
 
 ## What the Limits Do Not Cover
 
-- **Correlated sources.** Five sources that all go long the same coin count as
-  five separate allocations. The total exposure cap bounds the sum, but there
+- **Correlated sources.** Ten sources that all go long the same coin count as
+  ten separate allocations. The total exposure cap bounds the sum, but there
   is no per-coin limit across sources.
 - **Gaps.** Limits act on the next check. A price gap or an exchange outage can
   move an account past a limit before it trips.

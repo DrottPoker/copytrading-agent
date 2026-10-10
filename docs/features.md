@@ -765,7 +765,7 @@ What it does:
 - Keeps `backend/config/paper_trading.json` focused on paper-only simulation
   settings. It no longer seeds default accounts.
 - Builds allocations from the top `trading_copy_top_wallet_count` positive wallet
-  scores in the enabled wallet pool, 5 by default.
+  scores in the enabled wallet pool, 10 by default.
 - When current drawdown scoring is enabled, allocation only uses wallets whose
   latest score has `current_drawdown_status = "ok"`.
 - Keeps source wallets with open live source-attributed positions subscribed
@@ -782,8 +782,10 @@ What it does:
   remaining slots go to highest scored candidates. Top candidates without a
   slot are marked as waiting and cannot open new copy positions until a realtime
   slot is available. Paper-only mode retains open paper-position sources first.
-- Splits the allocation budget (`trading_copy_max_total_allocation_pct`, 100% by
-  default) equally between the copied sources, so five sources get 20% each.
+- Splits the allocation budget (`trading_copy_max_total_allocation_pct`, 200% by
+  default) equally between the copied sources, so ten sources get 20% each. The
+  budget may exceed 100% because the exposure caps, not the allocations, bound
+  the total size; it may not exceed `trading_copy_max_total_exposure_multiple`.
 - Converts new non-snapshot realtime source fills into simulated paper fills.
 - Applies the same entry and exit rules as live copy through the shared
   `copy_decision` module, so a paper result shows what the live rules would
@@ -1153,9 +1155,9 @@ What it does:
 Config:
 
 - `backend/config/trading.json`
-- `trading_copy_top_wallet_count`, defaults to 5 sources
+- `trading_copy_top_wallet_count`, defaults to 10 sources
 - `trading_copy_max_total_allocation_pct`, the budget split equally between the
-  sources, defaults to 100 percent
+  sources, defaults to 200 percent (20 percent per source)
 - `trading_copy_max_source_exposure_multiple`, defaults to 3x the source allocation
 - `trading_copy_max_total_exposure_multiple`, defaults to 3x account equity
 - `trading_copy_min_order_notional_usd`, defaults to 10 USD

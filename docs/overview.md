@@ -37,11 +37,14 @@ involved.
    would copy at our size. Wallets with fewer than 20 closed trades in the
    last 60 days are capped at a low score, and scores below 40 trades are
    pulled toward a neutral middle so a short lucky streak cannot top the list.
-4. **Pick the sources.** The five best ranked wallets become the copy sources.
-   Each gets an equal share of the account to copy with.
+4. **Pick the sources.** The ten best ranked wallets become the copy sources.
+   Each gets 20% of the account to copy with. Together that is twice the
+   account, so the exposure caps, not the shares, limit the total size.
 5. **Follow them live.** The system subscribes to those wallets' trades in
-   realtime over WebSocket. Up to ten wallets can be followed this way, so the
-   rest of the pool is refreshed by slower periodic polling.
+   realtime over WebSocket. Hyperliquid allows ten wallets this way, so the
+   rest of the pool is refreshed by slower periodic polling. A wallet we still
+   hold a position from keeps its slot until the position is closed, so the
+   tenth ranked wallet can have to wait for a free slot.
 6. **Copy the trades.** When a source opens or adds to a position, the system
    works out how big our position should be given our share and the source's
    account size, and buys the difference. When the source reduces or closes,
