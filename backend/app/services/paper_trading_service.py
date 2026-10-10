@@ -147,6 +147,8 @@ RETRIABLE_EXIT_SKIP_REASONS = frozenset(
         "source_perp_equity_missing",
         "source_perp_equity_zero",
         "execution_price_unavailable",
+        # Live retries an IOC exit the book could not fill, so paper retries it too.
+        "paper_ioc_unfilled",
     }
 )
 SUMMARY_MARKET_PRICE_CACHE = MarketPriceCache()
@@ -502,19 +504,25 @@ async def close_paper_position_manually(
         session,
         source_wallet=position_snapshot.source_wallet,
     )
-    position = await session.scalar(
-        select(PaperPosition).where(PaperPosition.id == position_id).with_for_update()
-    )
-    if position is None:
-        raise PaperPositionNotFoundError("Paper position was not found or is already closed.")
-
+    # Accounts lock before positions, the same order as the copy engine and the
+    # paper risk loop, so a manual close cannot deadlock with them.
     account = await session.scalar(
         select(PaperTradingAccount)
-        .where(PaperTradingAccount.key == position.account_key)
+        .where(PaperTradingAccount.key == position_snapshot.account_key)
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if account is None:
         raise PaperPositionCloseUnavailableError("Paper account is unavailable.")
+    # The unlocked snapshot above may be stale; reload the locked row's values.
+    position = await session.scalar(
+        select(PaperPosition)
+        .where(PaperPosition.id == position_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if position is None:
+        raise PaperPositionNotFoundError("Paper position was not found or is already closed.")
 
     allocation = await load_paper_allocation_for_position(session, position=position)
     source_fill_id = f"manual-close:{position.id}"
@@ -858,7 +866,10 @@ def paper_account_reads(
         unrealized_pnl = sum_decimal(
             position["unrealized_pnl_usd"] for position in account_positions
         )
-        total_pnl = account.realized_pnl_usd + account.funding_usd + unrealized_pnl
+        # Net like live: realized PnL minus fees plus funding, then open positions.
+        total_pnl = (
+            account.realized_pnl_usd - account.fee_usd + account.funding_usd + unrealized_pnl
+        )
         rows.append(
             {
                 "key": account.key,
@@ -1548,15 +1559,7 @@ async def process_paper_copy_fills(
         settings=resolved_settings,
     )
 
-    await lock_paper_source_mutation(session, source_wallet=normalized_source_wallet)
-    accounts = await load_paper_accounts_for_source_copy(
-        session,
-        source_wallet=normalized_source_wallet,
-        for_update=True,
-    )
-    if not accounts:
-        return PaperCopyBatchResult(skipped_fills=len(fills))
-
+    # Network reads finish before the locks below, so they never hold account rows.
     risk_mark_prices = dict(market_prices.prices)
     if resolved_settings.paper_copy_loss_limits_enabled:
         open_coins = set(
@@ -1573,6 +1576,15 @@ async def process_paper_copy_fills(
             risk_mark_prices.update(
                 await load_mark_prices(client=client, coins=missing_coins, price_cache=price_cache)
             )
+
+    await lock_paper_source_mutation(session, source_wallet=normalized_source_wallet)
+    accounts = await load_paper_accounts_for_source_copy(
+        session,
+        source_wallet=normalized_source_wallet,
+        for_update=True,
+    )
+    if not accounts:
+        return PaperCopyBatchResult(skipped_fills=len(fills))
 
     processed = 0
     skipped = 0
@@ -2810,6 +2822,7 @@ async def reset_paper_trading_account_balance(
     account.realized_pnl_usd = ZERO
     account.fee_usd = ZERO
     account.funding_usd = ZERO
+    account.peak_equity_usd = None
     clear_paper_account_exit_only(account)
     # Loss limits restart from the new balance.
     await session.execute(

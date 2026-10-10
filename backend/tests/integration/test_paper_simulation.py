@@ -33,6 +33,8 @@ from app.services.paper_trading_service import (
     PaperSourceAllocation,
     apply_close_part,
     apply_open_part,
+    apply_paper_fill_part,
+    close_paper_position_manually,
     reset_paper_trading_account_balance,
     set_paper_trading_account_enabled,
 )
@@ -334,12 +336,53 @@ async def test_equity_snapshots_mark_positions_to_market_and_reset_clears_them(
             enabled=False,
             settings=config,
         )
+        snapshotted = await session.get(PaperTradingAccount, ACCOUNT)
+        assert snapshotted is not None
+        peak_before_reset = snapshotted.peak_equity_usd
         await reset_paper_trading_account_balance(session, account_key=ACCOUNT, settings=config)
         await session.commit()
         left = await session.scalar(select(func.count()).select_from(PaperAccountEquitySnapshot))
+        reset_account = await session.get(PaperTradingAccount, ACCOUNT)
 
     assert recorded == 1
+    assert peak_before_reset == Decimal("1000")
     assert left == 0
+    assert reset_account is not None
+    assert reset_account.peak_equity_usd is None
+
+
+@pytest.mark.asyncio
+async def test_the_drawdown_peak_outlives_pruned_equity_snapshots(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    async with integration_sessionmaker() as session:
+        session.add_all(
+            [WatchedWallet(address=SOURCE, enabled=True), account(peak_equity_usd=Decimal("1400"))]
+        )
+        await session.flush()
+        # Only recent snapshots remain; the 1400 peak was recorded before the retention.
+        session.add(
+            PaperAccountEquitySnapshot(
+                account_key=ACCOUNT,
+                equity_usd=Decimal("1000"),
+                recorded_at=NOW - timedelta(minutes=5),
+            )
+        )
+        await session.commit()
+        paper_account = await session.get(PaperTradingAccount, ACCOUNT)
+        assert paper_account is not None
+
+        reason = await paper_entry_risk_reason(
+            session,
+            account=paper_account,
+            source_wallet=SOURCE,
+            mark_prices={},
+            settings=settings(),
+            now=NOW,
+        )
+
+    # 1000 is 28.6% below the 1400 peak, past the 25% drawdown limit.
+    assert reason == "paper_max_drawdown"
 
 
 @pytest.mark.asyncio
@@ -447,3 +490,75 @@ async def test_paper_exits_close_fully_on_a_final_source_close_and_combine_small
     assert remaining == 0
     assert aggregated is not None
     assert aggregated.skipped_reason == "close_aggregated"
+
+
+@pytest.mark.asyncio
+async def test_an_exit_the_book_cannot_fill_is_retried_like_a_live_ioc_exit(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    no_bids = parse_order_book({"levels": [[{"px": "90", "sz": "5"}], [{"px": "101", "sz": "5"}]]})
+    bids = parse_order_book({"levels": [[{"px": "100", "sz": "5"}], [{"px": "101", "sz": "5"}]]})
+    async with integration_sessionmaker() as session:
+        await seed(session, position(margin_mode="cross", opened_at=datetime.now(UTC)))
+        paper_account = await session.get(PaperTradingAccount, ACCOUNT)
+        assert paper_account is not None
+
+        async def exit_with(book: object) -> object:
+            result = await apply_paper_fill_part(
+                session,
+                account=paper_account,
+                allocation=allocation(),
+                fill=source_fill("exit"),
+                part=close_part("0.5"),
+                source_perp_equity=Decimal("10000"),
+                source_leverages={"BTC": Decimal("10")},
+                market_prices=PRICES,
+                settings=settings(),
+                source_account_state=source_state(holds=True, margin_mode="cross"),
+                order_book=book,  # type: ignore[arg-type]
+            )
+            await session.flush()
+            return result
+
+        unfilled = await exit_with(no_bids)
+        retried = await exit_with(bids)
+        held = await session.scalar(select(PaperPosition))
+        exit_rows = (
+            await session.scalars(
+                select(PaperCopyFill).where(PaperCopyFill.source_fill_id == "exit")
+            )
+        ).all()
+
+    assert unfilled.skip_reasons == {"paper_ioc_unfilled": 1}  # type: ignore[attr-defined]
+    assert retried.processed_fills == 1  # type: ignore[attr-defined]
+    assert held is not None
+    assert held.size == Decimal("0.5")
+    assert [row.action for row in exit_rows] == ["reduce"]
+
+
+class MidsClient:
+    async def all_mids(self) -> dict[str, str]:
+        return {"BTC": "110"}
+
+
+@pytest.mark.asyncio
+async def test_a_manual_close_locks_the_account_and_realizes_the_result(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    held = position(margin_mode="cross")
+    async with integration_sessionmaker() as session:
+        await seed(session, held)
+        result = await close_paper_position_manually(
+            session,
+            position_id=held.id,
+            settings=settings(),
+            client=MidsClient(),  # type: ignore[arg-type]
+        )
+        await session.commit()
+        paper_account = await session.get(PaperTradingAccount, ACCOUNT)
+        remaining = await session.scalar(select(func.count()).select_from(PaperPosition))
+
+    assert result.processed_fills == 1
+    assert remaining == 0
+    assert paper_account is not None
+    assert paper_account.realized_pnl_usd > Decimal("0")

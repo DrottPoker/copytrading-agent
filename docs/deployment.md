@@ -436,23 +436,25 @@ write the same `request_id` to the frontend container log. The Trading dashboard
 shows that identifier with failed mutations. Use it to correlate a browser error
 with the upstream backend response without logging credentials or request bodies.
 
-The Alembic head for this update is `d7f1b3c5e9a2`. The chain includes the
+The Alembic head for this update is `e8a2c4f6d1b3`. The chain includes the
 funding-payment ledger, external account cash-flow ledger, cash-flow-adjusted
 performance snapshots, append-only live order attempts, and unified durable
 `live_copy_work` queue. It also adds transactional wallet fill revisions,
 partial scoring indexes, the ordered source-trade stream index, the equity
 scoring and wallet archive schema (`c4e8a2f6b1d3`), and the paper market
-simulation and paper risk state (`d7f1b3c5e9a2`). The equity scoring migration
-marks every materialized source trade set for one rebuild, so the first scoring
-run after it takes longer than usual. The paper migration only adds columns and
-small tables; existing paper positions get cross margin mode and zero funding.
+simulation and paper risk state (`d7f1b3c5e9a2`), and the paper account peak
+equity (`e8a2c4f6d1b3`). The equity scoring migration marks every materialized
+source trade set for one rebuild, so the first scoring run after it takes
+longer than usual. The paper migrations only add columns and small tables;
+existing paper positions get cross margin mode and zero funding, and each paper
+account's peak equity is filled from its stored equity snapshots.
 
 The live-copy queue migration bridges only unfinished realtime inbox work. It
 does not replay the full historical fill table. The scoring migrations rebuild
 revision metadata and create indexes over the existing fill table, so they can
 take time on a multi-million-row deployment.
 
-The `current` command must show `d7f1b3c5e9a2` before the backend or workers
+The `current` command must show `e8a2c4f6d1b3` before the backend or workers
 are restarted.
 
 Run the score backtest against the live database from a one-off container. It

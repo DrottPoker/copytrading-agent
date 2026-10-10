@@ -863,9 +863,11 @@ What it does:
   IOC order when `paper_copy_order_book_fills` is enabled. The limit price is
   the execution mid plus or minus `live_trading_limit_slippage_bps`, and the
   fill price is the volume-weighted average of the book levels inside that
-  limit. Orders that the book cannot fill completely are skipped as
-  `paper_ioc_unfilled`. Without a book, paper applies adverse slippage from
-  `paper_copy_slippage_bps` to the observed price.
+  limit. A partial fill keeps the filled part. An order with nothing inside
+  the limit is skipped as `paper_ioc_unfilled`; an exit skipped this way is
+  retried by paper recovery, like a live IOC exit. Without a book, paper
+  applies adverse slippage from `paper_copy_slippage_bps` to the observed
+  price.
 - Skips paper and live entries when adverse observed price movement is more
   than `trading_copy_max_price_drift_bps` from the source fill price. The
   default limit is 30 bps. Favorable drift in the execution direction is

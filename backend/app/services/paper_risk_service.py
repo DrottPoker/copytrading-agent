@@ -119,11 +119,14 @@ async def paper_account_loss_state(
     *,
     account_key: str,
     now: datetime,
+    peak_equity_usd: Decimal | None = None,
 ) -> AccountLossState | None:
     """Rolling losses and drawdown from marked-to-market paper equity snapshots.
 
     Paper accounts have no deposits or withdrawals, so equity itself is the
-    performance index. A balance reset clears the snapshots.
+    performance index. The drawdown peak is the account's stored peak, because
+    snapshots older than the retention are pruned while live keeps its whole
+    history. A balance reset clears the snapshots and the peak.
     """
 
     snapshot = PaperAccountEquitySnapshot
@@ -155,10 +158,11 @@ async def paper_account_loss_state(
         return Decimal(value if value is not None else baseline or ZERO)
 
     current = Decimal(latest)
+    resolved_peak = max(Decimal(peak or ZERO), peak_equity_usd or ZERO)
     return AccountLossState(
         daily_loss_pct=performance_loss_pct(current, await equity_at(now - timedelta(days=1))),
         weekly_loss_pct=performance_loss_pct(current, await equity_at(now - timedelta(days=7))),
-        drawdown_pct=performance_loss_pct(current, Decimal(peak or ZERO)),
+        drawdown_pct=performance_loss_pct(current, resolved_peak),
     )
 
 
@@ -221,7 +225,12 @@ async def paper_entry_risk_reason(
         return "paper_account_exit_only"
     resolved_now = now or datetime.now(UTC)
     breach = account_loss_breach(
-        await paper_account_loss_state(session, account_key=account.key, now=resolved_now),
+        await paper_account_loss_state(
+            session,
+            account_key=account.key,
+            now=resolved_now,
+            peak_equity_usd=account.peak_equity_usd,
+        ),
         settings=settings,
     )
     if breach is not None:
@@ -275,7 +284,8 @@ async def record_paper_equity_snapshots(
     mark_prices: dict[str, Decimal],
     now: datetime,
 ) -> int:
-    accounts = list((await session.scalars(select(PaperTradingAccount))).all())
+    # Accounts are updated (peak equity), so lock them in key order like every risk pass.
+    accounts = await lock_paper_accounts(session)
     positions = list((await session.scalars(select(PaperPosition))).all())
     recorded = 0
     for account in accounts:
@@ -286,13 +296,16 @@ async def record_paper_equity_snapshots(
         )
         if equity is None:
             continue
+        equity = max(equity, ZERO)
         session.add(
             PaperAccountEquitySnapshot(
                 account_key=account.key,
-                equity_usd=max(equity, ZERO),
+                equity_usd=equity,
                 recorded_at=now,
             )
         )
+        if account.peak_equity_usd is None or equity > account.peak_equity_usd:
+            account.peak_equity_usd = equity
         recorded += 1
     await session.execute(
         delete(PaperAccountEquitySnapshot).where(

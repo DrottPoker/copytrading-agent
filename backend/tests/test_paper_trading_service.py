@@ -716,3 +716,37 @@ async def test_copy_allocations_reuse_a_fresh_snapshot(monkeypatch: pytest.Monke
     assert first is second
     assert len(refreshes) == 2
     assert cache.version == 1
+
+
+def test_paper_account_total_pnl_is_net_of_fees_and_includes_funding() -> None:
+    account = SimpleNamespace(
+        key="paper",
+        label="Paper",
+        starting_balance_usd=Decimal("1000"),
+        cash_balance_usd=Decimal("1012"),
+        equity_usd=Decimal("1012"),
+        realized_pnl_usd=Decimal("20"),
+        fee_usd=Decimal("5"),
+        funding_usd=Decimal("-3"),
+        enabled=True,
+        exit_only_at=None,
+        exit_only_reason=None,
+        created_at=datetime(2026, 10, 1, tzinfo=UTC),
+        updated_at=datetime(2026, 10, 1, tzinfo=UTC),
+    )
+    position = {
+        "account_key": "paper",
+        "unrealized_pnl_usd": Decimal("7"),
+        "current_notional_usd": Decimal("100"),
+        "notional_usd": Decimal("100"),
+        "margin_usd": Decimal("10"),
+    }
+
+    [read] = paper_trading_service.paper_account_reads(
+        accounts=[account],  # type: ignore[list-item]
+        positions=[position],
+    )
+
+    # 20 realized - 5 fees - 3 funding + 7 unrealized, matching cash 1012 + 7 - 1000.
+    assert read["total_pnl_usd"] == Decimal("19")
+    assert read["total_pnl_pct"] == Decimal("0.019")

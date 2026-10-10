@@ -166,7 +166,14 @@ function buildPaperAccountView(
         icon: WalletCards,
         title: "Account Details",
         rows: [
-          { label: "Status", value: account.enabled ? "enabled" : "disabled" },
+          {
+            label: "Status",
+            value: account.exitOnlyAt
+              ? `exit-only: ${account.exitOnlyReason ?? "loss limit"}`
+              : account.enabled
+                ? "enabled"
+                : "disabled",
+          },
           { label: "Created", value: formatDate(account.createdAt) },
           { label: "Updated", value: formatDate(account.updatedAt) },
           { label: "Open positions", value: formatInteger(account.openPositionCount) },

@@ -6,6 +6,23 @@ used to live in the README.
 
 ## 2026-10-10
 
+### Review fixes
+
+- An exit that the order book could not fill in paper is now retried by paper
+  recovery, as live retries an IOC exit without a match. Before, the paper
+  position stayed larger than the source's until the source closed fully.
+- A paper account's total PnL and return on the Accounts page are net of fees,
+  like the Trading page and live accounts. The Accounts page also shows when a
+  paper account is exit-only.
+- The paper drawdown limit measures from the account's peak equity since the
+  last reset, stored on the account, instead of the highest snapshot in the
+  last 35 days. Migration `e8a2c4f6d1b3` adds the column and fills it from the
+  existing snapshots.
+- Manual paper closes lock the account before the position, the order the copy
+  engine and the paper risk loop use, so they cannot deadlock. The copy engine
+  no longer reads prices from Hyperliquid while it holds account locks.
+- Postgres, Redis, and Caddy are pinned to their latest patch releases.
+
 ### Data and infrastructure
 
 - Production live trading signs only with a Hyperliquid API wallet, which can

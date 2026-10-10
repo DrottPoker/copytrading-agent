@@ -143,7 +143,8 @@ None of these filters apply to exits.
 Live accounts measure these on the time-weighted performance index, so
 deposits and withdrawals never look like gains or losses. Paper accounts have
 no external cash flows and measure them on equity snapshots taken every five
-minutes.
+minutes, with the drawdown measured from the highest equity since the account
+was last reset.
 
 Both engines check the limits at the entry gate. When a limit is hit, the
 account becomes **exit-only**: it keeps reducing and closing positions but

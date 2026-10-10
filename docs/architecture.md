@@ -1371,10 +1371,12 @@ and `paper_risk_service.py` applies them to stored paper state.
   against the Hyperliquid `l2Book` for the coin like a live IOC order. The
   limit is the execution mid plus or minus `live_trading_limit_slippage_bps`,
   the order walks the book levels up to that limit, and the fill price is the
-  volume-weighted average. A partial or empty fill is recorded as the skip
-  `paper_ioc_unfilled`, because live would not have filled the full order
-  either. When no book is available, paper falls back to the fixed slippage
-  model. The fill details are stored in `raw_payload.orderBookFill`.
+  volume-weighted average. A partial fill keeps the filled part, as a live IOC
+  order does. An order with nothing inside the limit is recorded as the skip
+  `paper_ioc_unfilled`; for an exit that skip is retried by paper recovery, as
+  live retries an IOC exit that found no match. When no book is available,
+  paper falls back to the fixed slippage model. The fill details are stored in
+  `raw_payload.orderBookFill`.
 - Margin mode: paper positions copy the source's cross or isolated margin mode
   from Hyperliquid `clearinghouseState`, defaulting to cross.
 - Funding: with `paper_copy_funding_enabled`, the paper risk loop reads
@@ -1394,7 +1396,10 @@ and `paper_risk_service.py` applies them to stored paper state.
 - Loss limits: with `paper_copy_loss_limits_enabled`, paper accounts use the
   live limits from `live_trading.json`. Marked-to-market equity is recorded in
   `paper_account_equity_snapshots` every `paper_copy_equity_snapshot_seconds`
-  and kept for 35 days. A breach of the 24 hour, 7 day, or drawdown limit sets
+  and kept for 35 days. The highest snapshot equity since the last reset is
+  also stored as `paper_trading_accounts.peak_equity_usd`, so the drawdown
+  limit measures from the peak like live even after old snapshots are pruned.
+  A breach of the 24 hour, 7 day, or drawdown limit sets
   `exit_only_at` and `exit_only_reason` on the account and writes an audit log
   row. An exit-only paper account still reduces and closes positions but takes
   no new entries or adds until it is started or reset. New entries from a
@@ -1405,7 +1410,9 @@ and `paper_risk_service.py` applies them to stored paper state.
 The `paper-risk` loop runs in the trading worker every
 `paper_copy_risk_check_seconds` when paper copy is enabled. It locks paper
 accounts in key order before their positions, the same order the copy engine
-uses, so the loop and fill processing cannot deadlock.
+and manual closes use, so the loop, fill processing, and dashboard closes
+cannot deadlock. The copy engine finishes its network reads before it takes
+these locks.
 
 ### Live-Ready Trading Core
 

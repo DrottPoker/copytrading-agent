@@ -1634,6 +1634,8 @@ class PaperTradingAccount(Base, TimestampMixin, UpdatedAtMixin):
     # Set when a loss limit trips, like a live account going exit-only.
     exit_only_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     exit_only_reason: Mapped[str | None] = mapped_column(Text)
+    # Highest marked equity since the last reset; snapshots are pruned, the peak is not.
+    peak_equity_usd: Mapped[Decimal | None] = mapped_column(Numeric)
     config_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
 
