@@ -495,7 +495,7 @@ export function AccountsDashboard({
 
       <section className="ui-panel flex flex-col gap-3 p-3 xl:flex-row xl:items-center xl:justify-between">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <span className="text-xs font-semibold uppercase tracking-[0.05em] text-muted">
+          <span className="text-xs font-semibold uppercase tracking-wider text-muted">
             Active account
           </span>
           <select

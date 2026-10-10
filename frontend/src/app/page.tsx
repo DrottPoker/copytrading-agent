@@ -266,7 +266,7 @@ function DataPoint({
   return (
     <div className="rounded-md border border-line bg-subtle p-3">
       <p className="text-xs font-medium uppercase text-muted">{label}</p>
-      <p className="mt-2 break-words text-lg font-semibold leading-snug">{value}</p>
+      <p className="mt-2 wrap-break-word text-lg font-semibold leading-snug">{value}</p>
       {detail ? <p className="mt-1 truncate text-sm text-muted">{detail}</p> : null}
     </div>
   );
@@ -283,7 +283,7 @@ function TopWalletRow({ wallet }: { wallet: Wallet }) {
       className="grid gap-3 py-3 hover:bg-subtle sm:grid-cols-[1fr_90px_120px]"
     >
       <div className="min-w-0">
-        <p className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold">{wallet.label || shortAddress(wallet.address)}</p>
+        <p className="min-w-0 max-w-full whitespace-normal wrap-break-word text-sm font-semibold">{wallet.label || shortAddress(wallet.address)}</p>
         <p className="mt-1 font-mono text-xs text-muted">{shortAddress(wallet.address)}</p>
       </div>
       <p className={`text-lg font-semibold ${scoreTone}`}>{formatScore(score)}</p>

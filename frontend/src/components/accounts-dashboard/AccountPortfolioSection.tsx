@@ -191,7 +191,7 @@ function SourceIdentity({
       <div className="flex flex-wrap items-center gap-1">
         <Link
           href={`/wallets/${row.sourceWallet}`}
-          className="min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink hover:text-brand"
+          className="min-w-0 max-w-full whitespace-normal wrap-break-word text-xs font-semibold text-ink hover:text-brand"
         >
           {sourceDisplayName(row.sourceLabel, row.sourceWallet)}
         </Link>
@@ -254,7 +254,7 @@ function Bar({ tone = "neutral", value }: { tone?: Tone; value: number }) {
 
 function SectionLabel({ label }: { label: string }) {
   return (
-    <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.05em] text-muted">
+    <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted">
       {label}
     </p>
   );

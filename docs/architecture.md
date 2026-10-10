@@ -244,8 +244,16 @@ contain only page identity, global freshness, and high-level state. Workflow
 controls stay inside the relevant page surface. The Accounts page, for example,
 keeps account selection and lifecycle actions in a dedicated control bar.
 
-The UI foundation is defined by semantic Tailwind tokens and shared component
-classes in `frontend/tailwind.config.ts` and `frontend/src/app/globals.css`.
+The UI foundation is defined by semantic Tailwind CSS v4 tokens and shared
+component classes in `frontend/src/app/globals.css`. There is no JavaScript
+Tailwind config: colors, fonts, shadows, and line heights live in the CSS
+`@theme` block, base element styles in `@layer base`, and the `ui-*` component
+classes in `@layer components`, so any utility class can override them.
+Tailwind compiles through the `@tailwindcss/postcss` plugin and scans the
+frontend sources automatically. The theme keeps the Tailwind v3 absolute line
+heights for the `text-*` sizes, so smaller nested labels keep the dense table
+rhythm instead of inheriting v4's unitless ratios. A base rule also keeps the v3
+default border color and pointer cursor on enabled buttons.
 `DashboardSurface.tsx` owns the common dashboard metric and panel primitives.
 Color is not used as the only state signal: status pills include text and a
 state dot, numeric tables use tabular figures, and all data tables have scoped

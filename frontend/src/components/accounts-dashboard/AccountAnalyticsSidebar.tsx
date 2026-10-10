@@ -252,7 +252,7 @@ function AnalyticsStat({
           : "text-ink";
   return (
     <div className="rounded-lg border border-line bg-subtle px-2.5 py-2">
-      <p className="truncate text-[10px] font-semibold uppercase tracking-[0.05em] text-muted">
+      <p className="truncate text-[10px] font-semibold uppercase tracking-wider text-muted">
         {label}
       </p>
       <p className={`mt-1 truncate font-mono text-xs font-semibold ${valueClass}`}>
@@ -284,7 +284,7 @@ function LiveAccountHealthNotice({ notice }: { notice: LiveAccountNotice }) {
       <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
       <div className="min-w-0">
         <p className="text-xs font-semibold">{notice.title}</p>
-        <p className="mt-0.5 break-words text-[11px] leading-4 opacity-90">
+        <p className="mt-0.5 wrap-break-word text-[11px] leading-4 opacity-90">
           {notice.detail}
         </p>
       </div>

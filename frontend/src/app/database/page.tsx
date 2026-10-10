@@ -318,7 +318,7 @@ function DataPoint({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-md border border-line bg-subtle p-3">
       <p className="text-xs font-medium uppercase text-muted">{label}</p>
-      <p className="mt-2 break-words text-lg font-semibold leading-snug">{value}</p>
+      <p className="mt-2 wrap-break-word text-lg font-semibold leading-snug">{value}</p>
     </div>
   );
 }

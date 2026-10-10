@@ -81,7 +81,7 @@ export function CreateAccountDialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/60 px-3 py-6 backdrop-blur-sm sm:px-6"
+      className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/60 px-3 py-6 backdrop-blur-xs sm:px-6"
       onClick={onClose}
       role="presentation"
     >
@@ -137,7 +137,7 @@ export function CreateAccountDialog({
             {accountType === "paper" ? (
               <label className="grid gap-2">
                 <span className="text-sm font-semibold text-ink">Starting balance</span>
-                <div className="flex items-center rounded-md border border-line bg-white shadow-sm focus-within:border-brand">
+                <div className="flex items-center rounded-md border border-line bg-white shadow-xs focus-within:border-brand">
                   <span className="border-r border-line px-3 text-sm font-semibold text-muted">
                     USD
                   </span>
@@ -147,7 +147,7 @@ export function CreateAccountDialog({
                     type="number"
                     value={balance}
                     onChange={(event) => onBalanceChange(event.target.value)}
-                    className="h-10 min-w-0 flex-1 rounded-r-md px-3 text-sm font-medium text-ink outline-none"
+                    className="h-10 min-w-0 flex-1 rounded-r-md px-3 text-sm font-medium text-ink outline-hidden"
                   />
                 </div>
                 <span className="text-xs font-medium text-muted">

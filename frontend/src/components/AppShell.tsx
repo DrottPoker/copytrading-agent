@@ -54,7 +54,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     <div className="min-h-screen bg-canvas text-ink lg:grid lg:grid-cols-[232px_minmax(0,1fr)]">
       <a
         href="#main-content"
-        className="sr-only fixed left-4 top-4 z-[100] rounded-lg bg-white px-3 py-2 text-sm font-semibold text-ink shadow-raised focus:not-sr-only"
+        className="sr-only fixed left-4 top-4 z-100 rounded-lg bg-white px-3 py-2 text-sm font-semibold text-ink shadow-raised focus:not-sr-only"
       >
         Skip to content
       </a>
@@ -94,7 +94,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                           "inline-flex h-9 shrink-0 items-center gap-2.5 rounded-lg border-l-2 px-3 text-[13px] font-medium transition-colors",
                           active
                             ? "border-blue-400 bg-white/10 text-white"
-                            : "border-transparent text-sidebar-muted hover:bg-white/[0.06] hover:text-white",
+                            : "border-transparent text-sidebar-muted hover:bg-white/6 hover:text-white",
                         ].join(" ")}
                       >
                         <Icon className="h-4 w-4 shrink-0" strokeWidth={1.8} aria-hidden="true" />
@@ -166,7 +166,7 @@ function SystemModeBadge() {
   }, []);
 
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-white/[0.06] px-2 py-1 text-[11px] font-medium text-white">
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-white/6 px-2 py-1 text-[11px] font-medium text-white">
       <span className={`h-1.5 w-1.5 rounded-full ${systemModeDotClass(mode)}`} aria-hidden="true" />
       {formatSystemMode(mode)}
     </span>

@@ -92,8 +92,8 @@ function CapitalBalanceRows({ balances }: { balances: TradingCapitalBalance[] })
           className="grid gap-2 rounded-md border border-line bg-subtle px-3 py-2 sm:grid-cols-[minmax(180px,1fr)_150px_150px_110px] sm:items-center"
         >
           <div className="min-w-0">
-            <p className="break-words text-sm font-semibold text-ink">{balance.label}</p>
-            <p className="break-words font-mono text-xs text-muted">{balance.key}</p>
+            <p className="wrap-break-word text-sm font-semibold text-ink">{balance.label}</p>
+            <p className="wrap-break-word font-mono text-xs text-muted">{balance.key}</p>
             {balance.stale ? (
               <p className="mt-1 text-xs font-medium text-warning">
                 Stale snapshot{balance.error ? `: ${balance.error}` : ""}
@@ -188,7 +188,7 @@ function SmallMetric({ label, value }: { label: string; value: string }) {
 
 function SectionLabel({ label }: { label: string }) {
   return (
-    <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.05em] text-muted">
+    <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted">
       {label}
     </p>
   );

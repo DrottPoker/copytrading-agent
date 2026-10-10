@@ -225,7 +225,7 @@ function HeaderMetric({
 
   return (
     <div className="ui-metric p-3">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.05em] text-muted">{label}</p>
+      <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">{label}</p>
       <p className={`mt-1.5 truncate text-xl font-semibold tabular-nums ${valueClass}`}>{value}</p>
       {detail ? <p className="mt-1 text-xs text-muted">{detail}</p> : null}
     </div>
@@ -365,7 +365,7 @@ function ScoreSignalList({
         ) : (
           items.map((item) => (
             <div key={item.key} className="flex items-center justify-between gap-3 text-sm">
-              <span className="min-w-0 max-w-full whitespace-normal break-words text-muted">{item.label}</span>
+              <span className="min-w-0 max-w-full whitespace-normal wrap-break-word text-muted">{item.label}</span>
               <span className={`font-semibold ${scoreTextClass(item.value)}`}>
                 {formatScore(item.value)}
               </span>
@@ -980,7 +980,7 @@ function StatTile({
 
   return (
     <article className="ui-metric">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.05em] text-muted">{label}</p>
+      <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">{label}</p>
       <p className={`mt-1.5 truncate text-xl font-semibold tabular-nums ${valueClass}`}>{value}</p>
       <p className="mt-2 min-h-5 text-xs leading-5 text-muted">{detail}</p>
     </article>

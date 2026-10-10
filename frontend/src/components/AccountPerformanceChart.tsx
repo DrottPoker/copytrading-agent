@@ -238,7 +238,7 @@ export function AccountPerformanceChart({
     <div>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.05em] text-muted">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">
             {mode === "cumulative" ? "Cumulative net PnL" : "Net PnL per trade"}
           </p>
           <div className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-1">
@@ -307,7 +307,7 @@ export function AccountPerformanceChart({
 
       <div
         ref={chartContainerRef}
-        className="mt-3 overflow-hidden rounded-lg border border-line bg-gradient-to-b from-white to-subtle/70"
+        className="mt-3 overflow-hidden rounded-lg border border-line bg-linear-to-b from-white to-subtle/70"
       >
         <svg
           ref={svgRef}

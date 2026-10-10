@@ -176,7 +176,7 @@ function CandidateRow({ item }: { item: WalletPruneCandidate }) {
     <div className="py-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold">{item.label || shortAddress(item.address)}</p>
+          <p className="min-w-0 max-w-full whitespace-normal wrap-break-word text-sm font-semibold">{item.label || shortAddress(item.address)}</p>
           <p className="font-mono text-xs text-muted">{shortAddress(item.address)}</p>
         </div>
         <div className="shrink-0 text-right">
@@ -229,7 +229,7 @@ function PruneMetric({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-md border border-line bg-subtle p-3">
       <p className="text-xs font-medium uppercase text-muted">{label}</p>
-      <p className="mt-2 break-words text-lg font-semibold leading-snug">{value}</p>
+      <p className="mt-2 wrap-break-word text-lg font-semibold leading-snug">{value}</p>
     </div>
   );
 }

@@ -28,10 +28,10 @@ export function DashboardMetric({
   value: ReactNode;
 }) {
   return (
-    <article className={`ui-metric min-w-0 ${compact ? "!p-2.5" : ""}`.trim()}>
+    <article className={`ui-metric min-w-0 ${compact ? "p-2.5!" : ""}`.trim()}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="truncate text-[11px] font-semibold uppercase tracking-[0.05em] text-muted">
+          <p className="truncate text-[11px] font-semibold uppercase tracking-wider text-muted">
             {label}
           </p>
           <div className={`${compact ? "mt-1 text-lg" : "mt-1.5 text-xl"} truncate font-semibold leading-tight text-ink tabular-nums`}>

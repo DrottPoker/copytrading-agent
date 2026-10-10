@@ -242,12 +242,12 @@ function SourceLink({ href, label }: { href: string | null; label: string }) {
   return href ? (
     <Link
       href={href}
-      className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink hover:text-brand"
+      className="mt-1 block min-w-0 max-w-full whitespace-normal wrap-break-word text-xs font-semibold text-ink hover:text-brand"
     >
       {label}
     </Link>
   ) : (
-    <p className="mt-1 min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink">
+    <p className="mt-1 min-w-0 max-w-full whitespace-normal wrap-break-word text-xs font-semibold text-ink">
       {label}
     </p>
   );

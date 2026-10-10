@@ -739,7 +739,7 @@ function TradingModeToggle({
             aria-pressed={isActive}
             className={`inline-flex min-w-24 items-center justify-center rounded-[5px] px-3 text-xs font-semibold transition ${
               isActive
-                ? "bg-white text-ink shadow-sm"
+                ? "bg-white text-ink shadow-xs"
                 : "text-muted hover:bg-white/70 hover:text-ink"
             }`}
           >
@@ -895,7 +895,7 @@ function AccountRow({
       <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 sm:grid-cols-3 xl:grid-cols-[1.2fr_repeat(5,minmax(0,1fr))_auto] xl:items-center">
         <div className="col-span-2 min-w-0 sm:col-span-3 xl:col-span-1">
           <div className="flex flex-wrap items-center gap-1">
-            <p className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold text-ink">{account.label}</p>
+            <p className="min-w-0 max-w-full whitespace-normal wrap-break-word text-sm font-semibold text-ink">{account.label}</p>
             <StatusPill label={account.accountType} tone={account.accountType === "live" ? "positive" : "neutral"} />
             <StatusPill label={account.statusLabel} tone={account.statusTone} />
           </div>
@@ -1057,18 +1057,18 @@ function SourceRow({
             <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5">
               <Link
                 href={`/wallets/${source.sourceWallet}`}
-                className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold leading-5 text-ink hover:text-brand"
+                className="min-w-0 max-w-full whitespace-normal wrap-break-word text-sm font-semibold leading-5 text-ink hover:text-brand"
               >
                 {sourceDisplayName(source.sourceLabel, source.sourceWallet)}
               </Link>
               <CompactSourcePill label={source.monitorStatus} tone={monitorTone} />
               <CompactSourcePill label={formatSourceStatus(source.sourceStatus)} tone={sourceTone} />
             </div>
-            <p className="mt-0.5 whitespace-normal break-words text-[11px] leading-4 text-muted">
+            <p className="mt-0.5 whitespace-normal wrap-break-word text-[11px] leading-4 text-muted">
               {sourceMeta}
             </p>
             {sourceDetail !== "active slot" && sourceDetail !== "active live source" ? (
-              <p className="mt-0.5 whitespace-normal break-words text-[11px] leading-4 text-muted">
+              <p className="mt-0.5 whitespace-normal wrap-break-word text-[11px] leading-4 text-muted">
                 {sourceDetail}
               </p>
             ) : null}
@@ -1184,12 +1184,12 @@ function CompactSourceStat({
         <p className="text-[10px] font-medium uppercase leading-4 text-muted">
           {label}
         </p>
-        <p className={`whitespace-normal break-words font-mono text-xs font-semibold leading-4 ${valueClass}`}>
+        <p className={`whitespace-normal wrap-break-word font-mono text-xs font-semibold leading-4 ${valueClass}`}>
           {value}
         </p>
       </div>
       {detail ? (
-        <p className="whitespace-normal break-words text-[11px] leading-4 text-muted">
+        <p className="whitespace-normal wrap-break-word text-[11px] leading-4 text-muted">
           {detail}
         </p>
       ) : null}
@@ -1220,7 +1220,7 @@ function SourcePocketStat({
         <p className="text-[10px] font-medium uppercase leading-4 text-muted">
           {label}
         </p>
-        <p className="whitespace-normal break-words font-mono text-xs font-semibold leading-4 text-ink">
+        <p className="whitespace-normal wrap-break-word font-mono text-xs font-semibold leading-4 text-ink">
           {value}
         </p>
       </div>
@@ -1230,7 +1230,7 @@ function SourcePocketStat({
           style={{ width: `${Math.min(usedPct * 100, 100)}%` }}
         />
       </div>
-      <p className="whitespace-normal break-words text-[11px] leading-4 text-muted">
+      <p className="whitespace-normal wrap-break-word text-[11px] leading-4 text-muted">
         {used} used, {remaining} free
       </p>
     </div>
@@ -1353,7 +1353,7 @@ export function PositionOwnerWallet({
           href={`/wallets/${sourceWallet}`}
           aria-label={`Open owner wallet ${sourceName}`}
           title={sourceWallet}
-          className="min-w-0 truncate rounded-sm font-semibold text-ink hover:text-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40"
+          className="min-w-0 truncate rounded-xs font-semibold text-ink hover:text-brand focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-brand/40"
         >
           {sourceName}
         </Link>
@@ -1372,7 +1372,7 @@ function WalletHistoryRow({ wallet }: { wallet: WalletPerformanceRow }) {
           <div className="flex flex-wrap items-center gap-1">
             <Link
               href={`/wallets/${wallet.sourceWallet}`}
-              className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold text-ink hover:text-brand"
+              className="min-w-0 max-w-full whitespace-normal wrap-break-word text-sm font-semibold text-ink hover:text-brand"
             >
               {sourceDisplayName(wallet.sourceLabel, wallet.sourceWallet)}
             </Link>
@@ -1415,7 +1415,7 @@ function ClosedTradeRow({ trade }: { trade: PaperClosedTrade }) {
           </div>
           <Link
             href={`/wallets/${trade.sourceWallet}`}
-            className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink hover:text-brand"
+            className="mt-1 block min-w-0 max-w-full whitespace-normal wrap-break-word text-xs font-semibold text-ink hover:text-brand"
           >
             {sourceDisplayName(trade.sourceLabel, trade.sourceWallet)}
           </Link>
@@ -1443,13 +1443,13 @@ export function LiveClosedTradeRow({ trade }: { trade: TradingClosedTrade }) {
             {trade.isLiquidation ? <StatusPill label="liquidated" tone="danger" /> : null}
           </div>
           {isLiveExchangeSource(trade.sourceWallet) ? (
-            <p className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink">
+            <p className="mt-1 block min-w-0 max-w-full whitespace-normal wrap-break-word text-xs font-semibold text-ink">
               {sourceName}
             </p>
           ) : (
             <Link
               href={`/wallets/${trade.sourceWallet}`}
-              className="mt-1 block min-w-0 max-w-full whitespace-normal break-words text-xs font-semibold text-ink hover:text-brand"
+              className="mt-1 block min-w-0 max-w-full whitespace-normal wrap-break-word text-xs font-semibold text-ink hover:text-brand"
             >
               {sourceName}
             </Link>
@@ -1503,12 +1503,12 @@ function RowIdentityBlock({
         {identity.href ? (
           <Link
             href={identity.href}
-            className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold text-ink hover:text-brand"
+            className="min-w-0 max-w-full whitespace-normal wrap-break-word text-sm font-semibold text-ink hover:text-brand"
           >
             {identity.label}
           </Link>
         ) : (
-          <p className="min-w-0 max-w-full whitespace-normal break-words text-sm font-semibold text-ink">
+          <p className="min-w-0 max-w-full whitespace-normal wrap-break-word text-sm font-semibold text-ink">
             {identity.label}
           </p>
         )}
@@ -1571,8 +1571,8 @@ function RowStat({
   return (
     <div className="min-w-0" title={title}>
       <p className="truncate text-[10px] font-medium uppercase leading-3 text-muted">{label}</p>
-      <p className={`whitespace-normal break-words font-mono text-xs font-semibold leading-4 ${valueClass}`}>{value}</p>
-      {detail ? <p className="whitespace-normal break-words text-[11px] leading-4 text-muted">{detail}</p> : null}
+      <p className={`whitespace-normal wrap-break-word font-mono text-xs font-semibold leading-4 ${valueClass}`}>{value}</p>
+      {detail ? <p className="whitespace-normal wrap-break-word text-[11px] leading-4 text-muted">{detail}</p> : null}
     </div>
   );
 }

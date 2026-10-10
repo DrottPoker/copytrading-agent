@@ -225,7 +225,7 @@ function WalletRow({ wallet }: { wallet: Wallet }) {
         <div className="flex min-w-0 flex-col gap-1">
           <Link
             href={`/wallets/${wallet.address}`}
-            className="min-w-0 max-w-full whitespace-normal break-words font-semibold hover:text-brand"
+            className="min-w-0 max-w-full whitespace-normal wrap-break-word font-semibold hover:text-brand"
           >
             {wallet.label || "Unlabeled"}
           </Link>
@@ -236,7 +236,7 @@ function WalletRow({ wallet }: { wallet: Wallet }) {
             {shortAddress(wallet.address)}
           </Link>
           {wallet.notes ? (
-            <p className="mt-1 min-w-0 max-w-full whitespace-normal break-words text-xs text-muted">{wallet.notes}</p>
+            <p className="mt-1 min-w-0 max-w-full whitespace-normal wrap-break-word text-xs text-muted">{wallet.notes}</p>
           ) : null}
         </div>
       </td>

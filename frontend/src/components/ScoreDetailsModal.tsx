@@ -55,7 +55,7 @@ export function ScoreDetailsModal({ score, scoreDetail }: ScoreDetailsModalProps
 
       {open ? (
         <div
-          className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/60 px-3 py-6 backdrop-blur-sm sm:px-6"
+          className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/60 px-3 py-6 backdrop-blur-xs sm:px-6"
           role="presentation"
           onClick={() => setOpen(false)}
         >
