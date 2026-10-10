@@ -5480,7 +5480,7 @@ async def update_live_orders_from_reconciled_fills(
     )
     updated = 0
     for order_id, filled_size, filled_notional, fee_usd, filled_at in fill_result.all():
-        order = orders.get(order_id)
+        order = orders.get(order_id) if order_id is not None else None
         if order is None:
             continue
         size = filled_size or ZERO

@@ -191,7 +191,7 @@ async def store_realtime_fills(
     return stored
 
 
-def _row_to_dict(row: Row[Any]) -> dict[str, Any]:
+def _row_to_dict(row: Row[*tuple[Any, ...]]) -> dict[str, Any]:
     mapping = row._mapping
     return {
         "id": str(mapping["id"]),

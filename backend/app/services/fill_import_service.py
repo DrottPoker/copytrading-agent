@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -243,7 +243,7 @@ async def list_wallet_fills(
 ) -> tuple[list[WalletFill], int]:
     normalized_address = normalize_wallet_address(address)
     filters = [WalletFill.wallet_address == normalized_address]
-    base_query: Select[tuple[WalletFill]] = select(WalletFill)
+    base_query = select(WalletFill)
     count_query = select(func.count()).select_from(WalletFill)
     for condition in filters:
         base_query = base_query.where(condition)

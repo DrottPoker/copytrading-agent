@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import Select, case, desc, func, select
+from sqlalchemy import case, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import CopyTrade, WalletFill
@@ -248,7 +248,7 @@ async def list_wallet_copy_trades(
 ) -> CopyTradeListResponse:
     normalized_address = normalize_wallet_address(address)
     filters = [CopyTrade.source_wallet == normalized_address]
-    base_query: Select[tuple[CopyTrade]] = select(CopyTrade)
+    base_query = select(CopyTrade)
     count_query = select(func.count()).select_from(CopyTrade)
     for condition in filters:
         base_query = base_query.where(condition)

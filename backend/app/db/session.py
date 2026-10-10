@@ -69,7 +69,7 @@ async def check_postgres(settings: Settings | None = None) -> dict[str, Any]:
         return {"status": "error", "detail": exc.__class__.__name__}
 
 
-def affected_row_count(result: Result[Any]) -> int:
+def affected_row_count(result: Result[*tuple[Any, ...]]) -> int:
     """Return the rows affected by an executed DML statement."""
     # Session.execute is typed as Result, but DML statements return a CursorResult.
-    return max(int(cast(CursorResult[Any], result).rowcount or 0), 0)
+    return max(int(cast(CursorResult[*tuple[Any, ...]], result).rowcount or 0), 0)
