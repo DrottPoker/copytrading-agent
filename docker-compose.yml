@@ -140,7 +140,7 @@ services:
     logging: *default_logging
 
   redis:
-    image: redis:7.4.9-alpine
+    image: redis:7.4.11-alpine
     command: redis-server --appendonly no --save ""
     expose:
       - "6379"

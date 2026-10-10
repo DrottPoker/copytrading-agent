@@ -16,7 +16,7 @@ services:
       retries: 20
 
   redis-test:
-    image: redis:7.4.9-alpine
+    image: redis:7.4.11-alpine
     command: redis-server --appendonly no --save ""
     ports:
       - "127.0.0.1:56379:6379"
