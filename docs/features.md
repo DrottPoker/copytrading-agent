@@ -126,6 +126,11 @@ What it does:
   fetched, and consecutive failures. Several sources are unofficial endpoints
   that can change without notice; a failing or empty source raises a warning
   and a note, but never degrades overall health.
+- Shows the Live Signing Key for every live account: whether the configured
+  Hyperliquid key is a verified API wallet for that account, the signer and
+  account addresses, and when it was checked. With live trading enabled, an
+  enabled or exit-only account without a verified API wallet raises a warning
+  and a note.
 - Refreshes the page data automatically every 15 seconds while the browser tab
   is visible.
 
@@ -1205,12 +1210,22 @@ What it does:
   Disabled paper accounts are mirrored as `exit_only` because source exits and
   reductions remain allowed after Stop trading.
 - Adds guarded account transitions. Create starts disabled. Start performs a
-  complete fresh reconciliation and validates that live trading is enabled.
+  complete fresh reconciliation and validates that live trading is enabled. In
+  production, Start also requires the signing key to be a verified Hyperliquid
+  API wallet for the account.
   Stop becomes exit-only. Disable requires complete flat reconciliation and no
   pending work. Delete archives the account and retains financial and audit
   history.
 - Tracks account lifecycle version, status time, status reason, and archive time.
   Active live routes are unique by network, wallet address, and optional vault.
+- Requires a Hyperliquid API wallet in production. Reconciliation checks the
+  signing key with Hyperliquid `userRole` at most hourly and on every Start and
+  stores the result in `trading_accounts.config_payload.liveSigner`. The entry
+  gate refuses production entries until the key is a verified API wallet: a
+  main wallet key, another full wallet key, or an API wallet of another account
+  trips the account to exit-only as `live_signer_not_api_wallet`, while an
+  unverified key only blocks entries as `live_signer_unverified`. Exits are
+  never blocked.
 - Adds a shared `TradeIntent` contract for copied orders. Successful paper
   fills now store the planned intent in `raw_payload.tradeIntent`.
 - Adds deterministic Hyperliquid client order ids from account, source wallet,
@@ -1667,22 +1682,21 @@ What it does:
 - Uses read-only application container filesystems with explicit `tmpfs` mounts.
 - Applies `no-new-privileges` and drops all Linux capabilities from backend,
   frontend, and worker containers.
-- Waits for Redis health before starting application services.
+- Keeps Redis out of the startup dependencies: Redis only carries presentation
+  events, so the backend and workers start and run without it.
+- Rotates every container's Docker logs at 10 MB with five files.
+- Pins the Postgres, Redis, and Caddy images to exact versions, updated monthly
+  by Dependabot without Postgres major upgrades.
+- Publishes local development ports on `127.0.0.1` only.
 - Rejects cross-origin browser mutations in both the frontend proxy and backend
   middleware while preserving authenticated non-browser API access.
 - Adds HSTS on the VPS plus content-type, frame, referrer, and permissions
   headers through Caddy.
-- Requires Alembic head `b3d5f7a9c1e2`. This head adds the external account
-  cash-flow ledger and cash-flow-adjusted performance snapshots on top of the
-  signed Hyperliquid funding-payment ledger, append-only exchange-attempt
-  ledger, unified durable live-copy work queue, and explicit execution timing
-  columns on top of the source and fill lifecycle tables. After upgrade, an
-  operator must run `python -m alembic current` and confirm it shows
-  `b3d5f7a9c1e2` before
-  starting the backend or workers. Earlier Phase 6 migrations preserve
-  financial history, enforce account lifecycle integrity, remove the obsolete
-  global entry-control table, and expand wallet fill ingest latency to
-  `BIGINT`.
+- Applies Alembic migrations through the one-off `migrate` Compose service.
+  The backend and both workers start only after it completes successfully, so
+  they never run against an older schema. `infra/deploy-vps.sh` backs up the
+  database, stops the application services, and verifies the head after the
+  migration. The current head is listed in `docs/deployment.md`.
 - Requires an operator to restart backend and workers after changing
   `LIVE_TRADING_ENABLED`.
 - Worker container handover waits for an unexpired capability lease instead of

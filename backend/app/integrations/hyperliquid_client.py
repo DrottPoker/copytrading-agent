@@ -138,10 +138,10 @@ class HyperliquidClient:
         self.priority = priority
         self._client: httpx.AsyncClient | None = None
 
-    async def __aenter__(self) -> "HyperliquidClient":
+    async def __aenter__(self) -> HyperliquidClient:
         return self.open()
 
-    def open(self) -> "HyperliquidClient":
+    def open(self) -> HyperliquidClient:
         """Start a pooled HTTP client so requests reuse warm connections."""
 
         if self._client is None:
@@ -371,6 +371,12 @@ class HyperliquidClient:
     async def user_abstraction(self, *, user: str) -> Any:
         return await self.post_info({"type": "userAbstraction", "user": user})
 
+    async def user_role(self, *, user: str) -> dict[str, Any]:
+        result = await self.post_info({"type": "userRole", "user": user})
+        if not isinstance(result, dict):
+            raise HyperliquidClientError("Hyperliquid userRole returned an unexpected shape.")
+        return result
+
     async def portfolio(self, *, user: str) -> list[Any]:
         result = await self.post_info({"type": "portfolio", "user": user})
         if not isinstance(result, list):
@@ -386,7 +392,7 @@ def parse_retry_after_seconds(value: str | None) -> float | None:
     except ValueError:
         try:
             retry_at = parsedate_to_datetime(value)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return None
         return max(0.0, retry_at.timestamp() - time.time())
     return max(0.0, seconds)

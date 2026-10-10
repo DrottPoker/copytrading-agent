@@ -724,7 +724,7 @@ def decimal_or_none(value: Any) -> Decimal | None:
         return None
     try:
         return Decimal(str(value))
-    except (InvalidOperation, TypeError, ValueError):
+    except InvalidOperation, TypeError, ValueError:
         return None
 
 
@@ -741,7 +741,7 @@ def int_or_none(value: Any) -> int | None:
         return None
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 

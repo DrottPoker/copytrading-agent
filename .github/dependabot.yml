@@ -48,3 +48,16 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "python"
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
+
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: monthly
+    ignore:
+      # A Postgres major upgrade needs a dump and restore of the data volume.
+      - dependency-name: "postgres"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "redis"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "caddy"
+        update-types: ["version-update:semver-major"]

@@ -735,7 +735,7 @@ def datetime_from_ms(value: Any) -> datetime | None:
         return None
     try:
         parsed = int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
     if parsed <= 0:
         return None

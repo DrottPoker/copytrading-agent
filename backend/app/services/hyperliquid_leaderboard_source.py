@@ -183,7 +183,7 @@ def get_window(row: dict[str, Any], window: str) -> dict[str, Any] | None:
 def decimal_value(value: Any) -> Decimal:
     try:
         return Decimal(str(value))
-    except (InvalidOperation, TypeError, ValueError):
+    except InvalidOperation, TypeError, ValueError:
         return Decimal("0")
 
 

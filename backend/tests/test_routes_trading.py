@@ -26,7 +26,7 @@ class MappingRows:
     def __init__(self, rows: list[dict[str, Any]]) -> None:
         self.rows = rows
 
-    def mappings(self) -> "MappingRows":
+    def mappings(self) -> MappingRows:
         return self
 
     def all(self) -> list[dict[str, Any]]:

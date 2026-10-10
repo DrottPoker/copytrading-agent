@@ -107,7 +107,7 @@ def history_values(raw_history: Any) -> dict[int, Decimal]:
         try:
             time_ms = int(item[0])
             value = Decimal(str(item[1]))
-        except (InvalidOperation, TypeError, ValueError):
+        except InvalidOperation, TypeError, ValueError:
             continue
         if value.is_finite():
             values[time_ms] = value

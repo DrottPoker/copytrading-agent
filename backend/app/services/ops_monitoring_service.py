@@ -6,10 +6,11 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
+from app.db.models import TradingAccount
 from app.db.session import check_postgres, get_sessionmaker
 from app.integrations.redis_client import check_redis
 from app.schemas.ops import (
@@ -19,6 +20,7 @@ from app.schemas.ops import (
     OpsDiscoverySourceHealth,
     OpsDiskStats,
     OpsHealthResponse,
+    OpsLiveSigner,
     OpsLoadStats,
     OpsMemoryStats,
     OpsRealtimeQueueHealth,
@@ -27,6 +29,11 @@ from app.schemas.ops import (
     OpsWorkerLoopState,
 )
 from app.services.database_stats_service import get_database_summary_stats
+from app.services.live_signer_service import (
+    SIGNER_API_WALLET,
+    current_live_signer,
+    live_signer_required,
+)
 from app.services.operation_status_service import list_operation_statuses
 from app.services.worker_heartbeat_service import load_worker_heartbeat_values
 
@@ -59,16 +66,21 @@ async def get_ops_health(*, settings: Settings) -> OpsHealthResponse:
         stale_after_seconds=settings.backup_status_stale_seconds,
         now=measured_at,
     )
-    database, workers, operations, discovery_sources, db_notes = await load_database_backed_ops(
-        settings=settings,
-        now=measured_at,
-    )
+    (
+        database,
+        workers,
+        operations,
+        discovery_sources,
+        live_signers,
+        db_notes,
+    ) = await load_database_backed_ops(settings=settings, now=measured_at)
 
     notes = [
         *db_notes,
         *status_note("postgres", postgres_status),
         *status_note("redis", redis_status),
         *discovery_source_notes(discovery_sources),
+        *live_signer_notes(live_signers, settings=settings),
     ]
     status = aggregate_status(
         postgres_status=postgres_status,
@@ -80,6 +92,7 @@ async def get_ops_health(*, settings: Settings) -> OpsHealthResponse:
         database=database,
         workers=workers,
         discovery_sources=discovery_sources,
+        live_signer_warning=bool(live_signer_notes(live_signers, settings=settings)),
     )
 
     return OpsHealthResponse(
@@ -109,6 +122,7 @@ async def get_ops_health(*, settings: Settings) -> OpsHealthResponse:
         workers=workers,
         operations=operations,
         discovery_sources=discovery_sources,
+        live_signers=live_signers,
         notes=notes,
     )
 
@@ -122,12 +136,14 @@ async def load_database_backed_ops(
     list[OpsWorkerHeartbeat],
     list[Any],
     list[OpsDiscoverySourceHealth],
+    list[OpsLiveSigner],
     list[str],
 ]:
     sessionmaker = get_sessionmaker(settings)
     if sessionmaker is None:
         return (
             empty_database_summary("not_configured"),
+            [],
             [],
             [],
             [],
@@ -144,15 +160,58 @@ async def load_database_backed_ops(
                 now=now,
             )
             discovery_sources = await load_discovery_source_health(session, settings=settings)
-            return database, workers, operations, discovery_sources, []
+            live_signers = await load_live_signers(session, settings=settings)
+            return database, workers, operations, discovery_sources, live_signers, []
     except Exception as exc:
         return (
             empty_database_summary("error", error=exc.__class__.__name__),
             [],
             [],
             [],
+            [],
             [f"Database-backed ops checks failed: {exc.__class__.__name__}."],
         )
+
+
+async def load_live_signers(session: AsyncSession, *, settings: Settings) -> list[OpsLiveSigner]:
+    accounts = (
+        await session.scalars(
+            select(TradingAccount)
+            .where(TradingAccount.account_type == "live", TradingAccount.archived_at.is_(None))
+            .order_by(TradingAccount.key)
+        )
+    ).all()
+    required = live_signer_required(settings)
+    signers = []
+    for account in accounts:
+        signer = current_live_signer(account, settings=settings)
+        signers.append(
+            OpsLiveSigner(
+                account_key=account.key,
+                account_status=account.status,
+                status=signer.status,
+                description=signer.description,
+                required=required,
+                signer_address=signer.signer_address or None,
+                master_address=signer.master_address or None,
+                checked_at=signer.checked_at,
+                attempted_at=signer.attempted_at,
+                error=signer.error,
+            )
+        )
+    return signers
+
+
+def live_signer_notes(signers: list[OpsLiveSigner], *, settings: Settings) -> list[str]:
+    """Warn about live accounts that may trade with a key other than a verified API wallet."""
+
+    if not settings.live_trading_enabled:
+        return []
+    return [
+        f"Live account {signer.account_key} signs with {signer.description}."
+        for signer in signers
+        if signer.account_status in {"enabled", "exit_only"} and signer.status != SIGNER_API_WALLET
+    ]
 
 
 async def load_discovery_source_health(
@@ -525,7 +584,7 @@ def get_load_stats() -> OpsLoadStats:
     cpu_count = os.cpu_count()
     try:
         load_1m, load_5m, load_15m = os.getloadavg()
-    except (AttributeError, OSError):
+    except AttributeError, OSError:
         return OpsLoadStats(
             load_1m=None,
             load_5m=None,
@@ -659,6 +718,7 @@ def aggregate_status(
     database: OpsDatabaseSummary,
     workers: list[OpsWorkerHeartbeat],
     discovery_sources: list[OpsDiscoverySourceHealth] | None = None,
+    live_signer_warning: bool = False,
 ) -> str:
     if (
         postgres_status.get("status") != "ok"
@@ -678,6 +738,7 @@ def aggregate_status(
         or any(worker.status != "ok" for worker in workers)
         # Discovery feeds the pool slowly, so a broken source warns but never degrades.
         or any(source.status in {"warning", "degraded"} for source in discovery_sources or [])
+        or live_signer_warning
     ):
         return "warning"
     return "ok"
@@ -777,7 +838,7 @@ def int_value(value: Any) -> int | None:
         return None
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 

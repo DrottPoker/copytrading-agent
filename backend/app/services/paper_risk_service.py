@@ -534,7 +534,7 @@ async def funding_history(
                 microsecond=0,
             )
             rate = Decimal(str(row["fundingRate"]))
-        except (KeyError, TypeError, ValueError, ArithmeticError):
+        except KeyError, TypeError, ValueError, ArithmeticError:
             continue
         rates.append((funding_time, rate))
     return rates

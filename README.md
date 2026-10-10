@@ -29,15 +29,15 @@ before you turn it on.
 
 ## Quick Start
 
-Requirements: Docker with Compose. For development outside Docker, Python 3.12
+Requirements: Docker with Compose. For development outside Docker, Python 3.14
 and Node.js 24 LTS.
 
 ```bash
 cp .env.example .env
-docker compose up -d postgres redis
-docker compose run --rm backend python -m alembic upgrade head
 docker compose up --build
 ```
+
+Database migrations run automatically before the backend and workers start.
 
 Set `DASHBOARD_AUTH_PASSWORD` in `.env` before exposing anything. The dashboard
 runs at http://localhost:3000 and the API at http://localhost:8000. Paper
@@ -47,7 +47,8 @@ page.
 ## Safety Defaults
 
 - `LIVE_TRADING_ENABLED=false` in `.env` is the only switch for real orders.
-- The Hyperliquid private key lives only in `.env`, never in the database.
+- The Hyperliquid private key lives only in `.env`, never in the database. In
+  production it must be an API wallet key, which can trade but not withdraw.
 - Live accounts start disabled and need a fresh exchange reconciliation before
   they can trade.
 - Every route except `/health` and `/ready` requires dashboard authentication.

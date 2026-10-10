@@ -118,6 +118,26 @@ export type OpsDiscoverySourceHealth = {
   lastError: string | null;
 };
 
+export type OpsLiveSigner = {
+  accountKey: string;
+  accountStatus: string;
+  status:
+    | "api_wallet"
+    | "main_wallet"
+    | "other_wallet"
+    | "wrong_account"
+    | "not_registered"
+    | "unavailable"
+    | "unchecked";
+  description: string;
+  required: boolean;
+  signerAddress: string | null;
+  masterAddress: string | null;
+  checkedAt: string | null;
+  attemptedAt: string | null;
+  error: string | null;
+};
+
 export type OpsServiceConfig = {
   environment: string;
   mode: string;
@@ -144,6 +164,7 @@ export type OpsHealthResponse = {
   workers: OpsWorkerHeartbeat[];
   operations: OperationStatus[];
   discoverySources?: OpsDiscoverySourceHealth[];
+  liveSigners?: OpsLiveSigner[];
   notes: string[];
   metadata: Record<string, unknown>;
 };

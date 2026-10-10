@@ -3127,7 +3127,7 @@ def decimal_value(value: Any) -> Decimal:
         return ZERO
     try:
         return Decimal(str(value))
-    except (InvalidOperation, ValueError):
+    except InvalidOperation, ValueError:
         return ZERO
 
 

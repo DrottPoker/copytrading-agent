@@ -1,8 +1,32 @@
+x-logging: &default_logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 x-app-database-environment: &app_database_environment
   DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-copyagent}:${POSTGRES_PASSWORD:-copyagent-local-dev-password}@postgres:5432/${POSTGRES_DB:-copyagent}
   DATABASE_URL_DIRECT: postgresql://${POSTGRES_USER:-copyagent}:${POSTGRES_PASSWORD:-copyagent-local-dev-password}@postgres:5432/${POSTGRES_DB:-copyagent}
 
 services:
+  migrate:
+    build:
+      context: ./backend
+    command: python -m alembic upgrade head
+    environment:
+      <<: *app_database_environment
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging: *default_logging
+
   backend:
     build:
       context: ./backend
@@ -14,7 +38,7 @@ services:
       <<: *app_database_environment
       WORKER_RUN_IN_API_PROCESS: "false"
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - ./backups/postgres:/app/backups/postgres:ro
     read_only: true
@@ -27,6 +51,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test:
         [
@@ -39,6 +65,7 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
+    logging: *default_logging
 
   trading-worker:
     build:
@@ -61,6 +88,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    logging: *default_logging
 
   maintenance-worker:
     build:
@@ -83,6 +113,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    logging: *default_logging
 
   frontend:
     build:
@@ -92,7 +125,7 @@ services:
       DASHBOARD_AUTH_USERNAME: ${DASHBOARD_AUTH_USERNAME:-admin}
       DASHBOARD_AUTH_PASSWORD: ${DASHBOARD_AUTH_PASSWORD:-change-me}
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     read_only: true
     tmpfs:
       - /tmp
@@ -104,9 +137,10 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    logging: *default_logging
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.9-alpine
     command: redis-server --appendonly no --save ""
     expose:
       - "6379"
@@ -116,9 +150,10 @@ services:
       timeout: 5s
       retries: 10
       start_period: 5s
+    logging: *default_logging
 
   postgres:
-    image: postgres:18-alpine
+    image: postgres:18.4-alpine
     shm_size: 512mb
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-copyagent}
@@ -128,16 +163,17 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
       interval: 10s
       timeout: 5s
       retries: 10
       start_period: 20s
+    logging: *default_logging
 
   postgres-backup:
-    image: postgres:18-alpine
+    image: postgres:18.4-alpine
     command: sh /usr/local/bin/postgres-backup-loop.sh
     env_file:
       - backend/config/backup.env
@@ -153,12 +189,13 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    logging: *default_logging
 
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2.11.4-alpine
     ports:
-      - "8080:8080"
-      - "8001:8001"
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8001:8001"
     volumes:
       - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -168,6 +205,7 @@ services:
         condition: service_started
       backend:
         condition: service_healthy
+    logging: *default_logging
 
 volumes:
   caddy_data:

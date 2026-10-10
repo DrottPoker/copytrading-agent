@@ -179,6 +179,10 @@ Scoring decides which wallets we copy, so it is the first line of defense:
 ## Execution Safety
 
 - `LIVE_TRADING_ENABLED=false` is the default and the only global switch.
+- In production the signing key must be a Hyperliquid API wallet, which can
+  trade but cannot withdraw. A main wallet key on the server would let anyone
+  who reads it empty the account, so live accounts with such a key cannot start
+  and are made exit-only.
 - Live accounts start disabled and need a complete exchange reconciliation no
   older than 90 seconds before an entry can be sent.
 - Orders are IOC limit orders 20 bps beyond the execution mid

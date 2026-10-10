@@ -24,7 +24,7 @@ class FakePipeline:
         self.publications: list[tuple[str, str]] = []
         self.executed = False
 
-    def publish(self, channel: str, payload: str) -> "FakePipeline":
+    def publish(self, channel: str, payload: str) -> FakePipeline:
         self.publications.append((channel, payload))
         return self
 

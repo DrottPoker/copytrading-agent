@@ -849,7 +849,7 @@ def live_size_decimals(info: Any, *, asset: Any | None, coin: str) -> int | None
         return None
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 
@@ -880,7 +880,7 @@ def size_decimals_from_meta(meta: Any, coin: str) -> Any | None:
 def asset_is_spot(asset: Any) -> bool:
     try:
         asset_id = int(asset)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return False
     return SPOT_ASSET_OFFSET <= asset_id < BUILDER_PERP_ASSET_OFFSET
 

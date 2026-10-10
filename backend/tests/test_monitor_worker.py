@@ -29,7 +29,7 @@ from app.workers import monitor_worker
 
 
 class DummySession:
-    async def __aenter__(self) -> "DummySession":
+    async def __aenter__(self) -> DummySession:
         return self
 
     async def __aexit__(self, *_args: object) -> None:

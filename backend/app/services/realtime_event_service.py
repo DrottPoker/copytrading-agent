@@ -126,7 +126,7 @@ def stream_event(stream_id: Any, fields: Mapping[Any, Any] | None) -> dict[str, 
         return None
     try:
         event = json.loads(normalize_redis_value(raw_event))
-    except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
+    except json.JSONDecodeError, TypeError, UnicodeDecodeError:
         return None
     if not isinstance(event, dict):
         return None
@@ -145,7 +145,7 @@ async def list_legacy_recent_events(
     for raw_event in raw_events:
         try:
             event = json.loads(normalize_redis_value(raw_event))
-        except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
+        except json.JSONDecodeError, TypeError, UnicodeDecodeError:
             continue
         if isinstance(event, dict):
             event.setdefault("schemaVersion", EVENT_SCHEMA_VERSION)

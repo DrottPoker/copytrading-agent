@@ -139,7 +139,7 @@ async def test_current_drawdown_runtime_budget_keeps_scoring_completable(
         return None
 
     class FakeClient:
-        async def __aenter__(self) -> "FakeClient":
+        async def __aenter__(self) -> FakeClient:
             return self
 
         async def __aexit__(self, *_args: object) -> None:

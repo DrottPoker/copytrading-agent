@@ -61,5 +61,5 @@ def decimal_or_none(value: Any) -> Decimal | None:
         return None
     try:
         return Decimal(str(value))
-    except (InvalidOperation, TypeError, ValueError):
+    except InvalidOperation, TypeError, ValueError:
         return None

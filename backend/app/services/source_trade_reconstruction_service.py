@@ -398,7 +398,7 @@ class ReconstructedWalletTrades:
 
         self.items.append(item)
 
-    def record_ignored_fill(self, fill: "FillParts", *, reason: str) -> None:
+    def record_ignored_fill(self, fill: FillParts, *, reason: str) -> None:
         if reason == "unmatched_close":
             self.unmatched_close_fill_count += 1
         elif reason == "preexisting_open":
@@ -1383,7 +1383,7 @@ def decimal_or_none(value: Any) -> Decimal | None:
         return None
     try:
         return Decimal(str(value))
-    except (InvalidOperation, ValueError):
+    except InvalidOperation, ValueError:
         return None
 
 

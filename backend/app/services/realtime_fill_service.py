@@ -53,7 +53,7 @@ class StoredRealtimeFills:
         *,
         inbox_id: str,
         fallback_observed_at: datetime | None = None,
-    ) -> "StoredRealtimeFills":
+    ) -> StoredRealtimeFills:
         wallet_address = payload.get("walletAddress")
         inserted_rows = payload.get("insertedRows")
         execution_rows = payload.get("executionRows", inserted_rows)

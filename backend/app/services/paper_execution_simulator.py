@@ -83,7 +83,7 @@ def parse_levels(raw_levels: Any) -> list[BookLevel]:
         try:
             price = Decimal(str(raw.get("px")))
             size = Decimal(str(raw.get("sz")))
-        except (InvalidOperation, TypeError, ValueError):
+        except InvalidOperation, TypeError, ValueError:
             continue
         if price > ZERO and size > ZERO:
             levels.append(BookLevel(price=price, size=size))

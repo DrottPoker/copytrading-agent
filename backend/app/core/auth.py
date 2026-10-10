@@ -66,7 +66,7 @@ def dashboard_basic_auth_is_valid(
 
     try:
         decoded = base64.b64decode(credentials, validate=True).decode("utf-8")
-    except (binascii.Error, UnicodeDecodeError):
+    except binascii.Error, UnicodeDecodeError:
         return False
 
     username, separator, password = decoded.partition(":")

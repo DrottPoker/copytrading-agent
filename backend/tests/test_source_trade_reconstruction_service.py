@@ -179,7 +179,7 @@ class StreamSession:
         _params: dict[str, Any],
         *,
         execution_options: dict[str, Any],
-    ) -> "AsyncCaptureResult":
+    ) -> AsyncCaptureResult:
         self.execution_options = execution_options
         return AsyncCaptureResult(self.rows)
 
@@ -188,7 +188,7 @@ class AsyncCaptureResult:
     def __init__(self, rows: list[dict[str, Any]]) -> None:
         self.rows = rows
 
-    def mappings(self) -> "AsyncCaptureResult":
+    def mappings(self) -> AsyncCaptureResult:
         return self
 
     def __aiter__(self):
@@ -212,7 +212,7 @@ class CaptureSession:
         self.rows = rows
         self.statement: Any = None
 
-    async def execute(self, statement: Any, _params: Any) -> "CaptureResult":
+    async def execute(self, statement: Any, _params: Any) -> CaptureResult:
         self.statement = statement
         return CaptureResult(self.rows)
 
@@ -221,7 +221,7 @@ class CaptureResult:
     def __init__(self, rows: list[dict[str, Any]]) -> None:
         self.rows = rows
 
-    def mappings(self) -> "CaptureResult":
+    def mappings(self) -> CaptureResult:
         return self
 
     def all(self) -> list[dict[str, Any]]:

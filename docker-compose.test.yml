@@ -2,7 +2,7 @@ name: copyagent-test
 
 services:
   postgres-test:
-    image: postgres:18-alpine
+    image: postgres:18.4-alpine
     environment:
       POSTGRES_DB: copyagent_test
       POSTGRES_USER: copyagent_test
@@ -16,7 +16,7 @@ services:
       retries: 20
 
   redis-test:
-    image: redis:7-alpine
+    image: redis:7.4.9-alpine
     command: redis-server --appendonly no --save ""
     ports:
       - "127.0.0.1:56379:6379"

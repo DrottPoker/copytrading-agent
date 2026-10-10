@@ -304,7 +304,7 @@ def payload_decimal(payload: dict[str, Any], key: str) -> Decimal | None:
         return None
     try:
         return Decimal(str(value))
-    except (InvalidOperation, ValueError):
+    except InvalidOperation, ValueError:
         return None
 
 

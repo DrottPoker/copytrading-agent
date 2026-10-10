@@ -872,7 +872,7 @@ class Settings(BaseSettings):
         return value
 
     @model_validator(mode="after")
-    def guard_live_trading(self) -> "Settings":
+    def guard_live_trading(self) -> Settings:
         if self.worker_heartbeat_stale_seconds <= self.worker_heartbeat_interval_seconds:
             raise ValueError(
                 "worker_heartbeat_stale_seconds must be greater than "

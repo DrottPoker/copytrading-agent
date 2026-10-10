@@ -128,6 +128,19 @@ class OpsDiscoverySourceHealth(CamelModel):
     last_error: str | None
 
 
+class OpsLiveSigner(CamelModel):
+    account_key: str
+    account_status: str
+    status: str
+    description: str
+    required: bool
+    signer_address: str | None
+    master_address: str | None
+    checked_at: datetime | None
+    attempted_at: datetime | None
+    error: str | None
+
+
 class OpsServiceConfig(CamelModel):
     environment: str
     mode: str
@@ -154,5 +167,6 @@ class OpsHealthResponse(CamelModel):
     workers: list[OpsWorkerHeartbeat]
     operations: list[OperationStatusRead]
     discovery_sources: list[OpsDiscoverySourceHealth] = Field(default_factory=list)
+    live_signers: list[OpsLiveSigner] = Field(default_factory=list)
     notes: list[str]
     metadata: dict[str, Any] = {}

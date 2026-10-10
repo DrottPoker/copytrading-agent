@@ -9,12 +9,15 @@ and local Postgres.
 
 - `postgres`: local Postgres 18 with persistent Docker volume storage.
 - `redis`: local Redis with append-only persistence.
+- `migrate`: one-off Alembic migration that must succeed before the backend
+  and workers start.
 - `backend`: FastAPI API on the internal Docker network.
 - `trading-worker`: realtime monitoring, paper copy, live copy when enabled,
   copy recovery, and live reconciliation.
 - `maintenance-worker`: discovery, pool import, scoring, pruning, and database maintenance.
 - `frontend`: Next.js dashboard on the internal Docker network.
 - `caddy`: public reverse proxy on ports 80 and 443.
+- `postgres-backup`: daily `pg_dump` into `backups/postgres`.
 
 The VPS compose file does not publish backend, frontend, Postgres, or Redis
 ports directly. Only Caddy is exposed publicly.
@@ -141,7 +144,9 @@ For paper trading, Hyperliquid private key settings can remain empty. The
 repository uses mainnet market data with live trading and live copy disabled. Do not
 enable live trading on the VPS until the paper trading system has been validated.
 Live trading requires `LIVE_TRADING_ENABLED=true` in `.env`, a configured
-`HYPERLIQUID_PRIVATE_KEY`, and `HYPERLIQUID_WALLET_ADDRESS`. This single switch
+`HYPERLIQUID_PRIVATE_KEY`, and `HYPERLIQUID_WALLET_ADDRESS`. In production the
+private key must belong to a Hyperliquid API wallet approved by that wallet
+address; see [Use an API Wallet](#use-an-api-wallet). This single switch
 also controls automatic live copy. There is no acknowledgement, time-based
 arming, global database gate, coin allowlist, or coin blocklist. Restart the
 backend and trading worker after changing the switch. The private key is read
@@ -149,9 +154,9 @@ from `.env` only and is not stored in Postgres.
 Live reconciliation settings live in the same file
 under `reconciliation`; the worker reads Hyperliquid order status, fills, and
 clearinghouse state for enabled live accounts. It also recovers durable live
-order outbox rows and unfinished close-all operations. Run Alembic migrations
-before restarting the backend and workers so the dispatch and operation tables
-and reconciliation run history exist. Partial reconciliation preserves the
+order outbox rows and unfinished close-all operations. The `migrate` service
+applies Alembic migrations before the backend and workers start, so the
+dispatch and operation tables and reconciliation run history exist. Partial reconciliation preserves the
 last known value for failed exchange components and blocks new live entries
 until a complete worker or manual reconciliation succeeds. Reduce-only exits
 remain available. `account.capital_mode` defaults
@@ -172,28 +177,14 @@ Live entries also copy source cross or isolated mode. Migration
 `c9d5a1e7f3b2` must be applied before restarting the backend and trading worker
 because margin mode is persisted on live orders and positions.
 
-Build the images:
+Build the images and start the stack. The one-off `migrate` service applies
+the Alembic migrations first; the backend and both workers start only after it
+completes successfully:
 
 ```bash
 docker compose -f docker-compose.vps.yml build
-```
-
-Start Postgres and Redis:
-
-```bash
-docker compose -f docker-compose.vps.yml up -d postgres redis
-```
-
-Run database migrations:
-
-```bash
-docker compose -f docker-compose.vps.yml run --rm backend python -m alembic upgrade head
-```
-
-Start the stack:
-
-```bash
 docker compose -f docker-compose.vps.yml up -d
+docker compose -f docker-compose.vps.yml logs migrate
 ```
 
 Follow logs:
@@ -302,8 +293,39 @@ These commands assume the update has already been committed and pushed to the
 Git remote used by the VPS. A VPS `git pull` cannot receive uncommitted changes
 from a development machine.
 
-Run these commands from the repository root. First inspect the current state
-and save both the database and environment file:
+### Deploy Script
+
+Run the deploy script from the repository root:
+
+```bash
+bash infra/deploy-vps.sh
+```
+
+The script:
+
+1. stops if tracked files have local changes;
+2. writes a database backup with `infra/postgres-backup-local.sh` and copies
+   `.env` to `.env.before-update-<time>`;
+3. pulls with `git pull --ff-only`;
+4. lists changed configuration templates (`.env.example`, `backend/config`,
+   `frontend/config`) and asks before continuing, so `.env` can be updated
+   first;
+5. builds the images, stops the application services, and starts the stack, so
+   the `migrate` service applies migrations while nothing else uses the
+   database;
+6. checks that the database is at the Alembic head and waits for the backend
+   health check.
+
+When the migration fails, the backend and workers stay stopped. Read
+`docker compose -f docker-compose.vps.yml logs migrate`, fix the cause, and run
+the script again. A PostgreSQL deadlock is rolled back, so a rerun is safe. Use
+`bash infra/deploy-vps.sh --yes` to skip the question in step 4.
+
+### Manual Update
+
+These are the steps the script runs, for when they are needed one at a time.
+Run them from the repository root. First inspect the current state and save
+both the database and environment file:
 
 ```bash
 docker compose -f docker-compose.vps.yml ps
@@ -384,19 +406,19 @@ schema migrations from deadlocking with normal API or worker queries:
 docker compose -f docker-compose.vps.yml build backend trading-worker maintenance-worker frontend
 docker compose -f docker-compose.vps.yml up -d postgres redis
 docker compose -f docker-compose.vps.yml stop backend trading-worker maintenance-worker frontend caddy
-docker compose -f docker-compose.vps.yml run --rm --no-deps backend python -m alembic upgrade head
-docker compose -f docker-compose.vps.yml run --rm --no-deps backend python -m alembic current
+docker compose -f docker-compose.vps.yml run --rm --no-deps migrate
+docker compose -f docker-compose.vps.yml run --rm --no-deps migrate python -m alembic current
 docker compose -f docker-compose.vps.yml up -d --remove-orphans
 ```
 
 If an Alembic command reports a PostgreSQL deadlock, do not continue with the
 application restart. PostgreSQL rolls back the failed transactional migration.
-Keep the application services stopped and rerun the same `upgrade head` command.
+Keep the application services stopped and rerun the same `migrate` command.
 
 Verify migration, containers, dependencies, workers, and backups:
 
 ```bash
-docker compose -f docker-compose.vps.yml run --rm backend python -m alembic current
+docker compose -f docker-compose.vps.yml run --rm --no-deps migrate python -m alembic current
 docker compose -f docker-compose.vps.yml ps
 docker compose -f docker-compose.vps.yml exec backend \
   python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read().decode())"
@@ -496,16 +518,58 @@ VPS and sets content-type, frame, referrer, and permissions security headers.
 Keep state and backups in the declared volumes rather than writing into an
 application container.
 
+Every service writes Docker's `json-file` logs with rotation at 10 MB and five
+files, so logs never use more than about 50 MB per container. Postgres, Redis,
+and Caddy images are pinned to exact versions, and Dependabot proposes updates
+to them every month. It never proposes a new Postgres major version, because a
+Postgres major upgrade needs a dump and restore of the data volume.
+
 ## Live Trading Activation
 
 The repository uses mainnet market data for monitoring and paper trading while
-live execution defaults to disabled:
+live execution defaults to disabled (`LIVE_TRADING_ENABLED` in `.env`):
 
 ```dotenv
 LIVE_TRADING_ENABLED=false
 ```
 
-Set it to `true` and restart the backend and trading worker to activate live
+### Use an API Wallet
+
+Production live trading signs only with a Hyperliquid API wallet. An API wallet
+can place and cancel orders for the account that approved it, but it cannot
+withdraw or transfer funds. A key that leaks from the server can then trade but
+never empty the account.
+
+1. In the Hyperliquid app, open the API page (`app.hyperliquid.xyz/API`),
+   create an API wallet for the trading account, and authorize it. Copy its
+   private key when it is shown.
+2. Put that private key in `HYPERLIQUID_PRIVATE_KEY` and the trading account's
+   own address, not the API wallet address, in `HYPERLIQUID_WALLET_ADDRESS`.
+   Never put the main wallet's private key on the server.
+3. Start the live account from the Accounts page.
+
+Reconciliation asks Hyperliquid (`userRole`) what the signing key is. It must
+be an API wallet approved by the account's wallet address. The answer is stored
+on the account, checked again every hour and on every start, and shown on the
+Ops page under Live Signing Key. A failed request keeps the last answer and is
+retried after five minutes.
+
+In production, a live account whose key is not a verified API wallet cannot
+start and its entries are refused:
+
+- a key that is the account's own wallet, another full wallet, or an API wallet
+  of a different account makes the account exit-only and records a critical
+  risk event;
+- a key that has not been verified yet, for example because Hyperliquid could
+  not be reached, only blocks entries until it is verified.
+
+Exits continue in both cases. If the API wallet has an expiry, Hyperliquid
+stops reporting it once it expires; create a new one and replace the key.
+Outside production the check only shows a warning on the Ops page.
+
+### Activate
+
+Set `LIVE_TRADING_ENABLED=true` and restart the backend and trading worker to activate live
 execution and automatic live copy. Startup then requires
 `HYPERLIQUID_PRIVATE_KEY` and `HYPERLIQUID_WALLET_ADDRESS`. There are no
 acknowledgement flags, time-based arming values, global database gate, coin
@@ -655,6 +719,13 @@ than 7 days are deleted. Change retention in `backend/config/backup.env`:
 BACKUP_RETENTION_DAYS=30
 ```
 
+The dumps stay on the VPS, so losing the server loses them too. Copy a recent
+dump to another machine now and then, for example from your own computer:
+
+```bash
+scp "user@VPS_PUBLIC_IP:copytrading-agent/backups/postgres/copyagent-postgres-*.dump" ./
+```
+
 Restore a backup only while app services are stopped:
 
 ```bash
@@ -662,6 +733,21 @@ docker compose -f docker-compose.vps.yml stop backend trading-worker maintenance
 CONFIRM_RESTORE=yes bash infra/postgres-restore-local.sh backups/postgres/copyagent-postgres-YYYYMMDDTHHMMSSZ.dump
 docker compose -f docker-compose.vps.yml up -d
 ```
+
+## Suspected Compromise
+
+When someone else may have had access to the server, or data disappears without
+a known cause, assume that the server and everything in `.env` are compromised:
+
+1. Revoke the API wallet on the Hyperliquid API page. If a main wallet key was
+   ever stored on the server, move the funds to a new wallet immediately.
+2. Review the Hyperliquid account history for orders, transfers, or withdrawals
+   you did not make.
+3. Build a new server instead of cleaning the old one. Restore the latest
+   backup you trust, and choose a new dashboard password, Postgres password, and
+   API wallet.
+4. Keep the old server's disk or provider logs if you want to find the cause,
+   but never move its `.env` or keys to the new server.
 
 ## Operational Commands
 
@@ -703,6 +789,7 @@ docker compose -f docker-compose.vps.yml down -v
   Postgres start. Changing them later does not rename or re-own an existing
   database volume.
 - Redis data is stored in the `redis_data` Docker volume.
+- Container logs rotate at 10 MB with five files per service.
 - Caddy certificates are stored in `caddy_data` and `caddy_config` volumes.
 - The backend mounts `./backups/postgres` read-only so `/ops` can show latest
   backup status when `backup_status_enabled=true` in

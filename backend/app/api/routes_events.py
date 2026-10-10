@@ -91,7 +91,7 @@ async def stream_events(request: Request) -> AsyncIterator[str]:
                 yield sse_event(event, event_id=last_event_id)
     except asyncio.CancelledError:
         raise
-    except (RedisError, TimeoutError):
+    except RedisError, TimeoutError:
         logger.warning("event stream closed because Redis is unavailable", exc_info=True)
 
 

@@ -1,9 +1,35 @@
+x-logging: &default_logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 x-app-database-environment: &app_database_environment
   APP_ENV: production
   DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-copyagent}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-copyagent}
   DATABASE_URL_DIRECT: postgresql://${POSTGRES_USER:-copyagent}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-copyagent}
 
 services:
+  migrate:
+    build:
+      context: ./backend
+    command: python -m alembic upgrade head
+    environment:
+      <<: *app_database_environment
+      DASHBOARD_AUTH_USERNAME: ${DASHBOARD_AUTH_USERNAME:?DASHBOARD_AUTH_USERNAME must be set}
+      DASHBOARD_AUTH_PASSWORD: ${DASHBOARD_AUTH_PASSWORD:?DASHBOARD_AUTH_PASSWORD must be set}
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging: *default_logging
+
   backend:
     build:
       context: ./backend
@@ -27,6 +53,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test:
         [
@@ -40,6 +68,7 @@ services:
       retries: 5
       start_period: 30s
     restart: unless-stopped
+    logging: *default_logging
 
   trading-worker:
     build:
@@ -61,7 +90,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
+    logging: *default_logging
 
   maintenance-worker:
     build:
@@ -83,7 +115,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
+    logging: *default_logging
 
   frontend:
     build:
@@ -107,9 +142,10 @@ services:
       backend:
         condition: service_healthy
     restart: unless-stopped
+    logging: *default_logging
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.9-alpine
     command: redis-server --appendonly yes --save 60 1
     volumes:
       - redis_data:/data
@@ -122,9 +158,10 @@ services:
       retries: 10
       start_period: 5s
     restart: unless-stopped
+    logging: *default_logging
 
   postgres:
-    image: postgres:18-alpine
+    image: postgres:18.4-alpine
     shm_size: 512mb
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-copyagent}
@@ -164,9 +201,10 @@ services:
       retries: 10
       start_period: 20s
     restart: unless-stopped
+    logging: *default_logging
 
   postgres-backup:
-    image: postgres:18-alpine
+    image: postgres:18.4-alpine
     command: sh /usr/local/bin/postgres-backup-loop.sh
     env_file:
       - backend/config/backup.env
@@ -183,9 +221,10 @@ services:
       postgres:
         condition: service_healthy
     restart: unless-stopped
+    logging: *default_logging
 
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2.11.4-alpine
     environment:
       DASHBOARD_DOMAIN: ${DASHBOARD_DOMAIN:?DASHBOARD_DOMAIN must be set}
     ports:
@@ -201,6 +240,7 @@ services:
       backend:
         condition: service_healthy
     restart: unless-stopped
+    logging: *default_logging
 
 volumes:
   caddy_data:

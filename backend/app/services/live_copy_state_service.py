@@ -722,7 +722,7 @@ def session_uses_postgresql(session: Any) -> bool:
         return False
     try:
         bind = get_bind()
-    except (AttributeError, RuntimeError):
+    except AttributeError, RuntimeError:
         return False
     dialect = getattr(bind, "dialect", None)
     return getattr(dialect, "name", "") == "postgresql"
@@ -826,7 +826,7 @@ def is_same_side_owned_continuation_part(
         return False
     try:
         normalized_start_position = Decimal(str(start_position))
-    except (ArithmeticError, TypeError, ValueError):
+    except ArithmeticError, TypeError, ValueError:
         return False
     if side == "long":
         return normalized_start_position > POSITION_EPSILON
@@ -2022,5 +2022,5 @@ def utc_now(value: datetime | None = None) -> datetime:
 def int_or_default(value: Any, default: int) -> int:
     try:
         return int(value) if value is not None else default
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default

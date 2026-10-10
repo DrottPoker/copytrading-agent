@@ -6,6 +6,23 @@ used to live in the README.
 
 ## 2026-10-10
 
+### Data and infrastructure
+
+- Production live trading signs only with a Hyperliquid API wallet, which can
+  trade but cannot withdraw. The signing key is checked with Hyperliquid
+  `userRole` during reconciliation and on every start; a main wallet key makes
+  the account exit-only. The Ops page shows the Live Signing Key per account.
+- A one-off `migrate` Compose service applies migrations before the backend
+  and workers start, and `infra/deploy-vps.sh` runs the whole VPS update:
+  backup, pull, build, migrate, head check, and health check.
+- Docker logs rotate at 10 MB with five files per service. Postgres, Redis,
+  and Caddy images are pinned and updated by Dependabot. Local Compose ports
+  are published on `127.0.0.1` only.
+- The backend runs on Python 3.14 everywhere: Docker, CI, and local
+  development through `.python-version`.
+- Documented how to copy backups off the VPS, what to do after a suspected
+  compromise, and Hyperliquid's S3 fill history.
+
 ### Paper simulation shares the live decision rules
 
 - Paper and live copy now call one decision module, `copy_decision`, for entry

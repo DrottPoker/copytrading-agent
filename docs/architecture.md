@@ -572,6 +572,20 @@ Linux capabilities for application containers. Redis has its own healthcheck
 but does not gate backend or worker startup. Caddy applies HSTS on the VPS and
 content-type, frame, referrer, and permissions headers at the edge.
 
+Migrations run in a one-off `migrate` service that receives only database and
+dashboard settings, not the Hyperliquid key. The backend and workers depend on
+its successful completion. Every service rotates its Docker logs, and the
+infrastructure images are pinned to exact versions.
+
+Production live trading signs only with a Hyperliquid API wallet, which can
+trade but cannot withdraw. `live_signer_service.py` derives the signer address
+from the configured key, asks Hyperliquid `userRole` whether it is an agent
+approved by the account's wallet address, and stores the answer without the key
+in `trading_accounts.config_payload.liveSigner`. Reconciliation refreshes it at
+most hourly, account start forces a check, and a failed request keeps the last
+answer. Account start and the live entry gate read the stored answer, so the
+order path makes no extra network call.
+
 ## Test Architecture
 
 Fast unit tests run without external services. Tests marked `integration` use
@@ -878,6 +892,14 @@ percentile of the top selection among seeded random selections of the same
 size, and the rank correlation between score and outcome. Recompute history is
 limited by fill retention, so the daily snapshots extend the testable period
 over time.
+
+Deeper fill history exists outside the API. Hyperliquid publishes node data in
+the requester-pays S3 bucket `hl-mainnet-node-data`: `node_fills_by_block` has
+every fill grouped by block with the trading wallet's address, and the older
+`node_fills` uses the same fill format as the API. Reading it needs an AWS
+account, and the requester pays the transfer. The system does not import it
+yet; the API import keeps up to 10,000 recent fills per wallet. Hyperliquid's
+`hyperliquid-archive` bucket only has order book snapshots and asset contexts.
 Wallet list and wallet detail responses expose `poolRank`, which is calculated
 from the latest stored wallet score ordering and is independent of realtime
 monitor slots.

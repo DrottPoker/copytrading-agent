@@ -5,9 +5,11 @@ same checks as CI. For production see [deployment.md](deployment.md).
 
 ## Local Development
 
-Runtime versions: Python 3.12 for the backend and Node.js 24 LTS (24.15 or
-newer) for the dashboard. `frontend/.nvmrc` pins the Node major for version
-managers, and the frontend Docker image and CI use the same major.
+Runtime versions: Python 3.14 for the backend and Node.js 24 LTS (24.15 or
+newer) for the dashboard. `.python-version` pins the backend Python for version
+managers and CI, and the backend Docker image uses the same version.
+`frontend/.nvmrc` pins the Node major for version managers, and the frontend
+Docker image and CI use the same major.
 
 Tweakable non-secret settings live in config files:
 
@@ -107,14 +109,8 @@ forwarded origin again. Non-browser clients without an `Origin` header continue
 to use Basic Auth normally. These paired origin checks are the CSRF protection
 for authenticated mutation routes.
 
-For a fresh local Compose database, start Postgres and run migrations first:
-
-```bash
-docker compose up -d postgres redis
-docker compose run --rm backend python -m alembic upgrade head
-```
-
-Run the stack:
+Run the stack. The one-off `migrate` service applies Alembic migrations
+before the backend and workers start, also on a fresh database:
 
 ```bash
 docker compose up --build
@@ -130,6 +126,9 @@ Services:
 - Postgres backup worker: `postgres-backup`, writes to `backups/postgres`
 - Caddy dashboard proxy: http://localhost:8080
 - Caddy API proxy: http://localhost:8001
+
+The local Compose file publishes these ports on `127.0.0.1` only, so the
+development passwords are not reachable from other machines on the network.
 
 ## Test Suites
 

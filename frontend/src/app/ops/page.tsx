@@ -6,6 +6,7 @@ import {
   Cpu,
   Database,
   HardDrive,
+  KeyRound,
   MemoryStick,
   RadioTower,
   Radar,
@@ -36,6 +37,7 @@ import type {
   OpsDiscoverySourceHealth,
   OpsDiskStats,
   OpsHealthResponse,
+  OpsLiveSigner,
   OpsLoadStats,
   OpsMemoryStats,
   OpsWorkerHeartbeat,
@@ -145,6 +147,16 @@ export default async function OpsPage() {
           <div className="divide-y divide-line">
             {ops.discoverySources.map((source) => (
               <DiscoverySourceRow key={source.source} source={source} />
+            ))}
+          </div>
+        </Panel>
+      ) : null}
+
+      {ops.liveSigners && ops.liveSigners.length > 0 ? (
+        <Panel icon={KeyRound} title="Live Signing Key">
+          <div className="divide-y divide-line">
+            {ops.liveSigners.map((signer) => (
+              <LiveSignerRow key={signer.accountKey} signer={signer} />
             ))}
           </div>
         </Panel>
@@ -464,6 +476,53 @@ function DiscoverySourceRow({ source }: { source: OpsDiscoverySourceHealth }) {
       </div>
     </div>
   );
+}
+
+function LiveSignerRow({ signer }: { signer: OpsLiveSigner }) {
+  return (
+    <div className="grid gap-3 py-3 sm:grid-cols-[220px_150px_1fr] sm:items-center">
+      <div className="min-w-0">
+        <p className="truncate text-sm font-semibold">{signer.accountKey}</p>
+        <p className="mt-1 text-xs text-muted">
+          Account {signer.accountStatus}
+          {signer.required ? ", API wallet required" : ""}
+        </p>
+      </div>
+      <StatusPill label={signerStatusLabel(signer.status)} tone={signerTone(signer)} />
+      <div className="min-w-0 text-sm text-muted">
+        <p className="truncate">
+          {signer.signerAddress
+            ? `Signer ${shortAddress(signer.signerAddress)} for ${shortAddress(signer.masterAddress)}: ${signer.description}`
+            : "No signing key is configured."}
+        </p>
+        <p className="mt-1 truncate text-xs">
+          Checked {formatDate(signer.checkedAt)}
+          {signer.error ? `, last attempt failed: ${signer.error}` : ""}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function signerStatusLabel(status: OpsLiveSigner["status"]) {
+  return status.replaceAll("_", " ");
+}
+
+function signerTone(signer: OpsLiveSigner): "positive" | "warning" | "danger" | "neutral" {
+  if (signer.status === "api_wallet") {
+    return "positive";
+  }
+  if (signer.status === "unchecked" || signer.status === "unavailable") {
+    return "warning";
+  }
+  return signer.required ? "danger" : "warning";
+}
+
+function shortAddress(address: string | null) {
+  if (!address) {
+    return "-";
+  }
+  return address.length > 12 ? `${address.slice(0, 6)}...${address.slice(-4)}` : address;
 }
 
 function SmallMetric({ label, value }: { label: string; value: string }) {

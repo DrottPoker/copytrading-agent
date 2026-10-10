@@ -83,6 +83,10 @@ from app.services.live_order_reject_policy import (
     OPEN_INTEREST_CAP_COOLDOWN_REASON,
     classify_live_order_reject,
 )
+from app.services.live_signer_service import (
+    live_signer_entry_block,
+    refresh_live_account_signer,
+)
 from app.services.source_fill_ordering import source_fill_order_components
 from app.services.trading_core import (
     MARGIN_MODES,
@@ -410,7 +414,7 @@ def live_performance_backfill_version(account: TradingAccount) -> int:
         return 0
     try:
         return int(performance.get("historicalBackfillVersion") or 0)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 0
 
 
@@ -421,7 +425,7 @@ def live_cash_flow_backfill_version(account: TradingAccount) -> int:
         return 0
     try:
         return int(cash_flow_tracking.get("historicalBackfillVersion") or 0)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 0
 
 
@@ -545,6 +549,9 @@ def validate_live_account_can_start(
             "starting live trading.",
             status_code=409,
         )
+    signer_block = live_signer_entry_block(account, settings=settings)
+    if signer_block is not None:
+        raise LiveTradingServiceError(signer_block.message, status_code=409)
 
 
 def live_reconciliation_is_fresh(
@@ -855,6 +862,7 @@ async def start_live_trading_account(
                     account=account,
                     settings=settings,
                     info_client=info_client,
+                    force_signer_check=True,
                 )
                 if result.status != "complete":
                     raise LiveTradingServiceError(
@@ -3026,6 +3034,15 @@ async def validate_live_entry_risk_guardrails(
             limit=settings.live_trading_reconciliation_max_snapshot_age_seconds,
             trip_account=False,
         )
+    signer_block = live_signer_entry_block(account, settings=settings)
+    if signer_block is not None:
+        await reject(
+            rule=signer_block.rule,
+            message=signer_block.message,
+            observed=signer_block.status,
+            limit="api_wallet",
+            trip_account=signer_block.trip_account,
+        )
     breach = account_loss_breach(
         await live_account_loss_state(session, account_key=account.key, now=now),
         settings=settings,
@@ -3312,6 +3329,7 @@ async def run_live_trading_account_reconciliation(
     settings: Settings,
     info_client: HyperliquidClient | None = None,
     lookback_minutes: int | None = None,
+    force_signer_check: bool = False,
 ) -> LiveReconciliationResult:
     """Run under the caller-held live_execution job lock.
 
@@ -3341,6 +3359,15 @@ async def run_live_trading_account_reconciliation(
         if client_created:
             await client.__aenter__()
             client_entered = True
+        # Committed on its own so a failed reconciliation keeps the signer result.
+        if await refresh_live_account_signer(
+            account,
+            client=client,
+            settings=settings,
+            now=reconciled_at,
+            force=force_signer_check,
+        ):
+            await session.commit()
         order_result = await reconcile_live_order_statuses(
             session,
             account=account,
@@ -3956,7 +3983,7 @@ def reconciliation_components_payload(
     perp_snapshot: LivePerpSnapshot,
     spot_state: dict[str, Any],
     user_abstraction: Any,
-    position_result: "LivePositionReconciliationResult",
+    position_result: LivePositionReconciliationResult,
 ) -> dict[str, Any]:
     return {
         "orders": {
@@ -6666,7 +6693,7 @@ def decimal_or_none(value: Any) -> Decimal | None:
         return None
     try:
         return Decimal(str(value))
-    except (InvalidOperation, TypeError, ValueError):
+    except InvalidOperation, TypeError, ValueError:
         return None
 
 

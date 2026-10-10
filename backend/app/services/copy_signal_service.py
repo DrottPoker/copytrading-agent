@@ -44,7 +44,7 @@ class SourceAccountState:
     dex: str
     perp_equity: Decimal
     leverage_by_coin: dict[str, Decimal]
-    positions_by_coin: dict[str, "SourceCurrentPosition"]
+    positions_by_coin: dict[str, SourceCurrentPosition]
     margin_mode_by_coin: dict[str, MarginMode] = field(default_factory=dict)
     skip_reason: str | None = None
 
@@ -1018,7 +1018,7 @@ def decimal_or_none(value: Any) -> Decimal | None:
         return None
     try:
         return Decimal(str(value))
-    except (InvalidOperation, ValueError):
+    except InvalidOperation, ValueError:
         return None
 
 
