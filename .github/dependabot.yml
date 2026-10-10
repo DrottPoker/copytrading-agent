@@ -10,6 +10,15 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # Node type definitions follow the runtime major in the Dockerfile and CI.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      # Blocked until eslint-config-next and typescript-eslint support the new majors.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "eslint"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: pip
     directory: /backend
@@ -33,3 +42,9 @@ updates:
       - /frontend
     schedule:
       interval: monthly
+    ignore:
+      # Runtime majors move deliberately to the next LTS release, never to odd versions.
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "python"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]

@@ -1057,6 +1057,10 @@ Notes:
 
 ## Local Development
 
+Runtime versions: Python 3.12 for the backend and Node.js 24 LTS (24.15 or
+newer) for the dashboard. `frontend/.nvmrc` pins the Node major for version
+managers, and the frontend Docker image and CI use the same major.
+
 Tweakable non-secret settings live in config files:
 
 - `backend/config/app.json`
