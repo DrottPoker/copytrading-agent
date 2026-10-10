@@ -224,7 +224,7 @@ services:
     logging: *default_logging
 
   caddy:
-    image: caddy:2.11.4-alpine
+    image: caddy:2.11.7-alpine
     environment:
       DASHBOARD_DOMAIN: ${DASHBOARD_DOMAIN:?DASHBOARD_DOMAIN must be set}
     ports:
