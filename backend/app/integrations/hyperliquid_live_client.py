@@ -8,7 +8,7 @@ from typing import Any
 
 from app.core.config import Settings, get_settings
 from app.db.models import TradingAccount
-from app.services.trading_core import MarginMode, TradeIntent
+from app.services.trading_core import MarginMode, TradeIntent, parse_margin_mode
 
 
 class HyperliquidLiveTradingError(RuntimeError):
@@ -343,11 +343,12 @@ def validated_live_entry_leverage(
 
 
 def validated_margin_mode(margin_mode: str) -> MarginMode:
-    if margin_mode not in {"cross", "isolated"}:
+    try:
+        return parse_margin_mode(margin_mode)
+    except ValueError as exc:
         raise HyperliquidLiveTradingConfigurationError(
             "Live order margin mode must be cross or isolated."
-        )
-    return margin_mode
+        ) from exc
 
 
 def apply_live_entry_exchange_leverage(
@@ -696,7 +697,7 @@ def size_decimals_from_meta(meta: Any, coin: str) -> Any | None:
     return None
 
 
-def asset_is_spot(asset: Any | None) -> bool:
+def asset_is_spot(asset: Any) -> bool:
     try:
         asset_id = int(asset)
     except (TypeError, ValueError):

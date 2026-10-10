@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from hashlib import blake2s
-from typing import Any, Literal
+from typing import Any, Literal, cast, get_args
 
 from app.core.config import Settings
 
@@ -13,6 +13,28 @@ TradeSide = Literal["long", "short"]
 TradingAccountType = Literal["paper", "live"]
 TradingAccountStatus = Literal["disabled", "enabled", "exit_only"]
 MarginMode = Literal["cross", "isolated"]
+
+TRADE_ACTIONS: frozenset[str] = frozenset(get_args(TradeAction))
+TRADE_SIDES: frozenset[str] = frozenset(get_args(TradeSide))
+MARGIN_MODES: frozenset[str] = frozenset(get_args(MarginMode))
+
+
+def parse_trade_action(value: str) -> TradeAction:
+    if value not in TRADE_ACTIONS:
+        raise ValueError(f"Unsupported trade action: {value!r}.")
+    return cast(TradeAction, value)
+
+
+def parse_trade_side(value: str) -> TradeSide:
+    if value not in TRADE_SIDES:
+        raise ValueError(f"Unsupported trade side: {value!r}.")
+    return cast(TradeSide, value)
+
+
+def parse_margin_mode(value: str) -> MarginMode:
+    if value not in MARGIN_MODES:
+        raise ValueError(f"Unsupported margin mode: {value!r}.")
+    return cast(MarginMode, value)
 
 
 @dataclass(frozen=True)
@@ -150,7 +172,7 @@ def safe_leverage(leverage: Decimal | None) -> Decimal:
     )
 
 
-def margin_from_notional(notional_usd: Decimal, leverage: Decimal) -> Decimal:
+def margin_from_notional(notional_usd: Decimal, leverage: Decimal | None) -> Decimal:
     resolved_leverage = safe_leverage(leverage)
     if notional_usd <= ZERO:
         return ZERO

@@ -28,10 +28,23 @@ Behavior:
 - All other backend routes require `DASHBOARD_AUTH_USERNAME` and
   `DASHBOARD_AUTH_PASSWORD`.
 - Production startup fails if auth is disabled, the username is empty, or the
-  password is still `change-me`. A short custom password is accepted, while a
-  longer unique password remains recommended.
+  password is still `change-me` or shorter than 8 characters. A longer unique
+  password remains recommended.
 - The Next.js dashboard uses the same Basic Auth settings before serving
-  dashboard pages or `/api/backend` proxy routes.
+  dashboard pages, `/api/backend` proxy routes, or any other route except
+  static build assets.
+- With `APP_ENV=production`, the dashboard applies the same credential rules as
+  the backend and never falls back to the development defaults. Unsafe
+  settings make it answer every request with HTTP 503 and log the reason.
+- Failed dashboard logins are throttled per client IP. Reaching the configured
+  number of failures within the window locks that IP out with HTTP 429 and a
+  `Retry-After` header for the lockout period, even for correct credentials. A
+  successful login clears the counter. The client IP comes from the
+  `X-Real-IP` header set by Caddy.
+- Credentials are compared as UTF-8 through fixed-length digests, so non-ASCII
+  passwords work and comparison time does not depend on the input.
+- The Next.js image optimization endpoint is disabled because the dashboard
+  serves no images.
 - The Next.js dashboard proxies browser API calls through `/api/backend` and adds
   backend auth on the server side.
 - Server-side dashboard data fetches also add backend auth from environment
@@ -51,7 +64,12 @@ Config:
   `backend/config/app.json`
 - Frontend auth enablement: `dashboardAuthEnabled` in
   `frontend/config/app.json`
+- Login throttle: `dashboardAuthMaxFailedAttempts` (default 10),
+  `dashboardAuthFailureWindowSeconds` (default 900), and
+  `dashboardAuthLockoutSeconds` (default 900) in `frontend/config/app.json`
 - Credentials: `DASHBOARD_AUTH_USERNAME` and `DASHBOARD_AUTH_PASSWORD` in `.env`
+- Frontend production mode: `APP_ENV=production`, set for the frontend service
+  in `docker-compose.vps.yml`
 
 ### Dashboard Interface
 

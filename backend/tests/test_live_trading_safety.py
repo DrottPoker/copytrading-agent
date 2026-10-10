@@ -462,8 +462,7 @@ async def test_expired_rejected_live_entry_reports_the_prior_exchange_rejection(
     session = ExpiredIntentSession(dispatch)
 
     expected_error = (
-        "Live entry retry window expired after Hyperliquid rejected "
-        "an earlier exchange attempt."
+        "Live entry retry window expired after Hyperliquid rejected an earlier exchange attempt."
     )
     with pytest.raises(LiveOrderSubmitError, match=expected_error):
         await ensure_live_entry_intent_is_fresh(  # type: ignore[arg-type]

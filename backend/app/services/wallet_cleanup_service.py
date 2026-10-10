@@ -7,6 +7,7 @@ from sqlalchemy import bindparam, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import WalletScore, WatchedWallet
+from app.db.session import affected_row_count
 from app.integrations.hyperliquid_client import HyperliquidClient
 from app.schemas.wallet import normalize_wallet_address
 from app.schemas.wallet_cleanup import (
@@ -1103,7 +1104,7 @@ async def delete_wallet_data_rows_detailed(
             ),
             parameters,
         )
-        deleted_rows[dependency.table_name] = max(0, delete_result.rowcount or 0)
+        deleted_rows[dependency.table_name] = affected_row_count(delete_result)
 
     await session.execute(
         address_list_statement(

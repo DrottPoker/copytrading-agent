@@ -15,6 +15,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal
 
 from sqlalchemy import (
+    ColumnElement,
     Numeric,
     and_,
     case,
@@ -126,9 +127,7 @@ def live_copy_unresolved_exit_predicate():
         LiveCopyFillState.source_wallet.not_in(LIVE_COPY_RESERVED_SOURCE_WALLETS),
         LiveCopyFillState.action.in_(LIVE_COPY_EXIT_ACTIONS),
         LiveCopyFillState.fill_complete.is_(False),
-        LiveCopyFillState.outcome.in_(
-            (LIVE_COPY_OUTCOME_PENDING, LIVE_COPY_OUTCOME_RETRYABLE)
-        ),
+        LiveCopyFillState.outcome.in_((LIVE_COPY_OUTCOME_PENDING, LIVE_COPY_OUTCOME_RETRYABLE)),
     )
 
 
@@ -332,7 +331,7 @@ async def close_live_copy_entry_states_at_activation_baseline(
     if baseline_timestamp_ms is None:
         return 0
     baseline_fill_ids = sorted(live_copy_baseline_fill_ids(source_state))
-    at_baseline = literal(False)
+    at_baseline: ColumnElement[bool] = literal(False)
     if baseline_fill_ids:
         at_baseline = and_(
             LiveCopyFillState.source_timestamp_ms == int(baseline_timestamp_ms),
@@ -731,7 +730,7 @@ def is_live_copy_fill_post_baseline(
     source_state: LiveCopySourceState,
     *,
     fill: WalletFill | Mapping[str, Any],
-    origin: LiveCopyProcessingOrigin,
+    origin: str,
     observed_at: datetime | None = None,
     first_observed_at: datetime | None = None,
 ) -> bool:
@@ -790,12 +789,22 @@ async def live_copy_entry_follows_owned_position_lifecycle(
         .with_for_update()
     )
     for position in positions.all():
+        lifecycle_timestamp_ms = position.source_lifecycle_timestamp_ms
+        lifecycle_direction_rank = position.source_lifecycle_direction_rank
+        lifecycle_position = position.source_lifecycle_position
+        if (
+            lifecycle_timestamp_ms is None
+            or lifecycle_direction_rank is None
+            or lifecycle_position is None
+        ):
+            # The query already excludes these rows; the guard narrows the types.
+            continue
         numeric_fill_id = position.source_lifecycle_fill_id_numeric
         position_key = (
-            int(position.source_lifecycle_timestamp_ms),
+            int(lifecycle_timestamp_ms),
             position.coin,
-            int(position.source_lifecycle_direction_rank),
-            Decimal(position.source_lifecycle_position),
+            int(lifecycle_direction_rank),
+            Decimal(lifecycle_position),
             0 if numeric_fill_id is not None else 1,
             Decimal(numeric_fill_id) if numeric_fill_id is not None else Decimal("0"),
             str(position.source_lifecycle_fill_id),
@@ -1799,7 +1808,7 @@ def build_live_copy_recovery_candidate_query(
         has_due_pending,
         has_only_terminal_incomplete,
     )
-    stale_entry_bypasses_barrier = literal(False)
+    stale_entry_bypasses_barrier: ColumnElement[bool] = literal(False)
     if max_entry_age_seconds > 0:
         stale_cutoff_timestamp_ms = int(
             (observed_at - timedelta(seconds=max(int(max_entry_age_seconds), 0))).timestamp() * 1000
@@ -1858,7 +1867,7 @@ async def load_live_copy_recovery_candidate_fills(
             max_entry_age_seconds=max_entry_age_seconds,
         )
     )
-    fills = result.all()
+    fills = list(result.all())
     update_live_copy_scan_high_water(source_state, fills)
     return fills
 
@@ -2008,7 +2017,7 @@ def utc_now(value: datetime | None = None) -> datetime:
     return ensure_utc(value) if value is not None else datetime.now(UTC)
 
 
-def int_or_default(value: object, default: int) -> int:
+def int_or_default(value: Any, default: int) -> int:
     try:
         return int(value) if value is not None else default
     except (TypeError, ValueError):

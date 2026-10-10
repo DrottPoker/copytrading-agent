@@ -472,9 +472,7 @@ def pool_fill_progress_payload(
         "currentWallet": current_wallet,
         "stage": "wallet_import",
         "stageLabel": "Importing fills",
-        "stageDetail": (
-            f"Wallet {batch_index} of {batch_size} in batch {batch_number or 1}."
-        ),
+        "stageDetail": (f"Wallet {batch_index} of {batch_size} in batch {batch_number or 1}."),
         "progressPercent": pool_fill_progress_percent(
             base_payload=base_payload,
             batch_number=batch_number,

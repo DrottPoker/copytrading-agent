@@ -161,9 +161,7 @@ class HyperliquidClient:
 
         result = await self.post_info(payload)
         if not isinstance(result, list):
-            raise HyperliquidClientError(
-                "Hyperliquid userFunding returned an unexpected shape."
-            )
+            raise HyperliquidClientError("Hyperliquid userFunding returned an unexpected shape.")
         return [item for item in result if isinstance(item, dict)]
 
     async def user_non_funding_ledger_updates(

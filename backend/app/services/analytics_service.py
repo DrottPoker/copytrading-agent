@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -504,8 +505,8 @@ async def load_paper_sources(session: AsyncSession) -> list[AnalyticsPaperSource
     labels = await load_source_labels(session, sources)
     rows: list[AnalyticsPaperSourceRow] = []
     for source in sources:
-        fill_row = fills_by_source.get(source, {})
-        position_row = positions_by_source.get(source, {})
+        fill_row: Mapping[Any, Any] = fills_by_source.get(source, {})
+        position_row: Mapping[Any, Any] = positions_by_source.get(source, {})
         copied_fill_count = int(fill_row.get("copied_fill_count") or 0)
         skipped_fill_count = int(fill_row.get("skipped_fill_count") or 0)
         total_fill_count = copied_fill_count + skipped_fill_count

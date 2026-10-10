@@ -10,7 +10,10 @@
 		Referrer-Policy no-referrer
 		Permissions-Policy "camera=(), microphone=(), geolocation=()"
 	}
-	reverse_proxy frontend:3000
+	reverse_proxy frontend:3000 {
+		# The dashboard login throttle keys on this value, so it must be the TCP peer.
+		header_up X-Real-IP {remote_host}
+	}
 }
 
 :8001 {

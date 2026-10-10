@@ -15,6 +15,7 @@ from app.services.realtime_event_service import (
     publish_event,
     read_event_stream,
     stream_event,
+    stream_read_rows,
 )
 
 
@@ -283,3 +284,21 @@ def test_stream_event_overwrites_untrusted_id_and_rejects_invalid_payloads() -> 
     assert stream_event("50-2", {"event": "[]"}) is None
     assert stream_event("50-3", {"event": "{"}) is None
     assert stream_event("50-4", {"other": "missing"}) is None
+    assert stream_event("50-5", None) is None
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        [["events:stream:v1", [("1-0", {"event": "{}"}), ("2-0", {"event": "{}"})]]],
+        {"events:stream:v1": [("1-0", {"event": "{}"}), ("2-0", {"event": "{}"})]},
+    ],
+    ids=["resp2", "resp3"],
+)
+def test_stream_read_rows_accepts_resp2_and_resp3_replies(reply: Any) -> None:
+    assert stream_read_rows(reply) == [("1-0", {"event": "{}"}), ("2-0", {"event": "{}"})]
+
+
+@pytest.mark.parametrize("reply", [None, [], {}])
+def test_stream_read_rows_treats_empty_replies_as_no_rows(reply: Any) -> None:
+    assert stream_read_rows(reply) == []

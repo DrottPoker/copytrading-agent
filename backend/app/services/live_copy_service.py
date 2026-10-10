@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -107,12 +107,16 @@ from app.services.source_fill_ordering import (
     source_fill_order_key,
 )
 from app.services.trading_core import (
+    MARGIN_MODES,
     MarginMode,
     TradeIntent,
+    TradeSide,
     adjust_open_sizing_to_min_order,
     build_client_order_id,
     build_copy_trade_intent,
     margin_from_notional,
+    parse_margin_mode,
+    parse_trade_action,
     trade_intent_payload,
     trade_is_buy,
 )
@@ -654,8 +658,9 @@ async def process_live_copy_fills(
             for part in parts:
                 if part.action not in {"open", "add", "flip_open"}:
                     continue
-                if entry_admission is None or not entry_admission.is_terminal:
+                if entry_admission is None or entry_admission.terminal_reason is None:
                     continue
+                admission_terminal_reason = entry_admission.terminal_reason
                 claim = await claim_live_copy_fill_part(
                     session,
                     source_state=lifecycle_state,
@@ -682,9 +687,9 @@ async def process_live_copy_fills(
                 await mark_live_copy_fill_terminal_skip(
                     session,
                     fill_state=claim.state,
-                    reason=entry_admission.terminal_reason,
+                    reason=admission_terminal_reason,
                 )
-                fill_result = live_skip(entry_admission.terminal_reason)
+                fill_result = live_skip(admission_terminal_reason)
                 processed += fill_result.processed_fills
                 skipped += fill_result.skipped_fills
                 skip_reasons = combine_skip_reasons(skip_reasons, fill_result.skip_reasons)
@@ -718,8 +723,11 @@ async def process_live_copy_fills(
             for part in parts:
                 if account_fill_deferred:
                     break
-                terminal_entry = part_requires_source_equity(part) and bool(
-                    entry_admission and entry_admission.is_terminal
+                entry_terminal_reason = (
+                    entry_admission.terminal_reason if entry_admission is not None else None
+                )
+                terminal_entry = (
+                    part_requires_source_equity(part) and entry_terminal_reason is not None
                 )
                 claim = await claim_live_copy_fill_part(
                     session,
@@ -780,13 +788,13 @@ async def process_live_copy_fills(
                     )
                     fill_result = live_skip("live_entry_preparation_expired")
                     terminal_entry = True
-                elif terminal_entry:
+                elif terminal_entry and entry_terminal_reason is not None:
                     await mark_live_copy_fill_terminal_skip(
                         session,
                         fill_state=fill_state,
-                        reason=entry_admission.terminal_reason,
+                        reason=entry_terminal_reason,
                     )
-                    fill_result = live_skip(entry_admission.terminal_reason)
+                    fill_result = live_skip(entry_terminal_reason)
                 else:
                     if not lifecycle_state.entry_eligible and part.action in {
                         "open",
@@ -1704,9 +1712,13 @@ async def load_recovered_live_copy_lifecycle_order(
         )
         .with_for_update()
     )
+    if wallet_fill is None:
+        return None
     wallet_lifecycle_order = live_copy_position_lifecycle_order_from_wallet_fill(wallet_fill)
     if wallet_lifecycle_order is None:
         return None
+    if state is None:
+        return wallet_lifecycle_order
     state_lifecycle_order = live_copy_position_lifecycle_order_from_state(state)
     if state_lifecycle_order is None:
         return wallet_lifecycle_order
@@ -2203,7 +2215,7 @@ async def load_complete_persisted_live_open_intent(
     sequence_index: int,
     coin: str,
     action: str,
-    side: str,
+    side: TradeSide,
 ) -> tuple[TradingOrder, TradeIntent] | None:
     if not source_fill_id:
         return None
@@ -2240,7 +2252,7 @@ def complete_persisted_live_open_intent(
     sequence_index: int,
     coin: str,
     action: str,
-    side: str,
+    side: TradeSide,
 ) -> TradeIntent | None:
     reusable_busy_skip = (
         order.error == "skip:live_execution_busy"
@@ -2377,7 +2389,7 @@ async def apply_live_open_part(
     coin = str(fill.get("coin") or "")
     if entry_admission is None or entry_admission.first_observed_at is None:
         raise LiveCopyPartTerminal("live_source_fill_first_observation_missing")
-    if entry_admission.is_terminal:
+    if entry_admission.terminal_reason is not None:
         raise LiveCopyPartTerminal(entry_admission.terminal_reason)
 
     source_fill_id = str(fill.get("externalFillId") or "")
@@ -2732,7 +2744,7 @@ async def apply_live_open_part(
         source_fill_id=str(fill.get("externalFillId") or ""),
         sequence_index=part.sequence_index,
         coin=coin,
-        action=action,
+        action=parse_trade_action(action),
         side=part.side,
         size=notional_usd / price,
         notional_usd=notional_usd,
@@ -2949,14 +2961,16 @@ async def apply_live_close_part(
         source_fill_id=str(fill.get("externalFillId") or ""),
         sequence_index=part.sequence_index,
         coin=coin,
-        action=part.action,
+        action=parse_trade_action(part.action),
         side=part.side,
         size=close_size,
         notional_usd=order_notional_usd,
         margin_usd=margin_from_notional(order_notional_usd, leverage),
         leverage=leverage,
         margin_mode=(
-            position.margin_mode if position.margin_mode in {"cross", "isolated"} else "cross"
+            parse_margin_mode(position.margin_mode)
+            if position.margin_mode in MARGIN_MODES
+            else "cross"
         ),
         limit_price=price,
         source_price=execution_context.source_price,
@@ -3320,9 +3334,7 @@ async def load_live_copy_recovery_sources(
         .limit(max_sources)
     )
     sources = [
-        str(row.source_wallet).lower()
-        for row in unresolved_exit_result.all()
-        if row.source_wallet
+        str(row.source_wallet).lower() for row in unresolved_exit_result.all() if row.source_wallet
     ]
     remaining = max(max_sources - len(sources), 0)
     if remaining <= 0:
@@ -3344,9 +3356,7 @@ async def load_live_copy_recovery_sources(
         )
     unresolved_order_result = await session.execute(unresolved_order_query.limit(remaining))
     sources.extend(
-        str(row.source_wallet).lower()
-        for row in unresolved_order_result.all()
-        if row.source_wallet
+        str(row.source_wallet).lower() for row in unresolved_order_result.all() if row.source_wallet
     )
     sources = unique_strings(sources)
     remaining = max(max_sources - len(sources), 0)
@@ -3550,7 +3560,7 @@ async def live_pending_close_size_for_position(
     return live_pending_close_size_from_orders(result.all())
 
 
-def live_pending_close_size_from_orders(orders: list[TradingOrder]) -> Decimal:
+def live_pending_close_size_from_orders(orders: Sequence[TradingOrder]) -> Decimal:
     total = ZERO
     for order in orders:
         if order.status not in PENDING_CLOSE_ORDER_STATUSES:

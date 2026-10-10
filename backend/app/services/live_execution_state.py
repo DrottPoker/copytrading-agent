@@ -7,7 +7,14 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import TradingOrder, TradingOrderDispatch
-from app.services.trading_core import TradeIntent, trade_intent_payload
+from app.services.trading_core import (
+    MARGIN_MODES,
+    TradeIntent,
+    parse_margin_mode,
+    parse_trade_action,
+    parse_trade_side,
+    trade_intent_payload,
+)
 
 ZERO = Decimal("0")
 MAX_LIVE_ORDER_SUBMIT_ATTEMPTS = 3
@@ -298,17 +305,17 @@ def trade_intent_from_order(order: TradingOrder) -> TradeIntent:
         sequence_index=order.sequence_index,
         client_order_id=order.client_order_id,
         coin=order.coin,
-        action=order.action,
-        side=order.side,
+        action=parse_trade_action(order.action),
+        side=parse_trade_side(order.side),
         is_buy=order.is_buy,
         reduce_only=order.reduce_only,
         size=Decimal(order.requested_size),
         notional_usd=Decimal(order.requested_notional_usd),
         margin_usd=Decimal(order.margin_usd or ZERO),
         leverage=Decimal(order.leverage or Decimal("1")),
-        margin_mode=(
-            raw_intent.get("marginMode")
-            if raw_intent.get("marginMode") in {"cross", "isolated"}
+        margin_mode=parse_margin_mode(
+            raw_intent["marginMode"]
+            if raw_intent.get("marginMode") in MARGIN_MODES
             else order.margin_mode
         ),
         limit_price=Decimal(order.limit_price or ZERO),

@@ -64,9 +64,9 @@ async def load_live_copy_decision_execution_diagnostics(
     )
     latest_by_order: dict[UUID, TradingOrderDispatch] = {}
     dispatches_by_order: dict[UUID, list[TradingOrderDispatch]] = {}
-    for dispatch in dispatch_result.all():
-        latest_by_order.setdefault(dispatch.order_id, dispatch)
-        dispatches_by_order.setdefault(dispatch.order_id, []).append(dispatch)
+    for candidate_dispatch in dispatch_result.all():
+        latest_by_order.setdefault(candidate_dispatch.order_id, candidate_dispatch)
+        dispatches_by_order.setdefault(candidate_dispatch.order_id, []).append(candidate_dispatch)
 
     diagnostics: dict[LiveCopyDecisionIdentity, LiveCopyDecisionExecutionDiagnostics] = {}
     for order_id, order in orders.items():

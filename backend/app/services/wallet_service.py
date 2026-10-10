@@ -1,4 +1,4 @@
-from sqlalchemy import func, or_, select
+from sqlalchemy import ColumnElement, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import WalletScore, WatchedWallet
@@ -18,7 +18,7 @@ async def list_wallets(
     limit: int = 100,
     offset: int = 0,
 ) -> tuple[list[WatchedWallet], int]:
-    filters = []
+    filters: list[ColumnElement[bool]] = []
     if enabled is not None:
         filters.append(WatchedWallet.enabled.is_(enabled))
     if query:
@@ -71,9 +71,9 @@ async def get_wallet(session: AsyncSession, address: str) -> WatchedWallet:
         .where(WatchedWallet.address == normalized_address)
     )
     row = result.one_or_none()
-    wallet = row[0] if row is not None else None
-    if wallet is None:
+    if row is None or row[0] is None:
         raise WalletNotFoundError(normalized_address)
+    wallet = row[0]
     wallet.score = row[1]
     wallet.pool_rank = int(row[2]) if row[2] is not None else None
     return wallet

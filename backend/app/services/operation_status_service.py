@@ -78,6 +78,7 @@ async def get_operation_status(session: AsyncSession, key: str) -> OperationStat
         )
 
     value = setting.value
+    payload = value.get("payload")
     return OperationStatusRead(
         key=key,
         label=str(value.get("label") or label),
@@ -88,7 +89,7 @@ async def get_operation_status(session: AsyncSession, key: str) -> OperationStat
         last_success_at=string_or_none(value.get("lastSuccessAt")),
         duration_ms=int_or_none(value.get("durationMs")),
         last_error=string_or_none(value.get("lastError")),
-        payload=dict(value.get("payload")) if isinstance(value.get("payload"), dict) else {},
+        payload=dict(payload) if isinstance(payload, dict) else {},
     )
 
 
@@ -473,7 +474,7 @@ def string_or_none(value: object) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def int_or_none(value: object) -> int | None:
+def int_or_none(value: Any) -> int | None:
     if value is None:
         return None
     try:

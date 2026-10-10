@@ -1457,9 +1457,7 @@ class TradingFundingPayment(Base, TimestampMixin):
         PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
     account_key: Mapped[str] = mapped_column(Text, nullable=False)
-    account_type: Mapped[str] = mapped_column(
-        Text, nullable=False, server_default=text("'live'")
-    )
+    account_type: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'live'"))
     exchange_event_id: Mapped[str] = mapped_column(Text, nullable=False)
     coin: Mapped[str] = mapped_column(Text, nullable=False)
     amount_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
@@ -1502,9 +1500,7 @@ class TradingAccountCashFlow(Base, TimestampMixin):
         PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
     account_key: Mapped[str] = mapped_column(Text, nullable=False)
-    account_type: Mapped[str] = mapped_column(
-        Text, nullable=False, server_default=text("'live'")
-    )
+    account_type: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'live'"))
     exchange_event_id: Mapped[str] = mapped_column(Text, nullable=False)
     flow_type: Mapped[str] = mapped_column(Text, nullable=False)
     amount_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
@@ -1550,9 +1546,7 @@ class TradingAccountPerformanceSnapshot(Base, TimestampMixin):
         PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
     account_key: Mapped[str] = mapped_column(Text, nullable=False)
-    account_type: Mapped[str] = mapped_column(
-        Text, nullable=False, server_default=text("'live'")
-    )
+    account_type: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'live'"))
     equity_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
     period_external_flow_usd: Mapped[Decimal] = mapped_column(
         Numeric, nullable=False, server_default=text("0")
@@ -1570,13 +1564,9 @@ class TradingAccountPerformanceSnapshot(Base, TimestampMixin):
     performance_index: Mapped[Decimal] = mapped_column(
         Numeric, nullable=False, server_default=text("1")
     )
-    tracking_started_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    tracking_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    is_baseline: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default=text("false")
-    )
+    is_baseline: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
 
 
 class PaperTradingAccount(Base, TimestampMixin, UpdatedAtMixin):

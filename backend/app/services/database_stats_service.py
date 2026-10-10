@@ -503,11 +503,11 @@ async def all_mappings(session: AsyncSession, sql: str) -> list[dict[str, Any]]:
     return [dict(row) for row in (await session.execute(text(sql))).mappings().all()]
 
 
-def int_value(value: object) -> int:
+def int_value(value: Any) -> int:
     return int(value or 0)
 
 
-def optional_int(value: object) -> int | None:
+def optional_int(value: Any) -> int | None:
     return int(value) if value is not None else None
 
 

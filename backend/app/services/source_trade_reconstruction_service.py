@@ -643,7 +643,7 @@ async def load_source_trade_refresh_candidates(
     *,
     include_disabled: bool,
     wallet_address: str | None,
-) -> list[Mapping[str, Any]]:
+) -> list[Mapping[Any, Any]]:
     result = await session.execute(
         text(
             """
@@ -950,7 +950,7 @@ async def apply_materialized_ignored_fill_counts(
 
 
 def record_materialized_trade(
-    row: Mapping[str, Any],
+    row: Mapping[Any, Any],
     *,
     trades_by_wallet: dict[str, ReconstructedWalletTrades],
     start_24h_ms: int,
@@ -1017,7 +1017,7 @@ def record_materialized_trade(
     wallet_trades.items.append(item)
 
 
-def reconstructed_source_trade_from_row(row: Mapping[str, Any]) -> ReconstructedSourceTrade:
+def reconstructed_source_trade_from_row(row: Mapping[Any, Any]) -> ReconstructedSourceTrade:
     return ReconstructedSourceTrade(
         id=str(row["trade_key"]),
         wallet_address=str(row["wallet_address"]),
@@ -1093,7 +1093,7 @@ def realized_entry_notional_for_trade(trade: ReconstructedSourceTrade) -> Decima
 
 
 def process_trade_fill(
-    row: Mapping[str, Any],
+    row: Mapping[Any, Any],
     *,
     trades_by_wallet: dict[str, ReconstructedWalletTrades],
     open_trades: dict[tuple[str, str, str], OpenSourceTrade],

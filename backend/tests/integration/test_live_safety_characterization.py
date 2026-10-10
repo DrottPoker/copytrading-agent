@@ -378,9 +378,7 @@ async def test_definitive_ioc_reject_uses_a_new_cloid_for_the_bounded_retry(
         dispatches = list(
             (
                 await session.scalars(
-                    select(TradingOrderDispatch).order_by(
-                        TradingOrderDispatch.attempt_number.asc()
-                    )
+                    select(TradingOrderDispatch).order_by(TradingOrderDispatch.attempt_number.asc())
                 )
             ).all()
         )
@@ -575,9 +573,7 @@ async def test_reconciliation_repairs_exchange_fill_attribution_from_dispatch_le
     assert repaired_fill.source_wallet == source_wallet
     assert repaired_fill.source_fill_id == order.source_fill_id
     assert repaired_fill.sequence_index == order.sequence_index
-    assert repaired_fill.raw_payload["sourceAttributionRepair"]["logicalOrderId"] == str(
-        order.id
-    )
+    assert repaired_fill.raw_payload["sourceAttributionRepair"]["logicalOrderId"] == str(order.id)
 
 
 @pytest.mark.asyncio

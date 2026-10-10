@@ -1467,11 +1467,9 @@ async def run_live_trading_reconciliation_once(
                             account=account,
                             settings=settings,
                         )
-                        recovered_attributions = (
-                            await bootstrap_missing_live_source_attribution(
-                                session,
-                                accounts=[account],
-                            )
+                        recovered_attributions = await bootstrap_missing_live_source_attribution(
+                            session,
+                            accounts=[account],
                         )
                         if recovered_attributions:
                             logger.warning(

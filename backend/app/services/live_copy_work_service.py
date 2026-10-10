@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.db.models import LiveCopyWork, WalletFill
+from app.db.session import affected_row_count
 from app.services.live_copy_state_service import LiveCopyProcessingOrigin
 from app.services.source_fill_ordering import source_fill_order_key
 
@@ -59,7 +60,7 @@ async def enqueue_live_copy_work_for_wallet_fills(
         .on_conflict_do_nothing(index_elements=["wallet_fill_id"])
     )
     await session.flush()
-    return max(int(result.rowcount or 0), 0)
+    return affected_row_count(result)
 
 
 def live_copy_work_record(

@@ -24,20 +24,15 @@ import type {
 } from "@/types/wallet";
 
 import { frontendConfig } from "./config";
+import { basicAuthorizationHeader, configuredDashboardCredentials } from "./dashboard-auth";
 
 export function getApiBaseUrl() {
   return frontendConfig.serverApiBaseUrl;
 }
 
 function getBackendAuthHeaders(): HeadersInit {
-  const username = process.env.DASHBOARD_AUTH_USERNAME ?? "admin";
-  const password = process.env.DASHBOARD_AUTH_PASSWORD ?? "change-me";
-  if (!username || !password) {
-    return {};
-  }
-
-  const token = Buffer.from(`${username}:${password}`).toString("base64");
-  return { Authorization: `Basic ${token}` };
+  const authorization = basicAuthorizationHeader(configuredDashboardCredentials());
+  return authorization ? { Authorization: authorization } : {};
 }
 
 function backendGet(url: string) {

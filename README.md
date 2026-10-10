@@ -1131,11 +1131,12 @@ Docker Compose uses local Postgres by default. Set `POSTGRES_DB`,
 `DATABASE_URL` and `DATABASE_URL_DIRECT` for the app containers.
 
 Change the default `DASHBOARD_AUTH_PASSWORD` before exposing the dashboard or
-API. A short custom password is accepted, although a longer unique password is
-recommended. Production requires a non-empty username and rejects the literal
-default `change-me`. Backend auth is enabled by default and protects every route
+API. Production requires a non-empty username and a password of at least 8
+characters other than the literal default `change-me`, although a longer unique
+password is recommended. Both the backend and the dashboard enforce this when
+`APP_ENV=production`. Backend auth is enabled by default and protects every route
 except `/health` and `/ready`. The dashboard also enforces Basic Auth before serving pages or
-`/api/backend` proxy routes. Backend credentials are attached by the Next.js
+`/api/backend` proxy routes, and throttles failed logins per client IP. Backend credentials are attached by the Next.js
 server, so they are not placed in the client bundle. Browser mutation requests
 must be same-origin or match the configured backend CORS origin allowlist.
 Behind Caddy, the frontend reconstructs the public request origin from Caddy's
@@ -1172,6 +1173,13 @@ Services:
 
 ## Test Suites
 
+Install the backend development tools once:
+
+```powershell
+cd backend
+..\.venv\Scripts\python.exe -m pip install -c constraints.txt -e ".[dev]"
+```
+
 Run the regular backend and frontend suites without external test services:
 
 ```powershell
@@ -1179,6 +1187,30 @@ Run the regular backend and frontend suites without external test services:
 cd frontend
 npm run test:run
 ```
+
+Run the same quality checks as CI from `backend`:
+
+```powershell
+..\.venv\Scripts\python.exe -m ruff check app tests
+..\.venv\Scripts\python.exe -m ruff format --check app tests
+..\.venv\Scripts\python.exe -m mypy
+..\.venv\Scripts\python.exe -m pip_audit --skip-editable
+..\.venv\Scripts\python.exe -m pytest tests -q --cov=app --cov-report=term
+```
+
+And from `frontend`:
+
+```powershell
+npm run lint
+npm run typecheck
+npm run test:coverage
+npm audit --omit=dev --audit-level=high
+```
+
+mypy checks `backend/app` with the settings in `backend/pyproject.toml`. It
+always type checks for Linux, the production platform, so results match on
+Windows. Property-based tests use Hypothesis. Set `HYPOTHESIS_PROFILE=thorough`
+to run 2000 examples per property instead of the default 100.
 
 Run the real Postgres, Redis, Alembic, and FastAPI integration suite on Windows:
 
@@ -1190,8 +1222,18 @@ The integration runner starts the disposable services from
 `docker-compose.test.yml`, migrates an empty Postgres database to Alembic head,
 runs tests marked `integration`, and removes the test volumes afterward. Use
 `-KeepServices` only when the disposable database and Redis instance are needed
-for debugging. The same unit, integration, frontend, lint, compile, and build
-checks run in `.github/workflows/ci.yml`.
+for debugging. The same unit, integration, frontend, lint, format, type,
+dependency audit, coverage, compile, and build checks run in
+`.github/workflows/ci.yml`.
+
+Two repository settings are recommended on GitHub but are not enabled by the
+code:
+
+- Settings > Code security: enable Dependabot alerts and Dependabot security
+  updates. `.github/dependabot.yml` covers routine version updates.
+- Settings > Branches: add a protection rule for `main` that requires the
+  `backend-quality`, `backend-tests`, and `frontend` checks. This requires pull
+  requests instead of direct pushes to `main`.
 
 ## VPS Deployment
 

@@ -95,16 +95,38 @@ def test_env_example_contains_only_deployment_specific_values() -> None:
     assert configured_keys == allowed_keys
 
 
+def _clear_dashboard_auth_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Environment values take precedence over init kwargs, so CI variables must not leak in.
+    for key in (
+        "APP_ENV",
+        "DASHBOARD_AUTH_ENABLED",
+        "DASHBOARD_AUTH_USERNAME",
+        "DASHBOARD_AUTH_PASSWORD",
+        "LIVE_TRADING_ENABLED",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
 def test_production_dashboard_auth_requires_configured_credentials(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("DASHBOARD_AUTH_PASSWORD", "too-short")
-    settings = Settings(app_env="production")
-    assert settings.dashboard_auth_password == "too-short"
+    _clear_dashboard_auth_env_overrides(monkeypatch)
 
+    monkeypatch.setenv("DASHBOARD_AUTH_PASSWORD", "12345678")
+    settings = Settings(_env_file=None, app_env="production")
+    assert settings.dashboard_auth_password == "12345678"
+
+    monkeypatch.setenv("DASHBOARD_AUTH_PASSWORD", "1234567")
+    with pytest.raises(
+        ValueError,
+        match="DASHBOARD_AUTH_PASSWORD must contain at least 8 characters in production",
+    ):
+        Settings(_env_file=None, app_env="production")
+
+    monkeypatch.setenv("DASHBOARD_AUTH_PASSWORD", "12345678")
     monkeypatch.setenv("DASHBOARD_AUTH_USERNAME", " ")
     with pytest.raises(ValueError, match="DASHBOARD_AUTH_USERNAME must not be empty"):
-        Settings(app_env="production")
+        Settings(_env_file=None, app_env="production")
 
     monkeypatch.setenv("DASHBOARD_AUTH_USERNAME", "admin")
     monkeypatch.setenv("DASHBOARD_AUTH_PASSWORD", "change-me")
@@ -112,7 +134,23 @@ def test_production_dashboard_auth_requires_configured_credentials(
         ValueError,
         match="DASHBOARD_AUTH_PASSWORD must be changed before production startup",
     ):
-        Settings(app_env="production")
+        Settings(_env_file=None, app_env="production")
+
+    monkeypatch.setenv("DASHBOARD_AUTH_PASSWORD", "12345678")
+    monkeypatch.setenv("DASHBOARD_AUTH_ENABLED", "false")
+    with pytest.raises(ValueError, match="DASHBOARD_AUTH_ENABLED=false is not allowed"):
+        Settings(_env_file=None, app_env="production")
+
+
+def test_development_dashboard_auth_accepts_short_password(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_dashboard_auth_env_overrides(monkeypatch)
+    monkeypatch.setenv("DASHBOARD_AUTH_PASSWORD", "dev")
+
+    settings = Settings(_env_file=None, app_env="development")
+
+    assert settings.dashboard_auth_password == "dev"
 
 
 def test_app_config_loads_wallet_pool_page_limit(monkeypatch: pytest.MonkeyPatch) -> None:

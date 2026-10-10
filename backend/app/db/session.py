@@ -1,9 +1,9 @@
 import asyncio
 from functools import lru_cache
-from typing import Any
+from typing import Any, cast
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from sqlalchemy import text
+from sqlalchemy import CursorResult, Result, text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from app.core.config import Settings, get_settings
@@ -67,3 +67,9 @@ async def check_postgres(settings: Settings | None = None) -> dict[str, Any]:
         return {"status": "ok"}
     except Exception as exc:
         return {"status": "error", "detail": exc.__class__.__name__}
+
+
+def affected_row_count(result: Result[Any]) -> int:
+    """Return the rows affected by an executed DML statement."""
+    # Session.execute is typed as Result, but DML statements return a CursorResult.
+    return max(int(cast(CursorResult[Any], result).rowcount or 0), 0)

@@ -272,8 +272,12 @@ Important folders:
 - `frontend/src/types`: shared TypeScript types.
 - `frontend/config/app.json`: non-secret frontend settings.
 
-The dashboard enforces Basic Auth in Next.js middleware before serving pages or
-`/api/backend` proxy routes. Server-side dashboard requests call
+The dashboard enforces Basic Auth in Next.js middleware before serving pages,
+`/api/backend` proxy routes, or any other route except static build assets. The
+middleware runs on the Node.js runtime so one in-memory login throttle exists per
+frontend process. The shared helpers in `frontend/src/lib/dashboard-auth.ts`
+validate production credentials, parse Basic Auth headers as UTF-8, and build the
+server-side backend header. Server-side dashboard requests call
 `serverApiBaseUrl` with a Basic Auth header from `DASHBOARD_AUTH_USERNAME` and
 `DASHBOARD_AUTH_PASSWORD`. Browser requests use `/api/backend`, a Next.js proxy
 route that attaches the same backend auth on the server side and streams SSE
@@ -456,7 +460,9 @@ reconstructs the public request origin from Caddy's trusted
 mutation requests before forwarding them, replaces client authorization with
 server-side Basic Auth, and sets the upstream origin to the backend origin. The
 VPS Compose file exposes only Caddy, so browsers cannot bypass this trusted
-proxy boundary and reach the frontend container directly. The backend
+proxy boundary and reach the frontend container directly. Caddy also overwrites
+`X-Real-IP` with the TCP peer address, which the login throttle uses to identify
+clients. The backend
 independently validates `Origin` for authenticated `POST`, `PUT`, `PATCH`, and
 `DELETE` requests against same-origin and configured CORS origins. These paired
 origin checks form the CSRF boundary for browser mutations. Command-line clients
@@ -477,8 +483,18 @@ schema and revision, exercises real dependency health and wallet API requests,
 and runs failure-oriented live trading and cleanup characterization tests.
 Known defects assigned to later phases are strict expected failures. They must
 be converted to normal regression tests when the owning implementation phase is
-completed. Frontend tests use Vitest, jsdom, and Testing Library. GitHub Actions
-runs both suites plus lint, compile, typecheck, and production build checks.
+completed. Property-based tests with Hypothesis cover the pure order helpers:
+exchange price and size rounding, minimum order adjustment, adverse slippage,
+close sizing, flip planning, and client order IDs. Frontend tests use Vitest,
+jsdom, and Testing Library, with the time zone pinned to UTC.
+
+GitHub Actions runs three jobs. `backend-quality` runs Ruff lint, Ruff format
+check, mypy, `pip-audit`, and a compile check. `backend-tests` migrates a fresh
+Postgres database and runs every backend test with coverage. `frontend` runs
+ESLint, TypeScript, Vitest with coverage, `npm audit` for production
+dependencies, and the production build. Every check step runs even when an
+earlier one fails, so a single run reports all problems. Dependabot proposes
+weekly npm and pip updates and monthly GitHub Actions and Docker image updates.
 
 Docker Compose also runs `postgres-backup`, a lightweight Postgres container
 that executes `pg_dump` immediately at startup and then every 24 hours by

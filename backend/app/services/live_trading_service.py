@@ -28,6 +28,7 @@ from app.db.models import (
     TradingReconciliationRun,
     WalletFill,
 )
+from app.db.session import affected_row_count
 from app.integrations.hyperliquid_client import HyperliquidClient
 from app.integrations.hyperliquid_live_client import (
     HyperliquidLiveOrderRejectedError,
@@ -79,10 +80,13 @@ from app.services.live_order_reject_policy import (
 )
 from app.services.source_fill_ordering import source_fill_order_components
 from app.services.trading_core import (
+    MARGIN_MODES,
     MarginMode,
     TradeIntent,
     build_copy_trade_intent,
     margin_from_notional,
+    parse_margin_mode,
+    parse_trade_side,
 )
 from app.services.trading_safety_service import (
     apply_live_account_status,
@@ -110,9 +114,7 @@ LIVE_ACCOUNT_KEY_MAX_LENGTH = 64
 LIVE_CAPITAL_MODE_UNIFIED = "unified"
 LIVE_CAPITAL_MODE_STANDARD_PER_DEX = "standard_per_dex"
 LIVE_CAPITAL_MODES = {LIVE_CAPITAL_MODE_UNIFIED, LIVE_CAPITAL_MODE_STANDARD_PER_DEX}
-LIVE_ENTRY_EXPIRED_BEFORE_SUBMISSION_ERROR = (
-    "Live entry intent expired before exchange submission."
-)
+LIVE_ENTRY_EXPIRED_BEFORE_SUBMISSION_ERROR = "Live entry intent expired before exchange submission."
 LIVE_ENTRY_RETRY_EXPIRED_AFTER_REJECTION_ERROR = (
     "Live entry retry window expired after Hyperliquid rejected an earlier exchange attempt."
 )
@@ -433,9 +435,9 @@ def normalize_user_abstraction(value: Any) -> str | None:
             "userAbstraction",
             "value",
         ):
-            normalized = normalize_user_abstraction(value.get(key))
-            if normalized is not None:
-                return normalized
+            nested = normalize_user_abstraction(value.get(key))
+            if nested is not None:
+                return nested
         return None
     normalized = str(value).strip()
     return normalized or None
@@ -1318,23 +1320,23 @@ async def run_live_close_all_operation(
                     session,
                     client_order_id=intent.client_order_id,
                 )
-                item = await session.get(TradingCloseAllItem, item.id)
-                if item is not None:
-                    item.order_id = order.id if order is not None else None
-                    item.status = (
+                refreshed_item = await session.get(TradingCloseAllItem, item.id)
+                if refreshed_item is not None:
+                    refreshed_item.order_id = order.id if order is not None else None
+                    refreshed_item.status = (
                         "uncertain"
                         if order is not None and order.status in {"submitting", "uncertain"}
                         else "failed"
                     )
-                    item.error = str(exc) or exc.__class__.__name__
+                    refreshed_item.error = str(exc) or exc.__class__.__name__
                     await session.commit()
                 continue
 
-            item = await session.get(TradingCloseAllItem, item.id)
-            if item is not None:
-                item.order_id = result.order.id
-                item.status = close_all_item_status_for_order(result.order.status)
-                item.error = result.order.error
+            refreshed_item = await session.get(TradingCloseAllItem, item.id)
+            if refreshed_item is not None:
+                refreshed_item.order_id = result.order.id
+                refreshed_item.status = close_all_item_status_for_order(result.order.status)
+                refreshed_item.error = result.order.error
                 await session.commit()
             submitted += int(result.submitted)
 
@@ -3049,11 +3051,7 @@ async def live_account_weekly_net_pnl(
     day_start = utc_now.replace(hour=0, minute=0, second=0, microsecond=0)
     week_start = day_start - timedelta(days=day_start.weekday())
     fill_total = (
-        select(
-            func.coalesce(
-                func.sum(TradingFill.realized_pnl_usd - TradingFill.fee_usd), ZERO
-            )
-        )
+        select(func.coalesce(func.sum(TradingFill.realized_pnl_usd - TradingFill.fee_usd), ZERO))
         .where(
             TradingFill.account_key == account_key,
             TradingFill.account_type == "live",
@@ -3235,8 +3233,7 @@ def apply_live_order_result(
     if result.status == "rejected":
         classification = classify_live_order_reject(result.error)
         retry_exhausted = (
-            dispatch is not None
-            and dispatch.attempt_number >= MAX_LIVE_ORDER_SUBMIT_ATTEMPTS
+            dispatch is not None and dispatch.attempt_number >= MAX_LIVE_ORDER_SUBMIT_ATTEMPTS
         )
         order.raw_payload = merge_raw_payload(
             order.raw_payload,
@@ -3733,9 +3730,7 @@ async def record_live_account_performance_snapshot(
             account_type="live",
             equity_usd=end_equity,
             period_external_flow_usd=period_external_flow,
-            net_external_flows_usd=(
-                previous.net_external_flows_usd + period_external_flow
-            ),
+            net_external_flows_usd=(previous.net_external_flows_usd + period_external_flow),
             trading_pnl_usd=previous.trading_pnl_usd + period_trading_pnl,
             period_return_pct=period_return,
             time_weighted_return_pct=performance_index - Decimal("1"),
@@ -3748,9 +3743,7 @@ async def record_live_account_performance_snapshot(
     existing_payload = account.config_payload if isinstance(account.config_payload, dict) else {}
     existing_performance = existing_payload.get("performanceTracking")
     backfill_version = (
-        live_performance_backfill_version(account)
-        if isinstance(existing_performance, dict)
-        else 0
+        live_performance_backfill_version(account) if isinstance(existing_performance, dict) else 0
     )
     account.config_payload = merge_raw_payload(
         account.config_payload,
@@ -4697,7 +4690,7 @@ async def reconcile_live_fills(
         stmt = insert(TradingFill).values(**row)
         stmt = stmt.on_conflict_do_nothing(constraint="ux_trading_fills_exchange_fill_id")
         result = await session.execute(stmt)
-        inserted_row = int(result.rowcount or 0) > 0
+        inserted_row = affected_row_count(result) > 0
         inserted += int(inserted_row)
         if inserted_row:
             await apply_live_source_fill_to_position(
@@ -4722,9 +4715,7 @@ async def repair_unattributed_live_fills_from_order_ledger(
 
     identity_filters = []
     if orders_by_oid:
-        identity_filters.append(
-            TradingFill.raw_payload.op("->>")("oid").in_(tuple(orders_by_oid))
-        )
+        identity_filters.append(TradingFill.raw_payload.op("->>")("oid").in_(tuple(orders_by_oid)))
     if orders_by_cloid:
         identity_filters.append(
             TradingFill.raw_payload.op("->>")("cloid").in_(tuple(orders_by_cloid))
@@ -4925,11 +4916,9 @@ async def reconcile_live_funding_payments(
             account_type="live",
             **parsed,
         )
-        stmt = stmt.on_conflict_do_nothing(
-            constraint="ux_trading_funding_payments_account_event"
-        )
+        stmt = stmt.on_conflict_do_nothing(constraint="ux_trading_funding_payments_account_event")
         result = await session.execute(stmt)
-        inserted += int(int(result.rowcount or 0) > 0)
+        inserted += int(affected_row_count(result) > 0)
     await session.flush()
     return inserted
 
@@ -4955,11 +4944,9 @@ async def reconcile_live_account_cash_flows(
             account_type="live",
             **parsed,
         )
-        stmt = stmt.on_conflict_do_nothing(
-            constraint="ux_trading_account_cash_flows_account_event"
-        )
+        stmt = stmt.on_conflict_do_nothing(constraint="ux_trading_account_cash_flows_account_event")
         result = await session.execute(stmt)
-        inserted += int(int(result.rowcount or 0) > 0)
+        inserted += int(affected_row_count(result) > 0)
     await session.flush()
     return inserted
 
@@ -4993,11 +4980,7 @@ async def load_live_orders_by_attempt_cloid(
             TradingOrder.account_type == "live",
         )
     )
-    return {
-        client_order_id: order
-        for client_order_id, order in result.all()
-        if client_order_id
-    }
+    return {client_order_id: order for client_order_id, order in result.all() if client_order_id}
 
 
 async def load_live_exchange_positions(
@@ -5056,10 +5039,8 @@ async def load_live_closed_trades(
     funding_result = await session.scalars(
         select(TradingFundingPayment).where(
             TradingFundingPayment.account_key.in_({trade.account_key for trade in trades}),
-            TradingFundingPayment.occurred_at
-            >= min(trade.opened_at for trade in trades),
-            TradingFundingPayment.occurred_at
-            <= max(trade.closed_at for trade in trades),
+            TradingFundingPayment.occurred_at >= min(trade.opened_at for trade in trades),
+            TradingFundingPayment.occurred_at <= max(trade.closed_at for trade in trades),
         )
     )
     return attach_live_funding_to_closed_trades(trades, list(funding_result.all()))
@@ -5087,12 +5068,13 @@ def live_closed_trades_from_fills(
             continue
         if not live_fill_is_close(fill):
             continue
-        trade = open_trades.get(key)
-        if trade is None:
+        open_trade = open_trades.get(key)
+        if open_trade is None:
             close_only_trade = live_exchange_close_only_trade(fill)
             if close_only_trade is not None:
                 closed_trades.append(close_only_trade)
             continue
+        trade = open_trade
         fill_size = decimal_or_none(fill.size) or ZERO
         close_size = min(fill_size, trade.remaining_size)
         if close_size <= ZERO:
@@ -5141,11 +5123,7 @@ def live_exchange_close_only_trade(fill: TradingFill) -> LiveClosedTrade | None:
         account_key=fill.account_key,
         source_wallet=fill.source_wallet,
         source_label=(
-            (
-                "Unattributed liquidation"
-                if is_liquidation
-                else "Unattributed exchange close"
-            )
+            ("Unattributed liquidation" if is_liquidation else "Unattributed exchange close")
             if is_unattributed
             else None
         ),
@@ -5983,7 +5961,7 @@ def build_testnet_live_trade_intent(
         sequence_index=0,
         coin=coin,
         action="close" if reduce_only else "open",
-        side=side,
+        side=parse_trade_side(side),
         size=size,
         notional_usd=notional_usd,
         margin_usd=margin_from_notional(notional_usd, leverage),
@@ -6032,13 +6010,15 @@ def build_live_close_position_intent(
         sequence_index=0,
         coin=position.coin,
         action="close",
-        side=position.side,
+        side=parse_trade_side(position.side),
         size=position.size,
         notional_usd=notional_usd,
         margin_usd=margin_from_notional(notional_usd, leverage),
         leverage=leverage,
         margin_mode=(
-            position.margin_mode if position.margin_mode in {"cross", "isolated"} else "cross"
+            parse_margin_mode(position.margin_mode)
+            if position.margin_mode in MARGIN_MODES
+            else "cross"
         ),
         limit_price=limit_price,
         source_price=mid_price,
@@ -6192,8 +6172,8 @@ def update_live_account_from_state(
         ZERO,
     )
     state_time: Any = None
-    for state in state_summaries:
-        state_time = max_optional_numeric(state_time, state.get("time"))
+    for summary in state_summaries:
+        state_time = max_optional_numeric(state_time, summary.get("time"))
 
     capital_mode = live_capital_mode(settings)
     resolved_spot_state = spot_state or {}
@@ -6436,9 +6416,7 @@ def parse_live_account_cash_flow(
     fee = abs(decimal_or_none(delta.get("fee")) or ZERO)
     absolute_amount = abs(amount)
     normalized_user = normalize_optional_address(string_or_none(delta.get("user")))
-    normalized_destination = normalize_optional_address(
-        string_or_none(delta.get("destination"))
-    )
+    normalized_destination = normalize_optional_address(string_or_none(delta.get("destination")))
     normalized_account = normalize_optional_address(user_address)
 
     if event_type == "deposit":
@@ -6450,10 +6428,7 @@ def parse_live_account_cash_flow(
     elif event_type == "send":
         if normalized_account is None:
             return None
-        if (
-            normalized_destination == normalized_account
-            and normalized_user != normalized_account
-        ):
+        if normalized_destination == normalized_account and normalized_user != normalized_account:
             signed_amount = absolute_amount
             flow_type = "send_in"
         elif normalized_user == normalized_account and normalized_destination != normalized_account:
@@ -6464,10 +6439,7 @@ def parse_live_account_cash_flow(
     elif event_type in {"internalTransfer", "spotTransfer", "subAccountTransfer"}:
         if normalized_account is None:
             return None
-        if (
-            normalized_destination == normalized_account
-            and normalized_user != normalized_account
-        ):
+        if normalized_destination == normalized_account and normalized_user != normalized_account:
             signed_amount = absolute_amount
             flow_type = {
                 "internalTransfer": "internal_transfer_in",

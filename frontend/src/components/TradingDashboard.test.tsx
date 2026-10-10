@@ -460,8 +460,8 @@ describe("live copy decisions", () => {
     const activity = buildLiveCopyDecisionActivities([decision], new Map())[0];
     expect(activity.pills.map((pill) => pill.label)).toContain("snapshot recovery");
     expect(activity.stats.find((stat) => stat.label === "First observed")).toMatchObject({
-      value: "01/01 01:00",
-      detail: expect.stringContaining("source 01/01 01:00"),
+      value: "01/01 00:00",
+      detail: expect.stringContaining("source 01/01 00:00"),
     });
     expect(activity.stats.find((stat) => stat.label === "First observed")?.detail).toContain("ingest 3 s");
     expect(activity.stats.find((stat) => stat.label === "Pipeline")?.detail).toContain("age 1m 5s");

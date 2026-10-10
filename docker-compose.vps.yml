@@ -89,6 +89,7 @@ services:
     build:
       context: ./frontend
     environment:
+      APP_ENV: production
       SERVER_API_BASE_URL: http://backend:8000
       DASHBOARD_AUTH_USERNAME: ${DASHBOARD_AUTH_USERNAME:?DASHBOARD_AUTH_USERNAME must be set}
       DASHBOARD_AUTH_PASSWORD: ${DASHBOARD_AUTH_PASSWORD:?DASHBOARD_AUTH_PASSWORD must be set}

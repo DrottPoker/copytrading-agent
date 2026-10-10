@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.db.models import WalletFill, WatchedWallet
+from app.db.session import affected_row_count
 from app.integrations.hyperliquid_client import HyperliquidClient
 from app.schemas.fill import WalletFillImportRequest, WalletFillImportResponse
 from app.schemas.wallet import normalize_wallet_address
@@ -211,7 +212,7 @@ async def import_address_fills(
                 .on_conflict_do_nothing(index_elements=["wallet_address", "external_fill_id"])
             )
             result = await session.execute(stmt)
-            inserted_count += max(0, result.rowcount or 0)
+            inserted_count += affected_row_count(result)
 
     if wallet is not None:
         wallet.last_polled_at = now

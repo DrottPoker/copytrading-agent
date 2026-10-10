@@ -1,10 +1,10 @@
 import asyncio
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
-from typing import Any
+from typing import Any, TypeGuard
 from uuid import UUID
 
 from sqlalchemy import and_, delete, func, literal, or_, select, text, tuple_, update
@@ -59,10 +59,13 @@ from app.services.trading_account_service import sync_paper_trading_account_mirr
 from app.services.trading_core import (
     MarginMode,
     TradeIntent,
+    TradeSide,
     adjust_open_sizing_to_min_order,
     build_copy_trade_intent,
     margin_from_notional,
     open_notional_skip_reason,
+    parse_trade_action,
+    parse_trade_side,
     safe_leverage,
     trade_intent_payload,
 )
@@ -204,7 +207,7 @@ class WalletMonitoringSummary:
 @dataclass(frozen=True)
 class SourceFillPart:
     action: str
-    side: str
+    side: TradeSide
     source_size: Decimal
     source_notional_usd: Decimal
     sequence_index: int
@@ -567,7 +570,7 @@ async def close_paper_position_manually(
     )
     part = SourceFillPart(
         action="close",
-        side=position.side,
+        side=parse_trade_side(position.side),
         source_size=close_size,
         source_notional_usd=notional_usd,
         sequence_index=0,
@@ -1090,7 +1093,7 @@ def paper_wallet_performance_reads(
     *,
     allocations: list[PaperCopyAllocation],
     positions: list[dict[str, Any]],
-    fill_performance_rows: list[dict[str, Any]],
+    fill_performance_rows: Sequence[Mapping[Any, Any]],
     source_allocations: dict[str, PaperSourceAllocation],
     source_labels: dict[str, str],
     monitoring_stats: dict[str, WalletMonitoringSummary],
@@ -1571,7 +1574,7 @@ async def process_paper_copy_fills(
         if source_account_state is None:
             source_perp_equity = ZERO
             source_leverages: dict[str, Decimal] = {}
-            source_state_skip_reason = "source_account_state_missing"
+            source_state_skip_reason: str | None = "source_account_state_missing"
         else:
             source_perp_equity = source_account_state.perp_equity
             source_leverages = source_account_state.leverage_by_coin
@@ -1789,10 +1792,7 @@ async def paper_copy_recovery_start_time_ms(
     if latest_processed_ms is None and earliest_opened_at is None:
         return None
 
-    if earliest_opened_at is not None:
-        anchor = earliest_opened_at
-    else:
-        anchor = latest_processed_ms
+    anchor = earliest_opened_at if earliest_opened_at is not None else latest_processed_ms
     if anchor is None:
         return None
     return max(0, int(anchor.timestamp() * 1000) - PAPER_COPY_RECOVERY_OVERLAP_MS)
@@ -1923,7 +1923,7 @@ async def reconcile_open_paper_positions_for_source(
 
 def source_state_available_for_reconciliation(
     source_state: PaperSourceAccountState | None,
-) -> bool:
+) -> TypeGuard[PaperSourceAccountState]:
     if source_state is None:
         return False
     return source_state.skip_reason not in {
@@ -2069,7 +2069,7 @@ async def reconcile_closed_source_position(
     )
     part = SourceFillPart(
         action="close",
-        side=position.side,
+        side=parse_trade_side(position.side),
         source_size=ZERO,
         source_notional_usd=ZERO,
         sequence_index=0,
@@ -2976,19 +2976,19 @@ async def load_paper_source_allocations(
         source_wallet = str(row["source_wallet"]).lower()
         if not source_wallet or source_wallet in allocation_sources:
             continue
-        allocation_pct = decimal_or_none(row["allocation_pct"])
-        pool_rank = int_or_none(row["pool_rank"])
+        retained_allocation_pct = decimal_or_none(row["allocation_pct"])
+        retained_pool_rank = int_or_none(row["pool_rank"])
         has_realtime_slot = source_wallet in slot_source_set
         allocations.append(
             PaperSourceAllocation(
                 source_wallet=source_wallet,
                 source_label=str(row["source_label"]) if row["source_label"] else None,
-                rank=pool_rank or retained_rank,
-                pool_rank=pool_rank,
+                rank=retained_pool_rank or retained_rank,
+                pool_rank=retained_pool_rank,
                 score=row["score"],
                 allocation_pct=(
-                    allocation_pct
-                    if allocation_pct is not None and allocation_pct > ZERO
+                    retained_allocation_pct
+                    if retained_allocation_pct is not None and retained_allocation_pct > ZERO
                     else settings.trading_copy_standard_allocation_pct
                 ),
                 active=False,
@@ -3487,7 +3487,7 @@ def plan_source_fill(fill: dict[str, Any]) -> list[SourceFillPart]:
 
 def close_parts(
     *,
-    side: str,
+    side: TradeSide,
     source_size: Decimal,
     source_notional: Decimal,
     start_position: Decimal | None,
@@ -3509,8 +3509,8 @@ def close_parts(
 
 def flip_parts(
     *,
-    close_side: str,
-    open_side: str,
+    close_side: TradeSide,
+    open_side: TradeSide,
     source_size: Decimal,
     source_notional: Decimal,
     start_position: Decimal | None,
@@ -3807,7 +3807,7 @@ async def apply_open_part(
         source_fill_id=str(fill.get("externalFillId") or ""),
         sequence_index=part.sequence_index,
         coin=str(fill.get("coin") or ""),
-        action=action,
+        action=parse_trade_action(action),
         side=part.side,
         size=paper_size,
         notional_usd=notional_usd,
@@ -4034,7 +4034,7 @@ async def apply_close_part(
         source_fill_id=str(fill.get("externalFillId") or ""),
         sequence_index=part.sequence_index,
         coin=str(fill.get("coin") or ""),
-        action=action,
+        action=parse_trade_action(action),
         side=part.side,
         size=close_size,
         notional_usd=notional_usd,
@@ -4685,7 +4685,7 @@ def dex_from_coin(value: Any) -> str:
     return dex
 
 
-def side_from_fill_direction(value: Any) -> str:
+def side_from_fill_direction(value: Any) -> TradeSide:
     direction = str(value or "")
     if "Short" in direction:
         return "short"

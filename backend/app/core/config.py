@@ -18,6 +18,7 @@ SCORING_CONFIG_PATH = CONFIG_DIR / "scoring.json"
 TRADING_CONFIG_PATH = CONFIG_DIR / "trading.json"
 PAPER_TRADING_CONFIG_PATH = CONFIG_DIR / "paper_trading.json"
 LIVE_TRADING_CONFIG_PATH = CONFIG_DIR / "live_trading.json"
+DASHBOARD_AUTH_MIN_PRODUCTION_PASSWORD_LENGTH = 8
 DISCOVERY_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("enabled",): "discovery_enabled",
     ("sources", "default"): "discovery_default_sources",
@@ -932,6 +933,15 @@ class Settings(BaseSettings):
             and self.dashboard_auth_password == "change-me"
         ):
             raise ValueError("DASHBOARD_AUTH_PASSWORD must be changed before production startup.")
+        if (
+            self.app_env == "production"
+            and self.dashboard_auth_enabled
+            and len(self.dashboard_auth_password) < DASHBOARD_AUTH_MIN_PRODUCTION_PASSWORD_LENGTH
+        ):
+            raise ValueError(
+                "DASHBOARD_AUTH_PASSWORD must contain at least "
+                f"{DASHBOARD_AUTH_MIN_PRODUCTION_PASSWORD_LENGTH} characters in production."
+            )
         if (
             self.app_env == "production"
             and self.dashboard_auth_enabled

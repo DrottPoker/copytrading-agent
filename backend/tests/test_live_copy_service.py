@@ -761,9 +761,7 @@ async def test_unowned_close_becomes_lifecycle_state_without_trading_order(
 
     async def unowned_lifecycle(*_args, **_kwargs):
         if known_other_owner:
-            raise live_copy_service.LiveCopyPartIgnored(
-                "live_exit_market_owned_by_other_source"
-            )
+            raise live_copy_service.LiveCopyPartIgnored("live_exit_market_owned_by_other_source")
         return True
 
     async def fake_mark_ignored(*_args, **kwargs):
@@ -2584,17 +2582,15 @@ def test_live_copy_combine_batch_results_merges_skip_reasons() -> None:
     "message",
     [
         "Live entry intent expired before exchange submission.",
-        (
-            "Live entry retry window expired after Hyperliquid rejected "
-            "an earlier exchange attempt."
-        ),
+        ("Live entry retry window expired after Hyperliquid rejected an earlier exchange attempt."),
         "Live entry retry window expired after an earlier exchange submission attempt.",
     ],
 )
 def test_live_submit_failure_reason_maps_entry_expiry_messages(message: str) -> None:
-    assert live_copy_service.live_submit_failure_reason(
-        LiveOrderSubmitError(message, status_code=409)
-    ) == "live_entry_intent_expired"
+    assert (
+        live_copy_service.live_submit_failure_reason(LiveOrderSubmitError(message, status_code=409))
+        == "live_entry_intent_expired"
+    )
 
 
 def test_live_exchange_position_conflict_allows_matching_source_position() -> None:

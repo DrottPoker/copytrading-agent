@@ -182,9 +182,7 @@ async def test_trading_account_cash_flows_route_returns_complete_signed_ledger(
         raw_payload={},
         created_at=deposited_at - timedelta(days=2),
     )
-    session = TradingAccountsRouteSession(
-        [[withdrawal, deposit, transfer_in, transfer_out]]
-    )
+    session = TradingAccountsRouteSession([[withdrawal, deposit, transfer_in, transfer_out]])
 
     async def existing_live_account(*_args: Any, **_kwargs: Any) -> object:
         return object()

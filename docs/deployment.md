@@ -111,10 +111,13 @@ with a DNS hostname such as `copy.example.com` after its DNS record points to
 the VPS. Basic Auth over HTTP is not encrypted, so use the DNS and HTTPS mode
 for long-running or broadly exposed deployments.
 
-Production requires a non-empty dashboard username and any custom password
-other than `change-me`. Your existing custom password can remain for now. A
-longer unique password is recommended later. Invalid configuration errors
-redact input values so credentials are not written to validation logs.
+Production requires a non-empty dashboard username and a custom password other
+than `change-me` with at least 8 characters. The backend refuses to start with
+weaker settings, and the dashboard answers every request with HTTP 503 and logs
+the reason until the configuration is fixed. A longer unique password is
+recommended because the dashboard can start, stop, and close live trading.
+Invalid configuration errors redact input values so credentials are not written
+to validation logs.
 
 Use a URL-safe Postgres password because Docker Compose builds database URLs
 from `POSTGRES_*`. This is safe and simple:
@@ -336,7 +339,7 @@ HYPERLIQUID_WALLET_ADDRESS=
 LIVE_TRADING_ENABLED=false
 
 DASHBOARD_AUTH_USERNAME=admin
-DASHBOARD_AUTH_PASSWORD=keep-your-current-custom-password
+DASHBOARD_AUTH_PASSWORD=keep-your-current-custom-password-of-at-least-8-characters
 DASHBOARD_DOMAIN=:80
 ```
 
@@ -545,6 +548,20 @@ docker compose -f docker-compose.vps.yml down -v
   creates `copyagent-postgres-*.dump` files every 24 hours by default.
 - Backend routes are protected by dashboard Basic Auth except `/health` and
   `/ready`. The dashboard itself also requires the same Basic Auth.
+- The frontend container runs with `APP_ENV=production` in
+  `docker-compose.vps.yml`, which turns on the same credential rules as the
+  backend. Without it, the dashboard falls back to the local development
+  defaults.
+- Failed dashboard logins are throttled per client IP. After 10 failed attempts
+  within 15 minutes, that IP receives HTTP 429 for 15 minutes, even with the
+  correct password. The limits live in `frontend/config/app.json`. The
+  counters are kept in memory and reset when the frontend container restarts.
+- The login throttle identifies clients by the `X-Real-IP` header, which Caddy
+  sets from the TCP peer address. Never publish the frontend port directly,
+  because a client could then send its own `X-Real-IP` value.
+- Basic Auth is the only barrier between the internet and the live trading
+  controls. When practical, also restrict the dashboard to your own network
+  with a firewall IP allowlist, Tailscale, or Cloudflare Access.
 - The dashboard calls the backend through the Next.js server-side proxy, so the
   backend does not need a public domain.
 - Caddy supplies the trusted public `X-Forwarded-Host` and

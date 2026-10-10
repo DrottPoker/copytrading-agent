@@ -4,6 +4,9 @@ type FrontendAppConfig = {
   serverApiBaseUrl?: string;
   browserApiBaseUrl?: string;
   dashboardAuthEnabled?: boolean;
+  dashboardAuthMaxFailedAttempts?: number;
+  dashboardAuthFailureWindowSeconds?: number;
+  dashboardAuthLockoutSeconds?: number;
   serverApiTimeoutMs?: number;
   liveFeedPollMs?: number;
   operationStatusPollMs?: number;
@@ -21,6 +24,9 @@ export const frontendConfig = {
   browserApiBaseUrl:
     process.env.NEXT_PUBLIC_BROWSER_API_BASE_URL ?? config.browserApiBaseUrl ?? "/api/backend",
   dashboardAuthEnabled: config.dashboardAuthEnabled ?? true,
+  dashboardAuthMaxFailedAttempts: numericConfig(config.dashboardAuthMaxFailedAttempts, 10),
+  dashboardAuthFailureWindowSeconds: numericConfig(config.dashboardAuthFailureWindowSeconds, 900),
+  dashboardAuthLockoutSeconds: numericConfig(config.dashboardAuthLockoutSeconds, 900),
   serverApiTimeoutMs: numericConfig(config.serverApiTimeoutMs, 15000),
   liveFeedPollMs: config.liveFeedPollMs ?? 5000,
   operationStatusPollMs: config.operationStatusPollMs ?? 5000,

@@ -642,7 +642,7 @@ def worker_instance_from_key(key: str) -> str | None:
     return instance_id if separator and instance_id else None
 
 
-def int_value(value: object) -> int | None:
+def int_value(value: Any) -> int | None:
     if value is None:
         return None
     try:

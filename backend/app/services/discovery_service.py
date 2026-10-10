@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
 import httpx
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import ColumnElement, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1763,7 +1763,7 @@ def hypertracker_leaderboard_candidate(
         return None
 
     source_config = HYPERTRACKER_LEADERBOARD_SOURCES[source]
-    profile = row.get("profile") if isinstance(row.get("profile"), dict) else {}
+    profile = dict_field(row, "profile")
     rank = int_or_none(row.get("rank")) or fallback_rank
     account_value = decimal_or_none(first_present(row, ("totalEquity", "perpEquity")))
     if account_value is None:
@@ -2711,7 +2711,7 @@ async def prefilter_discovery_candidates(
             candidates=[],
         )
 
-    filters = [
+    filters: list[ColumnElement[bool]] = [
         DiscoveryWalletCandidate.status.not_in(("promoted", "ignored")),
     ]
     if source:
@@ -3012,7 +3012,7 @@ def decimal_string(value: Decimal | None) -> str:
 
 
 def compact_vault_payload(row: dict[str, Any], *, rank: int, window: str) -> dict[str, Any]:
-    summary = row.get("summary") if isinstance(row.get("summary"), dict) else {}
+    summary = dict_field(row, "summary")
     return {
         "name": summary.get("name"),
         "vaultAddress": summary.get("vaultAddress"),
@@ -3136,6 +3136,11 @@ def extract_path(payload: dict[str, Any], path: tuple[str, ...]) -> Any:
     return value
 
 
+def dict_field(row: dict[str, Any], key: str) -> dict[str, Any]:
+    value = row.get(key)
+    return value if isinstance(value, dict) else {}
+
+
 def first_present(row: dict[str, Any], keys: tuple[str, ...]) -> Any:
     for key in keys:
         value = row.get(key)
@@ -3248,7 +3253,7 @@ def compact_hypertracker_leaderboard_payload(
     leaderboard_slug: str,
     rank: int,
 ) -> dict[str, Any]:
-    profile = row.get("profile") if isinstance(row.get("profile"), dict) else {}
+    profile = dict_field(row, "profile")
     vault = profile.get("vault") if isinstance(profile.get("vault"), dict) else None
     return {
         "address": row.get("address"),

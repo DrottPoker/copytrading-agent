@@ -147,7 +147,7 @@ async def run_supervised_worker_loop(
             await loop_factory()
             if stop_event.is_set():
                 break
-            error = RuntimeError(f"Worker loop exited unexpectedly: {name}.")
+            error: Exception = RuntimeError(f"Worker loop exited unexpectedly: {name}.")
         except asyncio.CancelledError:
             runtime.mark_stopped(name)
             raise

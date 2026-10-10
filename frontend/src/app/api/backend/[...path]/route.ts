@@ -1,5 +1,6 @@
 import appConfig from "../../../../../config/app.json";
 
+import { basicAuthorizationHeader, configuredDashboardCredentials } from "@/lib/dashboard-auth";
 import { browserMutationOriginIsAllowed } from "@/lib/mutation-origin";
 
 type FrontendAppConfig = {
@@ -177,12 +178,7 @@ function uniqueStrings(values: string[]) {
 }
 
 function backendAuthHeader() {
-  const username = process.env.DASHBOARD_AUTH_USERNAME ?? "admin";
-  const password = process.env.DASHBOARD_AUTH_PASSWORD ?? "change-me";
-  if (!username || !password) {
-    return null;
-  }
-  return `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
+  return basicAuthorizationHeader(configuredDashboardCredentials());
 }
 
 function filteredRequestHeaders(source: Headers) {

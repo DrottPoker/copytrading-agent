@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Annotated
@@ -43,6 +44,7 @@ from app.schemas.trading import (
     TradingSourceMetadataRead,
 )
 from app.services.live_copy_decision_service import (
+    LiveCopyDecisionExecutionDiagnostics,
     live_copy_decision_identity,
     load_live_copy_decision_execution_diagnostics,
 )
@@ -127,11 +129,62 @@ def normalize_source_wallet(value: str | None) -> str | None:
     return source
 
 
+def live_copy_decision_read(
+    decision: LiveCopyFillState,
+    diagnostics: LiveCopyDecisionExecutionDiagnostics | None,
+) -> LiveCopyDecisionRead:
+    return LiveCopyDecisionRead(
+        account_key=decision.account_key,
+        source_wallet=decision.source_wallet,
+        source_fill_id=decision.source_fill_id,
+        sequence_index=decision.sequence_index,
+        coin=decision.coin,
+        planned_action=decision.action,
+        side=decision.side,
+        outcome=decision.outcome,
+        reason=decision.reason,
+        attempt_count=decision.attempt_count,
+        origin=decision.origin,
+        source_timestamp_ms=decision.source_timestamp_ms,
+        observed_at=decision.observed_at,
+        first_observed_at=decision.first_observed_at,
+        execution_claimed_at=decision.execution_claimed_at,
+        processing_started_at=decision.processing_started_at,
+        decision_at=decision.decision_at,
+        last_attempt_at=decision.last_attempt_at,
+        next_attempt_at=decision.next_attempt_at,
+        trading_order_id=decision.trading_order_id,
+        order_record_id=diagnostics.order_record_id if diagnostics else None,
+        logical_order_status=diagnostics.logical_order_status if diagnostics else None,
+        logical_order_error=diagnostics.logical_order_error if diagnostics else None,
+        latest_dispatch_attempt_number=(
+            diagnostics.latest_dispatch_attempt_number if diagnostics else None
+        ),
+        latest_dispatch_client_order_id=(
+            diagnostics.latest_dispatch_client_order_id if diagnostics else None
+        ),
+        latest_dispatch_status=diagnostics.latest_dispatch_status if diagnostics else None,
+        latest_exchange_status=diagnostics.latest_exchange_status if diagnostics else None,
+        latest_exchange_error_code=(
+            diagnostics.latest_exchange_error_code if diagnostics else None
+        ),
+        latest_exchange_error_message=(
+            diagnostics.latest_exchange_error_message if diagnostics else None
+        ),
+        latest_exchange_response=diagnostics.latest_exchange_response if diagnostics else None,
+        submit_attempt_count=diagnostics.submit_attempt_count if diagnostics else 0,
+        status_lookup_count=diagnostics.status_lookup_count if diagnostics else 0,
+        last_status_lookup_at=diagnostics.last_status_lookup_at if diagnostics else None,
+        last_status_lookup_error=diagnostics.last_status_lookup_error if diagnostics else None,
+        updated_at=decision.updated_at,
+    )
+
+
 def collect_live_source_wallets(
     positions: list[TradingPosition],
     fills: list[TradingFill],
     orders: list[TradingOrder],
-    closed_trades: list[object],
+    closed_trades: Sequence[object],
     decisions: list[LiveCopyFillState],
 ) -> list[str]:
     sources: set[str] = set()
@@ -309,15 +362,11 @@ def enriched_trading_account_read(
         update={
             "capital_mode": mode,
             "funding_usd": funding_usd,
-            "time_weighted_return_pct": decimal_or_none(
-                performance.get("timeWeightedReturnPct")
-            ),
+            "time_weighted_return_pct": decimal_or_none(performance.get("timeWeightedReturnPct")),
             "net_external_flows_usd": (
                 decimal_or_none(performance.get("netExternalFlowsUsd")) or Decimal("0")
             ),
-            "trading_pnl_usd": (
-                decimal_or_none(performance.get("tradingPnlUsd")) or Decimal("0")
-            ),
+            "trading_pnl_usd": (decimal_or_none(performance.get("tradingPnlUsd")) or Decimal("0")),
             "performance_tracking_started_at": parse_reconciliation_datetime(
                 performance.get("trackingStartedAt")
             ),
@@ -810,105 +859,7 @@ async def list_trading_accounts_route(
         recent_fills=[TradingFillRead.model_validate(fill) for fill in recent_fills],
         recent_orders=[TradingOrderRead.model_validate(order) for order in recent_orders],
         recent_live_copy_decisions=[
-            LiveCopyDecisionRead(
-                account_key=decision.account_key,
-                source_wallet=decision.source_wallet,
-                source_fill_id=decision.source_fill_id,
-                sequence_index=decision.sequence_index,
-                coin=decision.coin,
-                planned_action=decision.action,
-                side=decision.side,
-                outcome=decision.outcome,
-                reason=decision.reason,
-                attempt_count=decision.attempt_count,
-                origin=decision.origin,
-                source_timestamp_ms=decision.source_timestamp_ms,
-                observed_at=decision.observed_at,
-                first_observed_at=decision.first_observed_at,
-                execution_claimed_at=decision.execution_claimed_at,
-                processing_started_at=decision.processing_started_at,
-                decision_at=decision.decision_at,
-                last_attempt_at=decision.last_attempt_at,
-                next_attempt_at=decision.next_attempt_at,
-                trading_order_id=decision.trading_order_id,
-                order_record_id=(
-                    decision_diagnostics_by_state_id[decision.id].order_record_id
-                    if decision_diagnostics_by_state_id[decision.id] is not None
-                    else None
-                ),
-                logical_order_status=(
-                    decision_diagnostics_by_state_id[decision.id].logical_order_status
-                    if decision_diagnostics_by_state_id[decision.id] is not None
-                    else None
-                ),
-                logical_order_error=(
-                    decision_diagnostics_by_state_id[decision.id].logical_order_error
-                    if decision_diagnostics_by_state_id[decision.id] is not None
-                    else None
-                ),
-                latest_dispatch_attempt_number=(
-                    decision_diagnostics_by_state_id[
-                        decision.id
-                    ].latest_dispatch_attempt_number
-                    if decision_diagnostics_by_state_id[decision.id] is not None
-                    else None
-                ),
-                latest_dispatch_client_order_id=(
-                    decision_diagnostics_by_state_id[
-                        decision.id
-                    ].latest_dispatch_client_order_id
-                    if decision_diagnostics_by_state_id[decision.id] is not None
-                    else None
-                ),
-                latest_dispatch_status=(
-                    decision_diagnostics_by_state_id[decision.id].latest_dispatch_status
-                    if decision_diagnostics_by_state_id[decision.id] is not None
-                    else None
-                ),
-                latest_exchange_status=(
-                    decision_diagnostics_by_state_id[decision.id].latest_exchange_status
-                    if decision_diagnostics_by_state_id[decision.id] is not None
-                    else None
-                ),
-                latest_exchange_error_code=(
-                    decision_diagnostics_by_state_id[decision.id].latest_exchange_error_code
-                    if decision_diagnostics_by_state_id[decision.id] is not None
-                    else None
-                ),
-                latest_exchange_error_message=(
-                    decision_diagnostics_by_state_id[
-                        decision.id
-                    ].latest_exchange_error_message
-                    if decision_diagnostics_by_state_id[decision.id] is not None
-                    else None
-                ),
-                latest_exchange_response=(
-                    decision_diagnostics_by_state_id[decision.id].latest_exchange_response
-                    if decision_diagnostics_by_state_id[decision.id] is not None
-                    else None
-                ),
-                submit_attempt_count=(
-                    decision_diagnostics_by_state_id[decision.id].submit_attempt_count
-                    if decision_diagnostics_by_state_id[decision.id] is not None
-                    else 0
-                ),
-                status_lookup_count=(
-                    decision_diagnostics_by_state_id[decision.id].status_lookup_count
-                    if decision_diagnostics_by_state_id[decision.id] is not None
-                    else 0
-                ),
-                last_status_lookup_at=(
-                    decision_diagnostics_by_state_id[decision.id].last_status_lookup_at
-                    if decision_diagnostics_by_state_id[decision.id] is not None
-                    else None
-                ),
-                last_status_lookup_error=(
-                    decision_diagnostics_by_state_id[decision.id].last_status_lookup_error
-                    if decision_diagnostics_by_state_id[decision.id] is not None
-                    else None
-                ),
-                updated_at=decision.updated_at,
-            )
+            live_copy_decision_read(decision, decision_diagnostics_by_state_id[decision.id])
             for decision in recent_live_copy_decisions
         ],
         closed_trades=[TradingClosedTradeRead.model_validate(trade) for trade in closed_trades],
@@ -940,19 +891,11 @@ async def list_trading_account_cash_flows_route(
     )
     cash_flows = list(cash_flow_result.all())
     deposits_usd = sum(
-        (
-            cash_flow.amount_usd
-            for cash_flow in cash_flows
-            if cash_flow.amount_usd > Decimal("0")
-        ),
+        (cash_flow.amount_usd for cash_flow in cash_flows if cash_flow.amount_usd > Decimal("0")),
         Decimal("0"),
     )
     signed_withdrawals_usd = sum(
-        (
-            cash_flow.amount_usd
-            for cash_flow in cash_flows
-            if cash_flow.amount_usd < Decimal("0")
-        ),
+        (cash_flow.amount_usd for cash_flow in cash_flows if cash_flow.amount_usd < Decimal("0")),
         Decimal("0"),
     )
     return TradingCashFlowsResponse(

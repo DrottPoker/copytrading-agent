@@ -1,5 +1,6 @@
 import json
 import re
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
@@ -65,7 +66,9 @@ async def list_recent_events(redis: Redis, *, limit: int = 100) -> list[dict[str
         min="-",
         count=max(0, limit),
     )
-    events = [event for stream_id, fields in rows if (event := stream_event(stream_id, fields))]
+    events = [
+        event for stream_id, fields in rows or [] if (event := stream_event(stream_id, fields))
+    ]
     if events:
         return events
     return await list_legacy_recent_events(redis, limit=limit)
@@ -85,12 +88,19 @@ async def read_event_stream(
         block=max(1, block_ms),
     )
     events: list[dict[str, Any]] = []
-    for _stream_name, rows in streams:
-        for stream_id, fields in rows:
-            event = stream_event(stream_id, fields)
-            if event is not None:
-                events.append(event)
+    for stream_id, fields in stream_read_rows(streams):
+        event = stream_event(stream_id, fields)
+        if event is not None:
+            events.append(event)
     return events
+
+
+def stream_read_rows(streams: Any) -> list[tuple[Any, Any]]:
+    # RESP2 replies with [[stream, rows]] and RESP3 with {stream: rows}.
+    if not streams:
+        return []
+    stream_rows = streams.values() if isinstance(streams, dict) else (row[1] for row in streams)
+    return [(stream_id, fields) for rows in stream_rows for stream_id, fields in rows]
 
 
 async def latest_event_stream_id(redis: Redis) -> str:
@@ -106,7 +116,9 @@ async def latest_event_stream_id(redis: Redis) -> str:
     return normalize_redis_value(stream_id)
 
 
-def stream_event(stream_id: Any, fields: dict[Any, Any]) -> dict[str, Any] | None:
+def stream_event(stream_id: Any, fields: Mapping[Any, Any] | None) -> dict[str, Any] | None:
+    if fields is None:
+        return None
     raw_event = fields.get("event")
     if raw_event is None:
         raw_event = fields.get(b"event")
