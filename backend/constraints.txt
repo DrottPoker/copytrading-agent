@@ -16,5 +16,5 @@ sqlalchemy==2.0.50
 uvicorn==0.49.0
 websockets==16.0
 # Security floors for transitive dependencies flagged by pip-audit.
-anyio>=4.14.2
+anyio>=4.15.1
 urllib3>=2.8.0
