@@ -24,6 +24,7 @@ from app.db.models import (
 )
 from app.integrations.hyperliquid_client import HyperliquidClient
 from app.integrations.hyperliquid_live_client import HyperliquidLiveTradingClient
+from app.services.copy_execution_cache import LiveCopyLaneSyncTracker
 from app.services.live_copy_state_service import (
     LIVE_COPY_ORIGIN_PERIODIC_RECOVERY,
     LIVE_COPY_ORIGIN_REALTIME,
@@ -74,13 +75,17 @@ from app.services.live_trading_service import (
 )
 from app.services.market_price_cache import MarketPriceCache, dex_from_coin
 from app.services.paper_trading_service import (
+    CopyAllocationCache,
     ExecutionMarketPrices,
     PaperCopyBatchResult,
     PaperSourceAccountState,
     PaperSourceAllocation,
     SourceFillPart,
+    SourceStateCache,
+    UnifiedEquityCache,
     build_execution_context,
     combine_skip_reasons,
+    copy_allocations,
     decimal_or_zero,
     is_preexisting_source_add,
     leverage_for_fill,
@@ -291,6 +296,30 @@ def live_copy_allocation_equity_usd(
     return live_copy_allocation_equity(account, settings=settings, dex=dex)
 
 
+def live_copy_lane_sync_key(
+    allocation_version: int,
+    accounts: list[TradingAccount],
+) -> tuple[int, tuple[tuple[str, str, int], ...]]:
+    """Inputs that decide entry eligibility in lane synchronization.
+
+    Entry eligibility depends only on the active source set and account status,
+    which this key covers. Owned pairs only grow through entries on already
+    eligible pairs, and the realtime wallet refresh resynchronizes every lane
+    each subscription refresh, so a skipped repeat never admits an entry or
+    blocks an exit.
+    """
+
+    return (
+        allocation_version,
+        tuple(
+            sorted(
+                (account.key, str(account.status), int(account.lifecycle_version or 0))
+                for account in accounts
+            )
+        ),
+    )
+
+
 async def synchronize_live_copy_lanes(
     session: AsyncSession,
     *,
@@ -443,13 +472,20 @@ async def process_live_copy_fills(
     accounts_override: list[TradingAccount] | None = None,
     prechecked_reconciliation_failures: set[str] | None = None,
     lanes_synchronized: bool = False,
+    allocation_cache: CopyAllocationCache | None = None,
+    source_state_cache: SourceStateCache | None = None,
+    lane_sync_tracker: LiveCopyLaneSyncTracker | None = None,
 ) -> PaperCopyBatchResult:
     resolved_settings = settings or get_settings()
     if not fills or not live_copy_processing_enabled(resolved_settings):
         return PaperCopyBatchResult()
 
     normalized_source_wallet = source_wallet.lower()
-    allocations = await refresh_paper_copy_allocations(session, settings=resolved_settings)
+    allocations = await copy_allocations(
+        session,
+        settings=resolved_settings,
+        cache=allocation_cache,
+    )
     allocation = allocations.get(normalized_source_wallet)
     if allocation is None:
         return live_skip("live_allocation_missing", len(fills))
@@ -462,6 +498,13 @@ async def process_live_copy_fills(
             source_wallet=normalized_source_wallet,
         )
     )
+    lane_sync_key = (
+        live_copy_lane_sync_key(allocation_cache.version, candidate_accounts)
+        if lane_sync_tracker is not None and allocation_cache is not None
+        else None
+    )
+    if lane_sync_key is not None and lane_sync_tracker is not None:
+        lanes_synchronized = lanes_synchronized or lane_sync_tracker.is_synced(lane_sync_key)
     if not lanes_synchronized:
         if callable(getattr(session, "execute", None)):
             await bootstrap_missing_live_source_attribution(
@@ -477,6 +520,8 @@ async def process_live_copy_fills(
             )
         await session.commit()
         lanes_synchronized = True
+        if lane_sync_key is not None and lane_sync_tracker is not None:
+            lane_sync_tracker.mark_synced(lane_sync_key)
     accounts = candidate_accounts
     accounts = await filter_live_accounts_for_source_allocation(
         session,
@@ -511,12 +556,16 @@ async def process_live_copy_fills(
                 accounts_override=candidate_accounts,
                 prechecked_reconciliation_failures=prechecked_reconciliation_failures,
                 lanes_synchronized=lanes_synchronized,
+                allocation_cache=allocation_cache,
+                source_state_cache=source_state_cache,
+                lane_sync_tracker=lane_sync_tracker,
             )
 
     source_account_states_task = load_source_account_states(
         client=client,
         source_wallet=normalized_source_wallet,
         fills=fills,
+        cache=source_state_cache,
     )
     market_prices_task = load_execution_market_prices(
         client=client,
@@ -2084,7 +2133,7 @@ async def sync_live_source_margin_settings(
     await session.commit()
 
     source_states: dict[str, PaperSourceAccountState] = {}
-    unified_equity_cache: dict[str, Decimal | None] = {}
+    unified_equity_cache: UnifiedEquityCache = {}
     for dex in sorted({dex_from_coin(position.coin) for position in positions}):
         source_states[dex] = await load_source_account_state(
             client=info_client,

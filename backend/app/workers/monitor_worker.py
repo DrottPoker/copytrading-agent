@@ -11,12 +11,19 @@ from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.db.models import PaperPosition, TradingAccount, TradingPosition, WalletScore, WatchedWallet
 from app.db.session import get_sessionmaker
+from app.integrations.hyperliquid_client import HyperliquidClient
+from app.integrations.hyperliquid_live_client import HyperliquidLiveTradingClient
 from app.integrations.hyperliquid_ws_client import (
     HyperliquidWebSocketError,
     stream_all_mids,
     stream_user_fills,
 )
 from app.integrations.redis_client import close_redis_clients, get_redis
+from app.services.copy_execution_cache import (
+    AllocationSnapshotCache,
+    LiveCopyLaneSyncTracker,
+    SourceAccountStateCache,
+)
 from app.services.discovery_service import run_discovery_import
 from app.services.job_lock_service import JobLockAlreadyHeldError, job_lock
 from app.services.live_copy_service import (
@@ -56,12 +63,16 @@ from app.services.operation_status_service import (
     mark_operation_succeeded,
 )
 from app.services.paper_trading_service import (
+    CopyAllocationCache,
     PaperCopyBatchResult,
+    SourceStateCache,
     paper_source_fill_from_wallet_fill,
     process_paper_copy_fills,
     process_paper_copy_recovery,
     record_wallet_monitoring_snapshot,
     refresh_paper_copy_allocations,
+    store_copy_allocations,
+    warm_source_state_cache,
 )
 from app.services.pool_fill_import_service import import_due_pool_wallet_fills
 from app.services.realtime_event_service import publish_event as publish_realtime_event
@@ -102,6 +113,47 @@ class LiveCopyWorkWakeItem:
 
 class RealtimeExecutionProcessingError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class CopyExecutionResources:
+    """Clients and caches shared by the copy execution loops of one trading worker."""
+
+    info_client: HyperliquidClient
+    trading_client: HyperliquidLiveTradingClient | None
+    allocation_cache: CopyAllocationCache
+    source_state_cache: SourceStateCache | None
+    lane_sync_tracker: LiveCopyLaneSyncTracker
+
+
+def build_copy_execution_resources(settings: Any) -> CopyExecutionResources:
+    source_state_max_age = settings.trading_copy_source_state_cache_max_age_seconds
+    return CopyExecutionResources(
+        info_client=HyperliquidClient(settings, priority="execution").open(),
+        trading_client=(
+            HyperliquidLiveTradingClient(settings=settings)
+            if live_copy_processing_enabled(settings)
+            else None
+        ),
+        # The realtime loop refreshes allocations every subscription refresh,
+        # so a snapshot older than two refreshes means that loop is stalled.
+        allocation_cache=AllocationSnapshotCache(
+            max_age_seconds=2 * settings.realtime_subscription_refresh_seconds
+        ),
+        source_state_cache=(
+            SourceAccountStateCache(max_age_seconds=source_state_max_age)
+            if source_state_max_age > 0
+            else None
+        ),
+        lane_sync_tracker=LiveCopyLaneSyncTracker(),
+    )
+
+
+def copy_processing_enabled(settings: Any) -> bool:
+    return bool(
+        (settings.paper_trading_enabled and settings.paper_copy_enabled)
+        or live_copy_processing_enabled(settings)
+    )
 
 
 async def publish_event(
@@ -277,6 +329,34 @@ async def run_owned_monitor_services(
     settings: Any,
     runtime: WorkerRuntimeState,
 ) -> None:
+    copy_resources = (
+        build_copy_execution_resources(settings)
+        if worker_runs_trading(settings) and copy_processing_enabled(settings)
+        else None
+    )
+    try:
+        await run_monitor_loops(
+            sessionmaker=sessionmaker,
+            redis=redis,
+            stop_event=stop_event,
+            settings=settings,
+            runtime=runtime,
+            copy_resources=copy_resources,
+        )
+    finally:
+        if copy_resources is not None:
+            await copy_resources.info_client.aclose()
+
+
+async def run_monitor_loops(
+    *,
+    sessionmaker: Any,
+    redis: Any,
+    stop_event: asyncio.Event,
+    settings: Any,
+    runtime: WorkerRuntimeState,
+    copy_resources: CopyExecutionResources | None,
+) -> None:
     runs_trading = worker_runs_trading(settings)
     runs_maintenance = worker_runs_maintenance(settings)
     await publish_event(
@@ -347,10 +427,7 @@ async def run_owned_monitor_services(
                 settings=settings,
             ),
         )
-    if runs_trading and (
-        (settings.paper_trading_enabled and settings.paper_copy_enabled)
-        or live_copy_processing_enabled(settings)
-    ):
+    if runs_trading and copy_processing_enabled(settings):
         tasks.append(
             asyncio.create_task(
                 run_startup_copy_recovery_once(
@@ -435,6 +512,16 @@ async def run_owned_monitor_services(
             ),
         )
 
+    if copy_resources is not None and copy_resources.source_state_cache is not None:
+        add_supervised(
+            "source-state-warmup",
+            lambda: run_source_state_warmup_loop(
+                copy_resources=copy_resources,
+                stop_event=stop_event,
+                settings=settings,
+            ),
+        )
+
     if (
         runs_trading
         and settings.live_trading_enabled
@@ -475,6 +562,7 @@ async def run_owned_monitor_services(
                 settings=settings,
                 price_cache=price_cache,
                 runtime=runtime,
+                copy_resources=copy_resources,
             ),
         )
         add_supervised(
@@ -488,6 +576,7 @@ async def run_owned_monitor_services(
                 settings=settings,
                 price_cache=price_cache,
                 runtime=runtime,
+                copy_resources=copy_resources,
             ),
         )
         realtime_subscription_task = add_supervised(
@@ -501,6 +590,7 @@ async def run_owned_monitor_services(
                 execution_queue=realtime_execution_queue,
                 live_copy_work_queue=live_copy_work_queue,
                 runtime=runtime,
+                copy_resources=copy_resources,
             ),
         )
         realtime_subscription_task.add_done_callback(lambda _task: realtime_intake_closed.set())
@@ -545,12 +635,15 @@ async def run_realtime_monitor_loop(
     execution_queue: asyncio.Queue[RealtimeExecutionWorkItem] | None = None,
     live_copy_work_queue: asyncio.Queue[LiveCopyWorkWakeItem] | None = None,
     runtime: WorkerRuntimeState | None = None,
+    copy_resources: CopyExecutionResources | None = None,
 ) -> None:
+    allocation_cache = copy_resources.allocation_cache if copy_resources is not None else None
     while not stop_event.is_set():
         wallet_addresses = await load_realtime_wallets(
             sessionmaker=sessionmaker,
             max_wallets=settings.max_realtime_wallets,
             settings=settings,
+            allocation_cache=allocation_cache,
         )
         if not wallet_addresses:
             if runtime is not None:
@@ -644,6 +737,7 @@ async def run_realtime_monitor_loop(
                     sessionmaker=sessionmaker,
                     max_wallets=settings.max_realtime_wallets,
                     settings=settings,
+                    allocation_cache=allocation_cache,
                 )
                 if runtime is not None and runtime.realtime_subscription_status == "connecting":
                     logger.warning(
@@ -858,13 +952,12 @@ async def load_realtime_wallets(
     sessionmaker: Any,
     max_wallets: int,
     settings: Any,
+    allocation_cache: CopyAllocationCache | None = None,
 ) -> list[str]:
     if max_wallets <= 0:
         return []
 
-    if (
-        settings.paper_trading_enabled and settings.paper_copy_enabled
-    ) or live_copy_processing_enabled(settings):
+    if copy_processing_enabled(settings):
         async with sessionmaker() as session:
             allocations = await refresh_paper_copy_allocations(session, settings=settings)
             live_accounts = await load_live_accounts_for_source_copy(session, source_wallet="")
@@ -878,6 +971,7 @@ async def load_realtime_wallets(
                 },
             )
             await session.commit()
+        store_copy_allocations(allocation_cache, allocations)
         owned_source_wallets = sorted(
             {source_wallet for _, source_wallet in owned_account_source_pairs}
         )
@@ -1754,6 +1848,7 @@ async def run_realtime_execution_loop(
     settings: Any,
     price_cache: MarketPriceCache | None,
     runtime: WorkerRuntimeState,
+    copy_resources: CopyExecutionResources | None = None,
 ) -> None:
     owner = runtime.instance_id
     claim_timeout_seconds = getattr(
@@ -1782,6 +1877,7 @@ async def run_realtime_execution_loop(
                     redis=redis,
                     settings=settings,
                     price_cache=price_cache,
+                    copy_resources=copy_resources,
                 )
             except asyncio.CancelledError:
                 try:
@@ -1883,6 +1979,7 @@ async def run_live_copy_work_loop(
     settings: Any,
     price_cache: MarketPriceCache | None,
     runtime: WorkerRuntimeState,
+    copy_resources: CopyExecutionResources | None = None,
 ) -> None:
     """Consume the canonical source-fill work queue for live execution only."""
 
@@ -1923,6 +2020,7 @@ async def run_live_copy_work_loop(
                         origin=claimed.origin,
                         realtime_observed_at=wallet_fill.received_at,
                         execution_claimed_at=claimed.claimed_at,
+                        **live_copy_resource_kwargs(copy_resources),
                     )
             except asyncio.CancelledError:
                 try:
@@ -2064,6 +2162,7 @@ async def process_stored_realtime_fills(
     redis: Any,
     settings: Any,
     price_cache: MarketPriceCache | None = None,
+    copy_resources: CopyExecutionResources | None = None,
 ) -> None:
     presentation_events: list[dict[str, Any]] = []
     if stored.is_snapshot:
@@ -2136,6 +2235,7 @@ async def process_stored_realtime_fills(
                     fills=execution_rows,
                     settings=settings,
                     price_cache=price_cache,
+                    **paper_copy_resource_kwargs(copy_resources),
                 )
             if paper_result.processed_fills > 0 or paper_result.skipped_fills > 0:
                 presentation_events.append(
@@ -2183,7 +2283,57 @@ async def process_stored_realtime_fills(
         raise RealtimeExecutionProcessingError(detail) from processing_errors[0][1]
 
 
-async def sleep_until_stop(stop_event: asyncio.Event, seconds: int) -> None:
+def paper_copy_resource_kwargs(copy_resources: CopyExecutionResources | None) -> dict[str, Any]:
+    if copy_resources is None:
+        return {}
+    return {
+        "client": copy_resources.info_client,
+        "allocation_cache": copy_resources.allocation_cache,
+        "source_state_cache": copy_resources.source_state_cache,
+    }
+
+
+def live_copy_resource_kwargs(copy_resources: CopyExecutionResources | None) -> dict[str, Any]:
+    if copy_resources is None:
+        return {}
+    return {
+        **paper_copy_resource_kwargs(copy_resources),
+        "trading_client": copy_resources.trading_client,
+        "lane_sync_tracker": copy_resources.lane_sync_tracker,
+    }
+
+
+async def run_source_state_warmup_loop(
+    *,
+    copy_resources: CopyExecutionResources,
+    stop_event: asyncio.Event,
+    settings: Any,
+) -> None:
+    """Keep copied sources' account states fresh so their adds skip the state lookup."""
+
+    cache = copy_resources.source_state_cache
+    if cache is None:
+        return
+    refresh_seconds = settings.trading_copy_source_state_refresh_seconds
+    # Background priority: warm-up never delays an execution request.
+    async with HyperliquidClient(settings) as client:
+        while not stop_event.is_set():
+            allocations = copy_resources.allocation_cache.fresh()
+            if allocations is not None:
+                await warm_source_state_cache(
+                    client=client,
+                    cache=cache,
+                    source_wallets={
+                        source_wallet
+                        for source_wallet, allocation in allocations.items()
+                        if allocation.active
+                    },
+                    refresh_after_seconds=refresh_seconds,
+                )
+            await sleep_until_stop(stop_event, refresh_seconds)
+
+
+async def sleep_until_stop(stop_event: asyncio.Event, seconds: float) -> None:
     try:
         await asyncio.wait_for(stop_event.wait(), timeout=seconds)
     except TimeoutError:

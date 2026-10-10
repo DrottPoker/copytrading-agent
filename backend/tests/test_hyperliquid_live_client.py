@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -5,6 +6,7 @@ import pytest
 
 from app.core.config import Settings
 from app.db.models import TradingAccount
+from app.integrations import hyperliquid_live_client
 from app.integrations.hyperliquid_live_client import (
     HyperliquidLiveOrderRejectedError,
     HyperliquidLiveTradingClient,
@@ -803,3 +805,177 @@ def live_test_intent(
         created_at=datetime(2026, 1, 1, tzinfo=UTC),
         margin_mode=margin_mode,
     )
+
+
+class CountingExchangeFactory:
+    def __init__(self, *exchanges: FakeExchange) -> None:
+        self.exchanges = list(exchanges)
+        self.calls = 0
+
+    def __call__(self, _account: TradingAccount) -> FakeExchange:
+        self.calls += 1
+        return self.exchanges[min(self.calls, len(self.exchanges)) - 1]
+
+
+def cached_live_client(
+    factory: CountingExchangeFactory,
+    *,
+    now: list[float] | None = None,
+) -> HyperliquidLiveTradingClient:
+    clock = now if now is not None else [1000.0]
+    return HyperliquidLiveTradingClient(
+        settings=live_test_settings(),
+        exchange_factory=factory,
+        cloid_factory=lambda value: value,
+        clock=lambda: clock[0],
+    )
+
+
+@pytest.mark.asyncio
+async def test_live_client_reuses_the_exchange_and_skips_unchanged_leverage() -> None:
+    exchange = FakeExchange()
+    factory = CountingExchangeFactory(exchange)
+    client = cached_live_client(factory)
+    account = live_test_account(status="enabled")
+
+    await client.submit_order(account=account, intent=live_test_intent())
+    second = await client.submit_order(account=account, intent=live_test_intent())
+
+    assert factory.calls == 1
+    assert exchange.events == ["update_leverage", "order", "order"]
+    assert "leverageUpdate" not in second.raw_response
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"leverage": Decimal("3")},
+        {"margin_mode": "isolated"},
+    ],
+)
+async def test_live_client_resends_leverage_when_the_setting_changes(
+    changed: dict[str, object],
+) -> None:
+    exchange = FakeExchange()
+    client = cached_live_client(CountingExchangeFactory(exchange))
+    account = live_test_account(status="enabled")
+
+    await client.submit_order(account=account, intent=live_test_intent())
+    await client.submit_order(account=account, intent=live_test_intent(**changed))  # type: ignore[arg-type]
+
+    assert exchange.events == ["update_leverage", "order", "update_leverage", "order"]
+
+
+@pytest.mark.asyncio
+async def test_live_client_resends_leverage_after_it_ages_out() -> None:
+    now = [1000.0]
+    exchange = FakeExchange()
+    client = cached_live_client(CountingExchangeFactory(exchange), now=now)
+    account = live_test_account(status="enabled")
+
+    await client.submit_order(account=account, intent=live_test_intent())
+    now[0] += hyperliquid_live_client.APPLIED_LEVERAGE_MAX_AGE_SECONDS + 1
+    await client.submit_order(account=account, intent=live_test_intent())
+
+    assert exchange.events.count("update_leverage") == 2
+
+
+@pytest.mark.asyncio
+async def test_live_client_reloads_an_expired_exchange_without_delaying_orders() -> None:
+    now = [1000.0]
+    stale = FakeExchange()
+    fresh = FakeExchange()
+    factory = CountingExchangeFactory(stale, fresh)
+    client = cached_live_client(factory, now=now)
+    account = live_test_account(status="enabled")
+
+    await client.submit_order(account=account, intent=live_test_intent())
+    now[0] += hyperliquid_live_client.EXCHANGE_CACHE_MAX_AGE_SECONDS + 1
+    await client.submit_order(account=account, intent=live_test_intent())
+    assert len(stale.orders) == 2
+
+    for _ in range(100):
+        if factory.calls == 2:
+            break
+        await asyncio.sleep(0.01)
+    await client.submit_order(account=account, intent=live_test_intent())
+
+    assert factory.calls == 2
+    assert len(fresh.orders) == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_exchange_reload_keeps_serving_and_retries_later() -> None:
+    now = [1000.0]
+    exchange = FakeExchange()
+    builds: list[str] = []
+
+    def flaky_factory(_account: TradingAccount) -> FakeExchange:
+        builds.append("build")
+        if len(builds) == 2:
+            raise RuntimeError("metadata unavailable")
+        return exchange
+
+    client = HyperliquidLiveTradingClient(
+        settings=live_test_settings(),
+        exchange_factory=flaky_factory,
+        cloid_factory=lambda value: value,
+        clock=lambda: now[0],
+    )
+    account = live_test_account(status="enabled")
+    await client.submit_order(account=account, intent=live_test_intent())
+    now[0] += hyperliquid_live_client.EXCHANGE_CACHE_MAX_AGE_SECONDS + 1
+
+    await client.submit_order(account=account, intent=live_test_intent())
+    for _ in range(100):
+        if len(builds) == 2 and not client._exchanges[next(iter(client._exchanges))].refreshing:
+            break
+        await asyncio.sleep(0.01)
+    await client.submit_order(account=account, intent=live_test_intent())
+    assert len(builds) == 2
+
+    now[0] += hyperliquid_live_client.EXCHANGE_REFRESH_RETRY_SECONDS + 1
+    await client.submit_order(account=account, intent=live_test_intent())
+    for _ in range(100):
+        if len(builds) == 3:
+            break
+        await asyncio.sleep(0.01)
+
+    assert len(builds) == 3
+    assert len(exchange.orders) == 4
+
+
+@pytest.mark.asyncio
+async def test_live_client_reloads_metadata_once_for_a_newly_listed_market() -> None:
+    stale = FakeExchange(info=FakeInfo(assets={"HYPE": 0}, size_decimals={0: 2}))
+    fresh = FakeExchange(info=FakeInfo(assets={"HYPE": 0, "BTC": 1}, size_decimals={0: 2, 1: 5}))
+    factory = CountingExchangeFactory(stale, fresh)
+    client = cached_live_client(factory)
+
+    result = await client.submit_order(
+        account=live_test_account(status="enabled"),
+        intent=live_test_intent(),
+    )
+
+    assert result.status == "filled"
+    assert factory.calls == 2
+    assert stale.orders == []
+    assert len(fresh.orders) == 1
+
+
+@pytest.mark.asyncio
+async def test_margin_setting_sync_is_remembered_for_the_next_entry() -> None:
+    exchange = FakeExchange()
+    client = cached_live_client(CountingExchangeFactory(exchange))
+    account = live_test_account(status="enabled")
+
+    await client.update_margin_setting(
+        account=account,
+        coin="BTC",
+        leverage=Decimal("5"),
+        margin_mode="cross",
+    )
+    await client.submit_order(account=account, intent=live_test_intent())
+
+    assert exchange.events == ["update_leverage", "order"]

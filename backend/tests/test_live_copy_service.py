@@ -15,6 +15,7 @@ from app.db.models import (
     TradingPosition,
 )
 from app.services import live_copy_service, live_trading_service
+from app.services.copy_execution_cache import AllocationSnapshotCache, LiveCopyLaneSyncTracker
 from app.services.live_copy_service import (
     combine_batch_results,
     live_aggregated_below_min_close_size,
@@ -35,12 +36,14 @@ from app.services.live_copy_service import (
 from app.services.live_copy_state_service import LiveCopyPartClaim, LiveCopyProcessingDeferred
 from app.services.live_trading_service import LiveOrderSubmitError, LiveReconciliationError
 from app.services.paper_trading_service import (
+    CopyAllocationCache,
     ExecutionMarketPrices,
     PaperCopyBatchResult,
     PaperSourceAccountState,
     PaperSourceAllocation,
     PaperSourceCurrentPosition,
     SourceFillPart,
+    store_copy_allocations,
 )
 from app.services.trading_core import build_client_order_id, build_copy_trade_intent
 
@@ -320,7 +323,7 @@ async def test_reconciliation_contention_defers_fill_without_trading_order(
 
     monkeypatch.setattr(
         live_copy_service,
-        "refresh_paper_copy_allocations",
+        "copy_allocations",
         fake_refresh_allocations,
     )
     monkeypatch.setattr(
@@ -458,7 +461,7 @@ async def test_under_ttl_ambiguous_entry_remains_retryable_without_trading_order
 
     monkeypatch.setattr(
         live_copy_service,
-        "refresh_paper_copy_allocations",
+        "copy_allocations",
         fake_refresh_allocations,
     )
     monkeypatch.setattr(
@@ -619,7 +622,7 @@ async def test_expired_entry_preparation_terminalizes_only_without_an_order(
 
     monkeypatch.setattr(
         live_copy_service,
-        "refresh_paper_copy_allocations",
+        "copy_allocations",
         fake_refresh_allocations,
     )
     monkeypatch.setattr(
@@ -777,7 +780,7 @@ async def test_unowned_close_becomes_lifecycle_state_without_trading_order(
 
     monkeypatch.setattr(
         live_copy_service,
-        "refresh_paper_copy_allocations",
+        "copy_allocations",
         fake_refresh_allocations,
     )
     monkeypatch.setattr(
@@ -963,7 +966,7 @@ async def test_stale_live_entry_becomes_terminal_state_without_trading_order(
 
     monkeypatch.setattr(
         live_copy_service,
-        "refresh_paper_copy_allocations",
+        "copy_allocations",
         fake_refresh_allocations,
     )
     monkeypatch.setattr(
@@ -1129,7 +1132,7 @@ async def test_fresh_live_open_is_claimed_once_and_executes_in_normal_pass(
 
     monkeypatch.setattr(
         live_copy_service,
-        "refresh_paper_copy_allocations",
+        "copy_allocations",
         fake_refresh_allocations,
     )
     monkeypatch.setattr(
@@ -4026,3 +4029,78 @@ async def test_live_add_without_source_start_position_is_skipped(monkeypatch) ->
 
     assert captured["intents"] == []
     assert captured["skips"][0]["reason"] == "live_source_position_unknown"
+
+
+@pytest.mark.asyncio
+async def test_lane_synchronization_is_skipped_until_its_inputs_change(monkeypatch) -> None:
+    account = live_account(last_reconciled_at=None)
+    synchronized: list[set[str]] = []
+
+    class ExecuteSession:
+        async def execute(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        async def commit(self) -> None:
+            return None
+
+    async def cached_allocations(*_args: object, cache: object, **_kwargs: object):
+        return cache.fresh()  # type: ignore[attr-defined]
+
+    async def fake_load_accounts(*_args: object, **_kwargs: object):
+        return [account]
+
+    async def fake_bootstrap(*_args: object, **_kwargs: object) -> int:
+        return 0
+
+    async def fake_synchronize(*_args: object, active_source_wallets: set[str], **_kwargs: object):
+        synchronized.append(active_source_wallets)
+        return set()
+
+    async def no_accounts(*_args: object, **_kwargs: object) -> list[TradingAccount]:
+        return []
+
+    monkeypatch.setattr(live_copy_service, "copy_allocations", cached_allocations)
+    monkeypatch.setattr(live_copy_service, "load_live_accounts_for_source_copy", fake_load_accounts)
+    monkeypatch.setattr(
+        live_copy_service,
+        "bootstrap_missing_live_source_attribution",
+        fake_bootstrap,
+    )
+    monkeypatch.setattr(live_copy_service, "synchronize_live_copy_lanes", fake_synchronize)
+    monkeypatch.setattr(
+        live_copy_service,
+        "filter_live_accounts_for_source_allocation",
+        no_accounts,
+    )
+    allocation_cache: CopyAllocationCache = AllocationSnapshotCache(max_age_seconds=30)
+    store_copy_allocations(allocation_cache, {"0xsource": source_allocation()})
+    tracker = LiveCopyLaneSyncTracker()
+    settings = Settings().model_copy(update={"live_trading_enabled": True})
+
+    async def process() -> None:
+        result = await live_copy_service.process_live_copy_fills(
+            ExecuteSession(),  # type: ignore[arg-type]
+            source_wallet="0xsource",
+            fills=[{"coin": "BTC"}],
+            settings=settings,
+            client=object(),  # type: ignore[arg-type]
+            trading_client=object(),  # type: ignore[arg-type]
+            allocation_cache=allocation_cache,
+            lane_sync_tracker=tracker,
+        )
+        assert result.skip_reasons == {"live_no_enabled_accounts": 1}
+
+    await process()
+    await process()
+    assert len(synchronized) == 1
+
+    account.lifecycle_version = 2
+    await process()
+    assert len(synchronized) == 2
+
+    store_copy_allocations(
+        allocation_cache,
+        {"0xsource": source_allocation(), "0xother": source_allocation()},
+    )
+    await process()
+    assert len(synchronized) == 3

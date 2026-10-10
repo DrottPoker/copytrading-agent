@@ -1,6 +1,6 @@
 import asyncio
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 import websockets
@@ -9,6 +9,10 @@ from app.core.config import Settings
 
 WebSocketMessageHandler = Callable[[dict[str, Any]], Awaitable[None]]
 WebSocketSubscriptionHandler = Callable[[str], Awaitable[None]]
+# Ping after this much silence, and treat the connection as dead when nothing,
+# not even the pong, arrives within the pong timeout.
+WEBSOCKET_HEARTBEAT_SECONDS = 30.0
+WEBSOCKET_PONG_TIMEOUT_SECONDS = 10.0
 
 
 class HyperliquidWebSocketError(RuntimeError):
@@ -44,34 +48,16 @@ async def stream_user_fills(
 
             requested_wallets = {address.lower() for address in wallet_addresses}
             acknowledged_wallets: set[str] = set()
-            while not stop_event.is_set():
-                try:
-                    raw_message = await receive_until_stop(
-                        websocket,
-                        stop_event=stop_event,
-                        timeout_seconds=30,
-                    )
-                except TimeoutError:
-                    await websocket.send(json.dumps({"method": "ping"}))
-                    continue
-                if raw_message is None:
-                    return
-
-                try:
-                    message = json.loads(raw_message)
-                except json.JSONDecodeError as exc:
-                    raise HyperliquidWebSocketError("Received invalid WebSocket JSON.") from exc
-
-                if isinstance(message, dict):
-                    acknowledged_wallet = user_fills_subscription_wallet(message)
-                    if (
-                        on_subscribed is not None
-                        and acknowledged_wallet in requested_wallets
-                        and acknowledged_wallet not in acknowledged_wallets
-                    ):
-                        acknowledged_wallets.add(acknowledged_wallet)
-                        await on_subscribed(acknowledged_wallet)
-                    await on_message(message)
+            async for message in receive_messages(websocket, stop_event=stop_event):
+                acknowledged_wallet = user_fills_subscription_wallet(message)
+                if (
+                    on_subscribed is not None
+                    and acknowledged_wallet in requested_wallets
+                    and acknowledged_wallet not in acknowledged_wallets
+                ):
+                    acknowledged_wallets.add(acknowledged_wallet)
+                    await on_subscribed(acknowledged_wallet)
+                await on_message(message)
     except HyperliquidWebSocketError:
         raise
     except Exception as exc:
@@ -100,30 +86,53 @@ async def stream_all_mids(
                 )
             )
 
-            while not stop_event.is_set():
-                try:
-                    raw_message = await receive_until_stop(
-                        websocket,
-                        stop_event=stop_event,
-                        timeout_seconds=30,
-                    )
-                except TimeoutError:
-                    await websocket.send(json.dumps({"method": "ping"}))
-                    continue
-                if raw_message is None:
-                    return
-
-                try:
-                    message = json.loads(raw_message)
-                except json.JSONDecodeError as exc:
-                    raise HyperliquidWebSocketError("Received invalid WebSocket JSON.") from exc
-
-                if isinstance(message, dict):
-                    await on_message(message)
+            async for message in receive_messages(websocket, stop_event=stop_event):
+                await on_message(message)
     except HyperliquidWebSocketError:
         raise
     except Exception as exc:
         raise HyperliquidWebSocketError(str(exc)) from exc
+
+
+async def receive_messages(
+    websocket: Any,
+    *,
+    stop_event: asyncio.Event,
+    heartbeat_seconds: float = WEBSOCKET_HEARTBEAT_SECONDS,
+    pong_timeout_seconds: float = WEBSOCKET_PONG_TIMEOUT_SECONDS,
+) -> AsyncIterator[dict[str, Any]]:
+    """Yield JSON object messages until stop, detecting silently dead connections.
+
+    A ping goes out after a quiet heartbeat interval. Hyperliquid answers with a
+    pong message, so any message proves the connection alive; a missing answer
+    raises and lets the caller reconnect instead of waiting on a dead socket.
+    """
+
+    awaiting_pong = False
+    while not stop_event.is_set():
+        try:
+            raw_message = await receive_until_stop(
+                websocket,
+                stop_event=stop_event,
+                timeout_seconds=pong_timeout_seconds if awaiting_pong else heartbeat_seconds,
+            )
+        except TimeoutError as exc:
+            if awaiting_pong:
+                raise HyperliquidWebSocketError(
+                    "Hyperliquid WebSocket did not answer the heartbeat ping."
+                ) from exc
+            await websocket.send(json.dumps({"method": "ping"}))
+            awaiting_pong = True
+            continue
+        if raw_message is None:
+            return
+        awaiting_pong = False
+        try:
+            message = json.loads(raw_message)
+        except json.JSONDecodeError as exc:
+            raise HyperliquidWebSocketError("Received invalid WebSocket JSON.") from exc
+        if isinstance(message, dict):
+            yield message
 
 
 async def receive_until_stop(

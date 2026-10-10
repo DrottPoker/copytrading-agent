@@ -213,6 +213,57 @@ Trading worker responsibilities:
 - Claim durable realtime execution payloads from Postgres. The local bounded
   queue only wakes the consumer and can be rebuilt after any restart.
 
+Copy execution latency:
+
+The realtime execution, live-copy work, and source-state warm-up loops of a
+trading worker share one set of execution resources, so a source fill reaches
+order submission without avoidable network round trips or repeated database
+work.
+
+- One Hyperliquid info client with execution priority and a pooled HTTP
+  connection serves both execution consumers, so requests reuse warm TLS
+  connections instead of opening one per fill.
+- The realtime loop stores every allocation refresh in an in-process snapshot.
+  Execution reuses it while it is younger than two subscription refreshes and
+  refreshes inline otherwise. Copy recovery always refreshes allocations itself.
+- Live-copy work synchronizes source lanes once per allocation version and
+  account lifecycle signature. The allocation version changes only with the
+  active source set, and the signature covers account key, status, and
+  lifecycle version, which are the inputs that decide entry eligibility. Owned
+  pairs only grow through entries on already eligible pairs, and the realtime
+  wallet refresh still synchronizes every lane each subscription refresh, so a
+  skipped repeat never admits an entry or blocks an exit.
+- Source account state is cached per source wallet and perp dex. Pure entries
+  on coins whose leverage and margin mode the cached state already holds reuse
+  state younger than `trading_copy_source_state_cache_max_age_seconds`. Exits,
+  flips, and coins the source did not hold yet always read fresh state, so close
+  sizing and new margin settings never depend on an older snapshot. Several perp
+  dexes are fetched concurrently. A state's age counts from its request start,
+  and a slower fetch never replaces a newer state.
+- The `source-state-warmup` loop refetches the state of active sources with
+  open positions every `trading_copy_source_state_refresh_seconds` at
+  background priority, so a later add usually skips the lookup. Sources that
+  are no longer copied are dropped from the cache.
+- The live trading client caches the Hyperliquid SDK exchange per account,
+  because creating one loads market metadata over HTTP. After one hour a
+  background thread reloads the metadata while the cached exchange keeps
+  serving orders, and a failed reload is retried after a minute. An order that
+  names a market the cached metadata does not know yet reloads it once
+  immediately. Leverage and margin mode are sent only when they differ from the
+  last applied value or that value is older than 10 minutes.
+- Hyperliquid info requests pass a per-process, weight-based token bucket with
+  the documented info weights: 2 for `l2Book`, `allMids`,
+  `clearinghouseState`, `orderStatus`, `spotClearinghouseState`, and
+  `exchangeStatus`, 60 for `userRole`, 20 for other requests, and extra weight
+  for large list responses. Execution requests take the next free capacity, and
+  background requests wait while an execution request is waiting. The
+  per-process budget `hyperliquid_info_weight_per_minute` defaults to 550, so
+  the trading and maintenance workers together stay below Hyperliquid's 1200
+  per minute IP limit.
+- Every WebSocket sends a ping after 30 seconds of silence. When nothing, not
+  even the pong, arrives within 10 seconds, the connection is treated as dead
+  and the loop reconnects instead of waiting on a half-open socket.
+
 Maintenance worker responsibilities:
 
 - Run configured discovery imports every 6 hours by default.
@@ -401,9 +452,10 @@ The backend config files are grouped by operational area:
 
 - `app.json` owns non-secret runtime defaults such as worker mode, capability
   lease TTL, supervisor restart delay, shutdown drain window, realtime wakeup
-  queue size, inbox claim timeout, retry backoff, Ops and backup status
-  monitoring, dashboard auth enablement, wallet pool page limit, network, and
-  shared infrastructure settings.
+  queue size, inbox claim timeout, retry backoff, the per-process Hyperliquid
+  info weight budget, Ops and backup status monitoring, dashboard auth
+  enablement, wallet pool page limit, network, and shared infrastructure
+  settings.
 - `backup.env` owns the automated Postgres backup interval and retention.
 - `discovery.json` owns source discovery, candidate filtering, backfill quality
   checks, and promotion.
@@ -416,7 +468,8 @@ The backend config files are grouped by operational area:
   behavior.
 - `trading.json` owns copy policy shared by paper and live copy, including the
   source count, equal-weight allocation budget, exposure caps, minimum copy
-  notional and rounding, price drift guard, and live mid-price cache settings.
+  notional and rounding, price drift guard, live mid-price cache settings, and
+  the source account state cache age and warm-up interval.
 - `paper_trading.json` owns paper-only simulation settings such as simulated
   fees, simulated slippage, simulated latency, and recovery cadence.
 - `pool_fill_import.json` owns scheduled pool reimport and shared fill import

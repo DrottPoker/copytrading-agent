@@ -6,6 +6,8 @@ import pytest
 
 from app.integrations import hyperliquid_ws_client
 from app.integrations.hyperliquid_ws_client import (
+    HyperliquidWebSocketError,
+    receive_messages,
     receive_until_stop,
     stream_user_fills,
     user_fills_subscription_wallet,
@@ -150,3 +152,57 @@ async def test_stream_user_fills_reports_acknowledged_wallet_once(monkeypatch) -
         "user": "0xABC",
         "aggregateByTime": False,
     }
+
+
+class HeartbeatWebSocket:
+    """WebSocket that stays silent until pinged, answering only when configured to."""
+
+    def __init__(self, *, answer_pings: bool) -> None:
+        self.answer_pings = answer_pings
+        self.incoming: asyncio.Queue[str] = asyncio.Queue()
+        self.sent: list[dict[str, object]] = []
+
+    async def send(self, value: str) -> None:
+        message = json.loads(value)
+        self.sent.append(message)
+        if self.answer_pings and message == {"method": "ping"}:
+            self.incoming.put_nowait(json.dumps({"channel": "pong"}))
+
+    async def recv(self) -> str:
+        return await self.incoming.get()
+
+
+@pytest.mark.asyncio
+async def test_receive_messages_raises_when_the_heartbeat_ping_goes_unanswered() -> None:
+    websocket = HeartbeatWebSocket(answer_pings=False)
+
+    with pytest.raises(HyperliquidWebSocketError, match="heartbeat"):
+        async for _message in receive_messages(
+            websocket,
+            stop_event=asyncio.Event(),
+            heartbeat_seconds=0.01,
+            pong_timeout_seconds=0.01,
+        ):
+            pass
+
+    assert websocket.sent == [{"method": "ping"}]
+
+
+@pytest.mark.asyncio
+async def test_receive_messages_keeps_an_answering_connection_open() -> None:
+    websocket = HeartbeatWebSocket(answer_pings=True)
+    stop_event = asyncio.Event()
+    received: list[dict[str, object]] = []
+
+    async for message in receive_messages(
+        websocket,
+        stop_event=stop_event,
+        heartbeat_seconds=0.01,
+        pong_timeout_seconds=0.05,
+    ):
+        received.append(message)
+        if len(received) == 3:
+            stop_event.set()
+
+    assert received == [{"channel": "pong"}] * 3
+    assert websocket.sent == [{"method": "ping"}] * 3

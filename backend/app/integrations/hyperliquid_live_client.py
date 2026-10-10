@@ -1,4 +1,6 @@
 import asyncio
+import logging
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -69,6 +71,25 @@ BUILDER_PERP_ASSET_OFFSET = 110_000
 PRICE_SIGNIFICANT_DIGITS = 5
 FALLBACK_SIZE_DECIMALS = 8
 FALLBACK_PRICE_DECIMALS = 6
+# A cached SDK exchange reloads market metadata in the background this often.
+EXCHANGE_CACHE_MAX_AGE_SECONDS = 3600
+# A failed background reload is retried after this delay.
+EXCHANGE_REFRESH_RETRY_SECONDS = 60
+# Applied leverage is re-sent after this long in case it changed outside the agent.
+APPLIED_LEVERAGE_MAX_AGE_SECONDS = 600
+
+ExchangeCacheKey = tuple[str, str | None, str | None, tuple[str, ...] | None]
+
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class CachedExchange:
+    exchange: Any
+    created_at: float
+    lock: threading.Lock
+    refreshing: bool = False
 
 
 class HyperliquidLiveTradingClient:
@@ -78,10 +99,18 @@ class HyperliquidLiveTradingClient:
         *,
         exchange_factory: ExchangeFactory | None = None,
         cloid_factory: CloidFactory | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.settings = settings or get_settings()
         self._exchange_factory = exchange_factory
         self._cloid_factory = cloid_factory
+        self._clock = clock
+        # SDK exchanges load market metadata over HTTP when created, so they are
+        # reused per account. The live execution fence serializes order flow per
+        # account; the per-exchange lock guards the shared SDK object as well.
+        self._exchanges: dict[ExchangeCacheKey, CachedExchange] = {}
+        self._exchanges_lock = threading.Lock()
+        self._applied_leverage: dict[tuple[ExchangeCacheKey, str], tuple[int, bool, float]] = {}
 
     async def submit_order(
         self,
@@ -104,14 +133,15 @@ class HyperliquidLiveTradingClient:
             raise HyperliquidLiveTradingConfigurationError(
                 "Only live accounts can cancel live orders."
             )
-        exchange = self._build_exchange(account, coin=coin)
-        order_coin = resolve_live_order_exchange_coin(exchange, coin)
         cloid = self._build_cloid(client_order_id)
-        response = await asyncio.to_thread(
-            exchange.cancel_by_cloid,
-            order_coin,
-            cloid,
-        )
+
+        def cancel() -> Any:
+            cached = self._cached_exchange(account, coin=coin)
+            with cached.lock:
+                order_coin = resolve_live_order_exchange_coin(cached.exchange, coin)
+                return cached.exchange.cancel_by_cloid(order_coin, cloid)
+
+        response = await asyncio.to_thread(cancel)
         return response if isinstance(response, dict) else {"response": response}
 
     async def update_margin_setting(
@@ -223,9 +253,17 @@ class HyperliquidLiveTradingClient:
         account: TradingAccount,
         intent: TradeIntent,
     ) -> LiveOrderResult:
-        exchange = self._build_exchange(account, coin=intent.coin)
+        cached = self._market_ready_exchange(account, coin=intent.coin)
+        with cached.lock:
+            return self._submit_order_with_exchange(account, intent, cached.exchange)
+
+    def _submit_order_with_exchange(
+        self,
+        account: TradingAccount,
+        intent: TradeIntent,
+        exchange: Any,
+    ) -> LiveOrderResult:
         order_coin = resolve_live_order_exchange_coin(exchange, intent.coin)
-        validate_live_order_market(exchange, order_coin, display_coin=intent.coin)
         wire_values = live_order_wire_values(
             intent,
             exchange=exchange,
@@ -248,11 +286,11 @@ class HyperliquidLiveTradingClient:
             )
         leverage_update: dict[str, Any] | None = None
         if not intent.reduce_only:
-            exchange_leverage = validated_live_entry_leverage(intent.leverage)
-            leverage_update = apply_live_entry_exchange_leverage(
+            leverage_update = self._ensure_leverage(
+                account,
                 exchange,
                 coin=order_coin,
-                leverage=exchange_leverage,
+                leverage=validated_live_entry_leverage(intent.leverage),
                 margin_mode=intent.margin_mode,
             )
         cloid = self._build_cloid(intent.client_order_id)
@@ -296,15 +334,158 @@ class HyperliquidLiveTradingClient:
         leverage: int,
         margin_mode: MarginMode,
     ) -> dict[str, Any]:
-        exchange = self._build_exchange(account, coin=coin)
-        order_coin = resolve_live_order_exchange_coin(exchange, coin)
-        validate_live_order_market(exchange, order_coin, display_coin=coin)
-        return apply_live_entry_exchange_leverage(
+        cached = self._market_ready_exchange(account, coin=coin)
+        with cached.lock:
+            order_coin = resolve_live_order_exchange_coin(cached.exchange, coin)
+            update = apply_live_entry_exchange_leverage(
+                cached.exchange,
+                coin=order_coin,
+                leverage=leverage,
+                margin_mode=margin_mode,
+            )
+            self._remember_leverage(
+                account,
+                coin=order_coin,
+                leverage=leverage,
+                margin_mode=margin_mode,
+            )
+            return update
+
+    def _ensure_leverage(
+        self,
+        account: TradingAccount,
+        exchange: Any,
+        *,
+        coin: str,
+        leverage: int,
+        margin_mode: MarginMode,
+    ) -> dict[str, Any] | None:
+        """Send the leverage update only when it differs from the last applied value."""
+
+        applied = self._applied_leverage.get((self._exchange_key(account, coin=coin), coin))
+        is_cross = margin_mode == "cross"
+        if (
+            applied is not None
+            and applied[0] == leverage
+            and applied[1] == is_cross
+            and self._clock() - applied[2] < APPLIED_LEVERAGE_MAX_AGE_SECONDS
+        ):
+            return None
+        update = apply_live_entry_exchange_leverage(
             exchange,
-            coin=order_coin,
+            coin=coin,
             leverage=leverage,
             margin_mode=margin_mode,
         )
+        self._remember_leverage(account, coin=coin, leverage=leverage, margin_mode=margin_mode)
+        return update
+
+    def _remember_leverage(
+        self,
+        account: TradingAccount,
+        *,
+        coin: str,
+        leverage: int,
+        margin_mode: MarginMode,
+    ) -> None:
+        self._applied_leverage[(self._exchange_key(account, coin=coin), coin)] = (
+            leverage,
+            margin_mode == "cross",
+            self._clock(),
+        )
+
+    def _exchange_key(self, account: TradingAccount, *, coin: str | None) -> ExchangeCacheKey:
+        perp_dexs = live_order_perp_dexs(coin)
+        return (
+            account.key,
+            account.wallet_address or self.settings.hyperliquid_wallet_address,
+            account.vault_address,
+            tuple(perp_dexs) if perp_dexs is not None else None,
+        )
+
+    def _cached_exchange(
+        self,
+        account: TradingAccount,
+        *,
+        coin: str | None,
+        refresh: bool = False,
+    ) -> CachedExchange:
+        """Return the account exchange, building it only when missing or forced.
+
+        An expired exchange keeps serving orders while a background thread
+        reloads its metadata, so the periodic reload never delays an order.
+        """
+
+        key = self._exchange_key(account, coin=coin)
+        with self._exchanges_lock:
+            cached = self._exchanges.get(key)
+            if cached is not None and not refresh:
+                if (
+                    not cached.refreshing
+                    and self._clock() - cached.created_at > EXCHANGE_CACHE_MAX_AGE_SECONDS
+                ):
+                    cached.refreshing = True
+                    threading.Thread(
+                        target=self._refresh_exchange,
+                        args=(key, account, coin),
+                        name="live-exchange-refresh",
+                        daemon=True,
+                    ).start()
+                return cached
+        # Build outside the shared lock so other accounts are never blocked.
+        built = self._new_cached_exchange(account, coin=coin)
+        with self._exchanges_lock:
+            self._exchanges[key] = built
+        return built
+
+    def _refresh_exchange(
+        self,
+        key: ExchangeCacheKey,
+        account: TradingAccount,
+        coin: str | None,
+    ) -> None:
+        try:
+            built = self._new_cached_exchange(account, coin=coin)
+        except Exception:
+            logger.warning("live exchange metadata reload failed account=%s", key[0], exc_info=True)
+            with self._exchanges_lock:
+                current = self._exchanges.get(key)
+                if current is not None:
+                    current.refreshing = False
+                    current.created_at = (
+                        self._clock()
+                        - EXCHANGE_CACHE_MAX_AGE_SECONDS
+                        + EXCHANGE_REFRESH_RETRY_SECONDS
+                    )
+            return
+        with self._exchanges_lock:
+            self._exchanges[key] = built
+
+    def _new_cached_exchange(self, account: TradingAccount, *, coin: str | None) -> CachedExchange:
+        return CachedExchange(
+            exchange=self._build_exchange(account, coin=coin),
+            created_at=self._clock(),
+            lock=threading.Lock(),
+        )
+
+    def _market_ready_exchange(self, account: TradingAccount, *, coin: str) -> CachedExchange:
+        """Return a cached exchange, reloading metadata once for a newly listed market."""
+
+        cached = self._cached_exchange(account, coin=coin)
+        try:
+            validate_live_order_market(
+                cached.exchange,
+                resolve_live_order_exchange_coin(cached.exchange, coin),
+                display_coin=coin,
+            )
+        except HyperliquidLiveOrderRejectedError:
+            cached = self._cached_exchange(account, coin=coin, refresh=True)
+            validate_live_order_market(
+                cached.exchange,
+                resolve_live_order_exchange_coin(cached.exchange, coin),
+                display_coin=coin,
+            )
+        return cached
 
     def _build_exchange(self, account: TradingAccount, *, coin: str | None = None) -> Any:
         if self._exchange_factory is not None:

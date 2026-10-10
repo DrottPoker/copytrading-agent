@@ -34,6 +34,7 @@ from app.schemas.paper_trading import (
     PaperTradingSummaryResponse,
 )
 from app.schemas.wallet import normalize_wallet_address
+from app.services.copy_execution_cache import AllocationSnapshotCache, SourceAccountStateCache
 from app.services.live_copy_state_service import (
     POSITION_EPSILON as LIVE_POSITION_EPSILON,
 )
@@ -232,6 +233,12 @@ class PaperExecutionContext:
 class ExecutionMarketPrices:
     prices: dict[str, Decimal]
     sources: dict[str, str]
+
+
+CopyAllocationCache = AllocationSnapshotCache[dict[str, PaperSourceAllocation]]
+SourceStateCache = SourceAccountStateCache[PaperSourceAccountState]
+# Per-batch unified equity lookups, shared by concurrent per-dex state loads.
+UnifiedEquityCache = dict[str, "asyncio.Task[Decimal | None]"]
 
 
 @dataclass(frozen=True)
@@ -1490,6 +1497,8 @@ async def process_paper_copy_fills(
     settings: Settings | None = None,
     client: HyperliquidClient | None = None,
     price_cache: MarketPriceCache | None = None,
+    allocation_cache: CopyAllocationCache | None = None,
+    source_state_cache: SourceStateCache | None = None,
 ) -> PaperCopyBatchResult:
     resolved_settings = settings or get_settings()
     if (
@@ -1500,7 +1509,11 @@ async def process_paper_copy_fills(
         return PaperCopyBatchResult()
 
     normalized_source_wallet = source_wallet.lower()
-    allocations = await refresh_paper_copy_allocations(session, settings=resolved_settings)
+    allocations = await copy_allocations(
+        session,
+        settings=resolved_settings,
+        cache=allocation_cache,
+    )
     allocation = allocations.get(normalized_source_wallet)
     if allocation is None:
         return PaperCopyBatchResult(skipped_fills=len(fills))
@@ -1521,6 +1534,8 @@ async def process_paper_copy_fills(
                 settings=resolved_settings,
                 client=hyperliquid_client,
                 price_cache=price_cache,
+                allocation_cache=allocation_cache,
+                source_state_cache=source_state_cache,
             )
 
     source_account_states_task = asyncio.create_task(
@@ -1528,6 +1543,7 @@ async def process_paper_copy_fills(
             client=client,
             source_wallet=normalized_source_wallet,
             fills=fills,
+            cache=source_state_cache,
         )
     )
     market_prices_task = asyncio.create_task(
@@ -2010,7 +2026,7 @@ async def load_source_account_states_for_positions(
     positions: list[PaperPosition],
 ) -> dict[str, PaperSourceAccountState]:
     states: dict[str, PaperSourceAccountState] = {}
-    unified_equity_cache: dict[str, Decimal | None] = {}
+    unified_equity_cache: UnifiedEquityCache = {}
     for dex in sorted({dex_from_coin(position.coin) for position in positions}):
         states[dex] = await load_source_account_state(
             client=client,
@@ -2458,6 +2474,35 @@ async def refresh_paper_copy_allocations(
         await session.execute(no_longer_allocated.values(active=False))
 
     return {allocation.source_wallet.lower(): allocation for allocation in source_allocations}
+
+
+def store_copy_allocations(
+    cache: CopyAllocationCache | None,
+    allocations: dict[str, PaperSourceAllocation],
+) -> None:
+    if cache is None:
+        return
+    active_sources = frozenset(
+        source for source, allocation in allocations.items() if allocation.active
+    )
+    cache.store(allocations, signature=active_sources)
+
+
+async def copy_allocations(
+    session: AsyncSession,
+    *,
+    settings: Settings,
+    cache: CopyAllocationCache | None = None,
+) -> dict[str, PaperSourceAllocation]:
+    """Use the periodically refreshed allocation snapshot when it is still fresh."""
+
+    if cache is not None:
+        cached = cache.fresh()
+        if cached is not None:
+            return cached
+    allocations = await refresh_paper_copy_allocations(session, settings=settings)
+    store_copy_allocations(cache, allocations)
+    return allocations
 
 
 async def ensure_open_paper_sources_watched(session: AsyncSession) -> None:
@@ -3075,21 +3120,113 @@ async def load_source_account_states(
     client: HyperliquidClient,
     source_wallet: str,
     fills: list[dict[str, Any]],
+    cache: SourceStateCache | None = None,
 ) -> dict[str, PaperSourceAccountState]:
+    """Load source account state per perp dex, reusing cached state when it is safe.
+
+    Cached state is only used when every fill is a pure entry and the cache
+    already holds leverage and margin mode for each copied coin. Exits, flips,
+    and coins the source did not hold yet always read fresh state, so close
+    sizing and new margin settings never depend on an older snapshot.
+    """
+
     dexes = {dex_from_coin(fill.get("coin")) for fill in fills}
     if not dexes:
         dexes.add("")
 
     states: dict[str, PaperSourceAccountState] = {}
-    unified_equity_cache: dict[str, Decimal | None] = {}
+    missing_dexes: list[str] = []
+    entry_only = fills_are_entry_only(fills)
     for dex in sorted(dexes):
-        states[dex] = await load_source_account_state(
-            client=client,
-            source_wallet=source_wallet,
-            dex=dex,
-            unified_equity_cache=unified_equity_cache,
+        cached = cache.get(source_wallet, dex) if cache is not None and entry_only else None
+        if cached is not None and cached_state_covers_fills(cached.state, fills=fills, dex=dex):
+            states[dex] = cached.state
+        else:
+            missing_dexes.append(dex)
+
+    unified_equity_cache: UnifiedEquityCache = {}
+    requested_at = cache.now() if cache is not None else 0.0
+    fetched = await asyncio.gather(
+        *(
+            load_source_account_state(
+                client=client,
+                source_wallet=source_wallet,
+                dex=dex,
+                unified_equity_cache=unified_equity_cache,
+            )
+            for dex in missing_dexes
         )
+    )
+    for dex, state in zip(missing_dexes, fetched, strict=True):
+        states[dex] = state
+        if cache is not None and state.skip_reason != "source_account_state_fetch_failed":
+            cache.store(source_wallet, dex, state, requested_at=requested_at)
     return states
+
+
+def fills_are_entry_only(fills: list[dict[str, Any]]) -> bool:
+    parts = [part for fill in fills for part in plan_source_fill(fill)]
+    return bool(parts) and all(part.action in SOURCE_EQUITY_ACTIONS for part in parts)
+
+
+def cached_state_covers_fills(
+    state: PaperSourceAccountState,
+    *,
+    fills: list[dict[str, Any]],
+    dex: str,
+) -> bool:
+    if state.skip_reason is not None:
+        return False
+    for fill in fills:
+        coin = str(fill.get("coin") or "")
+        if dex_from_coin(coin) != dex:
+            continue
+        if resolve_coin_decimal(state.leverage_by_coin, coin) is None:
+            return False
+        if resolve_coin_margin_mode(state.margin_mode_by_coin, coin) is None:
+            return False
+    return True
+
+
+async def warm_source_state_cache(
+    *,
+    client: HyperliquidClient,
+    cache: SourceStateCache,
+    source_wallets: set[str],
+    refresh_after_seconds: float,
+) -> int:
+    """Refetch aging source states so later adds can skip the network lookup.
+
+    Only states with open source positions are kept warm, because entries on
+    coins the source does not hold yet always need a fresh state anyway.
+    Returns the number of states fetched.
+    """
+
+    cache.retain(source_wallets)
+    due = cache.due_for_refresh(
+        source_wallets,
+        refresh_after_seconds=refresh_after_seconds,
+        keep_warm=lambda state: bool(state.positions_by_coin),
+    )
+    if not due:
+        return 0
+    unified_equity_cache: UnifiedEquityCache = {}
+    requested_at = cache.now()
+    fetched = await asyncio.gather(
+        *(
+            load_source_account_state(
+                client=client,
+                source_wallet=wallet,
+                dex=dex,
+                unified_equity_cache=unified_equity_cache,
+            )
+            for wallet, dex in due
+        )
+    )
+    for (wallet, dex), state in zip(due, fetched, strict=True):
+        if state.skip_reason != "source_account_state_fetch_failed":
+            cache.store(wallet, dex, state, requested_at=requested_at)
+    return len(due)
 
 
 async def load_source_account_state(
@@ -3097,7 +3234,7 @@ async def load_source_account_state(
     client: HyperliquidClient,
     source_wallet: str,
     dex: str,
-    unified_equity_cache: dict[str, Decimal | None] | None = None,
+    unified_equity_cache: UnifiedEquityCache | None = None,
 ) -> PaperSourceAccountState:
     try:
         clearinghouse_state = await client.clearinghouse_state(
@@ -3179,18 +3316,18 @@ async def load_source_unified_equity_cached(
     *,
     client: HyperliquidClient,
     source_wallet: str,
-    cache: dict[str, Decimal | None] | None,
+    cache: UnifiedEquityCache | None,
 ) -> Decimal | None:
+    if cache is None:
+        return await load_source_unified_equity(client=client, source_wallet=source_wallet)
     key = source_wallet.lower()
-    if cache is not None and key in cache:
-        return cache[key]
-    equity = await load_source_unified_equity(
-        client=client,
-        source_wallet=source_wallet,
-    )
-    if cache is not None:
-        cache[key] = equity
-    return equity
+    task = cache.get(key)
+    if task is None:
+        task = asyncio.create_task(
+            load_source_unified_equity(client=client, source_wallet=source_wallet)
+        )
+        cache[key] = task
+    return await task
 
 
 async def load_source_unified_equity(

@@ -64,6 +64,7 @@ def test_app_config_owns_worker_ops_and_backup_status_settings() -> None:
     assert config["worker_heartbeat_interval_seconds"] == 60
     assert config["worker_capability_lease_ttl_seconds"] == 90
     assert config["realtime_execution_queue_size"] == 1000
+    assert config["hyperliquid_info_weight_per_minute"] == 550
     assert config["ops_disk_path"] == "/"
     assert config["backup_status_enabled"] is True
     assert config["backup_status_directory"] == "/app/backups/postgres"
@@ -183,6 +184,8 @@ def test_shared_trading_config_is_loaded_from_dedicated_file(
     assert config["trading_copy_market_price_cache_stale_seconds"] == 2
     assert config["trading_copy_market_price_cache_refresh_seconds"] == 1
     assert config["trading_copy_market_price_cache_dexes"] == []
+    assert config["trading_copy_source_state_cache_max_age_seconds"] == 15
+    assert config["trading_copy_source_state_refresh_seconds"] == 5
     assert "paper_copy_top_wallet_count" not in config
     assert "paper_copy_max_total_allocation_pct" not in config
     assert "paper_copy_min_order_notional_usd" not in config
@@ -220,3 +223,19 @@ def test_paper_config_does_not_seed_accounts(monkeypatch: pytest.MonkeyPatch) ->
     assert settings.paper_copy_accounts == []
     assert settings.paper_copy_recovery_interval_seconds == 15
     assert settings.realtime_subscription_refresh_seconds == 15
+
+
+def test_source_state_refresh_must_be_shorter_than_the_cache_age() -> None:
+    with pytest.raises(ValueError, match="trading_copy_source_state_refresh_seconds"):
+        Settings(
+            _env_file=None,
+            trading_copy_source_state_cache_max_age_seconds=5,
+            trading_copy_source_state_refresh_seconds=5,
+        )
+
+    disabled = Settings(
+        _env_file=None,
+        trading_copy_source_state_cache_max_age_seconds=0,
+        trading_copy_source_state_refresh_seconds=5,
+    )
+    assert disabled.trading_copy_source_state_cache_max_age_seconds == 0

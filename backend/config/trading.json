@@ -12,6 +12,8 @@
     "market_price_cache_enabled": true,
     "market_price_cache_stale_seconds": 2,
     "market_price_cache_refresh_seconds": 1,
-    "market_price_cache_dexes": []
+    "market_price_cache_dexes": [],
+    "source_state_cache_max_age_seconds": 15,
+    "source_state_refresh_seconds": 5
   }
 }

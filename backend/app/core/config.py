@@ -292,6 +292,10 @@ TRADING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
         "trading_copy_market_price_cache_refresh_seconds"
     ),
     ("copy", "market_price_cache_dexes"): "trading_copy_market_price_cache_dexes",
+    ("copy", "source_state_cache_max_age_seconds"): (
+        "trading_copy_source_state_cache_max_age_seconds"
+    ),
+    ("copy", "source_state_refresh_seconds"): "trading_copy_source_state_refresh_seconds",
 }
 LIVE_TRADING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("account", "capital_mode"): "live_trading_capital_mode",
@@ -360,7 +364,7 @@ class Settings(BaseSettings):
     hyperliquid_info_request_retries: int = Field(default=4, ge=0, le=10)
     hyperliquid_info_retry_base_delay_seconds: float = Field(default=1.5, ge=0, le=60)
     hyperliquid_info_retry_max_delay_seconds: float = Field(default=20.0, ge=0, le=120)
-    hyperliquid_info_min_request_interval_seconds: float = Field(default=0.5, ge=0, le=10)
+    hyperliquid_info_weight_per_minute: int = Field(default=550, ge=0, le=1200)
 
     paper_trading_enabled: bool = True
     live_trading_enabled: bool = False
@@ -401,6 +405,9 @@ class Settings(BaseSettings):
     trading_copy_market_price_cache_stale_seconds: float = Field(default=2.0, ge=0.1, le=60)
     trading_copy_market_price_cache_refresh_seconds: int = Field(default=1, ge=1, le=60)
     trading_copy_market_price_cache_dexes: list[str] = Field(default_factory=list, max_length=20)
+    # Source account state reused for pure entries; 0 always fetches fresh state.
+    trading_copy_source_state_cache_max_age_seconds: float = Field(default=15, ge=0, le=300)
+    trading_copy_source_state_refresh_seconds: float = Field(default=5, ge=1, le=300)
     paper_copy_enabled: bool = True
     paper_copy_accounts: list[PaperTradingAccountConfig] = Field(
         default_factory=list,
@@ -816,6 +823,15 @@ class Settings(BaseSettings):
         account_keys = [account.key for account in self.paper_copy_accounts]
         if len(account_keys) != len(set(account_keys)):
             raise ValueError("paper_copy_accounts keys must be unique.")
+        if (
+            self.trading_copy_source_state_cache_max_age_seconds > 0
+            and self.trading_copy_source_state_refresh_seconds
+            >= self.trading_copy_source_state_cache_max_age_seconds
+        ):
+            raise ValueError(
+                "trading_copy_source_state_refresh_seconds must be less than "
+                "trading_copy_source_state_cache_max_age_seconds."
+            )
         if (
             self.discovery_prefilter_min_account_value_usd is not None
             and self.discovery_prefilter_max_account_value_usd is not None

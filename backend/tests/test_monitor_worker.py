@@ -8,6 +8,12 @@ from uuid import uuid4
 
 import pytest
 
+from app.core.config import Settings
+from app.services.copy_execution_cache import (
+    AllocationSnapshotCache,
+    LiveCopyLaneSyncTracker,
+    SourceAccountStateCache,
+)
 from app.services.live_copy_state_service import (
     LIVE_COPY_ORIGIN_REALTIME,
     LiveCopyProcessingDeferred,
@@ -1121,3 +1127,207 @@ async def test_trading_worker_registers_core_loops_with_supervisor(monkeypatch) 
         "live-copy-work",
         "realtime-subscription",
     ]
+
+
+def fake_copy_resources() -> monitor_worker.CopyExecutionResources:
+    return monitor_worker.CopyExecutionResources(
+        info_client=SimpleNamespace(name="info"),  # type: ignore[arg-type]
+        trading_client=SimpleNamespace(name="trading"),  # type: ignore[arg-type]
+        allocation_cache=AllocationSnapshotCache(max_age_seconds=30),
+        source_state_cache=SourceAccountStateCache(max_age_seconds=15),
+        lane_sync_tracker=LiveCopyLaneSyncTracker(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_copy_execution_resources_use_a_pooled_execution_priority_client() -> None:
+    settings = Settings(_env_file=None, live_trading_enabled=False)
+    resources = monitor_worker.build_copy_execution_resources(settings)
+    try:
+        assert resources.info_client.priority == "execution"
+        assert resources.info_client._client is not None
+        assert resources.trading_client is None
+        assert resources.allocation_cache.max_age_seconds == (
+            2 * settings.realtime_subscription_refresh_seconds
+        )
+        assert resources.source_state_cache is not None
+        assert resources.source_state_cache.max_age_seconds == (
+            settings.trading_copy_source_state_cache_max_age_seconds
+        )
+    finally:
+        await resources.info_client.aclose()
+
+    disabled = monitor_worker.build_copy_execution_resources(
+        Settings(_env_file=None, trading_copy_source_state_cache_max_age_seconds=0)
+    )
+    await disabled.info_client.aclose()
+    assert disabled.source_state_cache is None
+
+
+@pytest.mark.asyncio
+async def test_realtime_paper_copy_receives_the_shared_resources(monkeypatch) -> None:
+    resources = fake_copy_resources()
+    received: list[dict[str, Any]] = []
+    stored = StoredRealtimeFills(
+        wallet_address="0xsource",
+        fetched=1,
+        inserted=0,
+        duplicate=1,
+        is_snapshot=False,
+        latest_fill_time_ms=1,
+        inserted_rows=[],
+        execution_rows=[{"coin": "HYPE", "externalFillId": "fill-1"}],
+    )
+
+    async def fake_paper(*_args: object, **kwargs: Any) -> PaperCopyBatchResult:
+        received.append(kwargs)
+        return PaperCopyBatchResult()
+
+    async def fake_publish_batch(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(monitor_worker, "process_paper_copy_fills", fake_paper)
+    monkeypatch.setattr(monitor_worker, "publish_event_batch", fake_publish_batch)
+
+    await monitor_worker.process_stored_realtime_fills(
+        stored,
+        sessionmaker=dummy_sessionmaker,
+        redis=object(),
+        settings=SimpleNamespace(
+            live_trading_enabled=False,
+            paper_trading_enabled=True,
+            paper_copy_enabled=True,
+        ),
+        copy_resources=resources,
+    )
+
+    assert received[0]["client"] is resources.info_client
+    assert received[0]["allocation_cache"] is resources.allocation_cache
+    assert received[0]["source_state_cache"] is resources.source_state_cache
+
+
+@pytest.mark.asyncio
+async def test_live_copy_work_receives_the_shared_resources(monkeypatch) -> None:
+    resources = fake_copy_resources()
+    claimed = ClaimedLiveCopyWork(
+        id=uuid4(),
+        wallet_fill_id=uuid4(),
+        wallet_address="0xsource",
+        source_fill_id="source-fill-1",
+        origin=LIVE_COPY_ORIGIN_REALTIME,
+        claimed_at=datetime(2026, 7, 19, 10, tzinfo=UTC),
+        attempt_count=1,
+    )
+    claims: list[ClaimedLiveCopyWork | None] = [claimed, None]
+    received: list[dict[str, Any]] = []
+
+    async def fake_claim(*_args: object, **_kwargs: object):
+        return claims.pop(0)
+
+    async def fake_load(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(received_at=claimed.claimed_at)
+
+    async def fake_process(*_args: object, **kwargs: Any) -> PaperCopyBatchResult:
+        received.append(kwargs)
+        return PaperCopyBatchResult()
+
+    async def fake_complete(*_args: object, **_kwargs: object) -> bool:
+        return True
+
+    monkeypatch.setattr(monitor_worker, "claim_next_live_copy_work", fake_claim)
+    monkeypatch.setattr(monitor_worker, "load_claimed_live_copy_wallet_fill", fake_load)
+    monkeypatch.setattr(monitor_worker, "paper_source_fill_from_wallet_fill", lambda _fill: {})
+    monkeypatch.setattr(monitor_worker, "process_live_copy_fills", fake_process)
+    monkeypatch.setattr(monitor_worker, "complete_live_copy_work", fake_complete)
+    stop_event = asyncio.Event()
+    stop_event.set()
+    intake_closed_event = asyncio.Event()
+    intake_closed_event.set()
+
+    await monitor_worker.run_live_copy_work_loop(
+        work_queue=asyncio.Queue(maxsize=1),
+        sessionmaker=dummy_sessionmaker,
+        redis=object(),
+        stop_event=stop_event,
+        intake_closed_event=intake_closed_event,
+        settings=SimpleNamespace(
+            realtime_execution_claim_timeout_seconds=300,
+            realtime_execution_retry_base_seconds=5,
+        ),
+        price_cache=None,
+        runtime=monitor_worker.WorkerRuntimeState(role="trading", capabilities=("trading",)),
+        copy_resources=resources,
+    )
+
+    assert received[0]["client"] is resources.info_client
+    assert received[0]["trading_client"] is resources.trading_client
+    assert received[0]["allocation_cache"] is resources.allocation_cache
+    assert received[0]["source_state_cache"] is resources.source_state_cache
+    assert received[0]["lane_sync_tracker"] is resources.lane_sync_tracker
+
+
+@pytest.mark.asyncio
+async def test_realtime_wallet_refresh_stores_the_allocation_snapshot(monkeypatch) -> None:
+    allocations = {
+        "0xsource": SimpleNamespace(source_wallet="0xsource", active=True, has_realtime_slot=True)
+    }
+    allocation_cache: AllocationSnapshotCache[Any] = AllocationSnapshotCache(max_age_seconds=30)
+
+    async def fake_refresh(*_args: object, **_kwargs: object):
+        return allocations
+
+    async def fake_accounts(*_args: object, **_kwargs: object) -> list[object]:
+        return []
+
+    async def fake_synchronize(*_args: object, **_kwargs: object) -> set[tuple[str, str]]:
+        return set()
+
+    monkeypatch.setattr(monitor_worker, "refresh_paper_copy_allocations", fake_refresh)
+    monkeypatch.setattr(monitor_worker, "load_live_accounts_for_source_copy", fake_accounts)
+    monkeypatch.setattr(monitor_worker, "synchronize_live_copy_lanes", fake_synchronize)
+
+    wallets = await monitor_worker.load_realtime_wallets(
+        sessionmaker=dummy_sessionmaker,
+        max_wallets=10,
+        settings=SimpleNamespace(
+            live_trading_enabled=False,
+            paper_trading_enabled=True,
+            paper_copy_enabled=True,
+        ),
+        allocation_cache=allocation_cache,
+    )
+
+    assert wallets == ["0xsource"]
+    assert allocation_cache.fresh() is allocations
+
+
+@pytest.mark.asyncio
+async def test_source_state_warmup_refreshes_only_active_sources(monkeypatch) -> None:
+    resources = fake_copy_resources()
+    resources.allocation_cache.store(
+        {
+            "0xactive": SimpleNamespace(active=True),  # type: ignore[dict-item]
+            "0xdraining": SimpleNamespace(active=False),  # type: ignore[dict-item]
+        },
+        signature=frozenset({"0xactive"}),
+    )
+    warmed: list[set[str]] = []
+    stop_event = asyncio.Event()
+
+    async def fake_warm(*, source_wallets: set[str], **_kwargs: object) -> int:
+        warmed.append(source_wallets)
+        return 0
+
+    async def stop_after_first_pass(event: asyncio.Event, _seconds: float) -> None:
+        event.set()
+
+    monkeypatch.setattr(monitor_worker, "warm_source_state_cache", fake_warm)
+    monkeypatch.setattr(monitor_worker, "sleep_until_stop", stop_after_first_pass)
+
+    await monitor_worker.run_source_state_warmup_loop(
+        copy_resources=resources,
+        stop_event=stop_event,
+        settings=Settings(_env_file=None),
+    )
+
+    assert warmed == [{"0xactive"}]

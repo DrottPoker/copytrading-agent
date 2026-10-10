@@ -357,6 +357,19 @@ seconds as a bounded fallback for a restart or lost local wakeup. An in-process
 queue item wakes the consumer immediately. Redis is not an execution queue
 because event delivery is best effort and must never determine trading work.
 
+The copy execution hot path avoids repeated network and database work. Both
+execution consumers share one pooled, execution-priority Hyperliquid info client
+and one live trading client that reuses the SDK exchange per account and skips
+unchanged leverage updates. Execution reuses the allocation snapshot from the
+latest realtime refresh, skips live lane synchronization while the active source
+set and account lifecycles are unchanged, and reuses recent source account state
+for pure entries on coins the source already holds. Exits, flips, and new coins
+always read fresh source state. A `source-state-warmup` loop keeps the state of
+active sources with open positions fresh at background priority. A per-process,
+weight-based limiter follows Hyperliquid's documented info request weights and
+serves copy execution before background requests, and every WebSocket
+reconnects when a heartbeat ping goes unanswered.
+
 Redis Streams powers the recent event feed and SSE resume cursor. Runtime event
 publication is presentation-only and best effort. Redis latency or failure is
 logged but cannot prevent fill persistence, live execution, paper execution, or
@@ -1092,7 +1105,10 @@ penalties, and window scores.
 `backend/config/app.json` owns non-secret runtime defaults such as worker mode,
 worker supervision, realtime execution inbox timing, Ops monitoring, backup
 status monitoring, wallet pool page limit, network, and shared infrastructure
-request settings.
+request settings. `hyperliquid_info_weight_per_minute` is the Hyperliquid info
+request weight budget per process. The default of 550 keeps the trading and
+maintenance workers together below Hyperliquid's 1200 per minute IP limit. Lower
+it when more processes share the same public IP.
 
 `backend/config/backup.env` owns the automated Postgres backup interval and
 retention. It is loaded directly by the Compose backup service.
@@ -1122,8 +1138,12 @@ wallet is intentionally using separate default and HIP-3 perp balances.
 
 `backend/config/trading.json` owns shared copy policy used by both paper and live
 copy: source count, equal-weight allocation budget, source and total exposure
-caps, copy minimum notional and rounding, max entry age, price drift guard, and
-the live mid-price cache settings.
+caps, copy minimum notional and rounding, max entry age, price drift guard, the
+live mid-price cache settings, and the source account state cache.
+`copy.source_state_cache_max_age_seconds` (15) bounds how old a reused source
+state may be, and `copy.source_state_refresh_seconds` (5) sets the warm-up
+interval, which must be shorter than the cache age. A cache age of 0 always
+fetches fresh source state.
 
 `backend/config/paper_trading.json` owns paper-only simulation settings:
 paper copy enablement, simulated fee rate, simulated slippage, simulated latency,

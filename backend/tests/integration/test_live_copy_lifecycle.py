@@ -904,7 +904,7 @@ async def test_live_copy_uses_durable_first_observation_for_entry_admission(
 
     monkeypatch.setattr(
         live_copy_service,
-        "refresh_paper_copy_allocations",
+        "copy_allocations",
         fake_refresh_allocations,
     )
     monkeypatch.setattr(

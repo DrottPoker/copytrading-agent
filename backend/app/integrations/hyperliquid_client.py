@@ -2,7 +2,7 @@ import asyncio
 import logging
 import time
 from email.utils import parsedate_to_datetime
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
@@ -19,34 +19,133 @@ class HyperliquidRateLimitError(HyperliquidClientError):
     pass
 
 
+RequestPriority = Literal["execution", "background"]
+
+# Hyperliquid info request weights against the shared 1200 per minute IP budget.
+LIGHT_INFO_REQUEST_TYPES = frozenset(
+    {
+        "l2Book",
+        "allMids",
+        "clearinghouseState",
+        "orderStatus",
+        "spotClearinghouseState",
+        "exchangeStatus",
+    }
+)
+HEAVY_INFO_REQUEST_WEIGHTS = {"userRole": 60}
+DEFAULT_INFO_REQUEST_WEIGHT = 20
+LIGHT_INFO_REQUEST_WEIGHT = 2
+# Responses that cost one extra unit per this many returned items.
+ITEM_WEIGHTED_INFO_REQUEST_TYPES = {
+    "recentTrades": 20,
+    "historicalOrders": 20,
+    "userFills": 20,
+    "userFillsByTime": 20,
+    "fundingHistory": 20,
+    "userFunding": 20,
+    "nonUserFundingUpdates": 20,
+    "userNonFundingLedgerUpdates": 20,
+    "twapHistory": 20,
+    "userTwapSliceFills": 20,
+    "userTwapSliceFillsByTime": 20,
+    "candleSnapshot": 60,
+}
+
+
+def info_request_weight(payload: dict[str, Any]) -> int:
+    request_type = str(payload.get("type") or "")
+    if request_type in LIGHT_INFO_REQUEST_TYPES:
+        return LIGHT_INFO_REQUEST_WEIGHT
+    return HEAVY_INFO_REQUEST_WEIGHTS.get(request_type, DEFAULT_INFO_REQUEST_WEIGHT)
+
+
+def info_response_extra_weight(payload: dict[str, Any], result: Any) -> int:
+    items_per_unit = ITEM_WEIGHTED_INFO_REQUEST_TYPES.get(str(payload.get("type") or ""))
+    if items_per_unit is None or not isinstance(result, list):
+        return 0
+    return len(result) // items_per_unit
+
+
 class HyperliquidInfoRateLimiter:
-    def __init__(self) -> None:
-        self._lock = asyncio.Lock()
-        self._last_request_at = 0.0
+    """Weight-based token bucket where execution requests go before background work.
 
-    async def wait(self, *, min_interval_seconds: float) -> None:
-        if min_interval_seconds <= 0:
+    The budget is per process. Background callers yield while an execution
+    request is waiting, so copy execution never queues behind imports or
+    reconciliation in the same worker.
+    """
+
+    def __init__(self, *, clock: Any = time.monotonic, sleep: Any = asyncio.sleep) -> None:
+        self._clock = clock
+        self._sleep = sleep
+        self._tokens: float | None = None
+        self._updated_at = 0.0
+        self._waiting_execution = 0
+
+    async def acquire(
+        self,
+        weight: int,
+        *,
+        priority: RequestPriority,
+        weight_per_minute: int,
+    ) -> None:
+        if weight_per_minute <= 0:
             return
+        rate = weight_per_minute / 60
+        capacity = max(float(weight), weight_per_minute / 4)
+        if priority == "execution":
+            self._waiting_execution += 1
+        try:
+            while True:
+                self._refill(rate=rate, capacity=capacity)
+                assert self._tokens is not None
+                may_take = priority == "execution" or self._waiting_execution == 0
+                if may_take and self._tokens >= weight:
+                    self._tokens -= weight
+                    return
+                missing = max(weight - self._tokens, 0.0)
+                await self._sleep(max(missing / rate, 0.05))
+        finally:
+            if priority == "execution":
+                self._waiting_execution -= 1
 
-        async with self._lock:
-            if self._last_request_at > 0:
-                elapsed = time.monotonic() - self._last_request_at
-                if elapsed < min_interval_seconds:
-                    await asyncio.sleep(min_interval_seconds - elapsed)
-            self._last_request_at = time.monotonic()
+    def charge(self, weight: int) -> None:
+        """Record extra weight that is only known from the response size."""
+
+        if weight > 0 and self._tokens is not None:
+            self._tokens -= weight
+
+    def _refill(self, *, rate: float, capacity: float) -> None:
+        now = self._clock()
+        if self._tokens is None:
+            self._tokens = capacity
+        else:
+            self._tokens = min(capacity, self._tokens + (now - self._updated_at) * rate)
+        self._updated_at = now
 
 
 INFO_RATE_LIMITER = HyperliquidInfoRateLimiter()
 
 
 class HyperliquidClient:
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        *,
+        priority: RequestPriority = "background",
+    ) -> None:
         self.settings = settings or get_settings()
         self.base_url = self.settings.hyperliquid_api_url
+        self.priority = priority
         self._client: httpx.AsyncClient | None = None
 
     async def __aenter__(self) -> "HyperliquidClient":
-        self._client = httpx.AsyncClient(base_url=self.base_url, timeout=20)
+        return self.open()
+
+    def open(self) -> "HyperliquidClient":
+        """Start a pooled HTTP client so requests reuse warm connections."""
+
+        if self._client is None:
+            self._client = httpx.AsyncClient(base_url=self.base_url, timeout=20)
         return self
 
     async def __aexit__(self, *_: object) -> None:
@@ -61,8 +160,13 @@ class HyperliquidClient:
         attempts = self.settings.hyperliquid_info_request_retries + 1
         last_response: httpx.Response | None = None
 
+        weight = info_request_weight(payload)
         for attempt in range(attempts):
-            await self._respect_min_request_interval()
+            await INFO_RATE_LIMITER.acquire(
+                weight,
+                priority=self.priority,
+                weight_per_minute=self.settings.hyperliquid_info_weight_per_minute,
+            )
             response = await self._post_info_once(payload)
             last_response = response
 
@@ -92,7 +196,9 @@ class HyperliquidClient:
                     f"Hyperliquid info request failed with status {response.status_code}."
                 )
 
-            return response.json()
+            result = response.json()
+            INFO_RATE_LIMITER.charge(info_response_extra_weight(payload, result))
+            return result
 
         raise HyperliquidClientError(
             "Hyperliquid info request failed."
@@ -105,11 +211,6 @@ class HyperliquidClient:
             return await self._client.post("/info", json=payload)
         async with httpx.AsyncClient(base_url=self.base_url, timeout=20) as client:
             return await client.post("/info", json=payload)
-
-    async def _respect_min_request_interval(self) -> None:
-        await INFO_RATE_LIMITER.wait(
-            min_interval_seconds=self.settings.hyperliquid_info_min_request_interval_seconds
-        )
 
     def _retry_delay_seconds(self, response: httpx.Response, *, attempt: int) -> float:
         retry_after = parse_retry_after_seconds(response.headers.get("retry-after"))

@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -7,13 +8,19 @@ from sqlalchemy.dialects import postgresql
 
 from app.core.config import Settings
 from app.db.models import PaperPosition, WalletMonitoringStat
+from app.services import paper_trading_service
+from app.services.copy_execution_cache import AllocationSnapshotCache, SourceAccountStateCache
 from app.services.paper_trading_service import (
+    CopyAllocationCache,
     ExecutionMarketPrices,
     SourceFillPart,
+    SourceStateCache,
     apply_wallet_monitoring_snapshot,
     build_execution_context,
+    copy_allocations,
     live_open_copy_source_select,
     load_source_account_state,
+    load_source_account_states,
     monitored_hours,
     open_copy_source_select,
     paper_monitor_status,
@@ -26,6 +33,7 @@ from app.services.paper_trading_service import (
     select_realtime_slot_sources,
     source_fill_age_exceeds_entry_limit,
     wallet_monitoring_summary,
+    warm_source_state_cache,
 )
 from app.services.realtime_subscription_state_service import RealtimeSubscriptionSnapshot
 from app.services.trading_core import (
@@ -525,3 +533,184 @@ def source_part(*, side: str, action: str) -> SourceFillPart:
         close_ratio=None,
         start_position=Decimal("0"),
     )
+
+
+class CountingSourceClient:
+    """Source info client that records clearinghouse lookups per dex."""
+
+    def __init__(self, *, positions: dict[str, list[str]] | None = None) -> None:
+        self.positions = {"": ["BTC"]} if positions is None else positions
+        self.state_calls: list[tuple[str, str]] = []
+        self.user_abstraction_calls = 0
+        self.fail = False
+
+    async def clearinghouse_state(self, *, user: str, dex: str | None = None) -> dict:
+        self.state_calls.append((user, dex or ""))
+        if self.fail:
+            raise RuntimeError("offline")
+        return {
+            "assetPositions": [
+                {
+                    "position": {
+                        "coin": coin,
+                        "leverage": {"type": "cross", "value": 5},
+                        "szi": "1",
+                    }
+                }
+                for coin in self.positions.get(dex or "", [])
+            ],
+            "marginSummary": {"accountValue": "1000"},
+        }
+
+    async def user_abstraction(self, *, user: str) -> str:
+        self.user_abstraction_calls += 1
+        return "default"
+
+
+def source_fill(direction: str, *, coin: str = "BTC", start_position: str = "1") -> dict:
+    return {
+        "coin": coin,
+        "size": "1",
+        "price": "100",
+        "rawJson": {"dir": direction, "startPosition": start_position},
+    }
+
+
+def state_cache() -> SourceStateCache:
+    return SourceAccountStateCache(max_age_seconds=15)
+
+
+@pytest.mark.asyncio
+async def test_cached_source_state_serves_entries_on_held_coins() -> None:
+    client = CountingSourceClient()
+    cache = state_cache()
+
+    await load_source_account_states(
+        client=client, source_wallet="0xsource", fills=[source_fill("Open Long")], cache=cache
+    )
+    states = await load_source_account_states(
+        client=client, source_wallet="0xsource", fills=[source_fill("Open Long")], cache=cache
+    )
+
+    assert client.state_calls == [("0xsource", "")]
+    assert states[""].perp_equity == Decimal("1000")
+
+
+@pytest.mark.asyncio
+async def test_exits_always_read_fresh_source_state() -> None:
+    client = CountingSourceClient()
+    cache = state_cache()
+    await load_source_account_states(
+        client=client, source_wallet="0xsource", fills=[source_fill("Open Long")], cache=cache
+    )
+
+    await load_source_account_states(
+        client=client, source_wallet="0xsource", fills=[source_fill("Close Long")], cache=cache
+    )
+
+    assert len(client.state_calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_entries_on_coins_without_cached_leverage_read_fresh_state() -> None:
+    client = CountingSourceClient()
+    cache = state_cache()
+    await load_source_account_states(
+        client=client, source_wallet="0xsource", fills=[source_fill("Open Long")], cache=cache
+    )
+
+    await load_source_account_states(
+        client=client,
+        source_wallet="0xsource",
+        fills=[source_fill("Open Long", coin="ETH", start_position="0")],
+        cache=cache,
+    )
+
+    assert len(client.state_calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_failed_source_state_fetch_is_not_cached() -> None:
+    client = CountingSourceClient()
+    client.fail = True
+    cache = state_cache()
+
+    states = await load_source_account_states(
+        client=client, source_wallet="0xsource", fills=[source_fill("Open Long")], cache=cache
+    )
+
+    assert states[""].skip_reason == "source_account_state_fetch_failed"
+    assert cache.get("0xsource", "") is None
+
+
+@pytest.mark.asyncio
+async def test_source_states_for_several_dexes_share_one_unified_equity_lookup() -> None:
+    client = FakeUnifiedSourceClient()
+
+    states = await load_source_account_states(
+        client=client,
+        source_wallet="0xsource",
+        fills=[source_fill("Open Long", coin="xyz:GOLD"), source_fill("Open Long", coin="BTC")],
+    )
+
+    assert set(states) == {"", "xyz"}
+    assert all(state.perp_equity == Decimal("200") for state in states.values())
+    assert client.user_abstraction_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_warm_up_fetches_new_sources_and_refreshes_sources_with_positions() -> None:
+    client = CountingSourceClient(positions={"": ["BTC"]})
+    clock_now = [0.0]
+    cache: SourceStateCache = SourceAccountStateCache(
+        max_age_seconds=15,
+        clock=lambda: clock_now[0],
+    )
+    flat_client = CountingSourceClient(positions={})
+    await warm_source_state_cache(
+        client=flat_client, cache=cache, source_wallets={"0xflat"}, refresh_after_seconds=5
+    )
+
+    fetched = await warm_source_state_cache(
+        client=client,
+        cache=cache,
+        source_wallets={"0xholding", "0xflat"},
+        refresh_after_seconds=5,
+    )
+    assert fetched == 1
+    assert client.state_calls == [("0xholding", "")]
+
+    clock_now[0] = 5
+    await warm_source_state_cache(
+        client=client,
+        cache=cache,
+        source_wallets={"0xholding", "0xflat"},
+        refresh_after_seconds=5,
+    )
+    assert client.state_calls == [("0xholding", ""), ("0xholding", "")]
+
+    await warm_source_state_cache(
+        client=client, cache=cache, source_wallets={"0xflat"}, refresh_after_seconds=5
+    )
+    assert cache.get("0xholding", "") is None
+
+
+@pytest.mark.asyncio
+async def test_copy_allocations_reuse_a_fresh_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+    refreshes: list[int] = []
+
+    async def fake_refresh(*_args: object, **_kwargs: object) -> dict:
+        refreshes.append(1)
+        return {"0xsource": SimpleNamespace(active=True)}
+
+    monkeypatch.setattr(paper_trading_service, "refresh_paper_copy_allocations", fake_refresh)
+    cache: CopyAllocationCache = AllocationSnapshotCache(max_age_seconds=30)
+    settings = Settings(_env_file=None)
+
+    first = await copy_allocations(object(), settings=settings, cache=cache)  # type: ignore[arg-type]
+    second = await copy_allocations(object(), settings=settings, cache=cache)  # type: ignore[arg-type]
+    await copy_allocations(object(), settings=settings)  # type: ignore[arg-type]
+
+    assert first is second
+    assert len(refreshes) == 2
+    assert cache.version == 1
