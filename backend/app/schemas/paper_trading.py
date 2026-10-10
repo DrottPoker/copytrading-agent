@@ -125,12 +125,12 @@ class PaperCopyFillRead(CamelModel):
 class PaperTradingPolicyRead(CamelModel):
     enabled: bool
     top_wallet_count: int
-    top_tier_wallet_count: int
-    top_tier_allocation_pct: Decimal
-    standard_allocation_pct: Decimal
+    source_allocation_pct: Decimal
     max_total_allocation_pct: Decimal
+    max_source_exposure_multiple: Decimal
+    max_total_exposure_multiple: Decimal
     min_order_notional_usd: Decimal
-    adjust_small_orders_to_min_order: bool
+    min_order_round_up_ratio: Decimal
     fee_rate: Decimal
     slippage_bps: Decimal
     latency_ms: int

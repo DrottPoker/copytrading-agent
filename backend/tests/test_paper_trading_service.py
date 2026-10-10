@@ -29,35 +29,9 @@ from app.services.paper_trading_service import (
 )
 from app.services.realtime_subscription_state_service import RealtimeSubscriptionSnapshot
 from app.services.trading_core import (
-    adjust_open_sizing_to_min_order,
     build_client_order_id,
-    open_notional_skip_reason,
     trade_is_buy,
 )
-
-
-def test_adjust_open_sizing_to_min_order_when_enabled() -> None:
-    settings = Settings(
-        trading_copy_min_order_notional_usd=Decimal("10"),
-        trading_copy_adjust_small_orders_to_min_order=True,
-    )
-
-    margin_usd, notional_usd, adjustment = adjust_open_sizing_to_min_order(
-        target_notional=Decimal("5"),
-        margin_usd=Decimal("1"),
-        notional_usd=Decimal("5"),
-        source_remaining=Decimal("20"),
-        global_remaining=Decimal("20"),
-        source_leverage=Decimal("5"),
-        settings=settings,
-    )
-
-    assert margin_usd == Decimal("2")
-    assert notional_usd == Decimal("10")
-    assert adjustment is not None
-    assert adjustment.original_notional_usd == Decimal("5")
-    assert adjustment.adjusted_notional_usd == Decimal("10")
-    assert adjustment.min_order_notional_usd == Decimal("10")
 
 
 def test_source_position_margin_setting_parses_leverage_and_mode() -> None:
@@ -255,57 +229,6 @@ def test_paper_position_read_exposes_position_pnl_and_fill_counts() -> None:
     assert read["add_fill_count"] == 4
     assert read["close_fill_count"] == 1
     assert read["entry_execution_delay_ms"] == 150
-
-
-def test_adjust_open_sizing_to_min_order_when_disabled() -> None:
-    settings = Settings(
-        trading_copy_min_order_notional_usd=Decimal("10"),
-        trading_copy_adjust_small_orders_to_min_order=False,
-    )
-
-    margin_usd, notional_usd, adjustment = adjust_open_sizing_to_min_order(
-        target_notional=Decimal("5"),
-        margin_usd=Decimal("1"),
-        notional_usd=Decimal("5"),
-        source_remaining=Decimal("20"),
-        global_remaining=Decimal("20"),
-        source_leverage=Decimal("5"),
-        settings=settings,
-    )
-
-    assert margin_usd == Decimal("1")
-    assert notional_usd == Decimal("5")
-    assert adjustment is None
-
-
-def test_adjust_open_sizing_to_min_order_respects_caps() -> None:
-    settings = Settings(
-        trading_copy_min_order_notional_usd=Decimal("10"),
-        trading_copy_adjust_small_orders_to_min_order=True,
-    )
-
-    margin_usd, notional_usd, adjustment = adjust_open_sizing_to_min_order(
-        target_notional=Decimal("5"),
-        margin_usd=Decimal("1"),
-        notional_usd=Decimal("5"),
-        source_remaining=Decimal("1.5"),
-        global_remaining=Decimal("20"),
-        source_leverage=Decimal("5"),
-        settings=settings,
-    )
-
-    assert margin_usd == Decimal("1")
-    assert notional_usd == Decimal("5")
-    assert adjustment is None
-    assert (
-        open_notional_skip_reason(
-            target_notional=Decimal("5"),
-            source_remaining=Decimal("7.5"),
-            global_remaining=Decimal("100"),
-            min_order_notional=Decimal("10"),
-        )
-        == "source_allocation_cap_reached"
-    )
 
 
 def test_source_fill_age_limit_allows_fresh_entries() -> None:

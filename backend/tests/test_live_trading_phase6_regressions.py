@@ -464,11 +464,11 @@ async def test_final_gate_terminalizes_unattributed_same_side_exchange_exposure(
 def test_capacity_reserves_partial_and_unmaterialized_filled_order_remainders() -> None:
     partial = live_order(reduce_only=False, status="accepted")
     partial.requested_size = Decimal("1")
-    partial.margin_usd = Decimal("100")
+    partial.requested_notional_usd = Decimal("100")
     filled_without_rows = live_order(reduce_only=False, status="filled")
     filled_without_rows.requested_size = Decimal("1")
     filled_without_rows.filled_size = Decimal("0")
-    filled_without_rows.margin_usd = Decimal("100")
+    filled_without_rows.requested_notional_usd = Decimal("100")
 
     assert live_copy_capacity_order_reservation(
         partial,
@@ -480,27 +480,68 @@ def test_capacity_reserves_partial_and_unmaterialized_filled_order_remainders() 
     ) == Decimal("100")
 
 
-@pytest.mark.asyncio
-async def test_capacity_gate_rejects_stale_second_entry_and_ignores_dust_positions() -> None:
+def capacity_account() -> TradingAccount:
     account = live_account(status="enabled")
     account.equity_usd = Decimal("1000")
     account.config_payload = {"lastReconciliation": {"unifiedEquityUsd": "1000"}}
-    held_position = attributed_live_position(source_wallet="0xsource", size=Decimal("1"))
-    held_position.coin = "ETH"
-    held_position.margin_usd = Decimal("100")
-    dust_position = attributed_live_position(
-        source_wallet="0xsource",
-        size=live_trading_service.POSITION_EPSILON,
-    )
-    dust_position.margin_usd = Decimal("1000")
-    intent = replace(live_intent(), margin_usd=Decimal("150"))
-    session = FakeSession(scalars_values=[[held_position, dust_position], []])
+    return account
+
+
+def capacity_position(*, source_wallet: str, notional_usd: str) -> TradingPosition:
+    position = attributed_live_position(source_wallet=source_wallet)
+    position.coin = "ETH"
+    position.notional_usd = Decimal(notional_usd)
+    return position
+
+
+@pytest.mark.asyncio
+async def test_capacity_gate_rejects_an_entry_beyond_the_source_exposure_cap() -> None:
+    # Allocation is 20% of $1,000, so the 3x source cap is $600 of notional.
+    held = capacity_position(source_wallet="0xsource", notional_usd="550")
+    session = FakeSession(scalars_values=[[held], []])
 
     with pytest.raises(LiveCopyEntryLifecycleDeferred, match="live_allocation_capacity_changed"):
         await validate_live_copy_entry_capacity_gate(
             session,  # type: ignore[arg-type]
-            account=account,
-            intent=intent,
+            account=capacity_account(),
+            intent=live_intent(),
+            settings=Settings(),
+        )
+
+    position_sql = str(
+        session.scalars_statements[0].compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    assert "trading_positions.size >" in position_sql
+
+
+@pytest.mark.asyncio
+async def test_capacity_gate_allows_an_entry_within_the_exposure_caps() -> None:
+    held = capacity_position(source_wallet="0xsource", notional_usd="450")
+    other_source = capacity_position(source_wallet="0xother", notional_usd="2000")
+    session = FakeSession(scalars_values=[[held, other_source], []])
+
+    await validate_live_copy_entry_capacity_gate(
+        session,  # type: ignore[arg-type]
+        account=capacity_account(),
+        intent=live_intent(),
+        settings=Settings(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_capacity_gate_counts_unattributed_exchange_exposure_toward_the_total_cap() -> None:
+    attributed = capacity_position(source_wallet="0xsource", notional_usd="100")
+    exchange = capacity_position(source_wallet="__exchange__", notional_usd="2950")
+    session = FakeSession(scalars_values=[[attributed, exchange], []])
+
+    with pytest.raises(LiveCopyEntryLifecycleDeferred, match="live_allocation_capacity_changed"):
+        await validate_live_copy_entry_capacity_gate(
+            session,  # type: ignore[arg-type]
+            account=capacity_account(),
+            intent=live_intent(),
             settings=Settings(),
         )
 

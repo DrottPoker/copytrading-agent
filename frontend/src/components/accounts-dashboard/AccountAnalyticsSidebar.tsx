@@ -204,8 +204,20 @@ function RiskExposurePanel({
       {accountView.accountType === "live" ? (
         <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1.5 border-t border-line pt-3 text-[11px]">
           <RiskLimit
+            label="Daily loss"
+            value={formatPercent(riskLimits.maxDailyLossPct)}
+          />
+          <RiskLimit
             label="Weekly loss"
             value={formatPercent(riskLimits.maxWeeklyLossPct)}
+          />
+          <RiskLimit
+            label="Drawdown"
+            value={formatPercent(riskLimits.maxDrawdownPct)}
+          />
+          <RiskLimit
+            label="Source loss"
+            value={formatPercent(riskLimits.maxSourceLossPct)}
           />
           <RiskLimit
             label="Order rate"

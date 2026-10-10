@@ -201,7 +201,10 @@ export type TradingCashFlowsResponse = {
 };
 
 export type LiveRiskLimits = {
+  maxDailyLossPct: string;
   maxWeeklyLossPct: string;
+  maxDrawdownPct: string;
+  maxSourceLossPct: string;
   maxOrdersPerMinute: number;
   reconciliationMaxSnapshotAgeSeconds: number;
   entryIntentTtlSeconds: number;

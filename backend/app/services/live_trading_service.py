@@ -2190,6 +2190,159 @@ async def mark_live_copy_entry_state_terminal(
     await session.commit()
 
 
+@dataclass(frozen=True)
+class LiveCopyExposure:
+    """Notional exposure that copy sizing and the entry gate count against caps."""
+
+    source_usd: Decimal
+    account_usd: Decimal
+
+
+async def load_live_copy_exposure(
+    session: AsyncSession,
+    *,
+    account: TradingAccount,
+    source_wallet: str,
+    coin: str,
+    settings: Settings,
+    exclude_client_order_id: str | None = None,
+    lock: bool = False,
+) -> LiveCopyExposure:
+    """Sum current position notional and unfilled entry orders.
+
+    Account exposure takes the larger of the attributed source positions and the
+    authoritative exchange positions: source positions move immediately on fills,
+    while exchange positions also include unattributed exposure.
+    """
+
+    capacity_dex = live_dex_from_coin(coin)
+    unified_mode = live_capital_mode(settings) == LIVE_CAPITAL_MODE_UNIFIED
+    position_query = select(TradingPosition).where(
+        TradingPosition.account_key == account.key,
+        TradingPosition.account_type == "live",
+        TradingPosition.size > POSITION_EPSILON,
+    )
+    order_query = select(TradingOrder).where(
+        TradingOrder.account_key == account.key,
+        TradingOrder.account_type == "live",
+        TradingOrder.source_wallet != LIVE_EXCHANGE_SOURCE,
+        TradingOrder.reduce_only.is_(False),
+        live_copy_unresolved_order_predicate(),
+    )
+    if exclude_client_order_id is not None:
+        order_query = order_query.where(
+            or_(
+                TradingOrder.client_order_id.is_(None),
+                TradingOrder.client_order_id != exclude_client_order_id,
+            )
+        )
+    if lock:
+        position_query = position_query.execution_options(populate_existing=True).with_for_update()
+        order_query = order_query.execution_options(populate_existing=True).with_for_update()
+    positions = [
+        position
+        for position in (await session.scalars(position_query)).all()
+        if unified_mode or live_dex_from_coin(position.coin) == capacity_dex
+    ]
+    orders = [
+        order
+        for order in (await session.scalars(order_query)).all()
+        if unified_mode or live_dex_from_coin(order.coin) == capacity_dex
+    ]
+    order_ids = [order.id for order in orders if order.id is not None]
+    materialized_size_by_order: dict[Any, Decimal] = {}
+    if order_ids:
+        fill_query = select(TradingFill).where(TradingFill.order_id.in_(order_ids))
+        if lock:
+            fill_query = fill_query.execution_options(populate_existing=True).with_for_update()
+        for fill in (await session.scalars(fill_query)).all():
+            if fill.order_id is None:
+                continue
+            materialized_size_by_order[fill.order_id] = materialized_size_by_order.get(
+                fill.order_id, ZERO
+            ) + abs(fill.size or ZERO)
+
+    def position_notional(position: TradingPosition) -> Decimal:
+        return max(live_position_current_notional(position), ZERO)
+
+    def order_notional(order: TradingOrder) -> Decimal:
+        return live_copy_capacity_order_reservation(
+            order,
+            materialized_size=materialized_size_by_order.get(order.id, ZERO),
+        )
+
+    source_positions = sum(
+        (position_notional(p) for p in positions if p.source_wallet == source_wallet),
+        ZERO,
+    )
+    attributed_positions = sum(
+        (position_notional(p) for p in positions if p.source_wallet != LIVE_EXCHANGE_SOURCE),
+        ZERO,
+    )
+    exchange_positions = sum(
+        (position_notional(p) for p in positions if p.source_wallet == LIVE_EXCHANGE_SOURCE),
+        ZERO,
+    )
+    source_orders = sum(
+        (order_notional(order) for order in orders if order.source_wallet == source_wallet),
+        ZERO,
+    )
+    all_orders = sum((order_notional(order) for order in orders), ZERO)
+    return LiveCopyExposure(
+        source_usd=source_positions + source_orders,
+        account_usd=max(attributed_positions, exchange_positions) + all_orders,
+    )
+
+
+LIVE_SOURCE_LOSS_WINDOW = timedelta(days=7)
+
+
+async def live_source_net_loss_usd(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    source_wallet: str,
+    now: datetime,
+) -> Decimal:
+    """Realized net loss over the rolling window plus current unrealized loss."""
+
+    realized = await session.scalar(
+        select(
+            func.coalesce(func.sum(TradingFill.realized_pnl_usd - TradingFill.fee_usd), ZERO)
+        ).where(
+            TradingFill.account_key == account_key,
+            TradingFill.account_type == "live",
+            TradingFill.source_wallet == source_wallet,
+            TradingFill.filled_at >= now - LIVE_SOURCE_LOSS_WINDOW,
+        )
+    )
+    position_result = await session.scalars(
+        select(TradingPosition).where(
+            TradingPosition.account_key == account_key,
+            TradingPosition.account_type == "live",
+            TradingPosition.source_wallet == source_wallet,
+            TradingPosition.size > POSITION_EPSILON,
+        )
+    )
+    unrealized = sum(
+        (live_position_unrealized_pnl(position) or ZERO for position in position_result.all()),
+        ZERO,
+    )
+    return max(-((decimal_or_none(realized) or ZERO) + unrealized), ZERO)
+
+
+def live_copy_allocation_equity(
+    account: TradingAccount,
+    *,
+    settings: Settings,
+    dex: str | None,
+) -> Decimal:
+    if live_capital_mode(settings) == LIVE_CAPITAL_MODE_UNIFIED:
+        equity_usd = live_unified_equity_usd(account)
+        return equity_usd if equity_usd > ZERO else account.equity_usd or ZERO
+    return live_perp_equity_usd(account, dex=dex)
+
+
 async def validate_live_copy_entry_capacity_gate(
     session: AsyncSession,
     *,
@@ -2197,7 +2350,7 @@ async def validate_live_copy_entry_capacity_gate(
     intent: TradeIntent,
     settings: Settings,
 ) -> None:
-    """Reject a stale copied entry when current reservations exhaust its capacity."""
+    """Reject a stale copied entry when current exposure leaves no room for it."""
 
     if intent.reduce_only or intent.source_wallet in {
         LIVE_EXCHANGE_SOURCE,
@@ -2208,139 +2361,36 @@ async def validate_live_copy_entry_capacity_gate(
     if allocation_pct is None:
         raise LiveCopyEntryLifecycleDeferred("live_allocation_capacity_changed")
     await acquire_live_copy_lifecycle_lock(session, account_key=account.key)
-    capacity_dex = live_dex_from_coin(intent.coin)
-    unified_mode = live_capital_mode(settings) == LIVE_CAPITAL_MODE_UNIFIED
-    allocation_equity_usd = (
-        live_unified_equity_usd(account)
-        if unified_mode
-        else live_perp_equity_usd(account, dex=capacity_dex)
+    allocation_equity_usd = live_copy_allocation_equity(
+        account,
+        settings=settings,
+        dex=live_dex_from_coin(intent.coin),
     )
-    if unified_mode and allocation_equity_usd <= ZERO:
-        allocation_equity_usd = account.equity_usd or ZERO
     if allocation_equity_usd <= ZERO:
         raise LiveCopyEntryLifecycleDeferred("live_allocation_capacity_changed")
-
-    position_result = await session.scalars(
-        select(TradingPosition)
-        .where(
-            TradingPosition.account_key == account.key,
-            TradingPosition.account_type == "live",
-            TradingPosition.size > POSITION_EPSILON,
-        )
-        .execution_options(populate_existing=True)
-        .with_for_update()
+    exposure = await load_live_copy_exposure(
+        session,
+        account=account,
+        source_wallet=intent.source_wallet,
+        coin=intent.coin,
+        settings=settings,
+        exclude_client_order_id=intent.client_order_id,
+        lock=True,
     )
-    positions = [
-        position
-        for position in position_result.all()
-        if unified_mode or live_dex_from_coin(position.coin) == capacity_dex
-    ]
-    order_result = await session.scalars(
-        select(TradingOrder)
-        .where(
-            TradingOrder.account_key == account.key,
-            TradingOrder.account_type == "live",
-            TradingOrder.source_wallet != LIVE_EXCHANGE_SOURCE,
-            TradingOrder.reduce_only.is_(False),
-            or_(
-                TradingOrder.client_order_id.is_(None),
-                TradingOrder.client_order_id != intent.client_order_id,
-            ),
-            live_copy_unresolved_order_predicate(),
-        )
-        .execution_options(populate_existing=True)
-        .with_for_update()
+    allocation_usd = allocation_equity_usd * allocation_pct
+    source_room = (
+        settings.trading_copy_max_source_exposure_multiple * allocation_usd - exposure.source_usd
     )
-    orders = [
-        order
-        for order in order_result.all()
-        if order.client_order_id != intent.client_order_id
-        and (unified_mode or live_dex_from_coin(order.coin) == capacity_dex)
-    ]
-    order_ids = [order.id for order in orders if order.id is not None]
-    materialized_size_by_order: dict[Any, Decimal] = {}
-    if order_ids:
-        fill_result = await session.scalars(
-            select(TradingFill)
-            .where(TradingFill.order_id.in_(order_ids))
-            .execution_options(populate_existing=True)
-            .with_for_update()
-        )
-        for fill in fill_result.all():
-            if fill.order_id is None:
-                continue
-            materialized_size_by_order[fill.order_id] = materialized_size_by_order.get(
-                fill.order_id, ZERO
-            ) + abs(fill.size or ZERO)
-
-    source_position_margin = sum(
-        (
-            live_copy_capacity_position_margin(position)
-            for position in positions
-            if position.source_wallet == intent.source_wallet
-        ),
-        ZERO,
+    total_room = (
+        settings.trading_copy_max_total_exposure_multiple * allocation_equity_usd
+        - exposure.account_usd
     )
-    global_position_margin = sum(
-        (
-            live_copy_capacity_position_margin(position)
-            for position in positions
-            if position.source_wallet != LIVE_EXCHANGE_SOURCE
-        ),
-        ZERO,
-    )
-    source_order_reservation = sum(
-        (
-            live_copy_capacity_order_reservation(
-                order,
-                materialized_size=materialized_size_by_order.get(order.id, ZERO),
-            )
-            for order in orders
-            if order.source_wallet == intent.source_wallet
-        ),
-        ZERO,
-    )
-    global_order_reservation = sum(
-        (
-            live_copy_capacity_order_reservation(
-                order,
-                materialized_size=materialized_size_by_order.get(order.id, ZERO),
-            )
-            for order in orders
-        ),
-        ZERO,
-    )
-    incoming_margin = live_copy_capacity_intent_margin(intent)
-    source_remaining = max(
-        allocation_equity_usd * allocation_pct - source_position_margin - source_order_reservation,
-        ZERO,
-    )
-    global_remaining = max(
-        allocation_equity_usd * settings.trading_copy_max_total_allocation_pct
-        - global_position_margin
-        - global_order_reservation,
-        ZERO,
-    )
+    incoming_notional = max(decimal_or_none(intent.notional_usd) or ZERO, ZERO)
     if (
-        incoming_margin > source_remaining + POSITION_EPSILON
-        or incoming_margin > global_remaining + POSITION_EPSILON
+        incoming_notional > source_room + POSITION_EPSILON
+        or incoming_notional > total_room + POSITION_EPSILON
     ):
         raise LiveCopyEntryLifecycleDeferred("live_allocation_capacity_changed")
-
-
-def live_copy_capacity_position_margin(position: TradingPosition) -> Decimal:
-    return max(decimal_or_none(position.margin_usd) or ZERO, ZERO)
-
-
-def live_copy_capacity_intent_margin(intent: TradeIntent) -> Decimal:
-    margin_usd = decimal_or_none(intent.margin_usd) or ZERO
-    if margin_usd > ZERO:
-        return margin_usd
-    leverage = decimal_or_none(intent.leverage) or Decimal("1")
-    return margin_from_notional(
-        decimal_or_none(intent.notional_usd) or ZERO,
-        leverage if leverage > ZERO else Decimal("1"),
-    )
 
 
 def live_copy_capacity_order_reservation(
@@ -2348,6 +2398,8 @@ def live_copy_capacity_order_reservation(
     *,
     materialized_size: Decimal,
 ) -> Decimal:
+    """Notional still reserved by an entry order that has not fully materialized."""
+
     requested_size = decimal_or_none(order.requested_size) or ZERO
     filled_size = decimal_or_none(order.filled_size) or ZERO
     expected_size = (
@@ -2358,16 +2410,10 @@ def live_copy_capacity_order_reservation(
     outstanding_size = max(expected_size - materialized_size, ZERO)
     if outstanding_size <= POSITION_EPSILON:
         return ZERO
-    reservation_margin = decimal_or_none(order.margin_usd) or ZERO
-    if reservation_margin <= ZERO:
-        leverage = decimal_or_none(order.leverage) or Decimal("1")
-        reservation_margin = margin_from_notional(
-            decimal_or_none(order.requested_notional_usd) or ZERO,
-            leverage if leverage > ZERO else Decimal("1"),
-        )
+    requested_notional = max(decimal_or_none(order.requested_notional_usd) or ZERO, ZERO)
     if requested_size <= POSITION_EPSILON:
-        return reservation_margin
-    return reservation_margin * min(outstanding_size / requested_size, Decimal("1"))
+        return requested_notional
+    return requested_notional * min(outstanding_size / requested_size, Decimal("1"))
 
 
 async def submit_live_trade_intent_under_account_lock(
@@ -2975,34 +3021,35 @@ async def validate_live_entry_risk_guardrails(
             limit=settings.live_trading_reconciliation_max_snapshot_age_seconds,
             trip_account=False,
         )
-    if settings.live_trading_max_weekly_loss_pct > ZERO:
-        current_unrealized_pnl = await live_account_current_unrealized_pnl(
-            session,
-            account_key=account.key,
-        )
-        weekly_net_pnl = await live_account_weekly_net_pnl(
-            session,
-            account_key=account.key,
-            now=now,
-        )
-        weekly_external_cash_flow = await live_account_weekly_external_cash_flow(
-            session,
-            account_key=account.key,
-            now=now,
-        )
-        weekly_net_pnl += current_unrealized_pnl
-        weekly_loss_pct = live_account_weekly_loss_pct(
-            account,
-            weekly_net_pnl=weekly_net_pnl,
-            weekly_external_cash_flow=weekly_external_cash_flow,
-        )
-        if weekly_loss_pct >= settings.live_trading_max_weekly_loss_pct:
-            await reject(
-                rule="max_weekly_loss",
-                message="Live account weekly loss percentage guard is active.",
-                observed=str(weekly_loss_pct),
-                limit=str(settings.live_trading_max_weekly_loss_pct),
-            )
+    loss_state = await live_account_loss_state(session, account_key=account.key, now=now)
+    if loss_state is not None:
+        for rule, label, observed, limit in (
+            (
+                "max_daily_loss",
+                "rolling 24 hour loss",
+                loss_state.daily_loss_pct,
+                settings.live_trading_max_daily_loss_pct,
+            ),
+            (
+                "max_weekly_loss",
+                "rolling 7 day loss",
+                loss_state.weekly_loss_pct,
+                settings.live_trading_max_weekly_loss_pct,
+            ),
+            (
+                "max_drawdown",
+                "drawdown from peak",
+                loss_state.drawdown_pct,
+                settings.live_trading_max_drawdown_pct,
+            ),
+        ):
+            if limit > ZERO and observed >= limit:
+                await reject(
+                    rule=rule,
+                    message=f"Live account {label} guard is active.",
+                    observed=str(observed),
+                    limit=str(limit),
+                )
 
     if settings.live_trading_max_orders_per_minute > 0:
         recent_orders = await live_account_recent_order_count(
@@ -3019,92 +3066,65 @@ async def validate_live_entry_risk_guardrails(
             )
 
 
-async def live_account_current_unrealized_pnl(
-    session: AsyncSession,
-    *,
-    account_key: str,
-) -> Decimal:
-    result = await session.scalars(
-        select(TradingPosition).where(
-            TradingPosition.account_key == account_key,
-            TradingPosition.account_type == "live",
-        )
-    )
-    positions = list(result.all())
-    exchange_positions = [
-        position for position in positions if position.source_wallet == LIVE_EXCHANGE_SOURCE
-    ]
-    effective_positions = exchange_positions or positions
-    return sum(
-        (live_position_unrealized_pnl(position) or ZERO for position in effective_positions),
-        ZERO,
-    )
+@dataclass(frozen=True)
+class LiveAccountLossState:
+    daily_loss_pct: Decimal
+    weekly_loss_pct: Decimal
+    drawdown_pct: Decimal
 
 
-async def live_account_weekly_net_pnl(
+async def live_account_loss_state(
     session: AsyncSession,
     *,
     account_key: str,
     now: datetime,
-) -> Decimal:
-    utc_now = now.replace(tzinfo=UTC) if now.tzinfo is None else now.astimezone(UTC)
-    day_start = utc_now.replace(hour=0, minute=0, second=0, microsecond=0)
-    week_start = day_start - timedelta(days=day_start.weekday())
-    fill_total = (
-        select(func.coalesce(func.sum(TradingFill.realized_pnl_usd - TradingFill.fee_usd), ZERO))
-        .where(
-            TradingFill.account_key == account_key,
-            TradingFill.account_type == "live",
-            TradingFill.filled_at >= week_start,
-        )
-        .scalar_subquery()
+) -> LiveAccountLossState | None:
+    """Rolling losses and drawdown from the time-weighted performance index.
+
+    The index excludes deposits and withdrawals, so cash flows never look like
+    trading losses. Windows that start before tracking use the baseline snapshot.
+    """
+
+    snapshot = TradingAccountPerformanceSnapshot
+    latest = await session.scalar(
+        select(snapshot.performance_index)
+        .where(snapshot.account_key == account_key)
+        .order_by(snapshot.recorded_at.desc())
+        .limit(1)
     )
-    funding_total = (
-        select(func.coalesce(func.sum(TradingFundingPayment.amount_usd), ZERO))
-        .where(
-            TradingFundingPayment.account_key == account_key,
-            TradingFundingPayment.occurred_at >= week_start,
-        )
-        .scalar_subquery()
+    if latest is None:
+        return None
+    baseline = await session.scalar(
+        select(snapshot.performance_index)
+        .where(snapshot.account_key == account_key)
+        .order_by(snapshot.recorded_at.asc())
+        .limit(1)
     )
-    value = await session.scalar(select(fill_total + funding_total))
-    return decimal_or_none(value) or ZERO
-
-
-async def live_account_weekly_external_cash_flow(
-    session: AsyncSession,
-    *,
-    account_key: str,
-    now: datetime,
-) -> Decimal:
-    utc_now = now.replace(tzinfo=UTC) if now.tzinfo is None else now.astimezone(UTC)
-    day_start = utc_now.replace(hour=0, minute=0, second=0, microsecond=0)
-    week_start = day_start - timedelta(days=day_start.weekday())
-    value = await session.scalar(
-        select(func.coalesce(func.sum(TradingAccountCashFlow.amount_usd), ZERO)).where(
-            TradingAccountCashFlow.account_key == account_key,
-            TradingAccountCashFlow.occurred_at >= week_start,
-        )
+    peak = await session.scalar(
+        select(func.max(snapshot.performance_index)).where(snapshot.account_key == account_key)
     )
-    return decimal_or_none(value) or ZERO
+
+    async def index_at(moment: datetime) -> Decimal:
+        value = await session.scalar(
+            select(snapshot.performance_index)
+            .where(snapshot.account_key == account_key, snapshot.recorded_at <= moment)
+            .order_by(snapshot.recorded_at.desc())
+            .limit(1)
+        )
+        return decimal_or_none(value) or decimal_or_none(baseline) or ZERO
+
+    current = decimal_or_none(latest) or ZERO
+    return LiveAccountLossState(
+        daily_loss_pct=performance_loss_pct(current, await index_at(now - timedelta(days=1))),
+        weekly_loss_pct=performance_loss_pct(current, await index_at(now - timedelta(days=7))),
+        drawdown_pct=performance_loss_pct(current, decimal_or_none(peak) or ZERO),
+    )
 
 
-def live_account_weekly_loss_pct(
-    account: TradingAccount,
-    *,
-    weekly_net_pnl: Decimal,
-    weekly_external_cash_flow: Decimal = ZERO,
-) -> Decimal:
-    if weekly_net_pnl >= ZERO:
+def performance_loss_pct(current_index: Decimal, reference_index: Decimal) -> Decimal:
+    if reference_index <= ZERO:
         return ZERO
-    current_equity = decimal_or_none(account.equity_usd) or ZERO
-    week_start_equity = max(
-        current_equity - weekly_net_pnl - weekly_external_cash_flow,
-        ZERO,
-    )
-    if week_start_equity <= ZERO:
-        return Decimal("1")
-    return -weekly_net_pnl / week_start_equity
+    return max(Decimal("1") - current_index / reference_index, ZERO)
 
 
 async def live_account_recent_order_count(

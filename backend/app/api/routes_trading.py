@@ -82,6 +82,7 @@ from app.services.live_trading_service import (
 )
 from app.services.paper_trading_service import load_wallet_monitoring_stats
 from app.services.trading_account_service import list_trading_accounts
+from app.services.trading_core import copy_allocation_pct
 from app.services.wallet_service import wallet_pool_rank_cte
 
 router = APIRouter(prefix="/trading", tags=["trading"])
@@ -100,7 +101,10 @@ def request_audit_actor(request: Request) -> str:
 
 def live_risk_limits_read(settings: Settings) -> LiveRiskLimitsRead:
     return LiveRiskLimitsRead(
+        max_daily_loss_pct=settings.live_trading_max_daily_loss_pct,
         max_weekly_loss_pct=settings.live_trading_max_weekly_loss_pct,
+        max_drawdown_pct=settings.live_trading_max_drawdown_pct,
+        max_source_loss_pct=settings.live_trading_max_source_loss_pct,
         max_orders_per_minute=settings.live_trading_max_orders_per_minute,
         reconciliation_max_snapshot_age_seconds=(
             settings.live_trading_reconciliation_max_snapshot_age_seconds
@@ -117,9 +121,7 @@ def source_allocation_pct_for_rank(
 ) -> Decimal | None:
     if pool_rank is None:
         return None
-    if pool_rank <= max(settings.trading_copy_top_tier_wallet_count, 0):
-        return settings.trading_copy_top_tier_allocation_pct
-    return settings.trading_copy_standard_allocation_pct
+    return copy_allocation_pct(settings)
 
 
 def normalize_source_wallet(value: str | None) -> str | None:

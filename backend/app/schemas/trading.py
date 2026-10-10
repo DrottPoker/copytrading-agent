@@ -284,7 +284,10 @@ class TradingCashFlowsResponse(CamelModel):
 
 
 class LiveRiskLimitsRead(CamelModel):
+    max_daily_loss_pct: Decimal
     max_weekly_loss_pct: Decimal
+    max_drawdown_pct: Decimal
+    max_source_loss_pct: Decimal
     max_orders_per_minute: int
     reconciliation_max_snapshot_age_seconds: int
     entry_intent_ttl_seconds: int

@@ -712,7 +712,8 @@ What it does:
   ranking, allocation, min-order, price drift, and live mid-price cache settings.
 - Keeps `backend/config/paper_trading.json` focused on paper-only simulation
   settings. It no longer seeds default accounts.
-- Builds allocations from the top 10 positive wallet scores in the enabled wallet pool.
+- Builds allocations from the top `trading_copy_top_wallet_count` positive wallet
+  scores in the enabled wallet pool, 5 by default.
 - When current drawdown scoring is enabled, allocation only uses wallets whose
   latest score has `current_drawdown_status = "ok"`.
 - Keeps source wallets with open live source-attributed positions subscribed
@@ -729,11 +730,34 @@ What it does:
   remaining slots go to highest scored candidates. Top candidates without a
   slot are marked as waiting and cannot open new copy positions until a realtime
   slot is available. Paper-only mode retains open paper-position sources first.
-- Gives all top 10 ranks a 30% account pocket each.
-- Caps total open copied margin at 100% of each paper account equity.
+- Splits the allocation budget (`trading_copy_max_total_allocation_pct`, 100% by
+  default) equally between the copied sources, so five sources get 20% each.
 - Converts new non-snapshot realtime source fills into simulated paper fills.
-- Sizes an open by `source fill notional / source perp equity`, scaled inside
-  that wallet's paper allocation pocket.
+- Sizes entries against a target position: allocation divided by source perp
+  equity, times the source position right after the fill. The source position
+  comes from the fill's `startPosition` plus its size. Orders are still placed
+  at the source fill, so entry prices stay close to the source, but each entry
+  only buys the gap between the target and the current copied position.
+- Always opens a new position with at least the minimum order (10 USD) at the
+  source's first fill price. Later adds round to the nearest minimum step: a gap
+  of at least half the minimum (`trading_copy_min_order_round_up_ratio`) rounds
+  up to one minimum order, a smaller gap is skipped. The copied position
+  therefore stays within one minimum order of the proportional target instead of
+  growing with every small source fill.
+- An add never buys more than its own proportional fill plus one minimum order.
+  Exposure that was missed earlier, for example because of a price drift skip,
+  is not chased later at a different price.
+- Caps notional exposure, not margin: one source may reach at most
+  `trading_copy_max_source_exposure_multiple` times its allocation and the account
+  at most `trading_copy_max_total_exposure_multiple` times its equity, 3x each by
+  default. Sources running higher leverage are copied with a smaller size. An
+  opening that only partly fits is trimmed to the remaining room when that room
+  still holds a minimum order.
+- Exits stay proportional: when the source closes a share of its position, the
+  same share of the copied position is closed in the same moment, and a final
+  source close closes the copied position fully.
+- Skips adds without a source `startPosition` (`source_position_unknown`)
+  instead of guessing the target.
 - Requires valid source perp equity for opens and adds, but not for exits. Close,
   reduce, and flip-close parts are still processed against existing paper
   positions if Hyperliquid reports zero or unavailable source equity after the
@@ -748,19 +772,17 @@ What it does:
   as `dex:COIN`, so perp equity, leverage, and open positions are read from
   the matching perp venue.
 - Isolated HIP-3 perp equity can equal isolated margin used. In that case an
-  all-in isolated source position can fill the whole paper pocket, and later
-  adds are skipped once the fixed paper pocket is full.
+  all-in isolated source position maps to a large target, and the source
+  exposure cap limits the copied size.
 - Reads source per-coin leverage from Hyperliquid `clearinghouseState` and uses
   it for paper margin accounting. If leverage is unavailable for a coin, paper
   falls back to 1x.
 - Resolves common Hyperliquid coin aliases for live mids and leverage, including
   matching `dex:COIN` fills against `COIN` market keys when the exact key is not
   present.
-- Opens or adds below `trading_copy_min_order_notional_usd` are adjusted up to the
-  minimum when `trading_copy_adjust_small_orders_to_min_order` is enabled and the
-  source and account caps can fit the adjusted margin. Otherwise they are
-  skipped before any paper position is created. The default minimum is 10 USD to
-  match Hyperliquid's live perp minimum order value.
+- Never rounds an order up past an exposure cap. The default minimum order is
+  10 USD to match Hyperliquid's live perp minimum order value. Rounded-up fills
+  record the unrounded and adjusted notional as min-order adjustment markers.
 - Skips new opens or adds when the durable first observation is more than
   `trading_copy_max_entry_age_seconds` after the source timestamp. This prevents
   late snapshot or recovery entries from opening exposure while ensuring that
@@ -880,8 +902,8 @@ What it does:
   account/source wallet pocket.
 - Records skip rows when a fill cannot be copied safely, such as no matching
   paper position, missing source perp equity, preexisting source position,
-  minimum notional, source allocation cap exhaustion, or total account cap
-  exhaustion.
+  `target_position_reached`, `below_min_order_notional`,
+  `source_exposure_cap_reached`, or `total_exposure_cap_reached`.
 - Publishes `paper_copy` events to the live feed when realtime fills are simulated.
 - The Trading page polls the paper summary API and generic trading account API,
   but a top-panel mode toggle separates the cockpit into Paper and Live modes.
@@ -1048,18 +1070,15 @@ What it does:
 Config:
 
 - `backend/config/trading.json`
-- `trading_copy_top_wallet_count`
-- `trading_copy_top_tier_wallet_count`
-- `trading_copy_top_tier_allocation_pct`
-- `trading_copy_standard_allocation_pct`
-- `trading_copy_max_total_allocation_pct`
-
-Top-tier and standard source pockets both default to 30 percent of account
-equity. The total concurrently used allocation remains capped at 100 percent.
-- `trading_copy_min_order_notional_usd`
-- `trading_copy_adjust_small_orders_to_min_order`
+- `trading_copy_top_wallet_count`, defaults to 5 sources
+- `trading_copy_max_total_allocation_pct`, the budget split equally between the
+  sources, defaults to 100 percent
+- `trading_copy_max_source_exposure_multiple`, defaults to 3x the source allocation
+- `trading_copy_max_total_exposure_multiple`, defaults to 3x account equity
+- `trading_copy_min_order_notional_usd`, defaults to 10 USD
+- `trading_copy_min_order_round_up_ratio`, defaults to 0.5 (round to nearest)
 - `trading_copy_max_entry_age_seconds`, defaults to 20 seconds
-- `trading_copy_max_price_drift_bps`, defaults to 100 bps
+- `trading_copy_max_price_drift_bps`, defaults to 30 bps
 - `trading_copy_use_live_mid_price`
 - `trading_copy_market_price_cache_enabled`
 - `trading_copy_market_price_cache_stale_seconds`
@@ -1125,9 +1144,9 @@ What it does:
 - Adds a Hyperliquid live trading adapter that can submit IOC limit orders
   through the official Python SDK.
 - Normalizes live order size and limit price to Hyperliquid tick and lot
-  precision before SDK submission. Entry orders can round up to the next valid
-  lot only when min-order adjustment is enabled and lot rounding would otherwise
-  put the order below the configured minimum notional. Live entries also add the
+  precision before SDK submission. Entry orders round up to the next valid lot
+  when lot rounding would otherwise put the order below the configured minimum
+  notional; copy sizing already meets the minimum. Live entries also add the
   configured minimum-notional buffer before wire rounding so orders near the
   exchange minimum do not fall back under the limit after tick and lot
   normalization.
@@ -1231,9 +1250,12 @@ What it does:
 - Allows exit-only live accounts to submit reduce-only exits, but blocks new
   entries and adds.
 - Runs automatic live copy when `live_trading_enabled` is true. Realtime live
-  copy reuses the shared source allocation policy, live mid-price cache, price
-  drift guard, optional min-order adjustment, deterministic client order ids,
-  and live risk guardrails. Live lifecycle state is persisted separately from
+  copy reuses the shared target-position sizing, exposure caps, live mid-price
+  cache, price drift guard, deterministic client order ids, and live risk
+  guardrails. Live sizes at the limit price and counts exposure as the larger of
+  attributed source positions and the authoritative exchange positions, plus
+  unfilled entry orders. The final entry gate under the account lock repeats the
+  exposure cap check. Live lifecycle state is persisted separately from
   the raw fill and order ledgers, so recovery does not manufacture execution
   attempts for historical or transient conditions.
 - Uses `watched_wallets.copy_eligibility_started_at` as the global source-
@@ -1358,24 +1380,34 @@ What it does:
   before attribution recovery, so it cannot create an indefinite ambiguous
   entry retry.
 - Enforces live entry guardrails for reconciliation freshness, entry intent TTL,
-  weekly account loss percentage, and max orders per minute.
+  rolling 24 hour loss, rolling 7 day loss, drawdown from peak, and max orders
+  per minute.
   Stale or incomplete reconciliation blocks only the entry without changing the
   enabled account lifecycle. Transitions into partial or failed reconciliation
   health record warning risk and audit entries without repeating them on every
   worker pass. A complete fresh snapshot resumes entry eligibility automatically.
-  A breached weekly loss or order-rate limit moves the account to `exit_only`,
-  cancels unsent entries, and records a critical risk event. Expired intents and
-  invalid exchange leverage or slippage values are rejected before submission.
-- Calculates weekly loss usage from net realized PnL after fees and signed
-  Hyperliquid funding plus current
-  aggregate exchange unrealized PnL. The percentage base reconstructs account
-  equity at the start of the UTC week after removing weekly external deposits
-  and withdrawals. A deposit cannot dilute an existing weekly loss. Current
-  unrealized PnL is included once without duplicating it through position or
-  fill rows.
+  A breached loss, drawdown, or order-rate limit moves the account to
+  `exit_only`, cancels unsent entries, and records a critical risk event. Exits
+  are still copied so exit prices stay equivalent, and no position is force
+  closed. The account stays exit-only until it is started again manually.
+  Expired intents and invalid exchange leverage or slippage values are rejected
+  before submission.
+- Calculates account losses from the time-weighted performance index that each
+  reconciliation records. The index includes unrealized PnL and funding through
+  account equity and excludes deposits and withdrawals, so cash flows never look
+  like trading losses. The 24 hour and 7 day losses compare the current index
+  with the latest snapshot at or before the window start, or the baseline
+  snapshot for younger accounts. Drawdown compares it with the highest index.
+- Blocks new entries from a single source (`live_source_loss_limit`) when its
+  realized net loss over the last 7 days plus the current unrealized loss of its
+  open positions reaches `live_trading_max_source_loss_pct` of account equity.
+  Exits from that source are still copied, and the source resumes automatically
+  once the rolling loss falls below the limit.
 - Requires positive whole-number leverage for non-reduce-only entries, copies
-  source leverage without a local maximum, and copies source cross or isolated
-  mode. Hyperliquid's leverage update is sent with the matching `isCross` value
+  source leverage as the exchange setting, and copies source cross or isolated
+  mode, so margin use and isolated liquidation prices follow the source. Risk is
+  limited by the notional exposure caps instead of the exchange leverage
+  setting. Hyperliquid's leverage update is sent with the matching `isCross` value
   before order submission and must return `ok`. Missing source leverage or
   margin mode skips the entry instead of guessing. Generic leverage-missing
   rows do not become reusable persisted intents. A fully validated busy-fence
@@ -1420,7 +1452,10 @@ Config:
 - `live_trading_reconciliation_max_snapshot_age_seconds`
 - `live_trading_min_order_notional_usd`
 - `live_trading_min_order_notional_buffer_usd`
-- `live_trading_max_weekly_loss_pct`
+- `live_trading_max_daily_loss_pct`, rolling 24 hours, defaults to 10%
+- `live_trading_max_weekly_loss_pct`, rolling 7 days, defaults to 20%
+- `live_trading_max_drawdown_pct`, from the peak performance index, defaults to 25%
+- `live_trading_max_source_loss_pct`, per source over 7 days, defaults to 5%
 - `live_trading_max_orders_per_minute`
 - `live_trading_reduce_only_when_stopped`
 - `hyperliquid_private_key`
@@ -1518,10 +1553,11 @@ What it does:
 - `backend/config/database.json` owns manual database maintenance defaults such
   as fill retention days, batch size, max rows, and protected top scored wallets.
 - `backend/config/live_trading.json` owns entry TTL, reconciliation freshness,
-  reduce-only behavior, execution guardrails, and daily and weekly risk limits.
+  reduce-only behavior, execution guardrails, and the daily, weekly, drawdown,
+  and per-source loss limits.
 - `backend/config/trading.json` owns copy policy shared by paper and live copy:
-  source ranking limits, allocation pockets, minimum copy notional, optional
-  min-order adjustment, price drift guard, and live mid-price cache settings.
+  source count, equal-weight allocation budget, exposure caps, minimum copy
+  notional and rounding, price drift guard, and live mid-price cache settings.
 - `backend/config/paper_trading.json` owns paper-only simulation settings:
   paper copy enablement, simulated fees, simulated slippage, simulated latency,
   and recovery cadence.

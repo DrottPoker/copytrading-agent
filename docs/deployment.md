@@ -149,12 +149,15 @@ and reads trading capital from `spotClearinghouseState`. Set it to
 `standard_per_dex` only when the wallet intentionally keeps separate default and
   HIP-3 perp balances. Use testnet and the `POST /trading/testnet/orders`
   endpoint before any mainnet enablement.
-Live copy shares source ranking, allocation, min-order, price drift, and
-mid-price cache policy with paper copy through `backend/config/trading.json`.
-The 50 percent weekly account-loss limit, 50 orders-per-minute limit, and other
-live execution settings stay in `backend/config/live_trading.json`. Copied source
-leverage has no local maximum; Hyperliquid enforces each market's supported
-leverage. Live entries also copy source cross or isolated mode. Migration
+Live copy shares target-position sizing, equal-weight allocation, exposure caps,
+min-order rounding, price drift, and mid-price cache policy with paper copy
+through `backend/config/trading.json`. The loss limits (10 percent rolling 24
+hours, 20 percent rolling 7 days, 25 percent drawdown from peak, 5 percent per
+source), the 50 orders-per-minute limit, and other live execution settings stay
+in `backend/config/live_trading.json`. A tripped account limit leaves the account
+exit-only until it is started again from the dashboard. Copied source leverage is
+used as the exchange setting, while the 3x notional exposure caps limit risk.
+Live entries also copy source cross or isolated mode. Migration
 `c9d5a1e7f3b2` must be applied before restarting the backend and trading worker
 because margin mode is persisted on live orders and positions.
 

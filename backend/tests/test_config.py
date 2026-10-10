@@ -33,7 +33,10 @@ def test_live_trading_config_is_loaded_from_dedicated_file(
     assert settings.live_trading_limit_slippage_bps == Decimal("20")
     assert settings.live_trading_min_order_notional_usd == Decimal("10")
     assert settings.live_trading_min_order_notional_buffer_usd == Decimal("0.1")
-    assert settings.live_trading_max_weekly_loss_pct == Decimal("0.5")
+    assert settings.live_trading_max_daily_loss_pct == Decimal("0.1")
+    assert settings.live_trading_max_weekly_loss_pct == Decimal("0.2")
+    assert settings.live_trading_max_drawdown_pct == Decimal("0.25")
+    assert settings.live_trading_max_source_loss_pct == Decimal("0.05")
     assert settings.live_trading_max_orders_per_minute == 50
     assert settings.live_trading_reduce_only_when_stopped is True
     assert settings.live_trading_reconciliation_enabled is True
@@ -167,15 +170,14 @@ def test_shared_trading_config_is_loaded_from_dedicated_file(
     _clear_live_env_overrides(monkeypatch)
     config = load_app_config()
 
-    assert config["trading_copy_top_wallet_count"] == 10
-    assert config["trading_copy_top_tier_wallet_count"] == 3
-    assert Decimal(str(config["trading_copy_top_tier_allocation_pct"])) == Decimal("0.3")
-    assert Decimal(str(config["trading_copy_standard_allocation_pct"])) == Decimal("0.3")
+    assert config["trading_copy_top_wallet_count"] == 5
     assert Decimal(str(config["trading_copy_max_total_allocation_pct"])) == Decimal("1.0")
+    assert Decimal(str(config["trading_copy_max_source_exposure_multiple"])) == Decimal("3")
+    assert Decimal(str(config["trading_copy_max_total_exposure_multiple"])) == Decimal("3")
     assert Decimal(str(config["trading_copy_min_order_notional_usd"])) == Decimal("10")
-    assert config["trading_copy_adjust_small_orders_to_min_order"] is True
+    assert Decimal(str(config["trading_copy_min_order_round_up_ratio"])) == Decimal("0.5")
     assert config["trading_copy_max_entry_age_seconds"] == 20
-    assert Decimal(str(config["trading_copy_max_price_drift_bps"])) == Decimal("100")
+    assert Decimal(str(config["trading_copy_max_price_drift_bps"])) == Decimal("30")
     assert config["trading_copy_use_live_mid_price"] is True
     assert config["trading_copy_market_price_cache_enabled"] is True
     assert config["trading_copy_market_price_cache_stale_seconds"] == 2

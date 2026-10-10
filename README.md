@@ -580,9 +580,9 @@ Live activation and account lifecycle:
 - Lifecycle changes record `lifecycle_version`, `status_changed_at`, and
   `status_reason`. Active live wallet routes are unique by network, wallet, and
   optional vault.
-- Every new live entry must pass a fresh reconciliation check, intent TTL,
-  50 percent weekly account-loss limit, 50 orders-per-minute limit, and price
-  safety checks. A breached stateful
+- Every new live entry must pass a fresh reconciliation check, intent TTL, the
+  rolling 24 hour, rolling 7 day, drawdown, and per-source loss limits, the 50
+  orders-per-minute limit, and price safety checks. A breached stateful
   account limit or stale reconciliation trips the account to
   `exit_only`, cancels unsent entries, and persists the event for audit. Expired
   intents and invalid exchange leverage or slippage values are rejected
@@ -600,11 +600,12 @@ Live activation and account lifecycle:
   message distinguishes expiry before any submission from expiry after an
   earlier exchange attempt or rejection. Generic leverage-missing skips are not
   reusable persisted intents.
-- Weekly loss usage is net realized PnL after fees and signed Hyperliquid
-  funding plus current aggregate
-  exchange unrealized PnL. Its percentage base is reconstructed start-of-week
-  account equity. Current unrealized PnL is included once and is not duplicated
-  across positions or fill rows.
+- Account loss limits use the time-weighted performance index from each
+  reconciliation, so deposits and withdrawals never count as losses: 10% over a
+  rolling 24 hours, 20% over a rolling 7 days, and 25% drawdown from the peak. A
+  breach leaves the account exit-only until it is started again. A single source
+  stops opening new positions once its 7 day realized loss plus current
+  unrealized loss reaches 5% of account equity.
 - Non-reduce-only orders copy both source leverage and source margin mode from
   current Hyperliquid `clearinghouseState`. Hyperliquid still requires positive
   whole-number leverage and enforces the market's supported leverage. The
@@ -719,14 +720,15 @@ Live copy lifecycle and recovery:
 Paper accounts:
 
 - Paper accounts are stored in Postgres and created from the dashboard or API.
-- `backend/config/trading.json` owns shared copy allocation, min-order, price
-  drift, and mid-price cache policy.
+- `backend/config/trading.json` owns shared copy allocation, exposure caps,
+  min-order rounding, price drift, and mid-price cache policy.
 - `backend/config/paper_trading.json` owns paper simulation settings only, not
   account creation.
 
 Sizing policy:
 
-- The top 10 scored wallets are eligible for paper copy allocation.
+- The top 5 scored wallets (`trading_copy_top_wallet_count`) are eligible for
+  copy allocation.
 - Open paper-position sources have realtime priority in paper-only mode. When
   live trading is enabled, open live exposure and the current top 10 own the
   realtime slots while paper-only exposure is maintained by fill import and
@@ -734,10 +736,20 @@ Sizing policy:
 - Retained sources outside the current top 10 can add to existing matching paper
   positions and can reduce or close them, but cannot open completely new paper
   positions.
-- All top 10 ranks receive a 30% account pocket.
-- Total open copied margin is capped at 100% of each paper account equity.
-- Paper order size is based on source fill notional divided by source perp
-  equity, scaled inside that source wallet's pocket.
+- Each source receives an equal share of the allocation budget, 20% each for
+  five sources.
+- Entries follow a target position: allocation divided by source perp equity,
+  times the source position after the fill. Orders are placed at the source
+  fill, so the copied entry price stays close to the source, and each order only
+  buys the gap to the target.
+- A new position always opens with at least the 10 USD minimum at the source's
+  first fill price. Later adds round to the nearest minimum step, and an add
+  never buys more than its own fill plus one minimum order. The copied position
+  stays within one minimum order of the target, instead of growing by 10 USD for
+  every small source fill.
+- Notional exposure is capped at 3x the source allocation per source and 3x
+  account equity in total. Exits close the same share of the copied position as
+  the source closes of its own.
 - Paper fill rows store that source perp equity snapshot as
   `paper_copy_fills.source_perp_equity_usd`. The API also exposes the read alias
   `sourceAccountValueUsd` for the same value.
@@ -757,11 +769,8 @@ Sizing policy:
 - A configurable fee rate is applied to paper fills. The default is 0.045%,
   matching Hyperliquid's base perp taker fee because paper fills model immediate
   taker-style execution.
-- Paper opens or adds below `trading_copy_min_order_notional_usd` are adjusted up
-  to the minimum when `trading_copy_adjust_small_orders_to_min_order` is enabled
-  and the source and account caps can fit the adjusted margin. Otherwise they
-  are skipped before any position is created. The default minimum is 10 USD to
-  match Hyperliquid's live perp minimum order value.
+- Rounding to the 10 USD minimum never exceeds an exposure cap. The minimum
+  matches Hyperliquid's live perp minimum order value.
 - New entry fills first observed more than
   `trading_copy_max_entry_age_seconds` after the source timestamp are skipped
   before opening or adding exposure. The default is 20 seconds. Admission is
@@ -837,8 +846,9 @@ Sizing policy:
 - Same-timestamp source fills are processed with close and flip-close fills first
   by descending source `startPosition`, so split source exits reduce paper
   positions in a stable order.
-- Skip reasons distinguish minimum notional, source-wallet pocket cap, total
-  account cap, missing matching positions, and price safety guards.
+- Skip reasons distinguish a reached target position, a gap below half the
+  minimum order, the source and total exposure caps, missing matching positions,
+  and price safety guards.
 - The Trading page polls the paper summary API and generic trading account API,
   but the cockpit has an explicit Paper or Live mode toggle. The active mode
   owns top metrics, accounts, copy sources, wallet PnL history, open positions,
@@ -1111,9 +1121,9 @@ truth for live trading capital. Set it to `standard_per_dex` only when the live
 wallet is intentionally using separate default and HIP-3 perp balances.
 
 `backend/config/trading.json` owns shared copy policy used by both paper and live
-copy: source ranking limits, allocation pockets, total allocation cap, copy
-minimum notional, optional min-order adjustment, max entry age, price drift
-guard, and the live mid-price cache settings.
+copy: source count, equal-weight allocation budget, source and total exposure
+caps, copy minimum notional and rounding, max entry age, price drift guard, and
+the live mid-price cache settings.
 
 `backend/config/paper_trading.json` owns paper-only simulation settings:
 paper copy enablement, simulated fee rate, simulated slippage, simulated latency,
@@ -1304,12 +1314,13 @@ acknowledgement flags, time-based arming values, global database gate, coin
 allowlist, or coin blocklist. The market-policy function currently allows every
 coin. The private key is not stored in Postgres.
 
-Default live risk limits are 50 percent weekly loss against reconstructed
-start-of-week account equity and 50 orders per minute, plus a 90-second maximum
-reconciliation snapshot age and a 30-second entry intent TTL. Order notional,
-account open notional, position count, daily loss, and source leverage have no
-local maximum. Shared copy allocation still caps total open copied margin at 80
-percent by default in `backend/config/trading.json`.
+Default live risk limits are 10 percent loss over a rolling 24 hours, 20
+percent over a rolling 7 days, 25 percent drawdown from the peak performance
+index, 5 percent of account equity lost by a single source over 7 days, and 50
+orders per minute, plus a 90-second maximum reconciliation snapshot age and a
+30-second entry intent TTL. Shared copy policy in `backend/config/trading.json`
+caps notional exposure at 3x the source allocation per source and 3x account
+equity in total. Source leverage is copied as the exchange setting.
 
 Do not enable live trading before paper trading proves edge after delay, fees,
 slippage, and exit behavior.

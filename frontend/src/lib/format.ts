@@ -36,6 +36,16 @@ export function formatPercent(value: string | number | null | undefined) {
   }).format(numberValue(value));
 }
 
+export function formatMultiple(value: string | number | null | undefined) {
+  if (value === null || value === undefined) {
+    return "-";
+  }
+  const formatted = new Intl.NumberFormat("sv-SE", { maximumFractionDigits: 2 }).format(
+    numberValue(value),
+  );
+  return `${formatted}x`;
+}
+
 export function formatScore(value: string | number | null | undefined) {
   if (value === null || value === undefined) {
     return "-";

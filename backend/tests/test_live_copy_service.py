@@ -14,7 +14,7 @@ from app.db.models import (
     TradingOrder,
     TradingPosition,
 )
-from app.services import live_copy_service
+from app.services import live_copy_service, live_trading_service
 from app.services.live_copy_service import (
     combine_batch_results,
     live_aggregated_below_min_close_size,
@@ -3845,3 +3845,184 @@ def live_source_state(position_side: str | None) -> PaperSourceAccountState:
         positions_by_coin=positions_by_coin,
         skip_reason=None,
     )
+
+
+def target_sizing_kwargs(*, start_position: Decimal, source_size: str) -> dict:
+    return {
+        "account": live_account(last_reconciled_at=datetime.now(UTC)),
+        "allocation": source_allocation(),
+        "fill": {
+            "externalFillId": "target-sizing-fill",
+            "coin": "HYPE",
+            "price": "100",
+            "timestampMs": int(datetime.now(UTC).timestamp() * 1000),
+        },
+        "part": SourceFillPart(
+            action="open",
+            side="long",
+            source_size=Decimal(source_size),
+            source_notional_usd=Decimal(source_size) * Decimal("100"),
+            sequence_index=0,
+            start_position=start_position,
+        ),
+        "source_account_state": PaperSourceAccountState(
+            dex="",
+            perp_equity=Decimal("1000000"),
+            leverage_by_coin={"HYPE": Decimal("3")},
+            positions_by_coin={},
+            margin_mode_by_coin={"HYPE": "cross"},
+        ),
+        "source_perp_equity": Decimal("1000000"),
+        "source_leverages": {"HYPE": Decimal("3")},
+        "market_prices": ExecutionMarketPrices(
+            prices={"HYPE": Decimal("100")},
+            sources={"HYPE": "test"},
+        ),
+        "settings": Settings().model_copy(update={"live_trading_enabled": True}),
+        "trading_client": object(),
+        "entry_admission": live_copy_service.LiveEntryAdmission(
+            first_observed_at=datetime.now(UTC),
+            terminal_reason=None,
+        ),
+    }
+
+
+def patch_target_sizing_inputs(
+    monkeypatch,
+    *,
+    position: TradingPosition | None,
+    source_loss_usd: Decimal = Decimal("0"),
+) -> dict[str, list]:
+    captured: dict[str, list] = {"intents": [], "skips": []}
+
+    async def load_position(*_args, **_kwargs):
+        return position
+
+    async def not_reserved(*_args, **_kwargs):
+        return False
+
+    async def exposure(*_args, **_kwargs):
+        notional = position.size * Decimal("100") if position is not None else Decimal("0")
+        return live_trading_service.LiveCopyExposure(source_usd=notional, account_usd=notional)
+
+    async def source_loss(*_args, **_kwargs):
+        return source_loss_usd
+
+    async def submit_intent(*_args, **kwargs):
+        captured["intents"].append(kwargs["intent"])
+        return PaperCopyBatchResult(processed_fills=1)
+
+    async def record_skip(*_args, **kwargs):
+        captured["skips"].append(kwargs)
+        return PaperCopyBatchResult(skipped_fills=1, skip_reasons={kwargs["reason"]: 1})
+
+    monkeypatch.setattr(live_copy_service, "load_live_source_position", load_position)
+    monkeypatch.setattr(live_copy_service, "live_market_is_reserved_by_other_source", not_reserved)
+    monkeypatch.setattr(live_copy_service, "load_live_copy_exposure", exposure)
+    monkeypatch.setattr(live_copy_service, "live_source_net_loss_usd", source_loss)
+    monkeypatch.setattr(live_copy_service, "submit_live_copy_intent", submit_intent)
+    monkeypatch.setattr(live_copy_service, "record_live_skip", record_skip)
+    monkeypatch.setattr(
+        live_copy_service,
+        "live_tradable_equity_usd",
+        lambda *_args, **_kwargs: Decimal("1000"),
+    )
+    monkeypatch.setattr(
+        live_copy_service,
+        "live_copy_allocation_equity_usd",
+        lambda *_args, **_kwargs: Decimal("1000"),
+    )
+    return captured
+
+
+class NoPersistedIntentSession:
+    async def scalar(self, _statement):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_live_opening_below_the_minimum_enters_with_one_minimum_order(monkeypatch) -> None:
+    captured = patch_target_sizing_inputs(monkeypatch, position=None)
+
+    # Copy ratio 200 / 1,000,000 makes this 10 coin source fill worth $0.20 to us.
+    result = await live_copy_service.apply_live_open_part(
+        NoPersistedIntentSession(),
+        **target_sizing_kwargs(start_position=Decimal("0"), source_size="10"),
+    )
+
+    assert result.processed_fills == 1
+    assert captured["skips"] == []
+    intent = captured["intents"][0]
+    assert intent.action == "open"
+    assert intent.notional_usd == Decimal("10")
+    assert intent.margin_usd == Decimal("10") / Decimal("3")
+
+
+@pytest.mark.asyncio
+async def test_live_add_below_half_a_minimum_order_is_skipped(monkeypatch) -> None:
+    held = live_position(source_wallet="0xsource", side="long", size=Decimal("0.1"))
+    captured = patch_target_sizing_inputs(monkeypatch, position=held)
+
+    # The source grows to 700 coins. At the 100.2 limit price (mid plus 20 bps) that is a
+    # $14.03 target against our $10.02 position.
+    await live_copy_service.apply_live_open_part(
+        NoPersistedIntentSession(),
+        **target_sizing_kwargs(start_position=Decimal("500"), source_size="200"),
+    )
+
+    assert captured["intents"] == []
+    assert captured["skips"][0]["reason"] == "live_below_min_order_notional"
+    context = captured["skips"][0]["decision_context"]
+    assert Decimal(context["targetNotionalUsd"]) == Decimal("14.028")
+
+
+@pytest.mark.asyncio
+async def test_live_add_rounds_up_to_the_minimum_at_half_a_minimum_order(monkeypatch) -> None:
+    held = live_position(source_wallet="0xsource", side="long", size=Decimal("0.1"))
+    captured = patch_target_sizing_inputs(monkeypatch, position=held)
+
+    await live_copy_service.apply_live_open_part(
+        NoPersistedIntentSession(),
+        **target_sizing_kwargs(start_position=Decimal("500"), source_size="250"),
+    )
+
+    intent = captured["intents"][0]
+    assert intent.action == "add"
+    assert intent.notional_usd == Decimal("10")
+
+
+@pytest.mark.asyncio
+async def test_live_source_loss_limit_blocks_new_entries(monkeypatch) -> None:
+    captured = patch_target_sizing_inputs(
+        monkeypatch,
+        position=None,
+        source_loss_usd=Decimal("50"),
+    )
+
+    await live_copy_service.apply_live_open_part(
+        NoPersistedIntentSession(),
+        **target_sizing_kwargs(start_position=Decimal("0"), source_size="10"),
+    )
+
+    assert captured["intents"] == []
+    assert captured["skips"][0]["reason"] == "live_source_loss_limit"
+
+
+@pytest.mark.asyncio
+async def test_live_add_without_source_start_position_is_skipped(monkeypatch) -> None:
+    held = live_position(source_wallet="0xsource", side="long")
+    captured = patch_target_sizing_inputs(monkeypatch, position=held)
+    kwargs = target_sizing_kwargs(start_position=Decimal("0"), source_size="10")
+    kwargs["part"] = SourceFillPart(
+        action="open",
+        side="long",
+        source_size=Decimal("10"),
+        source_notional_usd=Decimal("1000"),
+        sequence_index=0,
+        start_position=None,
+    )
+
+    await live_copy_service.apply_live_open_part(NoPersistedIntentSession(), **kwargs)
+
+    assert captured["intents"] == []
+    assert captured["skips"][0]["reason"] == "live_source_position_unknown"

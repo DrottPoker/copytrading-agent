@@ -1,10 +1,9 @@
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
 import pytest
-from sqlalchemy.dialects import postgresql
 
 from app.core.config import Settings
 from app.db.models import (
@@ -12,7 +11,6 @@ from app.db.models import (
     TradingAccount,
     TradingOrder,
     TradingOrderDispatch,
-    TradingPosition,
 )
 from app.integrations.hyperliquid_live_client import (
     HyperliquidLiveTradingClient,
@@ -20,13 +18,12 @@ from app.integrations.hyperliquid_live_client import (
 )
 from app.services import live_trading_service
 from app.services.live_trading_service import (
+    LiveAccountLossState,
     LiveOrderSubmitError,
     LiveTradingServiceError,
     ensure_live_entry_intent_is_fresh,
-    live_account_current_unrealized_pnl,
-    live_account_weekly_loss_pct,
-    live_account_weekly_net_pnl,
     live_reconciliation_is_fresh,
+    performance_loss_pct,
     validate_live_account_can_start,
     validate_live_entry_risk_guardrails,
 )
@@ -58,32 +55,6 @@ class ExpiredIntentSession:
 
     async def commit(self) -> None:
         self.commit_count += 1
-
-
-class CapturingScalarSession:
-    def __init__(self, value: Decimal) -> None:
-        self.value = value
-        self.statement: Any | None = None
-
-    async def scalar(self, statement: Any) -> Decimal:
-        self.statement = statement
-        return self.value
-
-
-class PositionRows:
-    def __init__(self, positions: list[TradingPosition]) -> None:
-        self.positions = positions
-
-    def all(self) -> list[TradingPosition]:
-        return self.positions
-
-
-class PositionSession:
-    def __init__(self, positions: list[TradingPosition]) -> None:
-        self.positions = positions
-
-    async def scalars(self, _statement: object) -> PositionRows:
-        return PositionRows(self.positions)
 
 
 def live_account(*, status: str = "enabled") -> TradingAccount:
@@ -198,167 +169,137 @@ def test_stale_reconciliation_blocks_account_start() -> None:
         validate_live_account_can_start(account, settings=settings, now=now)
 
 
-@pytest.mark.asyncio
-async def test_weekly_pnl_window_starts_at_monday_midnight_utc() -> None:
-    session = CapturingScalarSession(Decimal("-42.50"))
-    now = datetime(2026, 7, 8, 15, 30, tzinfo=UTC)
-
-    value = await live_account_weekly_net_pnl(  # type: ignore[arg-type]
-        session,
-        account_key="live_test",
-        now=now,
-    )
-
-    assert value == Decimal("-42.50")
-    assert session.statement is not None
-    compiled = str(
-        session.statement.compile(
-            dialect=postgresql.dialect(),
-            compile_kwargs={"literal_binds": True},
-        )
-    )
-    assert "trading_fills.filled_at >= '2026-07-06 00:00:00+00:00'" in compiled
-
-
-@pytest.mark.asyncio
-async def test_weekly_pnl_normalizes_non_utc_now_before_finding_boundary() -> None:
-    session = CapturingScalarSession(Decimal("0"))
-    stockholm_summer = timezone(timedelta(hours=2))
-    now = datetime(2026, 7, 6, 1, 0, tzinfo=stockholm_summer)
-
-    await live_account_weekly_net_pnl(  # type: ignore[arg-type]
-        session,
-        account_key="live_test",
-        now=now,
-    )
-
-    assert session.statement is not None
-    compiled = str(
-        session.statement.compile(
-            dialect=postgresql.dialect(),
-            compile_kwargs={"literal_binds": True},
-        )
-    )
-    assert "trading_fills.filled_at >= '2026-06-29 00:00:00+00:00'" in compiled
-
-
-@pytest.mark.asyncio
-async def test_current_unrealized_pnl_prefers_exchange_positions_without_double_counting() -> None:
-    exchange_position = TradingPosition(
-        account_key="live_test",
-        account_type="live",
-        source_wallet="__exchange__",
-        coin="BTC",
-        side="long",
-        size=Decimal("1"),
-        entry_price=Decimal("100"),
-        notional_usd=Decimal("100"),
-        leverage=Decimal("2"),
-        margin_usd=Decimal("50"),
-        realized_pnl_usd=Decimal("0"),
-        fee_usd=Decimal("0"),
-        raw_payload={"position": {"unrealizedPnl": "-60"}},
-        opened_at=datetime.now(UTC),
-    )
-    attributed_duplicate = TradingPosition(
-        account_key="live_test",
-        account_type="live",
-        source_wallet="0xsource",
-        coin="BTC",
-        side="long",
-        size=Decimal("1"),
-        entry_price=Decimal("100"),
-        notional_usd=Decimal("100"),
-        leverage=Decimal("2"),
-        margin_usd=Decimal("50"),
-        realized_pnl_usd=Decimal("0"),
-        fee_usd=Decimal("0"),
-        raw_payload={"position": {"unrealizedPnl": "-60"}},
-        opened_at=datetime.now(UTC),
-    )
-
-    value = await live_account_current_unrealized_pnl(  # type: ignore[arg-type]
-        PositionSession([exchange_position, attributed_duplicate]),
-        account_key="live_test",
-    )
-
-    assert value == Decimal("-60")
-
-
-def test_weekly_loss_pct_uses_reconstructed_week_start_equity() -> None:
-    account = live_account()
-    account.equity_usd = Decimal("40")
-
-    assert live_account_weekly_loss_pct(
-        account,
-        weekly_net_pnl=Decimal("-60"),
-    ) == Decimal("0.6")
-
-
-def test_weekly_loss_pct_excludes_external_deposit_from_reference_equity() -> None:
-    account = live_account()
-    account.equity_usd = Decimal("1040")
-
-    assert live_account_weekly_loss_pct(
-        account,
-        weekly_net_pnl=Decimal("-60"),
-        weekly_external_cash_flow=Decimal("1000"),
-    ) == Decimal("0.6")
-
-
-@pytest.mark.asyncio
-async def test_weekly_loss_percentage_guard_includes_current_unrealized_loss(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("current", "reference", "expected"),
+    [
+        (Decimal("0.9"), Decimal("1"), Decimal("0.1")),
+        (Decimal("1.2"), Decimal("1"), Decimal("0")),
+        (Decimal("0.75"), Decimal("1.5"), Decimal("0.5")),
+        (Decimal("1"), Decimal("0"), Decimal("0")),
+    ],
+)
+def test_performance_loss_pct_is_relative_to_the_reference_index(
+    current: Decimal,
+    reference: Decimal,
+    expected: Decimal,
 ) -> None:
+    assert performance_loss_pct(current, reference) == expected
+
+
+def guarded_account() -> TradingAccount:
     account = live_account()
-    account.equity_usd = Decimal("40")
+    account.equity_usd = Decimal("1000")
     account.last_reconciled_at = datetime.now(UTC)
     account.config_payload = {"lastReconciliation": {"status": "complete"}}
-    settings = Settings(
-        live_trading_max_weekly_loss_pct=Decimal("0.5"),
+    return account
+
+
+def loss_guard_settings() -> Settings:
+    return Settings(
+        live_trading_max_daily_loss_pct=Decimal("0.10"),
+        live_trading_max_weekly_loss_pct=Decimal("0.20"),
+        live_trading_max_drawdown_pct=Decimal("0.25"),
         live_trading_max_orders_per_minute=0,
     )
-    observed: dict[str, object] = {}
 
-    class CommitSession:
-        async def commit(self) -> None:
-            return None
 
-    async def fake_unrealized(*_args: object, **_kwargs: object) -> Decimal:
-        return Decimal("-60")
+class CommitSession:
+    async def commit(self) -> None:
+        return None
 
-    async def fake_realized(*_args: object, **_kwargs: object) -> Decimal:
-        return Decimal("0")
 
-    async def fake_external_cash_flow(*_args: object, **_kwargs: object) -> Decimal:
-        return Decimal("0")
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("loss_state", "rule", "message", "observed", "limit"),
+    [
+        (
+            LiveAccountLossState(Decimal("0.12"), Decimal("0.12"), Decimal("0.12")),
+            "max_daily_loss",
+            "rolling 24 hour loss",
+            "0.12",
+            "0.10",
+        ),
+        (
+            LiveAccountLossState(Decimal("0.05"), Decimal("0.21"), Decimal("0.21")),
+            "max_weekly_loss",
+            "rolling 7 day loss",
+            "0.21",
+            "0.20",
+        ),
+        (
+            LiveAccountLossState(Decimal("0"), Decimal("0"), Decimal("0.30")),
+            "max_drawdown",
+            "drawdown from peak",
+            "0.30",
+            "0.25",
+        ),
+    ],
+)
+async def test_account_loss_guards_trip_the_account(
+    monkeypatch: pytest.MonkeyPatch,
+    loss_state: LiveAccountLossState,
+    rule: str,
+    message: str,
+    observed: str,
+    limit: str,
+) -> None:
+    tripped: dict[str, object] = {}
+
+    async def fake_loss_state(*_args: object, **_kwargs: object) -> LiveAccountLossState:
+        return loss_state
 
     async def fake_trip(*_args: object, **kwargs: object) -> None:
-        observed.update(kwargs)
+        tripped.update(kwargs)
 
-    monkeypatch.setattr(
-        live_trading_service,
-        "live_account_current_unrealized_pnl",
-        fake_unrealized,
-    )
-    monkeypatch.setattr(live_trading_service, "live_account_weekly_net_pnl", fake_realized)
-    monkeypatch.setattr(
-        live_trading_service,
-        "live_account_weekly_external_cash_flow",
-        fake_external_cash_flow,
-    )
+    monkeypatch.setattr(live_trading_service, "live_account_loss_state", fake_loss_state)
     monkeypatch.setattr(live_trading_service, "trip_live_account_risk", fake_trip)
 
-    with pytest.raises(LiveOrderSubmitError, match="weekly loss percentage guard"):
+    with pytest.raises(LiveOrderSubmitError, match=message):
         await validate_live_entry_risk_guardrails(
             CommitSession(),  # type: ignore[arg-type]
-            account=account,
-            settings=settings,
+            account=guarded_account(),
+            settings=loss_guard_settings(),
         )
 
-    assert observed["rule"] == "max_weekly_loss"
-    assert observed["observed"] == "0.6"
-    assert observed["limit"] == "0.5"
+    assert tripped["rule"] == rule
+    assert tripped["observed"] == observed
+    assert tripped["limit"] == limit
+
+
+@pytest.mark.asyncio
+async def test_account_loss_guards_allow_entries_below_the_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_loss_state(*_args: object, **_kwargs: object) -> LiveAccountLossState:
+        return LiveAccountLossState(Decimal("0.09"), Decimal("0.19"), Decimal("0.24"))
+
+    async def fail_trip(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("Losses below every limit must not trip the account.")
+
+    monkeypatch.setattr(live_trading_service, "live_account_loss_state", fake_loss_state)
+    monkeypatch.setattr(live_trading_service, "trip_live_account_risk", fail_trip)
+
+    await validate_live_entry_risk_guardrails(
+        CommitSession(),  # type: ignore[arg-type]
+        account=guarded_account(),
+        settings=loss_guard_settings(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_account_loss_guards_skip_accounts_without_performance_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def no_history(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(live_trading_service, "live_account_loss_state", no_history)
+
+    await validate_live_entry_risk_guardrails(
+        CommitSession(),  # type: ignore[arg-type]
+        account=guarded_account(),
+        settings=loss_guard_settings(),
+    )
 
 
 @pytest.mark.asyncio

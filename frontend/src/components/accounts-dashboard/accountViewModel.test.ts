@@ -23,8 +23,11 @@ describe("live account metric tiles", () => {
       recentOrders: [],
       riskLimits: {
         entryIntentTtlSeconds: 30,
+        maxDailyLossPct: "0.1",
+        maxDrawdownPct: "0.25",
         maxOrdersPerMinute: 20,
-        maxWeeklyLossPct: "0.1",
+        maxSourceLossPct: "0.05",
+        maxWeeklyLossPct: "0.2",
         reconciliationMaxSnapshotAgeSeconds: 30,
         reduceOnlyWhenStopped: true,
       },

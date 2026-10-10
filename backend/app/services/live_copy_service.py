@@ -53,7 +53,6 @@ from app.services.live_copy_work_service import enqueue_live_copy_work_for_walle
 from app.services.live_execution_state import trade_intent_from_order
 from app.services.live_order_reject_policy import live_copy_retry_delay_seconds
 from app.services.live_trading_service import (
-    LIVE_CAPITAL_MODE_UNIFIED,
     LIVE_EXCHANGE_SOURCE,
     LIVE_MANUAL_TEST_SOURCE,
     POSITION_EPSILON,
@@ -62,12 +61,12 @@ from app.services.live_trading_service import (
     LiveReconciliationError,
     ensure_live_entry_intent_is_fresh,
     is_retryable_live_order_submit_failure,
-    live_capital_mode,
-    live_perp_equity_usd,
+    live_copy_allocation_equity,
     live_reconciliation_is_fresh,
     live_reconciliation_status,
+    live_source_net_loss_usd,
     live_tradable_equity_usd,
-    live_unified_equity_usd,
+    load_live_copy_exposure,
     load_live_source_position,
     reconcile_live_trading_account,
     submit_live_trade_intent,
@@ -111,12 +110,14 @@ from app.services.trading_core import (
     MarginMode,
     TradeIntent,
     TradeSide,
-    adjust_open_sizing_to_min_order,
     build_client_order_id,
     build_copy_trade_intent,
+    entry_sizing_limits,
     margin_from_notional,
     parse_margin_mode,
     parse_trade_action,
+    plan_entry_sizing,
+    source_position_after_fill,
     trade_intent_payload,
     trade_is_buy,
 )
@@ -287,10 +288,7 @@ def live_copy_allocation_equity_usd(
     settings: Settings,
     dex: str | None = None,
 ) -> Decimal:
-    if live_capital_mode(settings) == LIVE_CAPITAL_MODE_UNIFIED:
-        equity_usd = live_unified_equity_usd(account)
-        return equity_usd if equity_usd > ZERO else account.equity_usd or ZERO
-    return live_perp_equity_usd(account, dex=dex)
+    return live_copy_allocation_equity(account, settings=settings, dex=dex)
 
 
 async def synchronize_live_copy_lanes(
@@ -2649,92 +2647,101 @@ async def apply_live_open_part(
         )
 
     price = execution_context.execution_price
+    if position is not None and part.start_position is None:
+        return await record_live_skip(
+            session,
+            account=account,
+            allocation=allocation,
+            fill=fill,
+            part=part,
+            reason="live_source_position_unknown",
+            leverage=source_leverage,
+            margin_mode=source_margin_mode,
+            limit_price=price,
+        )
+    source_loss_usd = await live_source_net_loss_usd(
+        session,
+        account_key=account.key,
+        source_wallet=allocation.source_wallet,
+        now=datetime.now(UTC),
+    )
+    source_loss_limit_usd = settings.live_trading_max_source_loss_pct * allocation_equity_usd
+    source_loss_limited = settings.live_trading_max_source_loss_pct > ZERO
+    if source_loss_limited and source_loss_usd >= source_loss_limit_usd:
+        return await record_live_skip(
+            session,
+            account=account,
+            allocation=allocation,
+            fill=fill,
+            part=part,
+            reason="live_source_loss_limit",
+            leverage=source_leverage,
+            margin_mode=source_margin_mode,
+            limit_price=price,
+            decision_context={
+                "sourceLossUsd": str(source_loss_usd),
+                "sourceLossLimitUsd": str(source_loss_limit_usd),
+            },
+        )
+
     allocation_usd = allocation_equity_usd * allocation.allocation_pct
     source_exposure_pct = part.source_notional_usd / source_perp_equity
-    target_notional = allocation_usd * source_exposure_pct
-    target_margin = margin_from_notional(target_notional, source_leverage)
-    source_remaining = max(
-        allocation_usd
-        - await live_open_margin_for_source(
-            session,
-            account_key=account.key,
-            source_wallet=allocation.source_wallet,
+    exposure = await load_live_copy_exposure(
+        session,
+        account=account,
+        source_wallet=allocation.source_wallet,
+        coin=coin,
+        settings=settings,
+    )
+    sizing = plan_entry_sizing(
+        opening=position is None,
+        allocation_usd=allocation_usd,
+        account_equity_usd=allocation_equity_usd,
+        source_equity_usd=source_perp_equity,
+        source_fill_size=part.source_size,
+        source_position_after=source_position_after_fill(
+            start_position=part.start_position,
+            fill_size=part.source_size,
         ),
-        ZERO,
+        current_position_size=position.size if position is not None else ZERO,
+        price=price,
+        source_exposure_usd=exposure.source_usd,
+        account_exposure_usd=exposure.account_usd,
+        limits=entry_sizing_limits(
+            settings,
+            min_order_notional_usd=live_min_order_notional_usd(settings),
+        ),
     )
-    global_remaining = max(
-        allocation_equity_usd * settings.trading_copy_max_total_allocation_pct
-        - await live_open_margin_for_account(session, account_key=account.key),
-        ZERO,
-    )
-    capacity_context = {
+    sizing_context = {
         "allocationEquityUsd": str(allocation_equity_usd),
         "allocationPct": str(allocation.allocation_pct),
         "allocationUsd": str(allocation_usd),
-        "sourceRemainingMarginUsd": str(source_remaining),
-        "globalRemainingMarginUsd": str(global_remaining),
-        "targetMarginUsd": str(target_margin),
-        "targetNotionalUsd": str(target_notional),
+        "sourceExposureUsd": str(exposure.source_usd),
+        "accountExposureUsd": str(exposure.account_usd),
+        "targetNotionalUsd": str(sizing.target_notional_usd),
+        "fillTargetNotionalUsd": str(sizing.fill_target_notional_usd),
+        "desiredNotionalUsd": str(sizing.desired_notional_usd),
+        "roundedUp": sizing.rounded_up,
+        "capped": sizing.capped,
     }
-    if source_remaining <= ZERO:
+    if sizing.skip_reason is not None:
         return await record_live_skip(
             session,
             account=account,
             allocation=allocation,
             fill=fill,
             part=part,
-            reason="live_source_allocation_exhausted",
+            reason=f"live_{sizing.skip_reason}",
             leverage=source_leverage,
             margin_mode=source_margin_mode,
             limit_price=price,
             margin_usd=ZERO,
             requested_notional_usd=ZERO,
             requested_size=ZERO,
-            decision_context=capacity_context,
+            decision_context=sizing_context,
         )
-    if global_remaining <= ZERO:
-        return await record_live_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            reason="live_total_allocation_exhausted",
-            leverage=source_leverage,
-            margin_mode=source_margin_mode,
-            limit_price=price,
-            margin_usd=ZERO,
-            requested_notional_usd=ZERO,
-            requested_size=ZERO,
-            decision_context=capacity_context,
-        )
-    margin_usd = min(target_margin, source_remaining, global_remaining)
-    notional_usd = margin_usd * source_leverage
-    margin_usd, notional_usd, _ = adjust_open_sizing_to_min_order(
-        target_notional=target_notional,
-        margin_usd=margin_usd,
-        notional_usd=notional_usd,
-        source_remaining=source_remaining,
-        global_remaining=global_remaining,
-        source_leverage=source_leverage,
-        settings=settings,
-    )
-    if notional_usd < live_min_order_notional_usd(settings):
-        return await record_live_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            reason="live_below_min_order_notional",
-            leverage=source_leverage,
-            margin_mode=source_margin_mode,
-            limit_price=price,
-            margin_usd=margin_usd,
-            requested_notional_usd=notional_usd,
-            requested_size=notional_usd / price if price > ZERO else ZERO,
-            decision_context=capacity_context,
-        )
+    notional_usd = sizing.notional_usd
+    margin_usd = margin_from_notional(notional_usd, source_leverage)
 
     action = "add" if position is not None and part.action == "open" else part.action
     intent = build_copy_trade_intent(
@@ -3674,33 +3681,6 @@ def live_source_position_is_final_close(
         coin,
     )
     return source_position is None or source_position.side != side
-
-
-async def live_open_margin_for_source(
-    session: AsyncSession,
-    *,
-    account_key: str,
-    source_wallet: str,
-) -> Decimal:
-    value = await session.scalar(
-        select(func.coalesce(func.sum(TradingPosition.margin_usd), ZERO)).where(
-            TradingPosition.account_key == account_key,
-            TradingPosition.account_type == "live",
-            TradingPosition.source_wallet == source_wallet,
-        )
-    )
-    return decimal_or_zero(value)
-
-
-async def live_open_margin_for_account(session: AsyncSession, *, account_key: str) -> Decimal:
-    value = await session.scalar(
-        select(func.coalesce(func.sum(TradingPosition.margin_usd), ZERO)).where(
-            TradingPosition.account_key == account_key,
-            TradingPosition.account_type == "live",
-            TradingPosition.source_wallet != LIVE_EXCHANGE_SOURCE,
-        )
-    )
-    return decimal_or_zero(value)
 
 
 async def gather_two(first: Any, second: Any) -> tuple[Any, Any]:

@@ -110,12 +110,12 @@ export type PaperCopyFill = {
 export type PaperTradingPolicy = {
   enabled: boolean;
   topWalletCount: number;
-  topTierWalletCount: number;
-  topTierAllocationPct: string;
-  standardAllocationPct: string;
+  sourceAllocationPct: string;
   maxTotalAllocationPct: string;
+  maxSourceExposureMultiple: string;
+  maxTotalExposureMultiple: string;
   minOrderNotionalUsd: string;
-  adjustSmallOrdersToMinOrder: boolean;
+  minOrderRoundUpRatio: string;
   feeRate: string;
   slippageBps: string;
   latencyMs: number;

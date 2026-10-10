@@ -23,6 +23,7 @@ import {
   formatCurrency,
   formatDate,
   formatInteger,
+  formatMultiple,
   formatPercent,
   formatScore,
   numberValue,
@@ -983,12 +984,20 @@ function PolicyRow({
     <ListRow>
       <div className="grid gap-2 sm:grid-cols-3">
         <RowStat label="Wallets" value={formatInteger(summary.policy.topWalletCount)} />
-        <RowStat label="Pocket" value={formatPercent(summary.policy.standardAllocationPct)} />
-        <RowStat label="Total cap" value={formatPercent(summary.policy.maxTotalAllocationPct)} />
-        <RowStat label="Min order" value={formatCurrency(summary.policy.minOrderNotionalUsd)} />
         <RowStat
-          label="Min adjust"
-          value={summary.policy.adjustSmallOrdersToMinOrder ? "enabled" : "disabled"}
+          label="Pocket"
+          value={formatPercent(summary.policy.sourceAllocationPct)}
+          detail={`of ${formatPercent(summary.policy.maxTotalAllocationPct)} budget`}
+        />
+        <RowStat
+          label="Exposure cap"
+          value={formatMultiple(summary.policy.maxSourceExposureMultiple)}
+          detail={`per source, ${formatMultiple(summary.policy.maxTotalExposureMultiple)} total`}
+        />
+        <RowStat
+          label="Min order"
+          value={formatCurrency(summary.policy.minOrderNotionalUsd)}
+          detail={`rounds up from ${formatPercent(summary.policy.minOrderRoundUpRatio)}`}
         />
         <RowStat label="Fee" value={formatPercent(summary.policy.feeRate)} />
         <RowStat label="Slippage" value={formatBps(summary.policy.slippageBps)} />

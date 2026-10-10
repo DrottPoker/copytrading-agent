@@ -60,13 +60,15 @@ from app.services.trading_core import (
     MarginMode,
     TradeIntent,
     TradeSide,
-    adjust_open_sizing_to_min_order,
     build_copy_trade_intent,
+    copy_allocation_pct,
+    entry_sizing_limits,
     margin_from_notional,
-    open_notional_skip_reason,
     parse_trade_action,
     parse_trade_side,
+    plan_entry_sizing,
     safe_leverage,
+    source_position_after_fill,
     trade_intent_payload,
 )
 from app.services.trading_core import (
@@ -2946,13 +2948,9 @@ async def load_paper_source_allocations(
 
     slot_source_set = set(slot_sources)
     allocations: list[PaperSourceAllocation] = []
-    for copy_rank, row in enumerate(candidate_rows, start=1):
+    allocation_pct = copy_allocation_pct(settings)
+    for row in candidate_rows:
         source_wallet = str(row["address"]).lower()
-        allocation_pct = (
-            settings.trading_copy_top_tier_allocation_pct
-            if copy_rank <= settings.trading_copy_top_tier_wallet_count
-            else settings.trading_copy_standard_allocation_pct
-        )
         pool_rank = int(row["pool_rank"])
         has_realtime_slot = source_wallet in slot_source_set
         allocations.append(
@@ -2989,7 +2987,7 @@ async def load_paper_source_allocations(
                 allocation_pct=(
                     retained_allocation_pct
                     if retained_allocation_pct is not None and retained_allocation_pct > ZERO
-                    else settings.trading_copy_standard_allocation_pct
+                    else copy_allocation_pct(settings)
                 ),
                 active=False,
                 has_realtime_slot=has_realtime_slot,
@@ -3748,42 +3746,7 @@ async def apply_open_part(
         )
     price = execution_context.execution_price
 
-    allocation_usd = max(account.equity_usd, ZERO) * allocation.allocation_pct
-    source_exposure_pct = part.source_notional_usd / source_perp_equity
-    target_notional = allocation_usd * source_exposure_pct
-    target_margin = margin_from_notional(target_notional, source_leverage)
-    source_remaining = max(
-        allocation_usd
-        - await open_margin_for_source(
-            session,
-            account_key=account.key,
-            source_wallet=allocation.source_wallet,
-        ),
-        ZERO,
-    )
-    global_remaining = max(
-        max(account.equity_usd, ZERO) * settings.trading_copy_max_total_allocation_pct
-        - await open_margin_for_account(session, account_key=account.key),
-        ZERO,
-    )
-    margin_usd = min(target_margin, source_remaining, global_remaining)
-    notional_usd = margin_usd * source_leverage
-    margin_usd, notional_usd, min_order_adjustment = adjust_open_sizing_to_min_order(
-        target_notional=target_notional,
-        margin_usd=margin_usd,
-        notional_usd=notional_usd,
-        source_remaining=source_remaining,
-        global_remaining=global_remaining,
-        source_leverage=source_leverage,
-        settings=settings,
-    )
-    if notional_usd < settings.trading_copy_min_order_notional_usd:
-        reason = open_notional_skip_reason(
-            target_notional=target_notional,
-            source_remaining=source_remaining * source_leverage,
-            global_remaining=global_remaining * source_leverage,
-            min_order_notional=settings.trading_copy_min_order_notional_usd,
-        )
+    if position is not None and part.start_position is None:
         return await record_skip(
             session,
             account=account,
@@ -3791,10 +3754,58 @@ async def apply_open_part(
             fill=fill,
             part=part,
             source_perp_equity=source_perp_equity,
-            reason=reason,
+            reason="source_position_unknown",
             settings=settings,
+            execution_context=execution_context,
             leverage=source_leverage,
         )
+    account_equity_usd = max(account.equity_usd, ZERO)
+    allocation_usd = account_equity_usd * allocation.allocation_pct
+    source_exposure_pct = part.source_notional_usd / source_perp_equity
+    sizing = plan_entry_sizing(
+        opening=position is None,
+        allocation_usd=allocation_usd,
+        account_equity_usd=account_equity_usd,
+        source_equity_usd=source_perp_equity,
+        source_fill_size=part.source_size,
+        source_position_after=source_position_after_fill(
+            start_position=part.start_position,
+            fill_size=part.source_size,
+        ),
+        current_position_size=position.size if position is not None else ZERO,
+        price=price,
+        source_exposure_usd=await open_notional_for_source(
+            session,
+            account_key=account.key,
+            source_wallet=allocation.source_wallet,
+        ),
+        account_exposure_usd=await open_notional_for_account(session, account_key=account.key),
+        limits=entry_sizing_limits(settings),
+    )
+    if sizing.skip_reason is not None:
+        return await record_skip(
+            session,
+            account=account,
+            allocation=allocation,
+            fill=fill,
+            part=part,
+            source_perp_equity=source_perp_equity,
+            reason=sizing.skip_reason,
+            settings=settings,
+            execution_context=execution_context,
+            leverage=source_leverage,
+        )
+    notional_usd = sizing.notional_usd
+    margin_usd = margin_from_notional(notional_usd, source_leverage)
+    min_order_adjustment = (
+        PaperMinOrderAdjustment(
+            original_notional_usd=sizing.desired_notional_usd,
+            adjusted_notional_usd=notional_usd,
+            min_order_notional_usd=settings.trading_copy_min_order_notional_usd,
+        )
+        if sizing.rounded_up
+        else None
+    )
 
     paper_size = notional_usd / price
     fee = notional_usd * settings.paper_copy_fee_rate
@@ -4340,14 +4351,14 @@ def can_retry_existing_paper_fill(fill: PaperCopyFill, part: SourceFillPart) -> 
     )
 
 
-async def open_margin_for_source(
+async def open_notional_for_source(
     session: AsyncSession,
     *,
     account_key: str,
     source_wallet: str,
 ) -> Decimal:
     value = await session.scalar(
-        select(func.coalesce(func.sum(PaperPosition.margin_usd), ZERO)).where(
+        select(func.coalesce(func.sum(PaperPosition.notional_usd), ZERO)).where(
             PaperPosition.account_key == account_key,
             PaperPosition.source_wallet == source_wallet,
         )
@@ -4355,9 +4366,9 @@ async def open_margin_for_source(
     return decimal_or_zero(value)
 
 
-async def open_margin_for_account(session: AsyncSession, *, account_key: str) -> Decimal:
+async def open_notional_for_account(session: AsyncSession, *, account_key: str) -> Decimal:
     value = await session.scalar(
-        select(func.coalesce(func.sum(PaperPosition.margin_usd), ZERO)).where(
+        select(func.coalesce(func.sum(PaperPosition.notional_usd), ZERO)).where(
             PaperPosition.account_key == account_key,
         )
     )
@@ -4481,12 +4492,12 @@ def paper_trading_policy(settings: Settings) -> PaperTradingPolicyRead:
     return PaperTradingPolicyRead(
         enabled=settings.paper_trading_enabled and settings.paper_copy_enabled,
         top_wallet_count=settings.trading_copy_top_wallet_count,
-        top_tier_wallet_count=settings.trading_copy_top_tier_wallet_count,
-        top_tier_allocation_pct=settings.trading_copy_top_tier_allocation_pct,
-        standard_allocation_pct=settings.trading_copy_standard_allocation_pct,
+        source_allocation_pct=copy_allocation_pct(settings),
         max_total_allocation_pct=settings.trading_copy_max_total_allocation_pct,
+        max_source_exposure_multiple=settings.trading_copy_max_source_exposure_multiple,
+        max_total_exposure_multiple=settings.trading_copy_max_total_exposure_multiple,
         min_order_notional_usd=settings.trading_copy_min_order_notional_usd,
-        adjust_small_orders_to_min_order=settings.trading_copy_adjust_small_orders_to_min_order,
+        min_order_round_up_ratio=settings.trading_copy_min_order_round_up_ratio,
         fee_rate=settings.paper_copy_fee_rate,
         slippage_bps=settings.paper_copy_slippage_bps,
         latency_ms=settings.paper_copy_latency_ms,
@@ -4755,7 +4766,9 @@ def paper_fill_payload(
             "feeRate": str(settings.paper_copy_fee_rate),
             "maxTotalAllocationPct": str(settings.trading_copy_max_total_allocation_pct),
             "minOrderNotionalUsd": str(settings.trading_copy_min_order_notional_usd),
-            "adjustSmallOrdersToMinOrder": (settings.trading_copy_adjust_small_orders_to_min_order),
+            "minOrderRoundUpRatio": str(settings.trading_copy_min_order_round_up_ratio),
+            "maxSourceExposureMultiple": str(settings.trading_copy_max_source_exposure_multiple),
+            "maxTotalExposureMultiple": str(settings.trading_copy_max_total_exposure_multiple),
             "slippageBps": str(settings.paper_copy_slippage_bps),
             "latencyMs": settings.paper_copy_latency_ms,
             "maxPriceDriftBps": str(settings.trading_copy_max_price_drift_bps),

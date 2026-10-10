@@ -278,12 +278,11 @@ SCORING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
 }
 TRADING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("copy", "top_wallet_count"): "trading_copy_top_wallet_count",
-    ("copy", "top_tier_wallet_count"): "trading_copy_top_tier_wallet_count",
-    ("copy", "top_tier_allocation_pct"): "trading_copy_top_tier_allocation_pct",
-    ("copy", "standard_allocation_pct"): "trading_copy_standard_allocation_pct",
     ("copy", "max_total_allocation_pct"): "trading_copy_max_total_allocation_pct",
+    ("copy", "max_source_exposure_multiple"): "trading_copy_max_source_exposure_multiple",
+    ("copy", "max_total_exposure_multiple"): "trading_copy_max_total_exposure_multiple",
     ("copy", "min_order_notional_usd"): "trading_copy_min_order_notional_usd",
-    ("copy", "adjust_small_orders_to_min_order"): ("trading_copy_adjust_small_orders_to_min_order"),
+    ("copy", "min_order_round_up_ratio"): "trading_copy_min_order_round_up_ratio",
     ("copy", "max_entry_age_seconds"): "trading_copy_max_entry_age_seconds",
     ("copy", "max_price_drift_bps"): "trading_copy_max_price_drift_bps",
     ("copy", "use_live_mid_price"): "trading_copy_use_live_mid_price",
@@ -308,7 +307,10 @@ LIVE_TRADING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ),
     ("risk", "min_order_notional_usd"): "live_trading_min_order_notional_usd",
     ("risk", "min_order_notional_buffer_usd"): ("live_trading_min_order_notional_buffer_usd"),
+    ("risk", "max_daily_loss_pct"): "live_trading_max_daily_loss_pct",
     ("risk", "max_weekly_loss_pct"): "live_trading_max_weekly_loss_pct",
+    ("risk", "max_drawdown_pct"): "live_trading_max_drawdown_pct",
+    ("risk", "max_source_loss_pct"): "live_trading_max_source_loss_pct",
     ("risk", "max_orders_per_minute"): "live_trading_max_orders_per_minute",
     ("risk", "reduce_only_when_stopped"): "live_trading_reduce_only_when_stopped",
 }
@@ -380,18 +382,20 @@ class Settings(BaseSettings):
         default=Decimal("0.10"),
         ge=0,
     )
-    live_trading_max_weekly_loss_pct: Decimal = Field(default=Decimal("0.5"), ge=0, le=1)
+    live_trading_max_daily_loss_pct: Decimal = Field(default=Decimal("0.10"), ge=0, le=1)
+    live_trading_max_weekly_loss_pct: Decimal = Field(default=Decimal("0.20"), ge=0, le=1)
+    live_trading_max_drawdown_pct: Decimal = Field(default=Decimal("0.25"), ge=0, le=1)
+    live_trading_max_source_loss_pct: Decimal = Field(default=Decimal("0.05"), ge=0, le=1)
     live_trading_max_orders_per_minute: int = Field(default=50, ge=0, le=10000)
     live_trading_reduce_only_when_stopped: bool = True
-    trading_copy_top_wallet_count: int = Field(default=10, ge=1, le=10)
-    trading_copy_top_tier_wallet_count: int = Field(default=3, ge=0, le=10)
-    trading_copy_top_tier_allocation_pct: Decimal = Field(default=Decimal("0.30"), ge=0, le=1)
-    trading_copy_standard_allocation_pct: Decimal = Field(default=Decimal("0.30"), ge=0, le=1)
-    trading_copy_max_total_allocation_pct: Decimal = Field(default=Decimal("1.00"), ge=0, le=1)
+    trading_copy_top_wallet_count: int = Field(default=5, ge=1, le=10)
+    trading_copy_max_total_allocation_pct: Decimal = Field(default=Decimal("1.00"), gt=0, le=1)
+    trading_copy_max_source_exposure_multiple: Decimal = Field(default=Decimal("3"), gt=0, le=100)
+    trading_copy_max_total_exposure_multiple: Decimal = Field(default=Decimal("3"), gt=0, le=100)
     trading_copy_min_order_notional_usd: Decimal = Field(default=Decimal("10"), ge=0)
-    trading_copy_adjust_small_orders_to_min_order: bool = True
+    trading_copy_min_order_round_up_ratio: Decimal = Field(default=Decimal("0.5"), ge=0, le=1)
     trading_copy_max_entry_age_seconds: int = Field(default=20, ge=0, le=3600)
-    trading_copy_max_price_drift_bps: Decimal = Field(default=Decimal("100"), ge=0, le=10000)
+    trading_copy_max_price_drift_bps: Decimal = Field(default=Decimal("30"), ge=0, le=10000)
     trading_copy_use_live_mid_price: bool = True
     trading_copy_market_price_cache_enabled: bool = True
     trading_copy_market_price_cache_stale_seconds: float = Field(default=2.0, ge=0.1, le=60)
@@ -918,11 +922,6 @@ class Settings(BaseSettings):
                 "live_trading_limit_slippage_bps must be less than or equal to "
                 "live_trading_max_slippage_bps."
             )
-        if self.trading_copy_top_tier_wallet_count > self.trading_copy_top_wallet_count:
-            raise ValueError(
-                "trading_copy_top_tier_wallet_count must be less than or equal to "
-                "trading_copy_top_wallet_count."
-            )
         if self.live_trading_enabled and not self.hyperliquid_private_key:
             raise ValueError("LIVE_TRADING_ENABLED requires HYPERLIQUID_PRIVATE_KEY.")
         if self.live_trading_enabled and not self.hyperliquid_wallet_address:
@@ -1054,14 +1053,8 @@ def normalize_paper_trading_config(config: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(config)
     deprecated_shared_keys = {
         "paper_copy_top_wallet_count": "trading_copy_top_wallet_count",
-        "paper_copy_top_tier_wallet_count": "trading_copy_top_tier_wallet_count",
-        "paper_copy_top_tier_allocation_pct": "trading_copy_top_tier_allocation_pct",
-        "paper_copy_standard_allocation_pct": "trading_copy_standard_allocation_pct",
         "paper_copy_max_total_allocation_pct": "trading_copy_max_total_allocation_pct",
         "paper_copy_min_order_notional_usd": "trading_copy_min_order_notional_usd",
-        "paper_copy_adjust_small_orders_to_min_order": (
-            "trading_copy_adjust_small_orders_to_min_order"
-        ),
         "paper_copy_max_entry_age_seconds": "trading_copy_max_entry_age_seconds",
         "paper_copy_max_price_drift_bps": "trading_copy_max_price_drift_bps",
         "paper_copy_use_live_mid_price": "trading_copy_use_live_mid_price",

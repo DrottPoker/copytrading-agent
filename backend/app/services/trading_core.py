@@ -179,59 +179,149 @@ def margin_from_notional(notional_usd: Decimal, leverage: Decimal | None) -> Dec
     return notional_usd / resolved_leverage
 
 
-def adjust_open_sizing_to_min_order(
-    *,
-    target_notional: Decimal,
-    margin_usd: Decimal,
-    notional_usd: Decimal,
-    source_remaining: Decimal,
-    global_remaining: Decimal,
-    source_leverage: Decimal,
+@dataclass(frozen=True)
+class EntrySizingLimits:
+    min_order_notional_usd: Decimal
+    min_order_round_up_ratio: Decimal
+    max_source_exposure_multiple: Decimal
+    max_total_exposure_multiple: Decimal
+
+
+@dataclass(frozen=True)
+class EntrySizingDecision:
+    notional_usd: Decimal
+    skip_reason: str | None
+    target_notional_usd: Decimal
+    fill_target_notional_usd: Decimal
+    desired_notional_usd: Decimal = ZERO
+    rounded_up: bool = False
+    capped: bool = False
+
+
+def entry_sizing_limits(
     settings: Settings,
-) -> tuple[Decimal, Decimal, MinOrderAdjustment | None]:
-    min_order_notional = settings.trading_copy_min_order_notional_usd
-    if notional_usd >= min_order_notional:
-        return margin_usd, notional_usd, None
-
-    min_order_margin = margin_from_notional(min_order_notional, source_leverage)
-    can_adjust_to_min_order = (
-        settings.trading_copy_adjust_small_orders_to_min_order
-        and target_notional < min_order_notional
-        and source_remaining >= min_order_margin
-        and global_remaining >= min_order_margin
-    )
-    if not can_adjust_to_min_order:
-        return margin_usd, notional_usd, None
-
-    return (
-        min_order_margin,
-        min_order_notional,
-        MinOrderAdjustment(
-            original_notional_usd=notional_usd,
-            adjusted_notional_usd=min_order_notional,
-            min_order_notional_usd=min_order_notional,
-        ),
-    )
-
-
-def open_notional_skip_reason(
     *,
-    target_notional: Decimal,
-    source_remaining: Decimal,
-    global_remaining: Decimal,
-    min_order_notional: Decimal,
-) -> str:
-    source_cap_blocked = source_remaining < min_order_notional
-    total_cap_blocked = global_remaining < min_order_notional
-    if source_cap_blocked and total_cap_blocked:
-        return "source_and_total_allocation_caps_reached"
-    if source_cap_blocked:
-        return "source_allocation_cap_reached"
-    if total_cap_blocked:
-        return "total_allocation_cap_reached"
-    if target_notional < min_order_notional:
-        return "below_min_order_notional"
-    return "below_min_order_notional"
+    min_order_notional_usd: Decimal | None = None,
+) -> EntrySizingLimits:
+    return EntrySizingLimits(
+        min_order_notional_usd=(
+            settings.trading_copy_min_order_notional_usd
+            if min_order_notional_usd is None
+            else min_order_notional_usd
+        ),
+        min_order_round_up_ratio=settings.trading_copy_min_order_round_up_ratio,
+        max_source_exposure_multiple=settings.trading_copy_max_source_exposure_multiple,
+        max_total_exposure_multiple=settings.trading_copy_max_total_exposure_multiple,
+    )
+
+
+def copy_allocation_pct(settings: Settings) -> Decimal:
+    """Equal-weight share of the allocation budget for each copied source."""
+
+    return settings.trading_copy_max_total_allocation_pct / Decimal(
+        settings.trading_copy_top_wallet_count
+    )
+
+
+def plan_entry_sizing(
+    *,
+    opening: bool,
+    allocation_usd: Decimal,
+    account_equity_usd: Decimal,
+    source_equity_usd: Decimal,
+    source_fill_size: Decimal,
+    source_position_after: Decimal,
+    current_position_size: Decimal,
+    price: Decimal,
+    source_exposure_usd: Decimal,
+    account_exposure_usd: Decimal,
+    limits: EntrySizingLimits,
+) -> EntrySizingDecision:
+    """Size one copied entry against the proportional target position.
+
+    Orders are placed at the source fill, so prices stay close to the source. The
+    position tracks allocation / source equity times the source position, rounded
+    to the exchange minimum: an opening order is always at least the minimum,
+    later adds round to the nearest minimum step, and an add never chases more
+    than its own fill plus one minimum order. Exposure caps are never exceeded.
+    """
+
+    if allocation_usd <= ZERO or source_equity_usd <= ZERO or price <= ZERO:
+        return EntrySizingDecision(ZERO, "sizing_inputs_unavailable", ZERO, ZERO)
+
+    copy_ratio = allocation_usd / source_equity_usd
+    fill_target = copy_ratio * max(source_fill_size, ZERO) * price
+    target = copy_ratio * max(source_position_after, ZERO) * price
+    current = max(current_position_size, ZERO) * price
+    min_order = limits.min_order_notional_usd
+    source_room = limits.max_source_exposure_multiple * allocation_usd - source_exposure_usd
+    total_room = limits.max_total_exposure_multiple * account_equity_usd - account_exposure_usd
+    room = min(source_room, total_room)
+    cap_reason = (
+        "source_exposure_cap_reached" if source_room <= total_room else "total_exposure_cap_reached"
+    )
+
+    def decision(
+        notional: Decimal,
+        desired: Decimal,
+        *,
+        skip_reason: str | None = None,
+        rounded_up: bool = False,
+        capped: bool = False,
+    ) -> EntrySizingDecision:
+        return EntrySizingDecision(
+            notional_usd=notional if skip_reason is None else ZERO,
+            skip_reason=skip_reason,
+            target_notional_usd=target,
+            fill_target_notional_usd=fill_target,
+            desired_notional_usd=desired,
+            rounded_up=rounded_up,
+            capped=capped,
+        )
+
+    if opening:
+        desired = max(target - current, ZERO)
+        if desired < min_order:
+            if min_order <= room:
+                return decision(min_order, desired, rounded_up=True)
+            return decision(ZERO, desired, skip_reason=cap_reason, capped=True)
+        if desired <= room:
+            return decision(desired, desired)
+        if room >= min_order:
+            return decision(room, desired, capped=True)
+        return decision(ZERO, desired, skip_reason=cap_reason, capped=True)
+
+    delta = target - current
+    if delta <= ZERO:
+        return decision(ZERO, ZERO, skip_reason="target_position_reached")
+    desired = min(delta, fill_target + min_order)
+    allowed = min(desired, max(room, ZERO))
+    capped = allowed < desired
+    if allowed >= min_order and allowed > ZERO:
+        return decision(allowed, desired, capped=capped)
+    if (
+        allowed > ZERO
+        and allowed >= limits.min_order_round_up_ratio * min_order
+        and min_order <= room
+    ):
+        return decision(min_order, desired, rounded_up=True, capped=capped)
+    return decision(
+        ZERO,
+        desired,
+        skip_reason=cap_reason if capped else "below_min_order_notional",
+        capped=capped,
+    )
+
+
+def source_position_after_fill(
+    *,
+    start_position: Decimal | None,
+    fill_size: Decimal,
+) -> Decimal:
+    """Absolute source position size right after a same-side opening fill."""
+
+    start = start_position.copy_abs() if start_position is not None else ZERO
+    return start + max(fill_size, ZERO)
 
 
 def trade_intent_payload(intent: TradeIntent | None) -> dict[str, Any] | None:

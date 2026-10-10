@@ -411,11 +411,12 @@ The backend config files are grouped by operational area:
   retention days, retention batch size, max rows, and protected top scored
   wallets.
 - `live_trading.json` owns live execution guardrails, entry intent TTL,
-  reconciliation freshness, min-order wire buffer, weekly account-loss
-  percentage, order rate, and reduce-only behavior.
-- `trading.json` owns copy policy shared by paper and live copy, including
-  source ranking limits, allocation pockets, minimum copy notional, optional
-  min-order adjustment, price drift guard, and live mid-price cache settings.
+  reconciliation freshness, min-order wire buffer, rolling daily and weekly
+  loss, drawdown from peak, per-source loss, order rate, and reduce-only
+  behavior.
+- `trading.json` owns copy policy shared by paper and live copy, including the
+  source count, equal-weight allocation budget, exposure caps, minimum copy
+  notional and rounding, price drift guard, and live mid-price cache settings.
 - `paper_trading.json` owns paper-only simulation settings such as simulated
   fees, simulated slippage, simulated latency, and recovery cadence.
 - `pool_fill_import.json` owns scheduled pool reimport and shared fill import
@@ -886,9 +887,16 @@ sequenceDiagram
   API-->>UI: refreshed paper trading summary
 ```
 
-Paper sizing uses `source fill notional / source perp equity` and applies that
-exposure inside each configured source-wallet pocket. Default pockets are 30% for
-each top 10 rank, with a 100% total open copied-margin cap per paper account.
+Paper and live share one entry sizing function, `plan_entry_sizing` in
+`trading_core.py`. Each copied source gets an equal share of the allocation
+budget (20% for the default five sources). The target position is allocation /
+source perp equity times the source position after the fill, taken from the
+fill's `startPosition` plus its size. Orders are placed at the source fill, and
+each entry buys only the gap to the target: an opening is always at least one
+minimum order, later adds round to the nearest minimum step, and an add never
+buys more than its own proportional fill plus one minimum order. Exposure caps
+apply to notional, not margin: 3x the source allocation per source and 3x
+account equity in total by default. Exits keep the proportional close ratio.
 Valid source perp equity is required for opens and adds only. Reduce, close, and
 flip-close parts are processed against existing paper positions even when the
 current Hyperliquid source state reports zero or unavailable perp equity after
@@ -907,11 +915,9 @@ WebSocket `allMids` subscription so later fills can use cached prices.
 For isolated HIP-3 positions, Hyperliquid `marginSummary.accountValue` can equal
 isolated position equity and move with `totalMarginUsed`, so it should not be
 read as a stable wallet cash balance.
-Opens or adds below the configured minimum notional are adjusted up to the
-minimum when `trading_copy_adjust_small_orders_to_min_order` is enabled and the
-source and account caps can fit the adjusted margin. Otherwise they are skipped
-before any paper position is created. The default minimum is 10 USD to match
-Hyperliquid's live perp minimum order value. Paper execution starts the
+Rounding never pushes an order past an exposure cap. The default minimum is
+10 USD to match Hyperliquid's live perp minimum order value. Paper execution
+starts the
 configured latency while source account state is fetched in parallel, then
 prices from live mids when enabled, applies adverse slippage, and skips fills
 whose adverse observed drift exceeds the configured max drift limit. Favorable
@@ -1343,24 +1349,35 @@ ownership. Unexplained manual or competing exposure remains retryable and no
 reduce-only order is submitted.
 Automatic copied live entries also require a complete reconciliation snapshot no
 older than the configured maximum and an unexpired entry intent. They pass
-account-level guardrails for weekly loss percentage and max orders per minute.
+account-level guardrails for rolling 24 hour loss, rolling 7 day loss, drawdown
+from peak, and max orders per minute, plus a per-source loss limit.
 Stale, partial, or failed reconciliation blocks new entries without changing the
 account lifecycle status. The account remains enabled, reconciliation continues,
 and entries resume automatically after a complete fresh snapshot. Reconciliation
 transitions into partial or failed health record warning risk and audit entries.
-Breached weekly loss or order-rate limits still trip the account to `exit_only`,
-cancel unsent entries, and record a critical risk event and audit entry. Expired
-intents and static leverage or slippage violations are rejected before
-submission.
-Weekly loss usage combines net realized PnL after fees and signed Hyperliquid
-funding with current aggregate
-exchange unrealized PnL. The percentage base is current account equity minus
-weekly net PnL and weekly net external cash flow, which reconstructs
-start-of-week equity without allowing a deposit to dilute an existing loss.
-The exchange aggregate is added once and is not reconstructed from
-source-attributed rows.
+Breached loss, drawdown, or order-rate limits trip the account to `exit_only`,
+cancel unsent entries, and record a critical risk event and audit entry. Exits
+are still copied and nothing is force closed; the account stays exit-only until
+it is started again. Expired intents and static leverage or slippage violations
+are rejected before submission.
+Account losses come from the time-weighted `performance_index` that every
+reconciliation writes to `trading_account_performance_snapshots`. It reflects
+equity including unrealized PnL and funding, and excludes deposits and
+withdrawals. Rolling losses compare the latest index with the snapshot at or
+before the window start, falling back to the baseline snapshot, and drawdown
+compares it with the highest index. Accounts without snapshots skip these checks.
+The per-source limit adds the source's realized net PnL over 7 days to the
+current unrealized PnL of its open positions and blocks only that source's
+entries.
+Copy sizing and the final entry gate share `load_live_copy_exposure`. Source
+exposure is the current notional of the source's positions plus unfilled entry
+orders. Account exposure is the larger of attributed source positions and the
+authoritative exchange positions, plus all unfilled entry orders, so neither a
+fill that is not yet reconciled nor unattributed exposure is missed. The gate
+repeats the cap check under the account lock.
 For non-reduce-only orders, leverage and margin mode follow the current source
-position without a local leverage maximum. Leverage must remain a positive
+position as the exchange setting; exposure is limited by the notional caps
+instead. Leverage must remain a positive
 whole number. The adapter applies `updateLeverage` to the resolved Hyperliquid
 market with `isCross=true` for cross or `isCross=false` for isolated and
 requires a successful response before submitting the order. Missing source
