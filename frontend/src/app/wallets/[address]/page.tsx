@@ -1,13 +1,30 @@
-import { WalletCards } from "lucide-react";
+import { ArrowLeft, ExternalLink } from "lucide-react";
+import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-import { HeaderRefreshButton, HeaderUpdatedLabel } from "@/components/HeaderRefresh";
-import { ImportFillsButton } from "@/components/ImportFillsButton";
-import { PageTopPanel } from "@/components/PageTopPanel";
-import { ScoreDetailsModal } from "@/components/ScoreDetailsModal";
-import { StatusPill } from "@/components/StatusPill";
+import { Address, RefreshControl, TimeAgo } from "@/components/ui/client";
 import {
+  Badge,
+  EmptyState,
+  KeyValues,
+  Meter,
+  Panel,
+  Pnl,
+  PnlPercent,
+  scoreTone,
+  SectionLabel,
+  Side,
+  Stat,
+  StatStrip,
+  StatusDot,
+  Usd,
+} from "@/components/ui/primitives";
+import { toneText } from "@/components/ui/tone";
+import { ScoreDetailsDialog } from "@/components/wallets/ScoreDetailsDialog";
+import { WalletDetailActions, WalletHistory } from "@/components/wallets/WalletDetailClient";
+import {
+  getPaperTradingSummary,
   getWallet,
   getWalletCopyTrades,
   getWalletFills,
@@ -15,1245 +32,504 @@ import {
   getWalletSourceTrades,
   getWalletStats,
 } from "@/lib/api";
+import { cx } from "@/lib/cx";
+import {
+  decimal,
+  formatDuration,
+  formatInteger,
+  formatLeverage,
+  formatMultiple,
+  formatPercent,
+  formatPrice,
+  formatScore,
+  formatSize,
+  formatUsd,
+  humanize,
+  shortAddress,
+} from "@/lib/format";
+import { SCORE_COMPONENTS, walletDisplayName, walletStatus } from "@/lib/wallets";
 import type {
-  CopyTrade,
-  SourceTrade,
-  SourceTradeListResponse,
   SourceTradeWindowStats,
-  WalletCoinStats,
   WalletCurrentStateStats,
-  WalletFill,
-  WalletPerpPositionStats,
   WalletScore,
   WalletScoreDetail,
-  WalletScorePenaltyItem,
-  WalletSpotBalanceStats,
   WalletStats,
 } from "@/types/wallet";
 
-export default async function WalletDetailPage({
-  params,
-}: {
-  params: Promise<{ address: string }>;
-}) {
+export const dynamic = "force-dynamic";
+
+export async function generateMetadata({ params }: { params: Promise<{ address: string }> }): Promise<Metadata> {
+  const { address } = await params;
+  return { title: shortAddress(address) };
+}
+
+export default async function WalletDetailPage({ params }: { params: Promise<{ address: string }> }) {
   const { address } = await params;
   const wallet = await getWallet(address);
   if (!wallet) {
     notFound();
   }
-
-  const [stats, fills, sourceTrades, copyTrades, scoreDetail] = await Promise.all([
+  const [stats, fills, sourceTrades, copyTrades, scoreDetail, summary] = await Promise.all([
     getWalletStats(wallet.address),
     getWalletFills(wallet.address),
     getWalletSourceTrades(wallet.address),
     getWalletCopyTrades(wallet.address),
     getWalletScoreDetail(wallet.address),
+    getPaperTradingSummary({ closedTradeLimit: 1, includeMarketPrices: false, recentFillLimit: 1 }),
   ]);
+  const followedLive = new Set(
+    [...summary.realtimeMonitoring.desiredWallets, ...summary.realtimeMonitoring.monitoredWallets].map((item) =>
+      item.toLowerCase(),
+    ),
+  );
+  const status = walletStatus(wallet, followedLive);
+  const score = wallet.score;
+  const state = stats?.currentState ?? null;
+  const windowDays = scoreDetail?.windowDays ?? 60;
 
   return (
     <>
-      <PageTopPanel
-        eyebrow="Wallet Pool"
-        icon={WalletCards}
-        title={wallet.label || shortAddress(wallet.address)}
-        meta={
-          <>
-            <Link href="/wallets" className="text-xs font-medium text-muted hover:text-ink">
-              Back to Wallet Pool
-            </Link>
-            <span className="break-all font-mono text-xs text-muted">{wallet.address}</span>
-          </>
-        }
-        actions={
-          <>
-            <HeaderUpdatedLabel label={`Updated ${formatDate(wallet.updatedAt)}`} />
-            <StatusPill
-              label={wallet.enabled ? "enabled" : "disabled"}
-              tone={wallet.enabled ? "positive" : "warning"}
-            />
-            <StatusPill label={wallet.pollingTier} tone="neutral" />
-            <StatusPill label={`${stats?.fillCount ?? fills.total} fills`} tone="neutral" />
-            {wallet.copyEnabled ? <StatusPill label="copy enabled" tone="positive" /> : null}
-          </>
-        }
-        refresh={<HeaderRefreshButton title="Refresh wallet data" />}
-      />
-
-      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <HeaderMetric
-          label="Pool rank"
-          value={wallet.poolRank ? `#${formatInteger(wallet.poolRank)}` : "Unranked"}
-        />
-        <HeaderMetric
-          label="Final score"
-          value={wallet.score ? formatScore(wallet.score.score) : "-"}
-          tone={scoreTone(wallet.score?.score)}
-        />
-        <HeaderMetric
-          label="Score PnL"
-          value={wallet.score ? formatCurrency(wallet.score.copyablePnlUsd) : "-"}
-          detail={
-            wallet.score
-              ? `${formatInteger(scoreDetail?.windowDays ?? 60)}D score window`
-              : undefined
-          }
-          tone={numberValue(wallet.score?.copyablePnlUsd ?? 0) >= 0 ? "positive" : "danger"}
-        />
-        <HeaderMetric
-          label="Source trades"
-          value={`${sourceTrades.summary.closedTradeCount}/${sourceTrades.summary.openTradeCount}`}
-          detail="closed / open"
-        />
-      </section>
-
-      <section className="grid gap-4 lg:grid-cols-[0.8fr_1.2fr]">
-        <div className="ui-panel p-4">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between lg:flex-col lg:items-stretch">
-            <div>
-              <h2 className="text-base font-semibold">History Import</h2>
-              <p className="mt-2 text-sm leading-6 text-muted">
-                Pulls recent perp fills and updates wallet stats after dedupe.
-              </p>
-            </div>
-            <ImportFillsButton address={wallet.address} />
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <Link href="/wallets" className="inline-flex items-center gap-1 text-xs text-fg-3 hover:text-fg">
+            <ArrowLeft className="h-3 w-3" aria-hidden="true" /> Wallets
+          </Link>
+          <h1 className="mt-1 truncate text-xl font-semibold tracking-[-0.01em]">{walletDisplayName(wallet)}</h1>
+          <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-fg-3">
+            <Address address={wallet.address} head={10} tail={8} />
+            <a
+              href={`https://app.hyperliquid.xyz/explorer/address/${wallet.address}`}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 hover:text-fg"
+            >
+              Hyperliquid explorer <ExternalLink className="h-3 w-3" aria-hidden="true" />
+            </a>
+            <StatusDot tone={status.tone} label={<span className="text-fg-2">{status.label}</span>} title={status.detail} />
+            <span>pool rank {wallet.poolRank ? `#${wallet.poolRank}` : "none"}</span>
+            <span>
+              last trade <TimeAgo value={wallet.lastSeenFillAt} fallback="never" />
+            </span>
+            <span>
+              polled <TimeAgo value={wallet.lastPolledAt} fallback="never" />
+            </span>
           </div>
+          {wallet.notes ? (
+            <p className="mt-1 line-clamp-2 max-w-3xl text-xs text-fg-3" title={wallet.notes}>
+              {wallet.notes}
+            </p>
+          ) : null}
         </div>
-
-        <div className="grid gap-3 sm:grid-cols-3">
-          <InfoBlock
-            title="Last poll"
-            value={wallet.lastPolledAt ? formatDate(wallet.lastPolledAt) : "Never"}
-          />
-          <InfoBlock
-            title="Last fill"
-            value={wallet.lastSeenFillAt ? formatDate(wallet.lastSeenFillAt) : "No fills"}
-          />
-          <InfoBlock
-            title="First fill"
-            value={stats?.firstFillTimeMs ? formatMs(stats.firstFillTimeMs) : "-"}
-          />
+        <div className="flex shrink-0 items-start gap-2">
+          <RefreshControl updatedAt={new Date().toISOString()} />
+          <WalletDetailActions wallet={wallet} />
         </div>
-      </section>
+      </div>
 
-      {stats ? <WalletStatsPanel stats={stats} /> : <EmptyStatsPanel />}
+      <StatStrip className="lg:grid-cols-6">
+        <Stat
+          label="Score"
+          tone={scoreTone(score?.score)}
+          value={score ? formatScore(score.score) : "Unscored"}
+          sub={score ? <>scored <TimeAgo value={score.updatedAt} /></> : "no score yet"}
+        />
+        <Stat
+          label="30D return"
+          hint="Time-weighted return on the wallet's own equity over 30 days, from Hyperliquid portfolio history"
+          value={<PnlPercent value={score?.equityReturnPct} />}
+          sub={`max drawdown ${formatPercent(score?.maxDrawdownPct)}`}
+        />
+        <Stat
+          label="Realized PnL"
+          hint={`The wallet's own realized PnL from closed trades in the ${windowDays} day scoring window`}
+          value={score ? <Pnl value={score.copyablePnlUsd} /> : "-"}
+          sub={`${windowDays} day window`}
+        />
+        <Stat
+          label="Win rate"
+          value={formatPercent(score?.winRate)}
+          sub={`profit factor ${formatMultiple(score?.profitFactor)}`}
+        />
+        <Stat
+          label="Closed trades"
+          value={formatInteger(score?.tradeCount ?? sourceTrades.summary.closedTradeCount)}
+          sub={`${formatInteger(sourceTrades.summary.openTradeCount)} open now`}
+        />
+        <Stat
+          label="Account value"
+          value={state ? formatUsd(state.accountValueUsd) : "-"}
+          sub={state ? <>open PnL <Pnl value={state.totalUnrealizedPnlUsd} /></> : "no snapshot"}
+        />
+      </StatStrip>
 
-      <ScoreBreakdownSection score={wallet.score} scoreDetail={scoreDetail} />
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+        <ScorePanel score={score} scoreDetail={scoreDetail} windowDays={windowDays} />
+        <CurrentStatePanel state={state} />
+      </div>
 
-      {stats?.currentState ? <CurrentStateSection state={stats.currentState} /> : null}
+      <WindowsPanel windows={sourceTrades.windows} />
 
-      <SourceTradeWindowsSection windows={sourceTrades.windows} />
+      {stats ? <FillStatsPanel stats={stats} /> : null}
 
-      <SourceTradesSection sourceTrades={sourceTrades} />
-
-      <section className="grid gap-5 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-        {stats ? <CoinStatsSection coins={stats.topCoins} /> : null}
-        <CopyTradesSection trades={copyTrades.items} total={copyTrades.total} />
-      </section>
-
-      <FillsSection fills={fills.items} total={fills.total} />
+      <WalletHistory
+        coins={stats?.topCoins ?? []}
+        copyTradeTotal={copyTrades.total}
+        copyTrades={copyTrades.items}
+        fillTotal={fills.total}
+        fills={fills.items}
+        sourceTradeDays={sourceTrades.days}
+        sourceTradeSummary={sourceTrades.summary}
+        sourceTrades={sourceTrades.items}
+        spotBalances={state?.spotBalances ?? []}
+      />
     </>
   );
 }
 
-function WalletStatsPanel({ stats }: { stats: WalletStats }) {
-  return (
-    <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-      <StatTile label="Total fills" value={formatInteger(stats.fillCount)} detail="Stored source fills" />
-      <StatTile
-        label="Total notional"
-        value={formatCurrency(stats.totalNotionalUsd)}
-        detail={`${formatInteger(stats.uniqueCoinCount)} coins traded`}
-      />
-      <StatTile
-        label="Raw Fill PnL"
-        value={formatCurrency(stats.totalPnlUsd)}
-        detail="Diagnostic, not scoring"
-        tone={numberValue(stats.totalPnlUsd) >= 0 ? "positive" : "danger"}
-      />
-      <StatTile
-        label="Fees"
-        value={formatCurrency(stats.totalFeeUsd)}
-        detail={`Avg fill ${formatCurrency(stats.averageFillNotionalUsd)}`}
-      />
-      <StatTile
-        label="Buy / sell"
-        value={`${formatInteger(stats.buyCount)} / ${formatInteger(stats.sellCount)}`}
-        detail="Fill side distribution"
-      />
-      <StatTile
-        label="Snapshots"
-        value={formatInteger(stats.snapshotFillCount)}
-        detail={`${formatInteger(stats.realtimeFillCount)} realtime fills`}
-      />
-      <StatTile
-        label="Latency"
-        value={
-          stats.averageIngestLatencyMs ? `${formatInteger(stats.averageIngestLatencyMs)} ms` : "-"
-        }
-        detail={
-          stats.maxIngestLatencyMs ? `Max ${formatInteger(stats.maxIngestLatencyMs)} ms` : "No latency data"
-        }
-      />
-      <StatTile
-        label="Last fill"
-        value={stats.lastFillTimeMs ? formatMs(stats.lastFillTimeMs) : "-"}
-        detail="Most recent stored fill"
-      />
-    </section>
-  );
-}
-
-function HeaderMetric({
-  detail,
-  label,
-  tone = "neutral",
-  value,
-}: {
-  detail?: string;
-  label: string;
-  tone?: "positive" | "warning" | "danger" | "neutral";
-  value: string;
-}) {
-  const valueClass =
-    tone === "positive"
-      ? "text-positive"
-      : tone === "warning"
-        ? "text-warning"
-        : tone === "danger"
-          ? "text-danger"
-          : "text-ink";
-
-  return (
-    <div className="ui-metric p-3">
-      <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">{label}</p>
-      <p className={`mt-1.5 truncate text-xl font-semibold tabular-nums ${valueClass}`}>{value}</p>
-      {detail ? <p className="mt-1 text-xs text-muted">{detail}</p> : null}
-    </div>
-  );
-}
-
-function ScoreBreakdownSection({
+function ScorePanel({
   score,
   scoreDetail,
+  windowDays,
 }: {
   score: WalletScore | null;
   scoreDetail: WalletScoreDetail | null;
+  windowDays: number;
 }) {
   if (!score) {
     return (
-      <section className="ui-panel px-4 py-10 text-center text-sm text-muted">
-        No wallet score available yet.
-      </section>
+      <Panel title="Score">
+        <EmptyState title="Not scored yet">Import fills and run wallet scoring to rank this wallet.</EmptyState>
+      </Panel>
     );
   }
-
-  const components = scoreComponents(score);
-  const strengths = components.filter((component) => component.value >= 70);
-  const weakSpots = components.filter((component) => component.value < 45);
-  const penaltyItems = scoreDetail?.penaltyItems ?? [];
-  const penalty = numberValue(scoreDetail?.penaltyScore ?? score.penaltyScore);
-  const liquidationEvents = scoreDetail?.liquidationEventCount ?? scoreDetail?.liquidationCount ?? 0;
-  const realizedDrawdownPct = scoreDetail?.realizedDrawdownPct ?? score.realizedDrawdownPct;
-  const equityDrawdownPct = scoreDetail?.maxDrawdownPct ?? score.maxDrawdownPct ?? null;
-  const equityReturnPct = scoreDetail?.equityReturnPct ?? score.equityReturnPct ?? null;
-  const copySizeRatio = scoreDetail?.copySizeRatio ?? score.copySizeRatio ?? null;
-  const currentDrawdownPct = scoreDetail?.currentDrawdownPct ?? score.currentDrawdownPct;
-  const openPositionStressPct =
-    scoreDetail?.openPositionStressPct ?? score.openPositionStressPct;
-  const currentDrawdownStatus =
-    scoreDetail?.currentDrawdownStatus ?? score.currentDrawdownStatus;
-  const scoreWindowDays = scoreDetail?.windowDays ?? 60;
+  const penalty = decimal(scoreDetail?.penaltyScore ?? score.penaltyScore);
+  const activePenalties = (scoreDetail?.penaltyItems ?? []).filter((item) => item.active);
+  const caps = [
+    scoreDetail?.sampleCap
+      ? `Capped at ${formatScore(scoreDetail.sampleCap)}: fewer than ${formatInteger(scoreDetail.minTrades)} closed trades in ${windowDays} days.`
+      : null,
+    scoreDetail?.liveRiskScoreCap
+      ? `Capped at ${formatScore(scoreDetail.liveRiskScoreCap)} while the wallet is in a deep drawdown.`
+      : null,
+  ].filter(Boolean);
 
   return (
-    <section className="ui-panel overflow-hidden">
-      <div className="flex flex-col gap-3 border-b border-line px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
-        <div>
-          <h2 className="text-base font-semibold">Score Breakdown</h2>
-          <p className="mt-1 text-sm text-muted">
-            Last scored {formatDate(score.updatedAt)}. Scoring window{" "}
-            {formatInteger(scoreWindowDays)}D.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <StatusPill label={`score ${formatScore(score.score)}`} tone={scoreTone(score.score)} />
-          <StatusPill label={`${formatInteger(scoreWindowDays)}D scoring`} tone="neutral" />
-          <StatusPill label={`${formatInteger(score.tradeCount)} closed`} tone="neutral" />
-          <StatusPill
-            label={`penalty ${formatPenaltyScore(penalty)}`}
-            tone={penalty >= 35 ? "danger" : penalty > 0 ? "warning" : "positive"}
-          />
-          {liquidationEvents > 0 ? (
-            <StatusPill
-              label={`${formatInteger(liquidationEvents)} liq events`}
-              tone={liquidationEvents >= 2 ? "danger" : "warning"}
-            />
-          ) : null}
-          {openPositionStressPct ? (
-            <StatusPill
-              label={`open stress ${formatPercent(openPositionStressPct)}`}
-              tone={openStressTone(openPositionStressPct)}
-            />
-          ) : null}
-          <ScoreDetailsModal score={score} scoreDetail={scoreDetail} />
-        </div>
+    <Panel
+      title="Score"
+      meta={`${windowDays} day window, ${formatInteger(score.tradeCount)} closed trades`}
+      actions={<ScoreDetailsDialog score={score} scoreDetail={scoreDetail} />}
+    >
+      <div className="flex items-baseline gap-3 border-b border-line px-3.5 py-3">
+        <span className={cx("text-2xl font-semibold tabular-nums", toneText[scoreTone(score.score)])}>
+          {formatScore(score.score)}
+        </span>
+        <span className="text-sm text-fg-2">{scoreVerdict(decimal(score.score))}</span>
       </div>
-
-      <div className="grid gap-0 divide-y divide-line xl:grid-cols-[0.9fr_1.1fr] xl:divide-x xl:divide-y-0">
-        <div className="p-4">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-            <div>
-              <p className="text-xs font-medium uppercase text-muted">Final score</p>
-              <p className={`mt-2 text-5xl font-semibold ${scoreTextClass(score.score)}`}>
-                {formatScore(score.score)}
-              </p>
-            </div>
-            <div className="grid gap-2 text-sm text-muted sm:text-right">
-              <p>
-                {formatInteger(scoreWindowDays)}D score realized PnL{" "}
-                {formatCurrency(score.copyablePnlUsd)}
-              </p>
-              <p>Win rate {formatPercent(score.winRate)}</p>
-              <p>Profit factor {formatNullableNumber(score.profitFactor)}</p>
-              <p>30D equity return {formatPercent(equityReturnPct)}</p>
-              <p>30D equity drawdown {formatPercent(equityDrawdownPct)}</p>
-              <p>Realized drawdown {formatPercent(realizedDrawdownPct)}</p>
-              <p>Trades copyable at our size {formatPercent(copySizeRatio)}</p>
-              <p>
-                Current drawdown {formatPercent(currentDrawdownPct)}
-                {formatCurrentDrawdownStatus(currentDrawdownStatus)}
-              </p>
-              <p>Open position stress {formatPercent(openPositionStressPct)}</p>
-            </div>
-          </div>
-
-          <div className="mt-5 grid gap-4 md:grid-cols-2">
-            <ScoreSignalList title="Shines" items={strengths} empty="No component above 70." />
-            <ScoreSignalList title="Falls" items={weakSpots} empty="No component below 45." />
-          </div>
-        </div>
-
-        <div className="divide-y divide-line">
-          {components.map((component) => (
-            <ScoreComponentRow key={component.key} component={component} />
-          ))}
-          <ScoreComponentRow
-            component={{
-              detail: activePenaltySummary(penaltyItems),
-              key: "penalty",
-              label: "Penalty",
-              value: penalty,
-            }}
-            inverted
-          />
-          <PenaltyBreakdownList items={penaltyItems} />
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function ScoreSignalList({
-  title,
-  items,
-  empty,
-}: {
-  title: string;
-  items: ScoreComponent[];
-  empty: string;
-}) {
-  return (
-    <div>
-      <p className="text-xs font-medium uppercase text-muted">{title}</p>
-      <div className="mt-2 grid gap-2">
-        {items.length === 0 ? (
-          <p className="text-sm text-muted">{empty}</p>
-        ) : (
-          items.map((item) => (
-            <div key={item.key} className="flex items-center justify-between gap-3 text-sm">
-              <span className="min-w-0 max-w-full whitespace-normal wrap-break-word text-muted">{item.label}</span>
-              <span className={`font-semibold ${scoreTextClass(item.value)}`}>
-                {formatScore(item.value)}
+      <ul className="divide-y divide-line">
+        {SCORE_COMPONENTS.map((component) => {
+          const value = decimal(component.value(score));
+          return (
+            <li key={component.key} className="grid grid-cols-[minmax(0,1fr)_120px_44px] items-center gap-3 px-3.5 py-2">
+              <div className="min-w-0">
+                <p className="text-sm font-medium">{component.label}</p>
+                <p className="truncate text-xs text-fg-3" title={component.description}>
+                  {component.description}
+                </p>
+              </div>
+              <Meter value={value / 100} tone={scoreTone(value)} />
+              <span className={cx("text-right text-sm font-medium tabular-nums", toneText[scoreTone(value)])}>
+                {formatScore(value)}
               </span>
-            </div>
-          ))
-        )}
-      </div>
-    </div>
-  );
-}
-
-function ScoreComponentRow({
-  component,
-  inverted = false,
-}: {
-  component: ScoreComponent;
-  inverted?: boolean;
-}) {
-  const toneClass = inverted
-    ? component.value >= 35
-      ? "bg-danger"
-      : component.value > 0
-        ? "bg-warning"
-        : "bg-positive"
-    : component.value >= 70
-      ? "bg-positive"
-      : component.value >= 45
-        ? "bg-warning"
-        : "bg-danger";
-
-  return (
-    <div className="px-4 py-3">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <p className="font-medium">{component.label}</p>
-          <p className="mt-1 text-sm text-muted">{component.detail}</p>
-        </div>
-        <span className={`shrink-0 text-lg font-semibold ${scoreTextClass(component.value, inverted)}`}>
-          {inverted ? formatPenaltyScore(component.value) : formatScore(component.value)}
-        </span>
-      </div>
-      <div className="mt-3 h-2 overflow-hidden rounded-full bg-line">
-        <div
-          className={`h-full rounded-full ${toneClass}`}
-          style={{ width: `${Math.max(0, Math.min(100, component.value))}%` }}
-        />
-      </div>
-    </div>
-  );
-}
-
-function PenaltyBreakdownList({ items }: { items: WalletScorePenaltyItem[] }) {
-  if (items.length === 0) {
-    return (
-      <div className="px-4 py-3 text-sm text-muted">
-        Penalty source details are not available yet.
-      </div>
-    );
-  }
-
-  return (
-    <div className="px-4 py-3">
-      <p className="text-xs font-medium uppercase text-muted">Penalty sources</p>
-      <div className="mt-3 grid gap-3">
-        {items.map((item) => (
-          <PenaltyItemRow key={item.key} item={item} />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function PenaltyItemRow({ item }: { item: WalletScorePenaltyItem }) {
-  const value = numberValue(item.value);
-  const maxValue = Math.max(numberValue(item.maxValue), 1);
-  const width = Math.max(0, Math.min(100, (value / maxValue) * 100));
-  const toneClass = value >= 20 ? "bg-danger" : value > 0 ? "bg-warning" : "bg-positive";
-
-  return (
-    <div className={item.active ? "" : "opacity-70"}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="font-medium">{item.label}</p>
-          <p className="mt-1 text-sm text-muted">{item.detail}</p>
-        </div>
-        <span className={`shrink-0 font-semibold ${scoreTextClass(value, true)}`}>
-          {formatPenaltyScore(value)}
-        </span>
-      </div>
-      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-line">
-        <div className={`h-full rounded-full ${toneClass}`} style={{ width: `${width}%` }} />
-      </div>
-    </div>
-  );
-}
-
-function CurrentStateSection({ state }: { state: WalletCurrentStateStats }) {
-  const currentDrawdownPct = currentUnrealizedDrawdownPct(state);
-
-  return (
-    <section className="grid gap-5 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
-      <div className="min-w-0 ui-panel">
-        <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
-          <h2 className="text-base font-semibold">Perp State</h2>
-          <StatusPill
-            label={`${formatInteger(state.openPositionCount)} open`}
-            tone={state.openPositionCount > 0 ? "positive" : "neutral"}
-          />
-        </div>
-        {state.error ? (
-          <div className="px-4 py-6 text-sm text-danger">{state.error}</div>
-        ) : (
-          <>
-            <div className="grid gap-0 divide-y divide-line sm:grid-cols-2 sm:divide-x sm:divide-y-0 lg:grid-cols-4">
-              <StateMetric label="Account value" value={formatCurrency(state.accountValueUsd)} />
-              <StateMetric label="Perp equity" value={formatCurrency(perpEquityUsd(state))} />
-              <StateMetric label="Available" value={formatCurrency(state.withdrawableUsd)} />
-              <StateMetric
-                label="Unrealized PnL"
-                value={formatCurrency(state.totalUnrealizedPnlUsd)}
-                tone={numberValue(state.totalUnrealizedPnlUsd) >= 0 ? "positive" : "danger"}
-              />
-              <StateMetric
-                label="Current drawdown"
-                value={formatPercent(currentDrawdownPct)}
-                tone={currentDrawdownPct > 0 ? "danger" : "neutral"}
-              />
-              <StateMetric
-                label="Position notional"
-                value={formatCurrency(state.totalPositionNotionalUsd)}
-              />
-              <StateMetric label="Margin used" value={formatCurrency(state.totalMarginUsedUsd)} />
-            </div>
-            <PerpPositionsTable positions={state.positions} />
-          </>
-        )}
-      </div>
-
-      <div className="min-w-0 ui-panel">
-        <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
-          <h2 className="text-base font-semibold">Spot Exposure</h2>
-          <StatusPill label={`${formatInteger(state.spotBalanceCount)} balances`} tone="neutral" />
-        </div>
-        <div className="grid gap-0 divide-y divide-line sm:grid-cols-2 sm:divide-x sm:divide-y-0">
-          <StateMetric label="USDC balance" value={formatCurrency(state.spotUsdcBalance)} />
-          <StateMetric label="Entry notional" value={formatCurrency(state.spotEntryNotionalUsd)} />
-        </div>
-        <SpotBalancesTable balances={state.spotBalances} />
-      </div>
-    </section>
-  );
-}
-
-function StateMetric({
-  label,
-  value,
-  tone = "neutral",
-}: {
-  label: string;
-  value: string;
-  tone?: "positive" | "danger" | "neutral";
-}) {
-  const toneClass =
-    tone === "positive" ? "text-positive" : tone === "danger" ? "text-danger" : "text-ink";
-
-  return (
-    <div className="p-4">
-      <p className="text-xs font-medium uppercase text-muted">{label}</p>
-      <p className={`mt-2 text-lg font-semibold ${toneClass}`}>{value}</p>
-    </div>
-  );
-}
-
-function PerpPositionsTable({ positions }: { positions: WalletPerpPositionStats[] }) {
-  return (
-    <div className="overflow-x-auto border-t border-line">
-      <table className="ui-table min-w-[920px] text-xs">
-        <thead className="ui-table-head">
-          <tr>
-            <th scope="col" className="px-3 py-2 font-semibold">Coin</th>
-            <th scope="col" className="px-3 py-2 font-semibold">Side</th>
-            <th scope="col" className="px-3 py-2 font-semibold">Opened</th>
-            <th scope="col" className="px-3 py-2 font-semibold">Size</th>
-            <th scope="col" className="px-3 py-2 font-semibold">Entry</th>
-            <th scope="col" className="px-3 py-2 font-semibold">Notional</th>
-            <th scope="col" className="px-3 py-2 font-semibold">PnL</th>
-            <th scope="col" className="px-3 py-2 font-semibold">Fills</th>
-            <th scope="col" className="px-3 py-2 font-semibold">Liq</th>
-            <th scope="col" className="px-3 py-2 font-semibold">Lev</th>
-          </tr>
-        </thead>
-        <tbody>
-          {positions.length === 0 ? (
-            <tr>
-              <td colSpan={10} className="px-4 py-10 text-center text-muted">
-                No open perp positions.
-              </td>
-            </tr>
-          ) : (
-            positions.map((position) => <PerpPositionRow key={position.coin} position={position} />)
-          )}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function PerpPositionRow({ position }: { position: WalletPerpPositionStats }) {
-  return (
-    <tr className="border-b border-line last:border-b-0">
-      <td className="px-3 py-2 font-semibold">{position.coin}</td>
-      <td className="px-3 py-2">{position.side}</td>
-      <td className="px-3 py-2 text-muted">
-        {position.openedAtMs ? formatMs(position.openedAtMs) : "-"}
-      </td>
-      <td className="px-3 py-2 font-mono">{formatCompactNumber(position.size)}</td>
-      <td className="px-3 py-2 font-mono">{formatPrice(position.entryPrice)}</td>
-      <td className="px-3 py-2 font-mono">{formatCurrency(position.positionValueUsd)}</td>
-      <td className="px-3 py-2 font-mono">
-        <div className={pnlTextClass(position.unrealizedPnlUsd)}>
-          U {position.unrealizedPnlUsd ? formatCurrency(position.unrealizedPnlUsd) : "-"}
-        </div>
-        <div className={pnlTextClass(position.realizedPnlUsd)}>
-          R {formatCurrency(position.realizedPnlUsd)}
-        </div>
-      </td>
-      <td className="px-3 py-2 font-mono text-muted">
-        <div>add {formatInteger(position.addFillCount)}</div>
-        <div>reduce {formatInteger(position.reduceFillCount)}</div>
-        {position.liquidationFillCount > 0 ? (
-          <div className="text-danger">liq {formatInteger(position.liquidationFillCount)}</div>
-        ) : null}
-      </td>
-      <td className="px-3 py-2 font-mono">{formatPrice(position.liquidationPrice)}</td>
-      <td className="px-3 py-2">
-        {position.leverageValue ? `${position.leverageValue}x ${position.leverageType ?? ""}` : "-"}
-      </td>
-    </tr>
-  );
-}
-
-function SpotBalancesTable({ balances }: { balances: WalletSpotBalanceStats[] }) {
-  return (
-    <div className="overflow-x-auto border-t border-line">
-      <table className="ui-table min-w-[620px] text-sm">
-        <thead className="ui-table-head">
-          <tr>
-            <th scope="col" className="px-3 py-2.5 font-semibold">Coin</th>
-            <th scope="col" className="px-3 py-2.5 font-semibold">Total</th>
-            <th scope="col" className="px-3 py-2.5 font-semibold">Hold</th>
-            <th scope="col" className="px-3 py-2.5 font-semibold">Entry notional</th>
-          </tr>
-        </thead>
-        <tbody>
-          {balances.length === 0 ? (
-            <tr>
-              <td colSpan={4} className="px-4 py-10 text-center text-muted">
-                No spot balances.
-              </td>
-            </tr>
-          ) : (
-            balances.map((balance) => (
-              <SpotBalanceRow key={`${balance.coin}-${balance.token}`} balance={balance} />
-            ))
-          )}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function SpotBalanceRow({ balance }: { balance: WalletSpotBalanceStats }) {
-  return (
-    <tr className="border-b border-line last:border-b-0">
-      <td className="px-3 py-2.5 font-semibold">{balance.coin}</td>
-      <td className="px-3 py-2.5 font-mono">{formatCompactNumber(balance.total)}</td>
-      <td className="px-3 py-2.5 font-mono">{formatCompactNumber(balance.hold)}</td>
-      <td className="px-3 py-2.5 font-mono">{formatCurrency(balance.entryNotionalUsd)}</td>
-    </tr>
-  );
-}
-
-function SourceTradeWindowsSection({ windows }: { windows: SourceTradeWindowStats[] }) {
-  return (
-    <section className="ui-panel overflow-hidden">
-      <div className="border-b border-line px-4 py-3">
-        <h2 className="text-base font-semibold">Performance Windows</h2>
-        <p className="mt-1 text-sm text-muted">
-          Reconstructed source trades only. Close-only and pre-existing fills are excluded.
-        </p>
-      </div>
-      {windows.length === 0 ? (
-        <div className="px-4 py-8 text-center text-sm text-muted">
-          No reconstructed source trade windows yet.
-        </div>
-      ) : null}
-      <div className="grid gap-0 divide-y divide-line xl:grid-cols-5 xl:divide-x xl:divide-y-0">
-        {windows.map((window) => (
-          <div key={window.label} className="p-4">
-            <p className="text-xs font-medium uppercase text-muted">{window.label}</p>
-            <p className={windowPnlClass(window.netPnlUsd)}>{formatCurrency(window.netPnlUsd)}</p>
-            <div className="mt-3 grid gap-1 text-sm text-muted">
-              <p>
-                ROI{" "}
-                <span className={windowRoiClass(window.roiPct)}>
-                  {formatPercent(window.roiPct)}
-                </span>
-              </p>
-              <p>
-                {formatInteger(window.closedTradeCount)} closed
-                {window.openTradeCount > 0 ? `, ${formatInteger(window.openTradeCount)} open` : ""}
-              </p>
-              <p>Win {formatPercent(window.winRate)}</p>
-              <p>{formatCurrency(window.entryNotionalUsd)} entry notional</p>
-              <p>{formatCurrency(window.feeUsd)} fees</p>
-            </div>
+            </li>
+          );
+        })}
+        <li className="px-3.5 py-2">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm font-medium">Penalties</p>
+            <span className={cx("text-sm font-medium tabular-nums", penalty > 0 ? "text-negative" : "text-fg-3")}>
+              {penalty > 0 ? `-${formatScore(penalty)}` : "none"}
+            </span>
           </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function CoinStatsSection({ coins }: { coins: WalletCoinStats[] }) {
-  return (
-    <section className="min-w-0 ui-panel overflow-hidden">
-      <div className="border-b border-line px-4 py-3">
-        <h2 className="text-base font-semibold">Top Coins</h2>
-      </div>
-      <div className="overflow-x-auto">
-        <table className="ui-table min-w-[640px] text-sm">
-          <thead className="ui-table-head">
-            <tr>
-              <th scope="col" className="px-3 py-2.5 font-semibold">Coin</th>
-              <th scope="col" className="px-3 py-2.5 font-semibold">Fills</th>
-              <th scope="col" className="px-3 py-2.5 font-semibold">Buy / sell</th>
-              <th scope="col" className="px-3 py-2.5 font-semibold">Notional</th>
-              <th scope="col" className="px-3 py-2.5 font-semibold">PnL</th>
-            </tr>
-          </thead>
-          <tbody>
-            {coins.length === 0 ? (
-              <tr>
-                <td colSpan={5} className="px-4 py-10 text-center text-muted">
-                  No coin stats yet.
-                </td>
-              </tr>
-            ) : (
-              coins.map((coin) => (
-                <tr key={coin.coin} className="border-b border-line last:border-b-0">
-                  <td className="px-3 py-2.5 font-semibold">{coin.coin}</td>
-                  <td className="px-3 py-2.5">{formatInteger(coin.fillCount)}</td>
-                  <td className="px-3 py-2.5">
-                    {formatInteger(coin.buyCount)} / {formatInteger(coin.sellCount)}
-                  </td>
-                  <td className="px-3 py-2.5 font-mono">{formatCurrency(coin.notionalUsd)}</td>
-                  <td className={pnlClass(coin.pnlUsd)}>{formatCurrency(coin.pnlUsd)}</td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
-    </section>
-  );
-}
-
-function SourceTradesSection({ sourceTrades }: { sourceTrades: SourceTradeListResponse }) {
-  const { summary } = sourceTrades;
-  return (
-    <section className="ui-panel overflow-hidden">
-      <div className="flex flex-col gap-3 border-b border-line px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
-        <div>
-          <h2 className="text-base font-semibold">Source Trades</h2>
-          <p className="mt-1 text-sm text-muted">
-            Reconstructed from {sourceTrades.days ? `${sourceTrades.days}D of` : "all"} observed
-            open and close fills. Ignored fills are diagnostics only.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <StatusPill label={`${summary.closedTradeCount} closed`} tone="positive" />
-          <StatusPill label={`${summary.openTradeCount} open`} tone="neutral" />
-          {summary.liquidationTradeCount > 0 ? (
-            <StatusPill
-              label={`${summary.liquidationTradeCount} liquidation`}
-              tone="danger"
-            />
+          {activePenalties.length > 0 ? (
+            <ul className="mt-1 grid gap-1">
+              {activePenalties.map((item) => (
+                <li key={item.key} className="flex items-start justify-between gap-3 text-xs">
+                  <span className="text-fg-2">
+                    {item.label}
+                    <span className="block text-fg-3">{item.detail}</span>
+                  </span>
+                  <span className="shrink-0 tabular-nums text-negative">-{formatScore(item.value)}</span>
+                </li>
+              ))}
+            </ul>
           ) : null}
-          <StatusPill label={`${summary.unmatchedCloseFillCount} close-only`} tone="warning" />
-          <StatusPill label={`${summary.preexistingOpenFillCount} pre-existing adds`} tone="warning" />
-        </div>
-      </div>
-      <div className="grid gap-0 divide-y divide-line sm:grid-cols-4 sm:divide-x sm:divide-y-0">
-        <StateMetric label="Entry notional" value={formatCurrency(summary.totalEntryNotionalUsd)} />
-        <StateMetric
-          label="Net PnL"
-          value={formatCurrency(summary.netPnlUsd)}
-          tone={numberValue(summary.netPnlUsd) >= 0 ? "positive" : "danger"}
+        </li>
+        {caps.length > 0 ? (
+          <li className="px-3.5 py-2 text-xs text-warning">
+            {caps.map((cap) => (
+              <p key={cap}>{cap}</p>
+            ))}
+          </li>
+        ) : null}
+      </ul>
+      <div className="border-t border-line px-3.5 py-2.5">
+        <SectionLabel>Risk signals</SectionLabel>
+        <KeyValues
+          items={[
+            {
+              hint: "Largest fall from a peak in realized PnL over the window",
+              label: "Realized drawdown",
+              value: formatPercent(scoreDetail?.realizedDrawdownPct ?? score.realizedDrawdownPct),
+            },
+            {
+              label: "Current drawdown",
+              value: `${formatPercent(scoreDetail?.currentDrawdownPct ?? score.currentDrawdownPct)}${drawdownStatus(scoreDetail?.currentDrawdownStatus ?? score.currentDrawdownStatus)}`,
+            },
+            {
+              hint: "Open losses and margin use relative to the account",
+              label: "Open position stress",
+              value: formatPercent(scoreDetail?.openPositionStressPct ?? score.openPositionStressPct),
+            },
+            {
+              hint: "Share of closed trades that still reach the $10 minimum order at our copy size",
+              label: "Trades copyable at our size",
+              value: formatPercent(scoreDetail?.copySizeRatio ?? score.copySizeRatio),
+            },
+            {
+              hint: "Share of adds made while the position was losing",
+              label: "Adds into losers",
+              value: formatPercent(scoreDetail?.underwaterAddRatio ?? score.underwaterAddRatio),
+            },
+            {
+              label: "Liquidations",
+              tone: (scoreDetail?.liquidationEventCount ?? 0) > 0 ? "negative" : "neutral",
+              value: formatInteger(scoreDetail?.liquidationEventCount ?? scoreDetail?.liquidationCount ?? 0),
+            },
+          ]}
         />
-        <StateMetric label="Realized PnL" value={formatCurrency(summary.realizedPnlUsd)} />
-        <StateMetric label="Fees" value={formatCurrency(summary.feeUsd)} />
       </div>
-      <div className="overflow-x-auto border-t border-line">
-        <table className="ui-table min-w-[1180px] text-sm">
-          <thead className="ui-table-head">
-            <tr>
-              <th scope="col" className="px-3 py-2.5 font-semibold">Status</th>
-              <th scope="col" className="px-3 py-2.5 font-semibold">Coin</th>
-              <th scope="col" className="px-3 py-2.5 font-semibold">Side</th>
-              <th scope="col" className="px-3 py-2.5 font-semibold">Opened</th>
-              <th scope="col" className="px-3 py-2.5 font-semibold">Closed</th>
-              <th scope="col" className="px-3 py-2.5 font-semibold">Duration</th>
-              <th scope="col" className="px-3 py-2.5 font-semibold">Entry</th>
-              <th scope="col" className="px-3 py-2.5 font-semibold">Exit</th>
-              <th scope="col" className="px-3 py-2.5 font-semibold">Size</th>
-              <th scope="col" className="px-3 py-2.5 font-semibold">Notional</th>
-              <th scope="col" className="px-3 py-2.5 font-semibold">Net PnL</th>
-              <th scope="col" className="px-3 py-2.5 font-semibold">Fills</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sourceTrades.items.length === 0 ? (
-              <tr>
-                <td colSpan={12} className="px-4 py-10 text-center text-muted">
-                  No complete source trades reconstructed for this window.
-                </td>
-              </tr>
-            ) : (
-              sourceTrades.items.map((trade) => (
-                <SourceTradeRow key={trade.id} trade={trade} />
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
-    </section>
+    </Panel>
   );
 }
 
-function SourceTradeRow({ trade }: { trade: SourceTrade }) {
-  return (
-    <tr className="border-b border-line last:border-b-0">
-      <td className="px-3 py-2.5">
-        <div className="flex flex-wrap gap-1">
-          <StatusPill label={trade.status} tone={trade.status === "closed" ? "positive" : "neutral"} />
-          {trade.hasLiquidation ? <StatusPill label="liquidation" tone="danger" /> : null}
-        </div>
-      </td>
-      <td className="px-3 py-2.5 font-semibold">{trade.coin}</td>
-      <td className="px-3 py-2.5">{trade.side}</td>
-      <td className="px-3 py-2.5 text-muted">{formatMs(trade.openedAtMs)}</td>
-      <td className="px-3 py-2.5 text-muted">
-        {trade.closedAtMs ? formatMs(trade.closedAtMs) : "-"}
-      </td>
-      <td className="px-3 py-2.5 text-muted">{formatDuration(trade.durationMs)}</td>
-      <td className="px-3 py-2.5 font-mono">{formatPrice(trade.averageEntryPrice)}</td>
-      <td className="px-3 py-2.5 font-mono">{formatPrice(trade.averageExitPrice)}</td>
-      <td className="px-3 py-2.5 font-mono">{formatCompactNumber(trade.closedSize)}</td>
-      <td className="px-3 py-2.5 font-mono">{formatCurrency(trade.entryNotionalUsd)}</td>
-      <td className={pnlClass(trade.netPnlUsd)}>{formatCurrency(trade.netPnlUsd)}</td>
-      <td className="px-3 py-2.5 text-muted">
-        {trade.entryFillCount} / {trade.closeFillCount}
-      </td>
-    </tr>
-  );
-}
-
-function CopyTradesSection({ trades, total }: { trades: CopyTrade[]; total: number }) {
-  return (
-    <section className="min-w-0 ui-panel overflow-hidden">
-      <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
-        <h2 className="text-base font-semibold">Copy Trades</h2>
-        <StatusPill label={`${total} trades`} tone="neutral" />
-      </div>
-      <div className="overflow-x-auto">
-        <table className="ui-table min-w-[760px] text-sm">
-          <thead className="ui-table-head">
-            <tr>
-              <th scope="col" className="px-3 py-2.5 font-semibold">Status</th>
-              <th scope="col" className="px-3 py-2.5 font-semibold">Coin</th>
-              <th scope="col" className="px-3 py-2.5 font-semibold">Side</th>
-              <th scope="col" className="px-3 py-2.5 font-semibold">Size</th>
-              <th scope="col" className="px-3 py-2.5 font-semibold">Entry</th>
-              <th scope="col" className="px-3 py-2.5 font-semibold">PnL</th>
-              <th scope="col" className="px-3 py-2.5 font-semibold">Opened</th>
-            </tr>
-          </thead>
-          <tbody>
-            {trades.length === 0 ? (
-              <tr>
-                <td colSpan={7} className="px-4 py-10 text-center text-muted">
-                  No paper or live copy trades have been created for this wallet yet.
-                </td>
-              </tr>
-            ) : (
-              trades.map((trade) => <CopyTradeRow key={trade.id} trade={trade} />)
-            )}
-          </tbody>
-        </table>
-      </div>
-    </section>
-  );
-}
-
-function CopyTradeRow({ trade }: { trade: CopyTrade }) {
-  return (
-    <tr className="border-b border-line last:border-b-0">
-      <td className="px-3 py-2.5">
-        <StatusPill label={trade.status} tone={trade.status === "open" ? "positive" : "neutral"} />
-      </td>
-      <td className="px-3 py-2.5 font-semibold">{trade.coin}</td>
-      <td className="px-3 py-2.5">{trade.side}</td>
-      <td className="px-3 py-2.5 font-mono">{formatCurrency(trade.sizeUsd)}</td>
-      <td className="px-3 py-2.5 font-mono">{trade.ourEntryPrice ?? trade.sourceEntryPrice ?? "-"}</td>
-      <td className={pnlClass(trade.pnlUsd)}>{trade.pnlUsd ? formatCurrency(trade.pnlUsd) : "-"}</td>
-      <td className="px-3 py-2.5 text-muted">
-        {trade.openedAt ? formatDate(trade.openedAt) : "-"}
-      </td>
-    </tr>
-  );
-}
-
-function FillsSection({ fills, total }: { fills: WalletFill[]; total: number }) {
-  return (
-    <section className="ui-panel overflow-hidden">
-      <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
-        <h2 className="text-base font-semibold">Source Fills</h2>
-        <StatusPill label={`${total} stored`} tone="neutral" />
-      </div>
-      <div className="overflow-x-auto">
-        <table className="ui-table min-w-[1020px] text-sm">
-          <thead className="ui-table-head">
-            <tr>
-              <th scope="col" className="px-3 py-2.5 font-semibold">Time</th>
-              <th scope="col" className="px-3 py-2.5 font-semibold">Coin</th>
-              <th scope="col" className="px-3 py-2.5 font-semibold">Side</th>
-              <th scope="col" className="px-3 py-2.5 font-semibold">Price</th>
-              <th scope="col" className="px-3 py-2.5 font-semibold">Size</th>
-              <th scope="col" className="px-3 py-2.5 font-semibold">Notional</th>
-              <th scope="col" className="px-3 py-2.5 font-semibold">PnL</th>
-              <th scope="col" className="px-3 py-2.5 font-semibold">Source</th>
-            </tr>
-          </thead>
-          <tbody>
-            {fills.length === 0 ? (
-              <tr>
-                <td colSpan={8} className="px-4 py-10 text-center text-muted">
-                  No fills imported yet.
-                </td>
-              </tr>
-            ) : (
-              fills.map((fill) => <FillRow fill={fill} key={fill.id} />)
-            )}
-          </tbody>
-        </table>
-      </div>
-    </section>
-  );
-}
-
-function FillRow({ fill }: { fill: WalletFill }) {
-  return (
-    <tr className="border-b border-line last:border-b-0">
-      <td className="px-3 py-2.5 text-muted">{formatMs(fill.timestampMs)}</td>
-      <td className="px-3 py-2.5 font-semibold">{fill.coin}</td>
-      <td className="px-3 py-2.5">{fill.side}</td>
-      <td className="px-3 py-2.5 font-mono">{fill.price}</td>
-      <td className="px-3 py-2.5 font-mono">{fill.size}</td>
-      <td className="px-3 py-2.5 font-mono">{formatCurrency(fill.notionalUsd)}</td>
-      <td className={pnlClass(fill.pnlUsd)}>{fill.pnlUsd ? formatCurrency(fill.pnlUsd) : "-"}</td>
-      <td className="px-3 py-2.5">
-        <StatusPill label={fill.isSnapshot ? "snapshot" : "realtime"} tone="neutral" />
-      </td>
-    </tr>
-  );
-}
-
-function EmptyStatsPanel() {
-  return (
-    <section className="ui-panel px-4 py-10 text-center text-sm text-muted">
-      No wallet stats available yet. Import fills to populate this page.
-    </section>
-  );
-}
-
-function InfoBlock({ title, value }: { title: string; value: string }) {
-  return (
-    <div className="ui-panel p-4">
-      <p className="text-xs font-medium uppercase text-muted">{title}</p>
-      <p className="mt-2 text-sm font-semibold">{value}</p>
-    </div>
-  );
-}
-
-function StatTile({
-  label,
-  value,
-  detail,
-  tone = "neutral",
-}: {
-  label: string;
-  value: string;
-  detail: string;
-  tone?: "positive" | "danger" | "neutral";
-}) {
-  const valueClass =
-    tone === "positive"
-      ? "text-positive"
-      : tone === "danger"
-        ? "text-danger"
-        : "text-ink";
-
-  return (
-    <article className="ui-metric">
-      <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">{label}</p>
-      <p className={`mt-1.5 truncate text-xl font-semibold tabular-nums ${valueClass}`}>{value}</p>
-      <p className="mt-2 min-h-5 text-xs leading-5 text-muted">{detail}</p>
-    </article>
-  );
-}
-
-type ScoreComponent = {
-  key: string;
-  label: string;
-  value: number;
-  detail: string;
-};
-
-function scoreComponents(score: WalletScore): ScoreComponent[] {
-  return [
-    {
-      detail: "Time-weighted equity return plus average and median realized trade ROI.",
-      key: "pnl",
-      label: "Profitability",
-      value: numberValue(score.pnlScore),
-    },
-    {
-      detail: "Profit spread, ROI stability, downside stability, and activity regularity.",
-      key: "consistency",
-      label: "Consistency",
-      value: numberValue(score.consistencyScore),
-    },
-    {
-      detail:
-        "Loss ratio, equity drawdown, adds into losing positions, live drawdown, margin stress, and losing trade rate.",
-      key: "risk",
-      label: "Risk",
-      value: numberValue(score.riskScore),
-    },
-    {
-      detail: "Share of trades that reach our minimum order at our copy size, and execution simplicity.",
-      key: "copyability",
-      label: "Copyability",
-      value: numberValue(score.copyabilityScore),
-    },
-    {
-      detail: "Age of the latest non-liquidation trading fill.",
-      key: "recency",
-      label: "Recency",
-      value: numberValue(score.recencyScore),
-    },
-  ];
-}
-
-function activePenaltySummary(items: WalletScorePenaltyItem[]) {
-  if (items.length === 0) {
-    return "Subtracts from the weighted component score.";
-  }
-
-  const activeItems = items.filter((item) => item.active);
-  if (activeItems.length === 0) {
-    return "No active penalty sources.";
-  }
-
-  return activeItems.map((item) => item.label).join(", ");
-}
-
-function pnlClass(value: string | null) {
-  const base = "px-4 py-3 font-mono";
-  if (!value) {
-    return base;
-  }
-  return numberValue(value) >= 0 ? `${base} text-positive` : `${base} text-danger`;
-}
-
-function pnlTextClass(value: string | null | undefined) {
-  if (!value) {
-    return "";
-  }
-  return numberValue(value) >= 0 ? "text-positive" : "text-danger";
-}
-
-function windowPnlClass(value: string | null) {
-  const base = "mt-2 text-lg font-semibold";
-  if (!value) {
-    return base;
-  }
-  return numberValue(value) >= 0 ? `${base} text-positive` : `${base} text-danger`;
-}
-
-function windowRoiClass(value: string | null) {
-  if (!value) {
-    return "font-semibold text-muted";
-  }
-  return numberValue(value) >= 0 ? "font-semibold text-positive" : "font-semibold text-danger";
-}
-
-function scoreTextClass(
-  value: string | number | null | undefined,
-  inverted = false,
-) {
-  if (value === null || value === undefined) {
-    return "text-muted";
-  }
-
-  const score = numberValue(value);
-  if (inverted) {
-    if (score >= 35) {
-      return "text-danger";
-    }
-    if (score > 0) {
-      return "text-warning";
-    }
-    return "text-positive";
-  }
-
+function scoreVerdict(score: number) {
   if (score >= 70) {
-    return "text-positive";
+    return "Strong. Ranks among the wallets worth copying.";
   }
   if (score >= 45) {
-    return "text-warning";
+    return "Mixed. Some components hold it back.";
   }
-  return "text-danger";
-}
-
-function shortAddress(address: string) {
-  return `${address.slice(0, 8)}...${address.slice(-6)}`;
-}
-
-function formatDate(value: string) {
-  return new Intl.DateTimeFormat("sv-SE", {
-    dateStyle: "short",
-    timeStyle: "short",
-  }).format(new Date(value));
-}
-
-function formatMs(value: number) {
-  return formatDate(new Date(value).toISOString());
-}
-
-function formatInteger(value: string | number) {
-  return new Intl.NumberFormat("sv-SE", { maximumFractionDigits: 0 }).format(numberValue(value));
-}
-
-function formatCurrency(value: string | number | null) {
-  if (value === null) {
-    return "-";
+  if (score > 0) {
+    return "Weak. Unlikely to be copied.";
   }
-  return new Intl.NumberFormat("sv-SE", {
-    currency: "USD",
-    maximumFractionDigits: 2,
-    style: "currency",
-  }).format(numberValue(value));
+  return "Not copyable on current data.";
 }
 
-function formatPrice(value: string | number | null) {
-  if (value === null) {
-    return "-";
-  }
-  return new Intl.NumberFormat("sv-SE", {
-    maximumFractionDigits: 8,
-  }).format(numberValue(value));
-}
-
-function formatCompactNumber(value: string | number | null) {
-  if (value === null) {
-    return "-";
-  }
-  return new Intl.NumberFormat("sv-SE", {
-    maximumFractionDigits: 6,
-  }).format(numberValue(value));
-}
-
-function formatDuration(value: number | null) {
-  if (value === null) {
-    return "-";
-  }
-  const totalMinutes = Math.max(0, Math.round(value / 60_000));
-  if (totalMinutes < 60) {
-    return `${totalMinutes}m`;
-  }
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  if (hours < 48) {
-    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
-  }
-  const days = Math.floor(hours / 24);
-  const restHours = hours % 24;
-  return restHours > 0 ? `${days}d ${restHours}h` : `${days}d`;
-}
-
-function formatPercent(value: string | number | null) {
-  if (value === null) {
-    return "-";
-  }
-  return new Intl.NumberFormat("sv-SE", {
-    maximumFractionDigits: 1,
-    style: "percent",
-  }).format(numberValue(value));
-}
-
-function formatCurrentDrawdownStatus(status: string | null | undefined) {
+function drawdownStatus(status: string | null | undefined) {
   if (!status || status === "ok") {
     return "";
   }
-  const labels: Record<string, string> = {
-    disabled: "disabled",
-    unavailable: "unavailable",
-    zero_equity: "zero equity",
-  };
-  return ` (${labels[status] ?? status})`;
+  return ` (${humanize(status).toLowerCase()})`;
 }
 
-function formatNullableNumber(value: string | null) {
-  if (value === null) {
-    return "-";
+function CurrentStatePanel({ state }: { state: WalletCurrentStateStats | null }) {
+  if (!state) {
+    return (
+      <Panel title="Account right now">
+        <EmptyState title="No account snapshot">The current positions of the wallet are read from Hyperliquid on request.</EmptyState>
+      </Panel>
+    );
   }
-  return new Intl.NumberFormat("sv-SE", { maximumFractionDigits: 2 }).format(numberValue(value));
+  const accountValue = decimal(state.accountValueUsd);
+  const unrealized = decimal(state.totalUnrealizedPnlUsd);
+  const drawdown = accountValue > 0 && unrealized < 0 ? Math.abs(unrealized) / accountValue : 0;
+  return (
+    <Panel
+      title="Account right now"
+      meta={<>snapshot <TimeAgo value={state.stateTimeMs} /></>}
+    >
+      {state.error ? <p className="px-3.5 py-3 text-sm text-negative">{state.error}</p> : null}
+      <div className="grid gap-x-8 px-3.5 py-2.5 sm:grid-cols-2">
+        <KeyValues
+          items={[
+            { label: "Account value", value: formatUsd(state.accountValueUsd) },
+            { label: "Perp equity", value: formatUsd(state.perpEquityUsd ?? state.accountValueUsd) },
+            { label: "Withdrawable", value: formatUsd(state.withdrawableUsd) },
+            { label: "Spot USDC", value: formatUsd(state.spotUsdcBalance) },
+          ]}
+        />
+        <KeyValues
+          items={[
+            { label: "Open PnL", value: <Pnl value={unrealized} /> },
+            {
+              hint: "Open losses as a share of account value",
+              label: "Drawdown on open positions",
+              tone: drawdown > 0.1 ? "negative" : "neutral",
+              value: formatPercent(drawdown),
+            },
+            { label: "Position value", value: formatUsd(state.totalPositionNotionalUsd) },
+            { label: "Margin used", value: formatUsd(state.totalMarginUsedUsd) },
+          ]}
+        />
+      </div>
+      {state.positions.length === 0 ? (
+        <p className="border-t border-line px-3.5 py-3 text-sm text-fg-3">No open perp positions.</p>
+      ) : (
+        <div className="max-h-80 overflow-auto border-t border-line">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Market</th>
+                <th className="num">Size</th>
+                <th className="num">Value</th>
+                <th className="num">Open PnL</th>
+                <th className="num">Held</th>
+              </tr>
+            </thead>
+            <tbody>
+              {state.positions.map((position) => (
+                <tr key={position.coin}>
+                  <td>
+                    <span className="font-medium">{position.coin}</span>
+                    <span className="sub">
+                      <Side
+                        side={position.side === "flat" ? null : position.side}
+                        suffix={position.leverageValue ? formatLeverage(position.leverageValue, position.leverageType) : undefined}
+                      />
+                    </span>
+                  </td>
+                  <td className="num">
+                    {formatSize(position.size)}
+                    <span className="sub">at {formatPrice(position.entryPrice)}</span>
+                  </td>
+                  <td className="num">
+                    <Usd value={position.positionValueUsd} />
+                    <span className="sub">liq. {formatPrice(position.liquidationPrice)}</span>
+                  </td>
+                  <td className="num">
+                    <Pnl value={position.unrealizedPnlUsd} />
+                    <span className="sub">{formatPercent(position.returnOnEquity, { signed: true })} on margin</span>
+                  </td>
+                  <td className="num text-fg-2">
+                    {position.openedAtMs ? formatDuration(Date.now() - position.openedAtMs) : "-"}
+                    {position.liquidationFillCount > 0 ? (
+                      <span className="sub text-negative">{position.liquidationFillCount} liquidation fills</span>
+                    ) : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
+  );
 }
 
-function formatScore(value: string | number) {
-  return new Intl.NumberFormat("sv-SE", { maximumFractionDigits: 1 }).format(numberValue(value));
+function WindowsPanel({ windows }: { windows: SourceTradeWindowStats[] }) {
+  return (
+    <Panel
+      title="Performance by period"
+      description="From the wallet's own rebuilt trades. Close-only and pre-existing fills are left out."
+    >
+      {windows.length === 0 ? (
+        <EmptyState title="No trades rebuilt yet" />
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Period</th>
+                <th className="num">Net PnL</th>
+                <th className="num" title="Net PnL divided by entry volume">
+                  ROI on volume
+                </th>
+                <th className="num">Win rate</th>
+                <th className="num">Closed</th>
+                <th className="num">Open</th>
+                <th className="num">Entry volume</th>
+                <th className="num">Fees</th>
+              </tr>
+            </thead>
+            <tbody>
+              {windows.map((window) => (
+                <tr key={window.label}>
+                  <td className="font-medium">{window.label}</td>
+                  <td className="num">
+                    <Pnl value={window.netPnlUsd} />
+                  </td>
+                  <td className="num">
+                    <PnlPercent value={window.roiPct} />
+                  </td>
+                  <td className="num">{formatPercent(window.winRate)}</td>
+                  <td className="num">{formatInteger(window.closedTradeCount)}</td>
+                  <td className="num text-fg-2">{formatInteger(window.openTradeCount)}</td>
+                  <td className="num">
+                    <Usd value={window.entryNotionalUsd} compact />
+                  </td>
+                  <td className="num text-fg-2">{formatUsd(window.feeUsd)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
+  );
 }
 
-function formatPenaltyScore(value: string | number) {
-  return new Intl.NumberFormat("sv-SE", { maximumFractionDigits: 2 }).format(numberValue(value));
-}
-
-function scoreTone(value: string | null | undefined): "positive" | "warning" | "danger" | "neutral" {
-  if (!value) {
-    return "neutral";
-  }
-  const score = numberValue(value);
-  if (score >= 70) {
-    return "positive";
-  }
-  if (score >= 45) {
-    return "warning";
-  }
-  return "danger";
-}
-
-function openStressTone(
-  value: string | null | undefined,
-): "positive" | "warning" | "danger" | "neutral" {
-  if (!value) {
-    return "neutral";
-  }
-  const stress = numberValue(value);
-  if (stress >= 0.75) {
-    return "danger";
-  }
-  if (stress >= 0.35) {
-    return "warning";
-  }
-  return stress > 0 ? "positive" : "neutral";
-}
-
-function currentUnrealizedDrawdownPct(state: WalletCurrentStateStats) {
-  const accountValue = numberValue(state.accountValueUsd);
-  const unrealizedPnlUsd = numberValue(state.totalUnrealizedPnlUsd);
-
-  if (accountValue <= 0 || unrealizedPnlUsd >= 0) {
-    return 0;
-  }
-
-  return Math.abs(unrealizedPnlUsd) / accountValue;
-}
-
-function perpEquityUsd(state: WalletCurrentStateStats) {
-  return state.perpEquityUsd ?? state.accountValueUsd;
-}
-
-function numberValue(value: string | number) {
-  return typeof value === "number" ? value : Number(value);
+function FillStatsPanel({ stats }: { stats: WalletStats }) {
+  return (
+    <details className="group min-w-0 overflow-hidden rounded-lg border border-line bg-surface">
+      <summary className="flex min-h-10 list-none items-center justify-between gap-3 px-3.5 py-2 text-sm font-semibold hover:bg-surface-2">
+        <span>
+          Stored history{" "}
+          <span className="font-normal text-fg-3">
+            {formatInteger(stats.fillCount)} fills, {formatInteger(stats.uniqueCoinCount)} coins
+          </span>
+        </span>
+        <span className="text-xs font-normal text-fg-3">
+          <span className="group-open:hidden">Show</span>
+          <span className="hidden group-open:inline">Hide</span>
+        </span>
+      </summary>
+      <div className="grid gap-x-8 border-t border-line px-3.5 py-2.5 sm:grid-cols-2 lg:grid-cols-3">
+        <KeyValues
+          items={[
+            { label: "Fills", value: formatInteger(stats.fillCount) },
+            { label: "From snapshots", value: formatInteger(stats.snapshotFillCount) },
+            { label: "From the realtime feed", value: formatInteger(stats.realtimeFillCount) },
+          ]}
+        />
+        <KeyValues
+          items={[
+            { label: "Volume", value: formatUsd(stats.totalNotionalUsd, { compact: true }) },
+            { label: "Average fill", value: formatUsd(stats.averageFillNotionalUsd) },
+            {
+              hint: "Sum of the PnL reported on each fill. Diagnostic only, not used for scoring.",
+              label: "Raw fill PnL",
+              value: <Pnl value={stats.totalPnlUsd} />,
+            },
+          ]}
+        />
+        <KeyValues
+          items={[
+            { label: "Fees", value: formatUsd(stats.totalFeeUsd) },
+            { label: "Buys and sells", value: `${formatInteger(stats.buyCount)} / ${formatInteger(stats.sellCount)}` },
+            {
+              label: "Ingest delay",
+              value: stats.averageIngestLatencyMs
+                ? `${formatDuration(decimal(stats.averageIngestLatencyMs))} avg, ${formatDuration(stats.maxIngestLatencyMs)} max`
+                : "-",
+            },
+          ]}
+        />
+      </div>
+      <p className="border-t border-line px-3.5 py-2 text-xs text-fg-3">
+        First fill <TimeAgo value={stats.firstFillTimeMs} />, latest fill <TimeAgo value={stats.lastFillTimeMs} />.{" "}
+        <Badge>{formatInteger(stats.profitableFillCount)} profitable</Badge>{" "}
+        <Badge>{formatInteger(stats.losingFillCount)} losing</Badge>
+      </p>
+    </details>
+  );
 }

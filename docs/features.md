@@ -73,31 +73,66 @@ Config:
 
 ### Dashboard Interface
 
-The Next.js dashboard is designed as a compact internal operations tool.
+The Next.js dashboard is a dense internal operations tool. It is built to answer
+"what is the system doing right now" on every page without hiding data.
 
 Behavior:
 
-- Groups routes into Execution, Intelligence, and System navigation areas.
-- Uses a persistent sidebar on desktop and a horizontally scrollable route row
-  on narrow screens.
-- Uses shared semantic tokens and reusable panel, metric, control, button,
-  status, and table primitives across every route.
-- Reserves green, amber, and red for real positive, warning, and danger states.
-  Normal interaction uses the blue brand accent and neutral surfaces.
-- Uses tabular numerals, compact table spacing, scoped table headers, keyboard
-  focus indicators, and a skip-to-content link for dense accessible scanning.
-- Keeps account selection and account lifecycle actions in a dedicated control
-  bar on `/accounts`.
-- Provides consistent loading, empty, not-found, offline, and recoverable error
-  states.
-- Keeps wide data tables horizontally scrollable without collapsing columns or
-  hiding source data on small screens.
-- Shows compact stage text and a progress bar for active discovery import, pool
-  reimport, and wallet scoring jobs on the home dashboard.
-- Gives each active job its own Cancel action. Cancellation is cooperative and
-  database-backed, so API-triggered and maintenance-worker jobs stop at a safe
-  source, wallet, batch, or persistence checkpoint instead of terminating in
-  the middle of a database write.
+- Seven pages in three navigation groups: Monitor (Overview, Trading,
+  Activity), Research (Wallets, Discovery, Analytics), and Infrastructure
+  (System). Desktop uses a fixed sidebar; narrow screens open the same
+  navigation from a menu button.
+- A status bar on every page shows the execution mode (PAPER, LIVE, or
+  MONITOR), the Hyperliquid network, API, Postgres, and Redis health, realtime
+  wallet slots, and every running background job with its progress. It polls
+  `/health` and `/operations/status` every 10 seconds, every 3 seconds while a
+  job runs, and only reports the backend as unreachable after two failed polls
+  in a row.
+- Every page starts with a plain-language sentence about what it shows. Metric
+  labels with a dotted underline explain themselves on hover.
+- Light and dark themes share one set of color tokens. The theme follows the
+  operating system by default and can be pinned to light or dark from the
+  sidebar; the choice is stored in the browser.
+- Color carries meaning only: green for gains and healthy state, red for losses
+  and failures, amber for warnings, and blue for work in progress. Buttons and
+  selections are neutral.
+- Type is IBM Plex Sans with IBM Plex Mono for addresses and identifiers,
+  self-hosted from npm packages so builds need no font download. Tables use
+  tabular figures and right-aligned numbers.
+- Numbers use en-US formatting: `$1,234.56`, a real minus sign for negative
+  values, compact `$601.2M` for large totals, `12.3%`, and `2.5×`. Times show as
+  short dates (`Oct 10, 23:51`) or relative times (`4m ago`) with the full
+  timestamp on hover.
+- Destructive actions ask for confirmation in a dialog that explains the
+  consequence; Cancel has the focus so Enter does not confirm by accident.
+- Lists use sortable or paginated tables instead of card grids. Wide tables
+  scroll horizontally on small screens without hiding columns.
+- Consistent loading, empty, not-found, offline, and recoverable error states.
+- Discovery import, pool reimport, and wallet scoring jobs show stage text, a
+  progress bar, the result of the last run, and Run or Cancel actions on the
+  Overview and System pages. Cancellation is cooperative and database-backed,
+  so jobs stop at a safe source, wallet, batch, or persistence checkpoint
+  instead of terminating in the middle of a database write. A canceled job is
+  shown as canceled, never as still stopping.
+
+Pages:
+
+- `/`: Overview. Accounts with equity and PnL, the wallet pipeline from
+  discovered candidates to wallets followed live, a list of everything that
+  needs attention (failing services, stale workers, full disks, missing
+  backups, failed jobs, exit-only accounts, paused live accounts), background
+  jobs, the top ranked wallets, and recent events.
+- `/trading`: one paper or live account at a time with headline figures,
+  performance curve, risk and exposure, open positions, copy sources, history
+  tabs, and account details. `/accounts` and `/paper-trading` redirect here.
+- `/activity`: the live event stream. `/live-feed` redirects here.
+- `/wallets` and `/wallets/[address]`: the wallet pool, archived wallets, and
+  wallet details.
+- `/discovery`: discovery runs, the per-source funnel, rejection reasons, and
+  candidates.
+- `/analytics`: pool, scoring, source, coin, and paper copy analytics.
+- `/system`: Health, Database, and Maintenance tabs. `/ops` and `/database`
+  redirect here.
 
 ### Ops Health Monitoring
 
@@ -105,7 +140,7 @@ Endpoint: `GET /ops/health`
 
 Dashboard page:
 
-- `/ops`
+- `/system` (Health tab)
 
 What it does:
 
@@ -164,8 +199,8 @@ What it does:
   including net PnL, ROI, win rate, and average hold time.
 - Shows 30D coin performance so copied markets can be compared by trade count,
   net PnL, ROI, and win rate.
-- Shows paper source performance, paper skip reason concentration, discovery
-  funnel quality by source, and data freshness.
+- Shows paper source performance, paper skip reason concentration, and data
+  freshness. The discovery funnel by source is shown on the Discovery page.
 - Refreshes automatically every 30 seconds while the browser tab is visible.
 
 ### Wallet Pool Management
@@ -184,20 +219,26 @@ Dashboard page:
 
 What it does:
 
-- Adds watched Hyperliquid wallets.
-- Enables or disables wallets.
-- Forces cooldown state.
-- Stores labels and notes.
-- Wallet list labels and notes wrap so discovery promotion notes stay fully
-  readable.
+- Adds watched Hyperliquid wallets from a dialog.
+- Enables or disables wallets, forces a six hour cooldown, imports recent
+  fills, and deletes wallets from each row's action menu.
+- Stores labels and notes. Notes show on hover in the list and in full on the
+  wallet page.
+- Filters the pool by copied, enabled, disabled, cooldown, and unscored
+  wallets, searches name, address, and notes, and sorts by rank, score, 30 day
+  return, drawdown, win rate, profit factor, trades, realized PnL, or last
+  trade.
+- Shows each wallet's score components as five small bars, with the values on
+  hover.
 - Shows last seen fill time.
 - Shows each wallet's current `poolRank`, based on the latest score ordering.
 - The Wallet Pool scoring coverage compares scored enabled wallets with all
   enabled wallets. Disabled wallets do not make the coverage look incomplete.
 - Wallet detail pages also show that wallet's current pool rank.
-- Archived wallets are hidden from the list. `GET /wallets?archived=true` lists
-  them with their archive time and reason, and enabling an archived wallet
-  returns it to the pool.
+- Archived wallets are hidden from the pool list and shown on a separate
+  Archived tab (`/wallets?view=archived`). `GET /wallets?archived=true` lists
+  them with their archive time and reason, and the Readmit action enables an
+  archived wallet, which returns it to the pool.
 - Deleting a wallet removes every wallet-owned research and materialization row
   defined by the shared dependency policy. Discovery records and completed
   execution history remain available.
@@ -349,7 +390,8 @@ Endpoints:
 
 Dashboard page:
 
-- `/database`
+- `/system?tab=database` for statistics
+- `/system?tab=maintenance` for the cleanup tools
 
 What it does:
 
@@ -420,7 +462,7 @@ What it does:
   ignore list.
 - Runs as a dry run by default and supports `dry_run=false` to archive.
 - Returns totals, including archived wallets and deleted orphan fills, and
-  per-rule results for review in the Database dashboard.
+  per-rule results for review on the System page Maintenance tab.
 - Shows backend proxy and validation error details in the dashboard if the
   manual prune request cannot run.
 - Uses `SERVER_API_BASE_URL` as the only dashboard backend proxy upstream in
@@ -626,13 +668,17 @@ Dashboard page:
 What it does:
 
 - Shows wallet-level statistics.
-- Shows the wallet's current rank in the scored wallet pool.
+- Shows the wallet's current rank in the scored wallet pool, a link to the
+  Hyperliquid explorer, and whether the wallet is copied right now.
+- Explains the score: each component with what it measures, active penalty
+  sources, sample and drawdown caps, and risk signals. A dialog lists every
+  scoring input with its value, weight, and contribution.
 - Shows total fills, notional, PnL, fees, win rate, latency, and realtime/snapshot split.
 - Shows 24h, 7d, 30d, 60D score-window, and all-time performance windows from
   reconstructed source trades. Close-only and pre-existing-position fills are
   excluded from these performance windows.
 - Shows top traded coins.
-- Shows reconstructed source trades for the wallet.
+- Shows reconstructed source trades for the wallet, 30 per page.
 - Shows copy trades associated with the source wallet when paper/live trades exist.
 - Shows recent imported fills for a specific wallet.
 - Displays time, coin, side, price, size, PnL, and fee.
@@ -759,7 +805,6 @@ Query parameters:
 Dashboard page:
 
 - `/trading`
-- `/accounts`
 
 What it does:
 
@@ -995,22 +1040,65 @@ What it does:
   `target_position_reached`, `below_min_order_notional`,
   `source_exposure_cap_reached`, or `total_exposure_cap_reached`.
 - Publishes `paper_copy` events to the live feed when realtime fills are simulated.
-- The Trading page polls the paper summary API and generic trading account API,
-  but a top-panel mode toggle separates the cockpit into Paper and Live modes.
-  The active mode owns the top metrics, accounts, copy sources, wallet PnL
-  history, open positions, closed activity, and recent execution activity
-  without mixing rows from the other mode. Paper mode shows paper accounts,
-  paper positions, paper closed trades, and paper fills. Live mode shows live
-  accounts, live positions, live source activity, reconstructed closed live
-  trades, live exchange fills, rejected live orders, and terminal live pre-submit
-  decisions with skip reasons. Recent Execution Activity uses the same
-  result-oriented row semantics in both modes, so filled, skipped, rejected, and
-  failed attempts are visible without mixing paper and live rows. Individual live reduce and
-  close fills stay in Recent Execution Activity.
-- Live Copy Decisions are rendered separately from Recent Execution Activity.
-  They distinguish decision-only and pre-submit skips from exchange rejects,
-  status-unknown attempts, accepted orders, partial fills, and fills. The view
-  labels prerequisite retries separately from exchange submissions and status lookups.
+- The Trading page shows one account at a time and replaces the former
+  Accounts and Trading pages. An account switcher at the top lists every paper
+  and live account with its state, equity, and total PnL. The page keeps the
+  last selected account in browser storage, accepts `?account=<key>` from links,
+  and falls back to the first account. It polls the paper summary API and the
+  generic trading account API every four seconds while the tab is visible.
+  Paper and live rows are never mixed: the selected account owns every figure,
+  table, and history list on the page.
+- Headline figures use the same PnL semantics for paper and live: net realized
+  PnL is realized PnL minus fees plus signed funding, and total PnL adds current
+  unrealized PnL. The strip shows equity, total PnL with return, net realized
+  PnL with fees and funding, unrealized PnL, gross exposure and its share of
+  equity, margin in use, win rate, and profit factor for paper accounts or the
+  exchange sync state with a reconcile button for live accounts. Paper return
+  is measured on the starting balance; live return is the time-weighted return
+  from the first verified baseline.
+- Notices under the account header explain why an account does not take new
+  entries: an exit-only loss limit, an incomplete, failed, or stale exchange
+  snapshot, live trading turned off on the server, or missing market prices.
+- The performance panel draws the cumulative or per trade net PnL of the loaded
+  closed trades and can inspect the last 25, 50, 100, or all trades with a
+  pointer or the arrow keys. It shows closed net PnL, gross profit and loss,
+  profit factor, expectancy, maximum drawdown, average win and loss, payoff
+  ratio, best and worst trade, the current streak, and the recovery factor.
+- The risk panel shows long and short notional, gross exposure, exposure of
+  equity, margin in use, average leverage, open PnL, and the largest markets.
+  Account details, the paper copy rules, and the live safety limits are in a
+  collapsible section at the bottom together with capital balances by scope.
+- Open position rows show the market, side, leverage, source wallet, size,
+  entry and mark price, value and margin, unrealized PnL with its percent,
+  realized PnL with signed Hyperliquid funding, add and close fill counts, the
+  opening time, and the copy delay. Live open position realized PnL is summed
+  from the same close, reduce, and flip-close fills used by the position fill
+  counts. Add counts include actual `add` fills only, not the initial open or
+  the opening leg of a flip. Each row has a Close action: paper closes price
+  from the current simulated market price, and live closes submit a reduce-only
+  order and reconcile the account immediately. Paper positions without a market
+  price cannot be closed by hand.
+- Open positions sort by opening time ascending with deterministic identity
+  tie-breakers. Mark-price and reconciliation updates do not reorder them.
+- Copy source rows show the copy rank, pool rank and score, the realtime feed
+  state, the source state with a one-sentence explanation, allocation used out
+  of the source's share, open positions, realized PnL with open PnL, realized
+  PnL per followed hour, total followed time, copied and skipped fills, and the
+  last activity. Paper sources have a Close all action that closes that
+  source's positions in every paper account. When more than one paper account
+  exists, realized PnL and fill counts combine all paper accounts, and the
+  table says so.
+- The history panel has tabs for closed trades, executions, live copy
+  decisions, source history, and live deposits and withdrawals. Lists show 25
+  rows per page.
+- Executions show every copied fill and every skipped source trade with the
+  result, price, value, fee, realized PnL, and the reason in plain words, such
+  as an adverse price drift or a raise to the minimum order. Live executions
+  combine exchange fills with rejected and skipped orders.
+- Live copy decisions are listed separately from executions. They distinguish
+  decision-only and pre-submit skips from exchange rejects, status-unknown
+  attempts, accepted orders, partial fills, and fills. The view labels
+  prerequisite retries separately from exchange submissions and status lookups.
   Stale no-order decisions show the processing origin, source time, first
   observed time, ingest lag, total source-to-decision age, and processing lag when
   available. This timing makes ingest delay distinguishable from processing
@@ -1024,138 +1112,85 @@ What it does:
   unattributed rows from that inventory. Ambiguous rows stay labeled as
   unattributed exchange closes.
 - Live recent fills and reconstructed closed trades include `isLiquidation`
-  only from Hyperliquid's raw `liquidation` marker. The Trading page renders a
-  compact red `liquidated` badge, a forced exchange liquidation result, and the
-  source wallet link when attribution is proven.
-- Copy source selection is shared across paper and live execution, but live mode
-  reserves realtime capacity only for open live exposure and current eligible
-  candidates. Paper-only retained sources are excluded from Live Copy Sources
-  and continue through historical fill import and paper recovery. Each mode
-  renders its own exposure, PnL, activity, and execution status. Live-only
-  historical sources remain visible through Wallet PnL history and Recent
-  Execution Activity.
-- Open position rows include unrealized PnL, realized PnL, signed Hyperliquid
-  funding, and add and close
-  fill counts for the current position window. Live open position realized PnL
-  is summed from the same close, reduce, and flip-close fills used by the
-  position fill counts. Add counts include actual `add` fills only, not the
-  initial open or the opening leg of a flip. Live open position rows also include reconciled current
-  notional, mark price, and ROE when Hyperliquid supplies the fields. They
-  expose an individual Close action that submits a reduce-only live close order
-  for that position. Successful manual closes immediately reconcile the live
-  account so the exchange fill and closed trade row can appear without waiting
-  for the next worker loop.
-- Open positions sort by opening time ascending with deterministic identity
-  tie-breakers. Mark-price and reconciliation updates do not reorder them. Each
-  compact Trading position row shows its local opening day and time in the
-  existing Execution detail line, without increasing row height.
-- The Accounts page filters account data to one selected paper or live account.
-  It keeps the last selected account in browser storage and falls back to the
-  first synced account. The compact account workspace combines an eight-KPI
-  summary, interactive cumulative or per-trade PnL chart, performance analytics,
-  risk and exposure, allocation, market concentration, source performance,
-  tabbed positions, trades and activity, and account diagnostics. The chart can
-  inspect the last 25, 50, 100, or all loaded closed trades with a pointer or
-  keyboard. Performance analytics include win rate, profit factor, maximum
-  drawdown, average win and loss, payoff ratio, expectancy, best and worst trade,
-  recovery factor, and win and loss streaks. For live accounts it also shows
-  exchange equity, cash balance, net realized PnL after fees and funding,
-  total PnL as net realized plus current unrealized PnL, cash-flow-adjusted
-  account return, reconciliation state, wallet routing, and vault routing.
-  Open margin is the primary exposure KPI with its share of equity; open
-  notional is secondary and shows average leverage. Cash-flow-adjusted PnL and
-  net external flows remain available in account details. A compact transaction
-  panel lists every automatically reconciled external deposit, withdrawal, and
-  account-to-account transfer with signed amount, fee, timestamp, ledger
-  identifier, inflow and outflow totals, and net external flow. It has no
-  separate reconciliation control. Performance is
-  labeled from its first verified baseline.
-  The live Reconciled card includes a manual refresh icon that posts to
-  `POST /trading/accounts/{account_key}/reconcile` and refreshes the selected
-  account snapshot. Operators can pass `lookback_minutes` to backfill older
-  live fills when a previous reconciliation window missed exchange history.
-- The Accounts page can create new paper and live accounts from the dashboard.
-  Paper accounts choose a USD starting balance. Live accounts choose a wallet
-  name, optional wallet address, and optional vault address. Empty wallet
-  address fields use and save `HYPERLIQUID_WALLET_ADDRESS`. The internal live
-  account key is generated from the wallet route, so changing the display name
-  cannot create a duplicate account for the same route. New accounts start
-  disabled and immediately reconcile the exchange wallet snapshot. Repeating
-  live account creation for an existing wallet route returns the existing local
-  account instead of creating a duplicate.
-- The Accounts page skips scheduled auto-refresh while the create account
-  dialog is open, stores the in-progress draft in browser session storage, and
-  keeps the dialog open until the user cancels, presses Escape, closes it, or
-  finishes account creation.
-- The Accounts page can start, stop, or close all and stop trading for the
-  selected account. Start trading enables new entries again. Stop trading
-  disables new entries and adds for that account, but still lets reduce and exit
-  fills manage existing positions. Close all and stop trading moves the account
-  to exit-only, submits reduce-only closes, and disables the account only after
-  reconciliation confirms no exchange positions remain. Other accounts are not
+  only from Hyperliquid's raw `liquidation` marker. The page renders a red
+  Liquidated marker, a forced exchange liquidation result, and the source wallet
+  link when attribution is proven.
+- Copy source selection is shared across paper and live execution, but live
+  accounts reserve realtime capacity only for open live exposure and current
+  eligible candidates. Paper-only retained sources are excluded from live copy
+  sources and continue through historical fill import and paper recovery.
+  Live-only historical sources remain visible in the source history tab.
+- The live deposits and withdrawals tab lists every automatically reconciled
+  external deposit, withdrawal, and account-to-account transfer with signed
+  amount, fee, timestamp, ledger identifier, inflow and outflow totals, and net
+  external flow. It reloads whenever reconciliation advances
+  `lastReconciledAt`. The live exchange sync figure includes a reconcile button
+  that posts to `POST /trading/accounts/{account_key}/reconcile`. Operators can
+  pass `lookback_minutes` to that endpoint to backfill older live fills when a
+  previous reconciliation window missed exchange history.
+- The New account dialog creates paper and live accounts. Paper accounts choose
+  a USD starting balance. Live accounts choose a name, optional wallet address,
+  and optional vault address. Empty wallet address fields use and save
+  `HYPERLIQUID_WALLET_ADDRESS`. The internal live account key is generated from
+  the wallet route, so changing the display name cannot create a duplicate
+  account for the same route. New accounts start disabled and immediately
+  reconcile the exchange wallet snapshot. Repeating live account creation for an
+  existing wallet route returns the existing local account instead of creating a
+  duplicate. The in-progress form is kept in browser session storage until it
+  is submitted or cancelled. `/trading?create=paper` opens the dialog.
+- The account header can start, stop, or close all and stop trading for the
+  selected account. Start trading enables new entries again; starting a live
+  account asks for confirmation and is disabled while live trading is off on
+  the server. Stop trading disables new entries and adds for that account, but
+  still lets reduce and exit fills manage existing positions. Close all and stop
+  moves the account to exit-only, submits reduce-only closes, and disables the
+  account only after reconciliation confirms no exchange positions remain.
+  Exit-only live accounts offer Verify flat and disable. Other accounts are not
   disabled or closed.
-- The Accounts page can delete the selected account from local database state.
-  Paper account deletion removes local positions, fills, allocations, and
-  account history. Live account deletion removes local account, order, fill, and
-  position snapshots only, requires live trading to be stopped first, and does
-  not close exchange positions.
+- The account menu can reset a paper balance, reconcile a live account, and
+  delete or archive the account. Reset restores the starting balance and clears
+  account-level realized PnL and fees without deleting open paper positions,
+  copied fills, or closed trade history. Paper account deletion removes local
+  positions, fills, allocations, and account history. Live accounts are
+  archived with their history retained, only after they are disabled, and
+  archiving does not close exchange positions.
 - The summary API attaches wallet labels to paper allocation, position,
   wallet-history, closed-trade, and recent-fill rows. The UI shows the label
-  when available and falls back to the short address.
-- Dashboard wallet and source labels wrap instead of using ellipsis so full
-  labels stay visible in list rows and detail headers.
-- Account rows include a reset action that restores the account to its
-  starting balance and clears account-level realized PnL and fees without
-  deleting open paper positions, copied fills, or closed trade history.
-- Source rows show a primary monitor status and a source substatus. Primary
-  status is `monitored` only when Hyperliquid has acknowledged that wallet's
-  active `userFills` subscription. Assigned sources are `connecting` before
-  confirmation and `offline` when no current worker connection exists. Sources
-  without an assigned slot are `waiting`. `hasRealtimeSlot` remains allocation
-  intent and `isRealtimeMonitored` is confirmed runtime truth. Substatus is
-  `trading`, `retained`, `entries paused`, `waiting for trades`, or `waiting for
-  slot`.
-- Live Copy Sources starts from the worker's authoritative desired and confirmed
+  when available and falls back to the short address, with the full address on
+  hover.
+- Source rows show a realtime feed state and a source state. The feed state is
+  Live only when Hyperliquid has acknowledged that wallet's active `userFills`
+  subscription. Assigned sources are Connecting before confirmation and Offline
+  when no current worker connection exists. Sources without an assigned slot
+  show No slot. `hasRealtimeSlot` remains allocation intent and
+  `isRealtimeMonitored` is confirmed runtime truth. The source state is Trading,
+  Reduce only, Entries paused, Ready, or Waiting for slot.
+- Live copy sources start from the worker's authoritative desired and confirmed
   realtime wallet sets. Those wallets remain visible even when no live account
   currently accepts entries. Allocation and open-position sources supplement
   that runtime set.
-- A source with open exposure is `trading` only while it has both a current
+- A source with open exposure is Trading only while it has both a current
   realtime slot and permission to open new positions. Existing exposure without
-  both conditions is `retained` internally and displayed as `reduce only`. A
-  slotted source without exposure is `entries paused` when no account accepts
-  entries and `waiting for trades` when it is entry-ready.
-- Source rows display `pool #` from the wallet score pool rank, not the realtime
-  monitor slot or retained-source order. Retained rows also show the blocking
-  reason, such as outside copy top 10, drawdown blocked, paper account disabled,
-  cooldown, or missing score.
-- Source rows split source PnL into realized and unrealized values, with total
-  PnL shown as supporting context.
-- Copy Sources sorts by allocation-used percentage descending, followed by used
-  USD, realized PnL, source status, pool rank, and wallet address for deterministic
-  ties. Wallet PnL History sorts by realized PnL descending, followed by total
-  PnL, pool rank, and wallet address.
-- The Sources summary and Copy Sources header derive their trading, monitored,
-  connecting, offline, and waiting-for-slot counts from the same current
-  source-state rows used by the source badges. Historical monitoring duration
-  and exchange-only display positions do not affect these counts.
-- The dashboard separates total, realized, and unrealized PnL and uses compact
-  responsive list rows instead of wide tables or large cards.
-- Trading summary cards, section headers, and activity rows use the denser
-  trading layout. Desktop activity keeps all available statistics on one row,
-  while narrow screens flow them into two- or three-column grids.
-- Open position ownership is shown as a clickable source name. The full wallet
-  address remains available in the link tooltip without consuming row space.
-- Dashboard pages use a shared top panel with page context first, followed by a
-  left-aligned action row for updated state, controls, filters, and status
-  pills. The refresh button is anchored to the right, and auto-refresh uses icon
-  motion instead of visible refreshing text.
-- Wallet PnL history rows show `monitored` only while the source has a confirmed
-  realtime subscription and `history` otherwise.
+  both conditions is `retained` internally and displayed as Reduce only. A
+  slotted source without exposure is Entries paused when no account accepts
+  entries and Ready when it is entry-ready.
+- Source rows display the pool rank from the wallet score, not the realtime
+  monitor slot or retained-source order. Retained rows also explain the
+  blocking reason, such as no longer in the top ranked wallets, a current
+  drawdown, a stopped paper account, a cooldown, or a missing score.
+- Copy sources sort by allocation-used percentage descending, followed by used
+  USD, realized PnL, source state, pool rank, and wallet address for
+  deterministic ties. Source history sorts by realized PnL descending, followed
+  by total PnL, pool rank, and wallet address.
+- The copy sources header derives its trading, live feed, connecting, offline,
+  and waiting-for-slot counts from the same source rows the table shows.
+  Historical monitoring duration and exchange-only display positions do not
+  affect these counts.
+- Source history rows show Followed now only while the source has a confirmed
+  realtime subscription and Past source otherwise.
 - Monitoring duration snapshots are persisted in the same transaction as each
   acknowledged realtime subscription-state transition. Wallets that are
   connecting or waiting for a slot do not accrue monitored time.
-- Wallet PnL history, closed trade history, and recent execution activity are
-  paginated at 10 rows per page.
 
 Config:
 
@@ -1204,7 +1239,7 @@ Current limitations:
 - Paper accounts are not backfilled from historical fills. They start recording
   only from new non-snapshot realtime fills after they exist.
 - Editing `starting_balance_usd` does not reset existing account state by
-  itself. Use the account reset action in the Trading page to apply
+  itself. Use the Reset balance action on the Trading page to apply
   configured starting capital to an existing paper account.
 
 ### Live-Ready Trading Foundation
@@ -1221,7 +1256,7 @@ What it does:
   `trading_close_all_items`, `trading_reconciliation_runs`, and
   `trading_fills`.
 - Mirrors existing paper accounts into `trading_accounts` and lists live
-  accounts from the same endpoint so the Accounts page can select mixed
+  accounts from the same endpoint so the Trading page can select mixed
   paper/live account data.
 - Includes live positions and recent live fills in the same response so generic
   Trading dashboards do not need to infer live activity from account rows.
@@ -1586,7 +1621,7 @@ Live trading API:
 - `POST /trading/positions/{position_id}/close`
 - `POST /trading/testnet/orders`
 
-### Live Feed
+### Activity Feed
 
 Endpoints:
 
@@ -1595,11 +1630,15 @@ Endpoints:
 
 Dashboard page:
 
-- `/live-feed`
+- `/activity`
 
 What it does:
 
-- Shows recent system and fill events.
+- Shows recent events from the workers: source trades, copies, jobs, risk
+  checks, and system messages.
+- Filters events by category, searches messages and payloads, expands a row to
+  show its raw payload, and links wallet events to the wallet page.
+- Can pause the list to read it; new events are counted and appear on resume.
 - Uses Server-Sent Events with Redis stream ids and `Last-Event-ID` replay when
   available.
 - Falls back to polling recent events.
@@ -1607,6 +1646,9 @@ What it does:
 - If SSE fails after connection, the dashboard polls `/events/recent` while the
   browser reconnects EventSource with its `Last-Event-ID` cursor. Polling stops
   after the stream reopens.
+- The stream blocks on Redis for at most four seconds per read and then sends a
+  keepalive. redis-py 8 times out socket reads after five seconds by default, so
+  a longer block closed the stream every few seconds and forced reconnects.
 
 ### Redis Runtime Event Store
 
@@ -1964,9 +2006,10 @@ Phase A behavior:
   new fills.
 - If pool maintenance is disabled, the standalone scoring loop uses
   `scoring_interval_seconds`.
-- Can be triggered manually from the Wallet Pool page. Wallet detail pages expose
-  a Detailed scoring modal beside the score header for inspecting how each score
-  component was calculated.
+- Can be triggered manually with Score wallets on the Wallets page or from the
+  background jobs on the Overview and System pages. Wallet detail pages explain
+  each component and open a dialog with every scoring input, its weight, and
+  its contribution.
 
 Score backtest:
 

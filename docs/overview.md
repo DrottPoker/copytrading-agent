@@ -90,23 +90,28 @@ system works at two speeds:
 
 ## What You See
 
-The dashboard at http://localhost:3000 has these pages:
+The dashboard at http://localhost:3000 has these pages. A status bar at the top
+of every page shows the trading mode, whether the API, Postgres, and Redis
+respond, how many wallets are followed in realtime, and any job that is
+running.
 
-- **Overview:** system health, the wallet pool, realtime slots, and database
-  status at a glance.
-- **Accounts:** one account at a time, with performance, risk, exposure, and
-  transactions. Accounts are created, started, stopped, and reset here.
-- **Trading:** copy sources, open positions, copy decisions, and recent fills
-  for paper and live accounts.
-- **Wallets:** the wallet pool with scores and trade history.
-- **Discovery:** candidate wallets from each source and whether they were
-  admitted to the pool.
-- **Analytics:** score distribution, the discovery funnel, drawdown state,
-  and paper performance by source and coin.
-- **Live feed:** trades and system events as they happen.
-- **Database:** storage use and cleanup tools.
-- **Operations:** health of the workers, data sources, rate limits, and
-  backups.
+- **Overview:** what is happening right now. Account equity and PnL, the path
+  from discovered wallets to wallets being copied, everything that needs
+  attention, background jobs, the best ranked wallets, and recent events.
+- **Trading:** one account at a time, paper or live. Performance, risk and
+  exposure, open positions, the wallets being copied, and the history of trades,
+  executions, and copy decisions. Accounts are created, started, stopped, reset,
+  and closed here.
+- **Activity:** trades, copies, jobs, and risk events as they happen, with
+  filters and a pause button.
+- **Wallets:** the wallet pool ranked by score, archived wallets, and a detail
+  page per wallet that explains its score.
+- **Discovery:** discovery runs, how many candidates each source delivers and
+  why they are rejected, and the candidates themselves.
+- **Analytics:** score distribution, promising and risky wallets, and
+  performance by source and coin.
+- **System:** worker and service health, backups, the database, and the
+  cleanup tools.
 
 ## Words Used in This Project
 

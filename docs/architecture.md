@@ -270,7 +270,7 @@ Maintenance worker responsibilities:
 - Import candidates from Hyperliquid leaderboard, HyperTracker segment,
   HyperTracker leaderboard, and Hyperdash discovery sources.
 - Prefilter source candidates and store discovery run history. Several
-  sources are unofficial endpoints, so `/ops` reports each configured source's
+  sources are unofficial endpoints, so `GET /ops/health` reports each configured source's
   last run, last success, consecutive failures, and empty results, and warns
   when a source fails or returns no wallets. Discovery feeds the pool slowly, so
   a broken source warns but never degrades overall health.
@@ -294,46 +294,73 @@ open live exposure or higher-ranked candidates occupy every slot.
 
 The dashboard is a Next.js app.
 
-The application shell groups navigation into Execution, Intelligence, and
-System areas. Desktop uses a persistent compact sidebar, while narrow screens
-use the same routes in a horizontally scrollable navigation row. Page headers
-contain only page identity, global freshness, and high-level state. Workflow
-controls stay inside the relevant page surface. The Accounts page, for example,
-keeps account selection and lifecycle actions in a dedicated control bar.
+The application shell (`components/shell/AppShell.tsx`) has a sidebar with
+three navigation groups: Monitor (Overview, Trading, Activity), Research
+(Wallets, Discovery, Analytics), and Infrastructure (System). Narrow screens
+open the same navigation from a menu button. `SystemStatusBar.tsx` sits above
+every page and polls `/health` and `/operations/status`: it shows the execution
+mode, network, dependency health, realtime wallet slots, and running jobs, so
+the state of the system is visible from any page.
 
-The UI foundation is defined by semantic Tailwind CSS v4 tokens and shared
-component classes in `frontend/src/app/globals.css`. There is no JavaScript
-Tailwind config: colors, fonts, shadows, and line heights live in the CSS
-`@theme` block, base element styles in `@layer base`, and the `ui-*` component
-classes in `@layer components`, so any utility class can override them.
-Tailwind compiles through the `@tailwindcss/postcss` plugin and scans the
-frontend sources automatically. The theme keeps the Tailwind v3 absolute line
-heights for the `text-*` sizes, so smaller nested labels keep the dense table
-rhythm instead of inheriting v4's unitless ratios. A base rule also keeps the v3
-default border color and pointer cursor on enabled buttons.
-`DashboardSurface.tsx` owns the common dashboard metric and panel primitives.
-Color is not used as the only state signal: status pills include text and a
-state dot, numeric tables use tabular figures, and all data tables have scoped
-column headers and horizontal overflow containers. Shared loading, not-found,
-and recoverable route error states cover navigation and API failures.
+The design system is defined in `frontend/src/app/globals.css`. Colors are CSS
+variables for a light and a dark theme, mapped into Tailwind CSS v4 through an
+`@theme inline` block, so utilities such as `bg-surface` or `text-fg-3` follow
+the active theme. There is no JavaScript Tailwind config. A small inline script
+in the root layout sets `data-theme` before the first paint from the stored
+preference or the operating system, and the `dark` variant is keyed to that
+attribute. The type scale sits at 13px for tables and body text. Fonts are IBM
+Plex Sans and IBM Plex Mono from `@fontsource` packages, so builds work without
+network access. `.data-table` and `.kv` are the shared table and key-value list
+styles.
+
+Shared building blocks live in `components/ui`:
+
+- `primitives.tsx`: server-safe pieces such as `Panel`, `PageHeader`,
+  `StatStrip` and `Stat`, `Badge`, `StatusDot`, `Meter`, `Pnl`, `Side`,
+  `Callout`, `KeyValues`, and the `buttonClass` helper.
+- `client.tsx`: interactive pieces such as `TimeAgo`, `Address` with copy,
+  `Tabs`, `Segmented`, `Dialog`, the promise based `ConfirmProvider` and
+  `useConfirm`, `Menu`, `RefreshControl`, and client pagination.
+- `tone.ts`: the mapping from meaning to color. Green, red, amber, and blue are
+  only used for gains, losses, warnings, and work in progress.
+
+Formatting lives in `lib/format.ts` (en-US numbers, a real minus sign, compact
+values, relative times, durations) and browser requests in `lib/http.ts`, which
+adds readable errors with the proxy request id.
+
+Business logic is kept out of components so it can be unit tested:
+
+- `lib/trading`: account options and summaries, per-account views, copy source
+  rows, live position attribution, live copy decisions, and performance
+  statistics. Paper and live accounts use the same PnL semantics.
+- `lib/attention.ts`: the list of problems shown on the Overview.
+- `lib/operations.ts`: background job progress, labels, and manual job
+  definitions.
+- `lib/events.ts`: event categories and tones for the Activity page.
+- `lib/wallets.ts`: wallet status and score component descriptions.
 
 Current pages:
 
-- `/`: overview and system status.
-- `/wallets`: wallet pool management.
-- `/wallets/[address]`: wallet details and recent fills.
-- `/live-feed`: realtime system and fill events.
-- `/analytics`: pool, scoring, paper, discovery, and freshness analytics.
-- `/accounts`: selected paper or live account metrics, reconciliation, routing,
-  positions, closed trades where available, and fills.
-- `/trading`: execution cockpit, trading accounts, copy sources, combined paper
-  and live positions, and combined execution activity.
+- `/`: Overview with accounts, the wallet pipeline, items that need attention,
+  background jobs, top ranked wallets, and recent events.
+- `/trading`: one paper or live account at a time, with positions, copy
+  sources, history, and account actions. `/accounts` and `/paper-trading`
+  redirect here.
+- `/activity`: the realtime event stream. `/live-feed` redirects here.
+- `/wallets`: the wallet pool and archived wallets.
+- `/wallets/[address]`: score explanation, current account state, performance
+  periods, and trade history of one wallet.
+- `/discovery`: discovery runs, the per-source funnel, and candidates.
+- `/analytics`: pool, scoring, source, coin, and paper copy analytics.
+- `/system`: Health, Database, and Maintenance tabs. `/ops` and `/database`
+  redirect here.
 
 Important folders:
 
 - `frontend/src/app`: routes.
-- `frontend/src/components`: reusable UI components.
-- `frontend/src/lib`: API and config helpers.
+- `frontend/src/components`: page components, with `ui` for the design system
+  and `shell`, `trading`, `wallets`, and `system` for page areas.
+- `frontend/src/lib`: API, formatting, and view-model helpers.
 - `frontend/src/types`: shared TypeScript types.
 - `frontend/config/app.json`: non-secret frontend settings.
 
@@ -356,8 +383,9 @@ logged by the frontend container for diagnosis.
 The Analytics page reads `GET /analytics`. The endpoint intentionally returns
 pre-aggregated rows so the dashboard can render pool coverage, score buckets,
 opportunity and risk wallet lists, 30D source and coin performance, paper skip
-analysis, discovery funnel quality, and freshness checks without issuing many
-browser-side API requests.
+analysis, and freshness checks without issuing many browser-side API
+requests. The Discovery and Overview pages read the same response for exact
+per-source funnel counts.
 
 ## Data Stores
 
@@ -406,7 +434,7 @@ By default, historical and realtime fill ingestion stores perp fills only.
 Historical import counts `targetFills` after this filter, so a 10k target means
 up to 10k stored perp fills even when raw Hyperliquid pages also contain spot
 fills.
-The Database page also exposes per-index storage and usage stats from Postgres,
+The System page Database tab also exposes per-index storage and usage stats from Postgres,
 so index cost can be reviewed before changing schema. Dashboard stats use a fast
 fill summary by default, based on Postgres table estimates, source trade sync
 state, and materialized source trades. Use `GET /database/stats?exact_fill_stats=true`
@@ -417,7 +445,7 @@ active, realtime-slot, copy-enabled, active-allocation, open source-position,
 open paper-position, open live-position, in-flight-order, and top scored
 wallets. Deleted space becomes reusable after vacuum, but total database file
 size may not shrink immediately on managed Postgres.
-The Database page also has ignored-fill cleanup. It deletes raw fills that were
+The System page Maintenance tab also has ignored-fill cleanup. It deletes raw fills that were
 classified as pre-existing-position adds or close-only fills and are not needed
 for reconstructed source trades. Unmatched close fills are kept when they line up
 with a materialized source-trade close, so source trades can still be rebuilt
@@ -610,7 +638,7 @@ weekly npm and pip updates and monthly GitHub Actions and Docker image updates.
 
 Docker Compose also runs `postgres-backup`, a lightweight Postgres container
 that executes `pg_dump` immediately at startup and then every 24 hours by
-default. Dumps are written to `backups/postgres`, and `/ops` reads that mounted
+default. Dumps are written to `backups/postgres`, and `GET /ops/health` reads that mounted
 directory for backup freshness.
 
 ## Data Flows
@@ -1237,7 +1265,7 @@ and can reduce or close them, but new entries are skipped with
 `retained_source_new_position_blocked`.
 The paper summary reports slot state separately from trade state. Allocation rows
 use `monitorStatus` as `monitored`, `connecting`, `offline`, or `waiting`.
-Wallet PnL history rows use `monitorStatus` as `monitored` or `history`.
+Source history rows use `monitorStatus` as `monitored` or `history`.
 `sourceStatus` is `trading`, `retained`, `entries_paused`,
 `waiting_for_trades`, or `waiting_for_slot`. Confirmed WebSocket subscription
 state is authoritative for the `monitored` label; accumulated monitoring
@@ -1254,47 +1282,45 @@ tie-breakers. Wallet PnL History sorts by realized PnL descending, followed by
 total PnL, pool rank, and wallet address.
 Open-position rows sort by durable opening time ascending and use position
 identity as a deterministic tie-breaker, so mark updates do not reorder them.
-The same `openedAt` value is formatted in the browser's local time and replaces
-the visible Execution scope detail. The scope remains available as the stat's
-hover title, preserving the existing row height and grid density.
+The opening time is shown as a relative time with the full local timestamp on
+hover, and the copy delay from the source fill is shown below it.
 Dashboard source counters are reduced from the same current source rows as the
-badges, so source-attributed open positions drive the trading count
+table, so source-attributed open positions drive the trading count
 even when exchange aggregate positions are preferred in the separate
 open-position display.
-The dashboard aggregates allocation status across paper accounts when rendering
-source rows. Open source-attributed exposure is `trading` only when it has both
+Paper source rows use the allocations and positions of the selected account;
+realized PnL, fill counts, and followed time come from all-time copy history
+across paper accounts, and the page says so when more than one paper account
+exists. Open source-attributed exposure is `trading` only when it has both
 a current realtime slot and entry permission. Otherwise it is retained for
 reductions and exits and rendered as `reduce only`. Entry readiness separately
 determines whether an empty slotted source is `waiting_for_trades` or
 `entries_paused`.
 Paper account `enabled` is database runtime state after the account has been
-created through the dashboard or API. The Accounts page can create paper
+created through the dashboard or API. The Trading page can create paper
 accounts with a selected USD starting balance and live accounts with a wallet
 name, optional wallet address, and optional vault address. Empty wallet address
 fields use and save `HYPERLIQUID_WALLET_ADDRESS`. Live account keys are
 generated internally from the wallet route, so the display name can change
 without creating a duplicate route. New accounts start disabled and reconcile
 the exchange wallet snapshot immediately so equity, balance, and open live
-positions are visible before trading is started. The live Reconciled card can
-also manually refresh the selected live account snapshot. The Accounts page
-adapts paper and live account sources into the same account view model, so the
-same panels and row components render the selected account.
-`AccountsDashboard.tsx` owns refresh, account selection, lifecycle actions, and
-create-account orchestration. `accounts-dashboard/accountViewModel.ts` performs
-the paper and live normalization. Its live headline metrics use the same PnL
-semantics as Trading: net realized is gross fill PnL minus fees plus signed
-funding, and total PnL adds current unrealized PnL. Open margin and its equity
-share precede open notional and average leverage. The performance ledger's
-cash-flow-adjusted PnL remains a separately labeled account detail. Focused
-components own performance analytics, risk and exposure, portfolio breakdowns,
-activity tabs, diagnostics, and the create-account dialog.
-`AccountTransactionsPanel.tsx` loads the selected live
+positions are visible before trading is started. The live exchange sync
+figure can also manually refresh the selected live account snapshot. The
+Trading page adapts paper and live account sources into the same account view
+model (`lib/trading/accounts.ts`), so the same panels and tables render the
+selected account. `components/trading/TradingWorkspace.tsx` owns refresh,
+account selection, lifecycle actions, confirmations, and create-account
+orchestration. Headline figures use one PnL semantic for paper and live: net
+realized is gross fill PnL minus fees plus signed funding, and total PnL adds
+current unrealized PnL. The performance ledger's cash-flow-adjusted PnL
+remains a separately labeled account detail.
+`components/trading/AccountTransactions.tsx` loads the selected live
 account's full external cash-flow ledger independently from the four-second
 account summary refresh. It has no manual action and reloads whenever the
 account's normal automatic reconciliation advances `lastReconciledAt`.
-`AccountPerformanceChart.tsx` owns the interactive SVG chart and
-closed-trade statistics. The Accounts page can change enabled state for one
-account without disabling other accounts.
+`components/trading/PerformanceChart.tsx` owns the interactive SVG chart and
+`lib/trading/performance.ts` the closed-trade statistics. The Trading page
+can change enabled state for one account without disabling other accounts.
 Disabled paper accounts are excluded from new entries and adds, but are still
 included when an existing open position for the source needs a reduce or exit
 fill. Live accounts use `enabled`, `exit_only`, and `disabled` status. The
@@ -1785,36 +1811,31 @@ so dashboard trade history is not a skip or fill activity log. The summary also
 matches closed paper fills back to original source fills and marks rows whose
 source close fill was a Hyperliquid liquidation.
 Recent fills remain available in the summary as the diagnostic fill and skip
-activity log, and the Trading page renders them in a separate paginated
-list at the bottom of the page.
+activity log, and the Trading page renders them in the Executions tab.
 
 Discovery candidate source metrics use explicit unit-bearing database columns:
 `source_account_value_usd`, `source_pnl_usd`, and `source_roi_pct`.
 
-The Trading page is a client dashboard that polls the paper summary API for
-paper marks, paper unrealized PnL, and source-wallet paper PnL, and also polls
-the generic trading account API for live accounts, live positions, and recent
-live fills and live order attempts. A top-panel mode toggle selects Paper or
-Live mode. The active mode owns all Trading page view models, so accounts,
-copy sources, wallet PnL history, open positions, closed activity, and recent
-execution activity are never mixed across paper and live rows. Live mode derives
-source history and realized PnL from all-time source metadata, then supplements
-it with live positions, recent fills, live orders, and persisted live pre-submit
-skips. Known wallet labels are reused for display names only. Copy
-source monitor slots and source eligibility are shared across paper and live
-execution, then rendered with mode-specific exposure, PnL, activity, and
-execution status. Live-only historical sources are excluded from Copy Sources
-and remain visible through Wallet PnL history. Recent Execution Activity uses
-the same result-oriented row
-semantics in both modes, so filled, skipped, rejected, and failed attempts are
-visible without mixing paper and live rows. Skip activity is sorted by its last
-decision update while retaining the source fill time as context. The frontend keeps mode-specific
-logic in paper and live view-model builders, while shared presentational
-components render the active mode. Live source allocation bars reuse the shared
-source allocation percentage against live account equity. Live account Equity
-and Net equity labels use exchange equity consistently across Trading and
-Accounts, while allocation usage and sizing use account equity. Tradable equity
-is still used as the order availability guard before submitting new live orders.
+The Trading page is a client component that polls the paper summary API for
+paper marks, paper unrealized PnL, and source-wallet paper PnL, and the generic
+trading account API for live accounts, live positions, recent live fills, live
+order attempts, and live copy decisions. The selected account owns every view
+model, so accounts, copy sources, source history, open positions, closed
+trades, and executions are never mixed across paper and live rows or across
+accounts. Live source history derives realized PnL from all-time source
+metadata, then supplements it with live positions, recent fills, live orders,
+and persisted live pre-submit skips. Known wallet labels are reused for display
+names only. Copy source monitor slots and source eligibility are shared across
+paper and live execution, then rendered with account-specific exposure, PnL,
+activity, and execution status. Live-only historical sources are excluded from
+copy sources and remain visible in the source history tab. Executions use the
+same result-oriented rows for paper and live, so filled, skipped, rejected, and
+failed attempts read the same way. Skip activity is sorted by its last decision
+update while retaining the source fill time as context. Live source allocation
+bars reuse the shared source allocation percentage against live account
+equity. Live equity uses exchange equity, while allocation usage and sizing use
+account equity. Tradable equity is still used as the order availability guard
+before submitting new live orders.
 Source rank, pool rank, score, and labels are resolved from the trading API source metadata
 and merged with paper summary metadata, so live-only fills and orders do not lose
 pool context. The trading API reconstructs live closed trades from stored live
@@ -1825,8 +1846,7 @@ available. Fill fees and `closedPnl` remain authoritative Hyperliquid fill
 fields. Funding is imported from the separate Hyperliquid `userFunding` ledger,
 preserves its signed USDC amount, and is attributed to the matching account and
 coin position window. Live trade net PnL is `closedPnl - fee + funding`.
-Individual reduce and close fills remain in Recent Execution
-Activity. Live exchange position rows use reconciled Hyperliquid position
+Individual reduce and close fills remain in the Executions tab. Live exchange position rows use reconciled Hyperliquid position
 payloads for mark
 price, current notional, unrealized PnL, and ROE. Trading open position rows
 also expose realized PnL plus add and close fill counts for the current position
@@ -1867,10 +1887,10 @@ post-submit error, the backend immediately reconciles the account and treats
 the request as successful when the target position is closed, reduced, or the
 order is found accepted by exchange state. Successful manual close submissions
 also reconcile immediately so the exchange fill and closed trade row can show
-up without waiting for the next worker loop. Paginated history sections show 10
-rows per page in both modes.
+up without waiting for the next worker loop. History lists show 25 rows per
+page.
 - Copy Decisions are a separate lifecycle diagnostic view, so stale no-order
-  decisions are not placed in Recent Execution Activity. Each stale row shows
+  decisions are not placed in the Executions tab. Each stale row shows
   its processing origin, source time, first observed time, ingest lag, total
   source-to-decision age, and processing lag when available. Correlated orders
   also expose logical status plus the latest attempt CLOID, exchange reject,

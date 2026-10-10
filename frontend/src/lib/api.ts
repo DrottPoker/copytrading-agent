@@ -180,10 +180,16 @@ export async function getDiscoveryRuns(limit = 25): Promise<DiscoveryImportRunLi
   }
 }
 
-export async function getWallets(query?: string): Promise<WalletListResponse> {
+export async function getWallets({
+  archived = false,
+  query,
+}: { archived?: boolean; query?: string } = {}): Promise<WalletListResponse> {
   const params = new URLSearchParams();
   if (query?.trim()) {
     params.set("q", query.trim());
+  }
+  if (archived) {
+    params.set("archived", "true");
   }
   const queryString = params.toString();
   const url = queryString

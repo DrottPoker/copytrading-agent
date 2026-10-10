@@ -41,7 +41,7 @@ Database migrations run automatically before the backend and workers start.
 
 Set `DASHBOARD_AUTH_PASSWORD` in `.env` before exposing anything. The dashboard
 runs at http://localhost:3000 and the API at http://localhost:8000. Paper
-copytrading starts once you create and start a paper account on the Accounts
+copytrading starts once you create and start a paper account on the Trading
 page.
 
 ## Safety Defaults

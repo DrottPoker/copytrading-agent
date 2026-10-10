@@ -121,7 +121,7 @@ Services:
 - Dashboard: http://localhost:3000
 - Backend: http://localhost:8000
 - Health: http://localhost:8000/health
-- Ops Health: http://localhost:3000/ops
+- System health: http://localhost:3000/system
 - Postgres: localhost:5432
 - Postgres backup worker: `postgres-backup`, writes to `backups/postgres`
 - Caddy dashboard proxy: http://localhost:8080

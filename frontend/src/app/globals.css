@@ -1,89 +1,127 @@
 @import "tailwindcss";
 
+/* Dark mode follows the data-theme attribute that the layout sets before first paint. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/*
+  Design tokens. Every color in the dashboard goes through these variables so the light and
+  dark themes stay in sync. Color carries meaning only: positive, negative, warning, and info.
+*/
+:root {
+  color-scheme: light;
+  --canvas: #f3f4f5;
+  --surface: #ffffff;
+  --surface-2: #f7f8f9;
+  --surface-3: #eef0f2;
+  --line: #e3e6e9;
+  --line-strong: #cfd4da;
+  --fg: #111418;
+  --fg-2: #3f4650;
+  --fg-3: #687180;
+  --fg-4: #9aa2ad;
+  --positive: #0a8150;
+  --negative: #c9302c;
+  --warning: #a95c00;
+  --info: #2a5bd7;
+  --chart-grid: #e6e9ec;
+  --chart-axis: #8b939e;
+  --overlay: rgb(17 20 24 / 0.45);
+  --shadow-pop: 0 10px 30px rgb(17 20 24 / 0.14), 0 1px 3px rgb(17 20 24 / 0.08);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --canvas: #0c0d0f;
+  --surface: #131518;
+  --surface-2: #181b1f;
+  --surface-3: #1f2328;
+  --line: #24282e;
+  --line-strong: #323840;
+  --fg: #e9ecef;
+  --fg-2: #b9c0c9;
+  --fg-3: #858d98;
+  --fg-4: #5c636d;
+  --positive: #2fbd74;
+  --negative: #f0544f;
+  --warning: #e3a13a;
+  --info: #6b95f2;
+  --chart-grid: #22262b;
+  --chart-axis: #6b737e;
+  --overlay: rgb(0 0 0 / 0.6);
+  --shadow-pop: 0 12px 32px rgb(0 0 0 / 0.5), 0 1px 3px rgb(0 0 0 / 0.4);
+}
+
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-fg: var(--fg);
+  --color-fg-2: var(--fg-2);
+  --color-fg-3: var(--fg-3);
+  --color-fg-4: var(--fg-4);
+  --color-positive: var(--positive);
+  --color-negative: var(--negative);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
+
+  --font-sans: "IBM Plex Sans Variable", "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+
+  --shadow-pop: var(--shadow-pop);
+}
+
 @theme {
-  --color-canvas: #f3f5f7;
-  --color-panel: #ffffff;
-  --color-subtle: #f7f8fa;
-  --color-ink: #101828;
-  --color-secondary: #344054;
-  --color-muted: #667085;
-  --color-faint: #98a2b3;
-  --color-line: #e1e5ea;
-  --color-line-strong: #cdd3dc;
-  --color-brand: #2563eb;
-  --color-brand-hover: #1d4ed8;
-  --color-brand-soft: #eff6ff;
-  --color-positive: #067647;
-  --color-positive-soft: #ecfdf3;
-  --color-warning: #b54708;
-  --color-warning-soft: #fffaeb;
-  --color-danger: #b42318;
-  --color-danger-soft: #fef3f2;
-  --color-sidebar: #0b1220;
-  --color-sidebar-muted: #94a3b8;
-
-  --font-sans:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-mono: SFMono-Regular, "Cascadia Code", "Roboto Mono", Consolas, monospace;
-
-  /*
-    Tailwind v4 uses unitless line-height ratios, which smaller nested labels inherit.
-    Absolute v3 values keep the dense table and card rhythm unchanged.
-  */
-  --text-xs--line-height: 1rem;
-  --text-sm--line-height: 1.25rem;
-  --text-base--line-height: 1.5rem;
-  --text-lg--line-height: 1.75rem;
-  --text-xl--line-height: 1.75rem;
-  --text-2xl--line-height: 2rem;
-  --text-3xl--line-height: 2.25rem;
-  --text-4xl--line-height: 2.5rem;
-
-  --shadow-panel: 0 1px 2px rgba(16, 24, 40, 0.04);
-  --shadow-raised: 0 12px 28px rgba(16, 24, 40, 0.12);
+  /* A dense type scale: tables and body copy sit at 13px. */
+  --text-2xs: 11px;
+  --text-2xs--line-height: 16px;
+  --text-xs: 12px;
+  --text-xs--line-height: 16px;
+  --text-sm: 13px;
+  --text-sm--line-height: 20px;
+  --text-base: 14px;
+  --text-base--line-height: 20px;
+  --text-lg: 16px;
+  --text-lg--line-height: 22px;
+  --text-xl: 19px;
+  --text-xl--line-height: 26px;
+  --text-2xl: 24px;
+  --text-2xl--line-height: 30px;
 }
 
 @layer base {
-  /* Tailwind v4 defaults borders to currentcolor; keep the v3 default. */
   *,
   ::after,
   ::before,
   ::backdrop,
   ::file-selector-button {
-    border-color: #e5e7eb;
+    border-color: var(--line);
   }
 
-  /* Tailwind v4 preflight no longer gives buttons a pointer cursor. */
-  button:not(:disabled),
-  [role="button"]:not(:disabled) {
-    cursor: pointer;
-  }
-
-  :root {
-    --chart-danger: #dc2626;
-    --chart-grid: #d5dbe3;
-    --chart-positive: #16855b;
-    color-scheme: light;
-    background: #f3f5f7;
-    color: #101828;
-    font-synthesis: none;
-  }
-
-  * {
-    box-sizing: border-box;
+  html {
+    background: var(--canvas);
+    -webkit-text-size-adjust: 100%;
   }
 
   body {
     margin: 0;
     min-height: 100vh;
-    background: #f3f5f7;
-    color: #101828;
+    background: var(--canvas);
+    color: var(--fg);
     font-family: var(--font-sans);
-    font-size: 14px;
-    line-height: 1.45;
+    font-size: 13px;
+    line-height: 20px;
+    font-feature-settings: "ss01" 0;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    text-rendering: optimizeLegibility;
+  }
+
+  button:not(:disabled),
+  [role="button"]:not(:disabled),
+  summary {
+    cursor: pointer;
   }
 
   button,
@@ -91,35 +129,7 @@
   select,
   textarea {
     font: inherit;
-  }
-
-  button,
-  a,
-  input,
-  select,
-  textarea {
-    transition-duration: 150ms;
-    transition-property: color, background-color, border-color, box-shadow, opacity;
-    transition-timing-function: ease;
-  }
-
-  button:focus-visible,
-  a:focus-visible,
-  input:focus-visible,
-  select:focus-visible,
-  textarea:focus-visible {
-    outline: 2px solid #2563eb;
-    outline-offset: 2px;
-  }
-
-  input::placeholder,
-  textarea::placeholder {
-    color: #98a2b3;
-  }
-
-  table,
-  .font-mono {
-    font-variant-numeric: tabular-nums slashed-zero;
+    color: inherit;
   }
 
   a {
@@ -127,26 +137,28 @@
     text-decoration: none;
   }
 
+  :focus-visible {
+    outline: 2px solid var(--info);
+    outline-offset: 2px;
+  }
+
   ::selection {
-    background: #bfdbfe;
-    color: #172554;
+    background: color-mix(in oklab, var(--info) 28%, transparent);
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--fg-4);
+  }
+
+  .tabular,
+  table {
+    font-variant-numeric: tabular-nums;
   }
 
   * {
-    scrollbar-color: #cdd3dc transparent;
+    scrollbar-color: var(--line-strong) transparent;
     scrollbar-width: thin;
-  }
-
-  ::-webkit-scrollbar {
-    height: 8px;
-    width: 8px;
-  }
-
-  ::-webkit-scrollbar-thumb {
-    background: #cdd3dc;
-    border: 2px solid transparent;
-    border-radius: 999px;
-    background-clip: padding-box;
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -161,61 +173,160 @@
   }
 }
 
-/* Component classes stay below utilities, so a utility can always override them. */
 @layer components {
-  .ui-panel {
-    @apply rounded-xl border border-line bg-panel shadow-panel;
+  /* Dense data table used by every list in the dashboard. */
+  .data-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    font-size: 13px;
+    line-height: 18px;
   }
 
-  .ui-panel-header {
-    @apply flex min-h-11 items-center justify-between gap-3 border-b border-line px-4 py-2.5;
+  .data-table th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--line);
+    color: var(--fg-3);
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 16px;
+    padding: 6px 10px;
+    text-align: left;
+    white-space: nowrap;
   }
 
-  .ui-metric {
-    @apply rounded-xl border border-line bg-panel p-3.5 shadow-panel;
+  .data-table td {
+    border-bottom: 1px solid var(--line);
+    padding: 6px 10px;
+    vertical-align: middle;
+    white-space: nowrap;
   }
 
-  .ui-data-cell {
-    @apply rounded-lg border border-line bg-subtle px-3 py-2.5;
+  .data-table tbody tr:last-child td {
+    border-bottom: 0;
   }
 
-  .ui-control {
-    @apply h-9 rounded-lg border border-line-strong bg-white px-3 text-sm text-ink shadow-panel outline-hidden hover:border-faint focus:border-brand focus:ring-2 focus:ring-brand/15;
+  .data-table tbody tr:hover td {
+    background: var(--surface-2);
   }
 
-  .ui-button-secondary {
-    @apply inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-line-strong bg-white px-3 text-sm font-semibold text-secondary shadow-panel hover:border-faint hover:bg-subtle;
+  .data-table th:first-child,
+  .data-table td:first-child {
+    padding-left: 14px;
   }
 
-  .ui-button-primary {
-    @apply inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-brand bg-brand px-3 text-sm font-semibold text-white shadow-panel hover:border-brand-hover hover:bg-brand-hover;
+  .data-table th:last-child,
+  .data-table td:last-child {
+    padding-right: 14px;
   }
 
-  .ui-button-positive {
-    @apply inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-positive/25 bg-positive-soft px-3 text-sm font-semibold text-positive hover:border-positive/40;
+  .data-table .num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
   }
 
-  .ui-button-warning {
-    @apply inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-warning/25 bg-warning-soft px-3 text-sm font-semibold text-warning hover:border-warning/40;
+  .data-table .wrap {
+    white-space: normal;
   }
 
-  .ui-button-danger {
-    @apply inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-danger/25 bg-danger-soft px-3 text-sm font-semibold text-danger hover:border-danger/40;
+  .data-table .sub {
+    display: block;
+    color: var(--fg-3);
+    font-size: 11px;
+    line-height: 15px;
   }
 
-  .ui-icon-button {
-    @apply inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-line-strong bg-white text-secondary shadow-panel hover:border-faint hover:bg-subtle hover:text-ink;
+  .data-table-compact td {
+    padding-top: 4px;
+    padding-bottom: 4px;
   }
 
-  .ui-table {
-    @apply w-full border-collapse text-left text-sm;
+  /* Key and value list for detail panels. */
+  .kv {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 12px;
+    row-gap: 0;
   }
 
-  .ui-table-head {
-    @apply border-b border-line bg-subtle text-[11px] font-semibold uppercase tracking-[0.06em] text-muted;
+  .kv > dt {
+    color: var(--fg-3);
+    padding: 4px 0;
+    border-bottom: 1px solid var(--line);
   }
 
-  .ui-table-row {
-    @apply border-b border-line last:border-b-0 hover:bg-subtle/80;
+  .kv > dd {
+    margin: 0;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--line);
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    color: var(--fg);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
+
+  .kv > dt:nth-last-of-type(1),
+  .kv > dd:nth-last-of-type(1) {
+    border-bottom: 0;
+  }
+
+  .field {
+    height: 32px;
+    border-radius: 6px;
+    border: 1px solid var(--line-strong);
+    background: var(--surface);
+    padding: 0 10px;
+    color: var(--fg);
+    outline: none;
+    transition: border-color 120ms ease, box-shadow 120ms ease;
+  }
+
+  .field:hover {
+    border-color: var(--fg-4);
+  }
+
+  .field:focus {
+    border-color: var(--info);
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--info) 18%, transparent);
+  }
+
+  .field:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+}
+
+@keyframes pulse-dot {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, currentColor 45%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 5px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+.animate-pulse-dot {
+  animation: pulse-dot 1.8s ease-out infinite;
+}
+
+@keyframes indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}
+
+.animate-indeterminate {
+  animation: indeterminate 1.4s ease-in-out infinite;
 }

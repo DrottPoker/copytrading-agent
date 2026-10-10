@@ -1,45 +1,24 @@
 export default function Loading() {
   return (
     <div className="grid gap-4" aria-busy="true" aria-live="polite">
-      <div className="border-b border-line pb-4">
-        <div className="h-2.5 w-36 animate-pulse rounded-sm bg-line-strong" />
-        <div className="mt-3 h-7 w-full max-w-sm animate-pulse rounded-md bg-line" />
-        <div className="mt-5 flex flex-wrap gap-2">
-          <div className="h-6 w-24 animate-pulse rounded-full bg-line" />
-          <div className="h-6 w-28 animate-pulse rounded-full bg-line" />
-          <div className="h-6 w-20 animate-pulse rounded-full bg-line" />
-        </div>
+      <span className="sr-only">Loading</span>
+      <div>
+        <div className="h-6 w-40 animate-pulse rounded bg-surface-3" />
+        <div className="mt-2 h-4 w-full max-w-xl animate-pulse rounded bg-surface-3" />
       </div>
-
-      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        {Array.from({ length: 4 }).map((_, index) => (
-          <div key={index} className="ui-metric">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0 flex-1">
-                <div className="h-2.5 w-24 animate-pulse rounded-sm bg-line" />
-                <div className="mt-3 h-7 w-32 animate-pulse rounded-sm bg-line" />
-              </div>
-              <div className="h-8 w-8 animate-pulse rounded-lg bg-line" />
-            </div>
-            <div className="mt-3 h-3 w-40 animate-pulse rounded-sm bg-line" />
-          </div>
-        ))}
-      </section>
-
-      <section className="grid gap-4 xl:grid-cols-[1fr_1fr]">
-        {Array.from({ length: 2 }).map((_, index) => (
-          <div key={index} className="ui-panel">
-            <div className="ui-panel-header">
-              <div className="h-4 w-40 animate-pulse rounded-sm bg-line" />
-            </div>
-            <div className="grid gap-3 p-4">
-              <div className="h-11 animate-pulse rounded-lg bg-line" />
-              <div className="h-11 animate-pulse rounded-lg bg-line" />
-              <div className="h-11 animate-pulse rounded-lg bg-line" />
+      <div className="h-[74px] animate-pulse rounded-lg border border-line bg-surface" />
+      <div className="grid gap-4 xl:grid-cols-2">
+        {[0, 1].map((index) => (
+          <div key={index} className="rounded-lg border border-line bg-surface">
+            <div className="h-10 border-b border-line" />
+            <div className="grid gap-2 p-3.5">
+              {[0, 1, 2, 3].map((row) => (
+                <div key={row} className="h-5 animate-pulse rounded bg-surface-3" />
+              ))}
             </div>
           </div>
         ))}
-      </section>
+      </div>
     </div>
   );
 }

@@ -432,8 +432,8 @@ locks renew at least every 30 seconds and become stale after 90 seconds without
 a renewal. This allows the first status poll or job trigger after a container
 replacement to reconcile abandoned `Running` or `Stopping` state.
 Dashboard mutation proxy failures include an `X-Request-ID` response header and
-write the same `request_id` to the frontend container log. The Trading dashboard
-shows that identifier with failed mutations. Use it to correlate a browser error
+write the same `request_id` to the frontend container log. The dashboard shows
+that identifier with failed mutations. Use it to correlate a browser error
 with the upstream backend response without logging credentials or request bodies.
 
 The Alembic head for this update is `e8a2c4f6d1b3`. The chain includes the
@@ -500,9 +500,9 @@ docker compose -f docker-compose.vps.yml up -d backend trading-worker maintenanc
 
 After the services are healthy:
 
-1. Open Accounts in the dashboard.
+1. Open Trading in the dashboard and select each live account.
 2. Run and confirm a complete fresh reconciliation for each live account.
-3. Review the effective risk limits shown in the Live Risk panel.
+3. Review the effective safety limits under Account details and safety limits.
 4. Confirm that any account intended for new exposure is in the expected
    lifecycle state.
 5. Set `LIVE_TRADING_ENABLED=true` in `.env` if live execution is intended, then
@@ -548,7 +548,7 @@ never empty the account.
 2. Put that private key in `HYPERLIQUID_PRIVATE_KEY` and the trading account's
    own address, not the API wallet address, in `HYPERLIQUID_WALLET_ADDRESS`.
    Never put the main wallet's private key on the server.
-3. Start the live account from the Accounts page.
+3. Start the live account from the Trading page.
 
 Reconciliation asks Hyperliquid (`userRole`) what the signing key is. It must
 be an API wallet approved by the account's wallet address. The answer is stored
@@ -661,7 +661,7 @@ mistaking the first partial balance for trading profit. If
 backfill data is unavailable, the previous stored complete exchange snapshot is
 used as a safe baseline and backfill is retried later. Later equity snapshots
 continue the same performance index, so adding capital changes sizing without
-diluting earlier account performance. The Accounts page labels the tracking
+diluting earlier account performance. The Trading page labels the tracking
 start and keeps cash-flow-adjusted PnL and net external flows in account details.
 Its headline Total PnL and Realized metrics use the same net definitions as the
 Trading page. Open margin is shown before notional with its share of equity,
@@ -793,7 +793,7 @@ docker compose -f docker-compose.vps.yml down -v
 - Redis data is stored in the `redis_data` Docker volume.
 - Container logs rotate at 10 MB with five files per service.
 - Caddy certificates are stored in `caddy_data` and `caddy_config` volumes.
-- The backend mounts `./backups/postgres` read-only so `/ops` can show latest
+- The backend mounts `./backups/postgres` read-only so the System page can show latest
   backup status when `backup_status_enabled=true` in
   `backend/config/app.json`.
 - The `postgres-backup` service mounts `./backups/postgres` read-write and

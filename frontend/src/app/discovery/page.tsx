@@ -1,620 +1,487 @@
-import {
-  AlertTriangle,
-  CheckCircle2,
-  Clock3,
-  Compass,
-  DatabaseZap,
-  Filter,
-  ListChecks,
-  Search,
-  X,
-  type LucideIcon,
-} from "lucide-react";
+import { Search } from "lucide-react";
+import type { Metadata } from "next";
 import Link from "next/link";
-import type { ReactNode } from "react";
 
-import { DashboardMetric, DashboardPanel } from "@/components/DashboardSurface";
-import { DiscoveryPipelineActions } from "@/components/DiscoveryPipelineActions";
-import { HeaderRefreshButton, HeaderUpdatedLabel } from "@/components/HeaderRefresh";
-import { PageTopPanel } from "@/components/PageTopPanel";
-import { StatusPill } from "@/components/StatusPill";
+import { DiscoveryRunPanel } from "@/components/DiscoveryRunPanel";
+import { Address, RefreshControl, TimeAgo } from "@/components/ui/client";
 import {
+  buttonClass,
+  EmptyState,
+  LinkButton,
+  Meter,
+  PageHeader,
+  Panel,
+  Pnl,
+  Stat,
+  StatStrip,
+  StatusDot,
+  Usd,
+} from "@/components/ui/primitives";
+import { statusTone, type Tone } from "@/components/ui/tone";
+import {
+  getAnalytics,
   getDiscoveryCandidates,
   getDiscoveryRuns,
   getDiscoverySources,
   getOperationStatuses,
+  getOpsHealth,
 } from "@/lib/api";
+import { cx } from "@/lib/cx";
 import {
-  formatCurrency,
-  formatDate,
+  formatDateTime,
   formatInteger,
-  formatMs,
+  formatMultiple,
   formatPercent,
+  formatPercentNumber,
   formatScore,
-  numberValue,
+  formatUsd,
+  humanize,
 } from "@/lib/format";
-import type {
-  DiscoveryCandidate,
-  DiscoveryImportRun,
-  DiscoverySource,
-} from "@/types/discovery";
+import type { DiscoveryCandidate } from "@/types/discovery";
 
-type DiscoveryPageProps = {
-  searchParams?: Promise<{
-    q?: string | string[];
-    source?: string | string[];
-    status?: string | string[];
-  }>;
+export const metadata: Metadata = { title: "Discovery" };
+export const dynamic = "force-dynamic";
+
+const PAGE_SIZE = 100;
+const STATUSES = ["discovered", "accepted", "rejected", "promoted", "ignored"];
+
+type SearchParams = {
+  page?: string | string[];
+  q?: string | string[];
+  source?: string | string[];
+  status?: string | string[];
 };
 
-export default async function DiscoveryPage({ searchParams }: DiscoveryPageProps) {
-  const params = await searchParams;
-  const query = searchParamValue(params?.q);
-  const selectedSource = searchParamValue(params?.source);
-  const selectedStatus = searchParamValue(params?.status);
-  const hasFilters = Boolean(query || selectedSource || selectedStatus);
-  const overviewCandidatesPromise = getDiscoveryCandidates({ limit: 500 });
-  const filteredCandidatesPromise = hasFilters
-    ? getDiscoveryCandidates({
-        limit: 500,
-        query,
-        source: selectedSource,
-        status: selectedStatus,
-      })
-    : overviewCandidatesPromise;
+export default async function DiscoveryPage({ searchParams }: { searchParams?: Promise<SearchParams> }) {
+  const params = (await searchParams) ?? {};
+  const query = first(params.q);
+  const source = first(params.source);
+  const status = first(params.status);
+  const page = Math.max(0, Number.parseInt(first(params.page) || "1", 10) - 1 || 0);
 
-  const [sources, overviewCandidates, runs, operations, filteredCandidates] = await Promise.all([
+  const [sources, analytics, runs, operations, ops, candidates, rejected] = await Promise.all([
     getDiscoverySources(),
-    overviewCandidatesPromise,
-    getDiscoveryRuns(20),
+    getAnalytics(),
+    getDiscoveryRuns(15),
     getOperationStatuses(),
-    filteredCandidatesPromise,
+    getOpsHealth(),
+    getDiscoveryCandidates({ limit: PAGE_SIZE, offset: page * PAGE_SIZE, query, source, status }),
+    getDiscoveryCandidates({ limit: 500, status: "rejected" }),
   ]);
 
-  const overview = buildOverview(overviewCandidates.items);
-  const displayed = filteredCandidates.items;
-  const lastRun = runs.items[0] ?? null;
-  const discoveryOperation =
-    operations.items.find((operation) => operation.key === "discovery_import") ?? null;
+  const funnel = analytics?.discoverySources ?? [];
+  const totals = funnel.reduce(
+    (sum, row) => ({
+      accepted: sum.accepted + row.accepted,
+      backfilled: sum.backfilled + row.backfillSucceeded,
+      promoted: sum.promoted + row.promoted,
+      rejected: sum.rejected + row.rejected,
+      total: sum.total + row.total,
+    }),
+    { accepted: 0, backfilled: 0, promoted: 0, rejected: 0, total: 0 },
+  );
+  const funnelBySource = new Map(funnel.map((row) => [row.source, row]));
+  const healthBySource = new Map((ops?.discoverySources ?? []).map((row) => [row.source, row]));
+  const rejectReasons = countBy(rejected.items.map((candidate) => candidate.failReason ?? "unknown"));
+  const rejectTotal = rejected.items.length;
+  const discoveryOperation = operations.items.find((item) => item.key === "discovery_import") ?? null;
+  const enabledSources = sources.items.filter((item) => item.enabled && item.configured).length;
+  const pageCount = Math.max(1, Math.ceil(candidates.total / PAGE_SIZE));
+  const filtered = Boolean(query || source || status);
 
   return (
     <>
-      <PageTopPanel
-        eyebrow="Trader sourcing"
-        icon={Compass}
+      <PageHeader
         title="Discovery"
-        actions={
-          <>
-            <HeaderUpdatedLabel
-              label={lastRun ? `Updated ${formatDate(lastRun.startedAt)}` : "No discovery run yet"}
-            />
-            <StatusPill label={`${formatInteger(overviewCandidates.total)} candidates`} />
-            <StatusPill label={`${formatInteger(overview.accepted)} accepted`} tone="positive" />
-            <StatusPill
-              label={`${formatInteger(overview.promoted)} in pool`}
-              tone={overview.promoted > 0 ? "positive" : "neutral"}
-            />
-          </>
-        }
-        refresh={<HeaderRefreshButton title="Refresh discovery data" />}
+        description="Finds traders on public leaderboards, drops the ones we cannot copy, imports their trade history, and admits the good ones to the wallet pool."
+        actions={<RefreshControl updatedAt={new Date().toISOString()} />}
       />
 
-      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-        <MetricTile
-          icon={Compass}
-          label="Candidates"
-          value={formatInteger(overviewCandidates.total)}
-          detail={`${formatInteger(overviewCandidates.items.length)} loaded`}
-        />
-        <MetricTile
-          icon={Filter}
-          label="Prefilter"
-          value={`${formatInteger(overview.accepted)}/${formatInteger(overview.rejected)}`}
-          detail="accepted / rejected"
-          tone={overview.accepted > 0 ? "positive" : "neutral"}
-        />
-        <MetricTile
-          icon={DatabaseZap}
-          label="Backfilled"
-          value={formatInteger(overview.backfilled)}
-          detail={`${formatInteger(overview.backfillFailed)} failed`}
-          tone={overview.backfillFailed > 0 ? "warning" : "neutral"}
-        />
-        <MetricTile
-          icon={CheckCircle2}
-          label="Added to pool"
-          value={formatInteger(overview.promoted)}
-          detail="Approved by discovery backfill"
-          tone={overview.promoted > 0 ? "positive" : "neutral"}
-        />
-        <MetricTile
-          icon={Clock3}
-          label="Last import"
-          value={lastRun ? formatDate(lastRun.startedAt) : "-"}
-          detail={lastRun ? `${lastRun.source} ${lastRun.status}` : "No runs yet"}
-          tone={lastRun?.status === "failed" ? "warning" : "neutral"}
-        />
-      </section>
+      <DiscoveryRunPanel initialOperation={discoveryOperation} sources={sources.items} />
 
-      <DiscoveryPipelineActions initialOperation={discoveryOperation} sources={sources.items} />
+      <StatStrip className="lg:grid-cols-6">
+        <Stat label="Candidates" value={formatInteger(totals.total)} sub={`from ${formatInteger(funnel.length)} sources`} />
+        <Stat
+          label="Passed the prefilter"
+          value={formatInteger(totals.accepted + totals.promoted)}
+          sub={totals.total > 0 ? `${formatPercent((totals.accepted + totals.promoted) / totals.total)} of candidates` : "-"}
+        />
+        <Stat label="Rejected" value={formatInteger(totals.rejected)} sub="see the reasons below" />
+        <Stat
+          label="History imported"
+          hint="Candidates whose trade history was downloaded to check their quality"
+          value={formatInteger(totals.backfilled)}
+        />
+        <Stat
+          label="Admitted to the pool"
+          tone={totals.promoted > 0 ? "positive" : "neutral"}
+          value={formatInteger(totals.promoted)}
+        />
+        <Stat
+          label="Sources in use"
+          value={`${formatInteger(enabledSources)} of ${formatInteger(sources.items.length)}`}
+          sub="enabled and configured"
+        />
+      </StatStrip>
 
-      <section className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
-        <Panel icon={ListChecks} title="Source Coverage">
-          <div className="grid gap-3">
-            {sources.items.length === 0 ? (
-              <EmptyState text="No discovery sources returned by API." />
-            ) : (
-              sources.items.map((source) => (
-                <SourceRow
-                  key={source.key}
-                  count={overview.sourceCounts[source.key] ?? 0}
-                  source={source}
-                />
-              ))
-            )}
-          </div>
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(320px,1fr)]">
+        <Panel title="Sources" meta="where candidates come from and how many make it through">
+          {sources.items.length === 0 ? (
+            <EmptyState title="No discovery sources configured" />
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Source</th>
+                    <th>Health</th>
+                    <th className="num">Candidates</th>
+                    <th className="num">Passed</th>
+                    <th className="num">Admitted</th>
+                    <th className="num" title="Average ROI reported by the source">
+                      Avg ROI
+                    </th>
+                    <th className="num">Avg account</th>
+                    <th className="num">Last success</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sources.items.map((item) => {
+                    const row = funnelBySource.get(item.key);
+                    const health = healthBySource.get(item.key);
+                    const passed = row ? row.accepted + row.promoted : 0;
+                    return (
+                      <tr key={item.key}>
+                        <td>
+                          <Link
+                            href={`/discovery?source=${encodeURIComponent(item.key)}`}
+                            className="font-medium hover:underline"
+                            title={item.notes ?? undefined}
+                          >
+                            {item.label}
+                          </Link>
+                          <span className="sub font-mono">{item.key}</span>
+                        </td>
+                        <td>
+                          {!item.enabled ? (
+                            <StatusDot tone="neutral" label="Disabled" />
+                          ) : !item.configured ? (
+                            <StatusDot tone="warning" label="Needs configuration" />
+                          ) : health ? (
+                            <StatusDot
+                              tone={health.consecutiveFailures > 0 ? "negative" : statusTone(health.status)}
+                              label={
+                                health.consecutiveFailures > 0
+                                  ? `${formatInteger(health.consecutiveFailures)} failed runs`
+                                  : humanize(health.status)
+                              }
+                              title={health.lastError ?? undefined}
+                            />
+                          ) : (
+                            <StatusDot tone="neutral" label="Not run yet" />
+                          )}
+                        </td>
+                        <td className="num">{formatInteger(row?.total ?? 0)}</td>
+                        <td className="num">
+                          {formatInteger(passed)}
+                          <span className="sub">{row && row.total > 0 ? formatPercent(passed / row.total, { decimals: 0 }) : "-"}</span>
+                        </td>
+                        <td className="num">{formatInteger(row?.promoted ?? 0)}</td>
+                        <td className="num text-fg-2">{formatPercentNumber(row?.averageRoiPct)}</td>
+                        <td className="num text-fg-2">{formatUsd(row?.averageAccountValueUsd, { compact: true })}</td>
+                        <td className="num text-fg-3">
+                          <TimeAgo value={health?.lastSuccessAt ?? row?.lastSeenAt} />
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </Panel>
 
-        <Panel icon={AlertTriangle} title="Reject Reasons">
-          <DictionaryBars values={overview.rejectReasons} emptyText="No rejected candidates loaded." />
+        <Panel
+          title="Why candidates are rejected"
+          meta={rejectTotal > 0 ? `latest ${formatInteger(rejectTotal)} rejections` : undefined}
+          bodyClassName="px-3.5 py-3"
+        >
+          {rejectReasons.length === 0 ? (
+            <p className="text-sm text-fg-3">No rejected candidates.</p>
+          ) : (
+            <ul className="grid gap-2.5">
+              {rejectReasons.map(([reason, value]) => (
+                <li key={reason}>
+                  <Link
+                    href="/discovery?status=rejected"
+                    className="flex items-center justify-between gap-3 text-sm hover:underline"
+                  >
+                    <span className="truncate">{humanize(reason)}</span>
+                    <span className="shrink-0 tabular-nums text-fg-2">
+                      {formatInteger(value)}
+                      <span className="ml-2 text-xs text-fg-4">{formatPercent(value / rejectTotal, { decimals: 0 })}</span>
+                    </span>
+                  </Link>
+                  <Meter className="mt-1" value={value / rejectTotal} tone="neutral" />
+                </li>
+              ))}
+            </ul>
+          )}
         </Panel>
-      </section>
+      </div>
 
-      <Panel icon={Clock3} title="Recent Import Runs">
-        <div className="overflow-x-auto">
-          <table className="ui-table min-w-[900px] text-sm">
-            <thead className="ui-table-head">
+      <details className="group min-w-0 overflow-hidden rounded-lg border border-line bg-surface">
+        <summary className="flex min-h-10 list-none items-center justify-between gap-3 px-3.5 py-2 text-sm font-semibold hover:bg-surface-2">
+          <span>
+            Import runs{" "}
+            <span className="font-normal text-fg-3">
+              latest {formatInteger(runs.items.length)} of {formatInteger(runs.total)}
+            </span>
+          </span>
+          <span className="text-xs font-normal text-fg-3">
+            <span className="group-open:hidden">Show</span>
+            <span className="hidden group-open:inline">Hide</span>
+          </span>
+        </summary>
+        <div className="overflow-x-auto border-t border-line">
+          <table className="data-table">
+            <thead>
               <tr>
-                <th scope="col" className="px-3 py-2.5 font-semibold">Source</th>
-                <th scope="col" className="px-3 py-2.5 font-semibold">Status</th>
-                <th scope="col" className="px-3 py-2.5 font-semibold">Fetched</th>
-                <th scope="col" className="px-3 py-2.5 font-semibold">Inserted / updated</th>
-                <th scope="col" className="px-3 py-2.5 font-semibold">Started</th>
-                <th scope="col" className="px-3 py-2.5 font-semibold">Finished</th>
+                <th>Started</th>
+                <th>Source</th>
+                <th>Status</th>
+                <th className="num">Fetched</th>
+                <th className="num">New</th>
+                <th className="num">Updated</th>
+                <th className="num">Skipped</th>
+                <th>Error</th>
               </tr>
             </thead>
             <tbody>
-              {runs.items.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="px-4 py-10 text-center text-muted">
-                    No import runs yet.
+              {runs.items.map((run) => (
+                <tr key={run.id}>
+                  <td className="tabular-nums text-fg-2">{formatDateTime(run.startedAt)}</td>
+                  <td className="font-mono text-xs">{run.source}</td>
+                  <td>
+                    <StatusDot tone={statusTone(run.status)} label={humanize(run.status)} />
                   </td>
+                  <td className="num">{formatInteger(run.fetchedCount)}</td>
+                  <td className="num">{formatInteger(run.insertedCount)}</td>
+                  <td className="num text-fg-2">{formatInteger(run.updatedCount)}</td>
+                  <td className="num text-fg-2">{formatInteger(run.skippedCount)}</td>
+                  <td className="wrap max-w-[360px] text-xs text-negative">{run.error ?? ""}</td>
                 </tr>
-              ) : (
-                runs.items.map((run) => <RunRow key={run.id} run={run} />)
-              )}
+              ))}
             </tbody>
           </table>
         </div>
-      </Panel>
+      </details>
 
-      <section className="ui-panel overflow-hidden">
-        <div className="flex flex-col gap-3 border-b border-line px-4 py-3 xl:flex-row xl:items-center xl:justify-between">
-          <div>
-            <h2 className="text-base font-semibold">Candidate Pipeline</h2>
-            <p className="mt-1 text-sm text-muted">
-              Showing {formatInteger(displayed.length)} of {formatInteger(filteredCandidates.total)}
-              {hasFilters ? " matching" : ""} candidates.
-            </p>
-          </div>
-          <CandidateFilters
-            query={query}
-            selectedSource={selectedSource}
-            selectedStatus={selectedStatus}
-            sources={sources.items}
-          />
-        </div>
-        <div className="overflow-x-auto">
-          <table className="ui-table min-w-[1440px] text-sm">
-            <thead className="ui-table-head">
-              <tr>
-                <th scope="col" className="px-3 py-2.5 font-semibold">Wallet</th>
-                <th scope="col" className="px-3 py-2.5 font-semibold">Source</th>
-                <th scope="col" className="px-3 py-2.5 font-semibold">Source metrics</th>
-                <th scope="col" className="px-3 py-2.5 font-semibold">Pipeline</th>
-                <th scope="col" className="px-3 py-2.5 font-semibold">Backfill</th>
-                <th scope="col" className="px-3 py-2.5 font-semibold">Quality</th>
-                <th scope="col" className="px-3 py-2.5 font-semibold">Last seen</th>
-              </tr>
-            </thead>
-            <tbody>
-              {displayed.length === 0 ? (
+      <section className="min-w-0 overflow-hidden rounded-lg border border-line bg-surface">
+        <form action="/discovery" className="flex flex-col gap-2 border-b border-line px-3.5 py-2.5 lg:flex-row lg:items-center">
+          <h2 className="text-sm font-semibold lg:mr-2">Candidates</h2>
+          <label className="relative block lg:w-64">
+            <span className="sr-only">Search candidates</span>
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-fg-4" aria-hidden="true" />
+            <input name="q" type="search" defaultValue={query} placeholder="Wallet or name" className="field w-full pl-8" />
+          </label>
+          <select name="source" defaultValue={source} className="field" aria-label="Source">
+            <option value="">All sources</option>
+            {sources.items.map((item) => (
+              <option key={item.key} value={item.key}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+          <select name="status" defaultValue={status} className="field" aria-label="Status">
+            <option value="">All statuses</option>
+            {STATUSES.map((value) => (
+              <option key={value} value={value}>
+                {humanize(value)}
+              </option>
+            ))}
+          </select>
+          <button type="submit" className={buttonClass({ size: "md" })}>
+            Filter
+          </button>
+          {filtered ? (
+            <LinkButton href="/discovery" variant="ghost">
+              Clear
+            </LinkButton>
+          ) : null}
+          <span className="text-xs text-fg-3 lg:ml-auto">
+            {formatInteger(candidates.total)} {filtered ? "matching" : "in total"}
+          </span>
+        </form>
+        {candidates.items.length === 0 ? (
+          <EmptyState title={filtered ? "No candidates match" : "No candidates yet"}>
+            {filtered ? "Try another filter." : "Run discovery to import candidates from the leaderboards."}
+          </EmptyState>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="data-table">
+              <thead>
                 <tr>
-                  <td colSpan={7} className="px-4 py-10 text-center text-muted">
-                    {hasFilters ? "No discovery candidates match this filter." : "No candidates yet."}
-                  </td>
+                  <th>Wallet</th>
+                  <th>Source</th>
+                  <th>Status</th>
+                  <th className="num" title="Metrics reported by the leaderboard">
+                    Source PnL
+                  </th>
+                  <th className="num">Source ROI</th>
+                  <th className="num">Account</th>
+                  <th title="Trade history import">History</th>
+                  <th className="num" title="Closed trades in the imported history">
+                    Trades
+                  </th>
+                  <th className="num">Net PnL</th>
+                  <th className="num">Win rate</th>
+                  <th className="num">PF</th>
+                  <th className="num">Max DD</th>
+                  <th className="num">Last trade</th>
                 </tr>
-              ) : (
-                displayed.map((candidate) => (
+              </thead>
+              <tbody>
+                {candidates.items.map((candidate) => (
                   <CandidateRow key={candidate.id} candidate={candidate} />
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {pageCount > 1 ? (
+          <div className="flex items-center justify-between gap-3 border-t border-line px-3.5 py-2 text-xs text-fg-3">
+            <span className="tabular-nums">
+              Page {formatInteger(page + 1)} of {formatInteger(pageCount)}
+            </span>
+            <span className="flex gap-1.5">
+              <PageLink disabled={page === 0} label="Previous" params={{ page: String(page), q: query, source, status }} />
+              <PageLink
+                disabled={page >= pageCount - 1}
+                label="Next"
+                params={{ page: String(page + 2), q: query, source, status }}
+              />
+            </span>
+          </div>
+        ) : null}
       </section>
     </>
   );
 }
 
-function CandidateFilters({
-  query,
-  selectedSource,
-  selectedStatus,
-  sources,
-}: {
-  query: string;
-  selectedSource: string;
-  selectedStatus: string;
-  sources: DiscoverySource[];
-}) {
-  const hasFilters = Boolean(query || selectedSource || selectedStatus);
-
-  return (
-    <form action="/discovery" className="flex flex-col gap-2 xl:flex-row xl:items-center">
-      <label className="relative block min-w-[260px]">
-        <span className="sr-only">Search wallet or label</span>
-        <Search
-          className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted"
-          aria-hidden="true"
-        />
-        <input
-          type="search"
-          name="q"
-          defaultValue={query}
-          placeholder="Search wallet or label"
-          className="ui-control w-full pl-9 pr-3"
-        />
-      </label>
-      <select
-        name="source"
-        defaultValue={selectedSource}
-        className="ui-control"
-      >
-        <option value="">All sources</option>
-        {sources.map((source) => (
-          <option key={source.key} value={source.key}>
-            {source.label}
-          </option>
-        ))}
-      </select>
-      <select
-        name="status"
-        defaultValue={selectedStatus}
-        className="ui-control"
-      >
-        <option value="">All statuses</option>
-        <option value="discovered">Discovered</option>
-        <option value="accepted">Accepted</option>
-        <option value="rejected">Rejected</option>
-        <option value="promoted">Promoted</option>
-        <option value="ignored">Ignored</option>
-      </select>
-      <div className="flex shrink-0 gap-2">
-        <button
-          type="submit"
-          className="ui-button-primary"
-        >
-          <Search className="h-4 w-4" aria-hidden="true" />
-          Filter
-        </button>
-        {hasFilters ? (
-          <Link
-            href="/discovery"
-            className="ui-button-secondary"
-          >
-            <X className="h-4 w-4" aria-hidden="true" />
-            Clear
-          </Link>
-        ) : null}
-      </div>
-    </form>
-  );
-}
-
-function MetricTile({
-  detail,
-  icon: Icon,
-  label,
-  tone = "neutral",
-  value,
-}: {
-  detail: string;
-  icon: LucideIcon;
-  label: string;
-  tone?: "positive" | "warning" | "neutral";
-  value: string;
-}) {
-  return (
-    <DashboardMetric detail={detail} icon={Icon} label={label} tone={tone} value={value} />
-  );
-}
-
-function Panel({
-  children,
-  icon: Icon,
-  title,
-}: {
-  children: ReactNode;
-  icon: LucideIcon;
-  title: string;
-}) {
-  return <DashboardPanel icon={Icon} title={title}>{children}</DashboardPanel>;
-}
-
-function SourceRow({
-  count,
-  source,
-}: {
-  count: number;
-  source: DiscoverySource;
-}) {
-  return (
-    <div className="flex flex-col gap-3 rounded-md border border-line bg-subtle p-3 sm:flex-row sm:items-center sm:justify-between">
-      <div className="min-w-0">
-        <div className="flex flex-wrap items-center gap-2">
-          <p className="font-semibold">{source.label}</p>
-          <StatusPill
-            label={source.enabled ? "enabled" : "disabled"}
-            tone={source.enabled ? "positive" : "neutral"}
-          />
-          <StatusPill
-            label={source.configured ? "configured" : "needs config"}
-            tone={source.configured ? "positive" : "warning"}
-          />
-        </div>
-        <p className="mt-2 font-mono text-xs text-muted">{source.key}</p>
-        {source.notes ? <p className="mt-2 text-sm text-muted">{source.notes}</p> : null}
-      </div>
-      <div className="shrink-0 text-left sm:text-right">
-        <p className="text-xl font-semibold">{formatInteger(count)}</p>
-        <p className="text-xs uppercase text-muted">loaded</p>
-      </div>
-    </div>
-  );
-}
-
-function RunRow({ run }: { run: DiscoveryImportRun }) {
-  return (
-    <tr className="border-b border-line last:border-b-0">
-      <td className="px-3 py-2.5 font-semibold">{run.source}</td>
-      <td className="px-3 py-2.5">
-        <StatusPill label={run.status} tone={run.status === "succeeded" ? "positive" : "warning"} />
-      </td>
-      <td className="px-3 py-2.5 font-mono">{formatInteger(run.fetchedCount)}</td>
-      <td className="px-3 py-2.5 text-muted">
-        {formatInteger(run.insertedCount)} / {formatInteger(run.updatedCount)}
-      </td>
-      <td className="px-3 py-2.5 text-muted">{formatDate(run.startedAt)}</td>
-      <td className="px-3 py-2.5 text-muted">{formatDate(run.finishedAt)}</td>
-    </tr>
-  );
-}
-
 function CandidateRow({ candidate }: { candidate: DiscoveryCandidate }) {
-  const canOpenWallet = candidate.status === "promoted";
-
+  const name = candidate.sourceLabel || candidate.subaccountName;
   return (
-    <tr className="ui-table-row">
-      <td className="px-3 py-2.5 align-top">
-        <div className="flex min-w-0 flex-col gap-1">
-          {canOpenWallet ? (
-            <Link
-              href={`/wallets/${candidate.walletAddress}`}
-              className="min-w-0 max-w-full whitespace-normal wrap-break-word font-semibold hover:text-brand"
-            >
-              {candidate.sourceLabel || candidate.subaccountName || shortAddress(candidate.walletAddress)}
-            </Link>
-          ) : (
-            <p className="min-w-0 max-w-full whitespace-normal wrap-break-word font-semibold">
-              {candidate.sourceLabel || candidate.subaccountName || shortAddress(candidate.walletAddress)}
-            </p>
-          )}
-          <p className="font-mono text-xs text-muted">
-            {shortAddress(candidate.walletAddress)}
-          </p>
-          <p className="text-xs text-muted">{candidate.accountRole}</p>
-        </div>
+    <tr>
+      <td>
+        {candidate.status === "promoted" ? (
+          <Link href={`/wallets/${candidate.walletAddress}`} className="block max-w-[200px] truncate font-medium hover:underline">
+            {name || candidate.walletAddress}
+          </Link>
+        ) : name ? (
+          <span className="block max-w-[200px] truncate font-medium">{name}</span>
+        ) : null}
+        <Address address={candidate.walletAddress} />
       </td>
-      <td className="px-3 py-2.5 align-top">
-        <div className="grid gap-1">
-          <span className="font-semibold">{candidate.source}</span>
-          <span className="text-xs text-muted">
-            {candidate.sourceRank ? `Rank #${candidate.sourceRank}` : "No rank"}
+      <td>
+        <span className="font-mono text-xs">{candidate.source}</span>
+        <span className="sub">
+          {candidate.sourceRank ? `rank #${candidate.sourceRank}` : "unranked"}
+          {candidate.sourceCohort ? `, ${candidate.sourceCohort}` : ""}
+        </span>
+      </td>
+      <td>
+        <StatusDot tone={candidateTone(candidate.status)} label={humanize(candidate.status)} />
+        {candidate.failReason ? (
+          <span className="sub max-w-[200px] truncate" title={humanize(candidate.failReason)}>
+            {humanize(candidate.failReason)}
           </span>
-          {candidate.sourceCohort ? (
-            <span className="text-xs text-muted">{candidate.sourceCohort}</span>
-          ) : null}
-        </div>
+        ) : null}
       </td>
-      <td className="px-3 py-2.5 align-top">
-        <div className="grid gap-1">
-          <MetricLine
-            label="PnL"
-            value={formatCurrency(candidate.sourcePnlUsd ?? candidate.sourcePnl)}
-          />
-          <MetricLine
-            label="ROI"
-            value={formatSourceRoi(candidate.sourceRoiPct ?? candidate.sourceRoi)}
-          />
-          <MetricLine
-            label="Equity"
-            value={formatCurrency(candidate.sourceAccountValueUsd ?? candidate.accountValue)}
-          />
-          <MetricLine label="Copy score" value={formatScore(candidate.sourceCopyScore)} />
-        </div>
+      <td className="num">
+        <Pnl value={candidate.sourcePnlUsd ?? candidate.sourcePnl} compact />
       </td>
-      <td className="px-3 py-2.5 align-top">
-        <div className="flex max-w-[260px] flex-wrap gap-2">
-          <StatusPill label={candidate.status} tone={candidateStatusTone(candidate.status)} />
-          {candidate.failReason ? (
-            <StatusPill label={reasonLabel(candidate.failReason)} tone="warning" />
-          ) : null}
-        </div>
+      <td className="num text-fg-2">{formatPercentNumber(candidate.sourceRoiPct ?? candidate.sourceRoi)}</td>
+      <td className="num">
+        <Usd value={candidate.sourceAccountValueUsd ?? candidate.accountValue} compact />
       </td>
-      <td className="px-3 py-2.5 align-top">
-        <div className="grid gap-2">
-          <StatusPill
-            label={candidate.backfillStatus}
-            tone={backfillStatusTone(candidate.backfillStatus)}
-          />
-          <div className="grid gap-1 text-xs text-muted">
-            <span>
-              {formatInteger(candidate.backfillInsertedCount)} new /{" "}
-              {formatInteger(candidate.backfillDuplicateCount)} dup
-            </span>
-            <span>{formatDate(candidate.lastBackfilledAt)}</span>
-          </div>
-          {candidate.backfillError ? (
-            <p className="max-w-[280px] truncate text-xs text-danger">{candidate.backfillError}</p>
-          ) : null}
-        </div>
+      <td>
+        <StatusDot
+          tone={candidate.backfillStatus === "succeeded" ? "positive" : candidate.backfillStatus === "failed" ? "negative" : "neutral"}
+          label={humanize(candidate.backfillStatus)}
+          title={candidate.backfillError ?? undefined}
+        />
+        {candidate.lastBackfilledAt ? (
+          <span className="sub">
+            {formatInteger(candidate.backfillInsertedCount)} fills, <TimeAgo value={candidate.lastBackfilledAt} />
+          </span>
+        ) : null}
       </td>
-      <td className="px-3 py-2.5 align-top">
-        <div className="grid gap-1">
-          <MetricLine
-            label="Trades"
-            value={`${formatInteger(candidate.closedTradeCount)} closed / ${formatInteger(
-              candidate.openTradeCount,
-            )} open`}
-          />
-          <MetricLine label="Fills" value={formatInteger(candidate.fillCount)} />
-          <MetricLine label="Net PnL" value={formatCurrency(candidate.netPnlUsd)} />
-          <MetricLine label="Profit factor" value={formatScore(candidate.profitFactor)} />
-          <MetricLine label="Win rate" value={formatPercent(candidate.winRate)} />
-          <MetricLine label="Equity DD" value={formatPercent(candidate.maxDrawdownPct)} />
-          <MetricLine label="Avg notional" value={formatCurrency(candidate.averageTradeNotionalUsd)} />
-          <MetricLine label="Last trade" value={formatMs(candidate.lastTradeTimeMs)} />
-        </div>
+      <td className="num">
+        {formatInteger(candidate.closedTradeCount)}
+        {candidate.openTradeCount > 0 ? <span className="sub">{formatInteger(candidate.openTradeCount)} open</span> : null}
       </td>
-      <td className="px-3 py-2.5 align-top text-muted">
-        <div className="grid gap-1">
-          <span>{formatDate(candidate.lastSeenAt)}</span>
-          <span className="text-xs">First {formatDate(candidate.firstSeenAt)}</span>
-        </div>
+      <td className="num">{candidate.netPnlUsd === null ? "-" : <Pnl value={candidate.netPnlUsd} compact />}</td>
+      <td className="num text-fg-2">{formatPercent(candidate.winRate, { decimals: 0 })}</td>
+      <td className="num text-fg-2">{formatMultiple(candidate.profitFactor)}</td>
+      <td className="num text-fg-2">{formatPercent(candidate.maxDrawdownPct)}</td>
+      <td className="num text-fg-3">
+        <TimeAgo value={candidate.lastTradeTimeMs} />
+        {candidate.sourceCopyScore ? (
+          <span className="sub" title="Copy score reported by the source">
+            source score {formatScore(candidate.sourceCopyScore)}
+          </span>
+        ) : null}
       </td>
     </tr>
   );
 }
 
-function MetricLine({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-center justify-between gap-3">
-      <span className="text-xs text-muted">{label}</span>
-      <span className="min-w-0 truncate text-right font-mono text-xs font-semibold">{value}</span>
-    </div>
-  );
-}
-
-function DictionaryBars({
-  emptyText,
-  values,
+function PageLink({
+  disabled,
+  label,
+  params,
 }: {
-  emptyText: string;
-  values: Record<string, number>;
+  disabled: boolean;
+  label: string;
+  params: Record<string, string>;
 }) {
-  const entries = Object.entries(values).sort((left, right) => right[1] - left[1]);
-  const total = entries.reduce((sum, [, value]) => sum + value, 0);
-
-  if (entries.length === 0) {
-    return <EmptyState text={emptyText} />;
+  if (disabled) {
+    return (
+      <span className={cx(buttonClass({ size: "xs" }), "pointer-events-none opacity-50")} aria-disabled="true">
+        {label}
+      </span>
+    );
   }
-
+  const search = new URLSearchParams(Object.entries(params).filter(([, value]) => value));
   return (
-    <div className="grid gap-3">
-      {entries.map(([key, value]) => (
-        <div key={key}>
-          <div className="flex items-center justify-between gap-3 text-sm">
-            <span className="truncate font-medium">{reasonLabel(key)}</span>
-            <span className="shrink-0 font-mono text-muted">{formatInteger(value)}</span>
-          </div>
-          <div className="mt-2 h-2 overflow-hidden rounded-full bg-line">
-            <div
-              className="h-full rounded-full bg-brand"
-              style={{ width: `${Math.max(0, Math.min(100, (value / total) * 100))}%` }}
-            />
-          </div>
-        </div>
-      ))}
-    </div>
+    <LinkButton href={`/discovery?${search.toString()}`} size="xs">
+      {label}
+    </LinkButton>
   );
 }
 
-function EmptyState({ text }: { text: string }) {
-  return <div className="py-10 text-center text-sm text-muted">{text}</div>;
-}
-
-function buildOverview(candidates: DiscoveryCandidate[]) {
-  const statusCounts = countBy(candidates, (candidate) => candidate.status);
-  const rejectReasons = countBy(
-    candidates.filter((candidate) => candidate.failReason),
-    (candidate) => candidate.failReason ?? "unknown",
-  );
-  const sourceCounts = countBy(candidates, (candidate) => candidate.source);
-
-  return {
-    accepted: (statusCounts.accepted ?? 0) + (statusCounts.promoted ?? 0),
-    backfillFailed: candidates.filter((candidate) => candidate.backfillStatus === "failed").length,
-    backfilled: candidates.filter((candidate) => candidate.backfillStatus === "succeeded").length,
-    promoted: statusCounts.promoted ?? 0,
-    rejected: statusCounts.rejected ?? 0,
-    rejectReasons,
-    sourceCounts,
-  };
-}
-
-function countBy<T>(items: T[], keyFn: (item: T) => string) {
-  return items.reduce<Record<string, number>>((accumulator, item) => {
-    const key = keyFn(item);
-    accumulator[key] = (accumulator[key] ?? 0) + 1;
-    return accumulator;
-  }, {});
-}
-
-function candidateStatusTone(status: string) {
-  if (status === "accepted" || status === "promoted") {
+function candidateTone(status: string): Tone {
+  if (status === "promoted") {
     return "positive";
+  }
+  if (status === "accepted") {
+    return "info";
   }
   if (status === "rejected") {
-    return "warning";
+    return "negative";
   }
   return "neutral";
 }
 
-function backfillStatusTone(status: string) {
-  if (status === "succeeded") {
-    return "positive";
+function countBy(values: string[]) {
+  const counts = new Map<string, number>();
+  for (const value of values) {
+    counts.set(value, (counts.get(value) ?? 0) + 1);
   }
-  if (status === "failed") {
-    return "warning";
-  }
-  if (status === "running") {
-    return "neutral";
-  }
-  return "neutral";
+  return Array.from(counts.entries()).sort((left, right) => right[1] - left[1]);
 }
 
-function formatSourceRoi(value: string | null) {
-  if (value === null || value === undefined) {
-    return "-";
-  }
-  return `${new Intl.NumberFormat("sv-SE", { maximumFractionDigits: 2 }).format(numberValue(value))}%`;
-}
-
-function reasonLabel(value: string) {
-  return value
-    .split("_")
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
-}
-
-function searchParamValue(value: string | string[] | undefined) {
-  if (Array.isArray(value)) {
-    return (value[0] ?? "").trim();
-  }
-  return (value ?? "").trim();
-}
-
-function shortAddress(address: string) {
-  return `${address.slice(0, 8)}...${address.slice(-6)}`;
+function first(value: string | string[] | undefined) {
+  return ((Array.isArray(value) ? value[0] : value) ?? "").trim();
 }

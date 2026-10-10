@@ -1,25 +1,22 @@
-import { ArrowLeft, SearchX } from "lucide-react";
-import Link from "next/link";
+import { ArrowLeft } from "lucide-react";
+
+import { LinkButton } from "@/components/ui/primitives";
 
 export default function NotFoundPage() {
   return (
-    <section className="ui-panel mx-auto w-full max-w-2xl p-6 sm:p-8">
-      <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-subtle text-muted">
-        <SearchX className="h-5 w-5" aria-hidden="true" />
-      </span>
-      <p className="mt-5 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted">
-        Not found
+    <section className="mx-auto mt-10 w-full max-w-lg rounded-lg border border-line bg-surface px-6 py-8">
+      <p className="text-xs font-medium text-fg-3">404</p>
+      <h1 className="mt-1 text-xl font-semibold">This page or wallet does not exist</h1>
+      <p className="mt-2 text-sm text-fg-3">
+        It may have been deleted, or the address in the link is wrong. Archived wallets are listed on the Wallets page.
       </p>
-      <h1 className="mt-1 text-2xl font-semibold tracking-tight text-ink">
-        The requested resource does not exist
-      </h1>
-      <p className="mt-2 max-w-xl text-sm leading-6 text-muted">
-        It may have been removed, archived, or requested with an invalid identifier.
-      </p>
-      <Link href="/" className="ui-button-secondary mt-5">
-        <ArrowLeft className="h-4 w-4" aria-hidden="true" />
-        Back to overview
-      </Link>
+      <div className="mt-5 flex gap-2">
+        <LinkButton href="/" variant="primary">
+          <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
+          Overview
+        </LinkButton>
+        <LinkButton href="/wallets?view=archived">Archived wallets</LinkButton>
+      </div>
     </section>
   );
 }

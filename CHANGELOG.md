@@ -4,6 +4,55 @@ Notable changes, newest first. Dates are UTC. The historical development phases
 at the end describe how the system was built and keep the detailed notes that
 used to live in the README.
 
+## 2026-10-11
+
+### Dashboard redesign
+
+- The dashboard has a new design and structure. Seven pages replace nine:
+  Overview, Trading, Activity, Wallets, Discovery, Analytics, and System. The
+  old routes redirect: `/accounts` and `/paper-trading` to `/trading`,
+  `/live-feed` to `/activity`, and `/ops` and `/database` to `/system`.
+- A status bar on every page shows the trading mode, network, API, Postgres,
+  and Redis health, realtime wallet slots, and running jobs with progress.
+- The Overview explains the current state in a sentence and shows accounts, the
+  wallet pipeline from discovered candidates to wallets followed live, a list of
+  problems that need attention, background jobs, top ranked wallets, and recent
+  events.
+- Trading merges the former Accounts and Trading pages into one view per
+  account, with an account switcher, headline figures, performance and risk
+  panels, open positions, copy sources, history tabs, and account details.
+  Destructive actions ask for confirmation in a dialog that explains the
+  consequence, and starting a live account now asks for confirmation too.
+- Wallets can be filtered, searched, and sorted on every score metric, show
+  their score components as small bars, and archived wallets have their own tab
+  with a Readmit action. The wallet page explains each score component and links
+  to the Hyperliquid explorer.
+- Discovery shows exact funnel counts per source from the analytics endpoint,
+  why candidates are rejected, and pages through all candidates instead of the
+  first 500.
+- Activity filters events by category, searches payloads, expands raw payloads,
+  and can pause the stream.
+- System combines health, database statistics, and the cleanup tools in tabs.
+- Light and dark themes follow the operating system and can be pinned from the
+  sidebar. Type is IBM Plex Sans and Mono, self-hosted from npm. Numbers use
+  en-US formatting with a real minus sign, and times show as relative times
+  with the full timestamp on hover.
+- Business logic moved out of components into tested modules under
+  `frontend/src/lib`.
+
+### Fixes
+
+- A canceled background job showed "Stopping" forever because the cancel flag
+  stayed in its payload. It now shows Canceled.
+- The paper total PnL on the Trading page was gross of fees and funding. Paper
+  and live figures now use the same net semantics everywhere.
+- The wallet page rendered up to 5,000 rebuilt trades at once; it now pages
+  through them.
+- The live event stream closed every five seconds, so the feed kept falling back
+  to polling. redis-py 8 times out socket reads after five seconds by default,
+  and the stream blocked for ten. It now blocks for four seconds and sends a
+  keepalive.
+
 ## 2026-10-10
 
 ### Ten copied sources

@@ -1,557 +1,445 @@
-import {
-  AlertTriangle,
-  BarChart3,
-  Compass,
-  LineChart,
-  ListChecks,
-  RadioTower,
-  ShieldCheck,
-  Target,
-  TrendingDown,
-  TrendingUp,
-  WalletCards,
-  type LucideIcon,
-} from "lucide-react";
+import type { Metadata } from "next";
 import Link from "next/link";
-import type { ReactNode } from "react";
 
-import { DashboardMetric, DashboardPanel } from "@/components/DashboardSurface";
-import { HeaderRefreshButton, HeaderUpdatedLabel } from "@/components/HeaderRefresh";
-import { PageTopPanel } from "@/components/PageTopPanel";
-import { StatusPill } from "@/components/StatusPill";
-import { getAnalytics } from "@/lib/api";
+import { RefreshControl, TimeAgo } from "@/components/ui/client";
 import {
-  formatCurrency,
-  formatDate,
+  Callout,
+  EmptyState,
+  KeyValues,
+  Meter,
+  PageHeader,
+  Panel,
+  Pnl,
+  PnlPercent,
+  scoreTone,
+  Stat,
+  StatStrip,
+  StatusDot,
+  Usd,
+} from "@/components/ui/primitives";
+import { toneText } from "@/components/ui/tone";
+import { getAnalytics } from "@/lib/api";
+import { cx } from "@/lib/cx";
+import {
+  decimal,
   formatInteger,
+  formatNumber,
   formatPercent,
   formatScore,
-  numberValue,
+  formatUsd,
+  humanize,
+  shortAddress,
 } from "@/lib/format";
-import type {
-  AnalyticsBucket,
-  AnalyticsCoinPerformanceRow,
-  AnalyticsDiscoverySourceRow,
-  AnalyticsPaperSourceRow,
-  AnalyticsResponse,
-  AnalyticsSkipReasonRow,
-  AnalyticsSourcePerformanceRow,
-  AnalyticsWalletRow,
-} from "@/types/analytics";
+import type { AnalyticsBucket, AnalyticsResponse, AnalyticsWalletRow } from "@/types/analytics";
+
+export const metadata: Metadata = { title: "Analytics" };
+export const dynamic = "force-dynamic";
 
 export default async function AnalyticsPage() {
   const analytics = await getAnalytics();
 
-  if (!analytics) {
-    return (
-      <>
-        <PageHeader />
-        <section className="rounded-lg border border-danger/25 bg-danger-soft p-6 text-danger">
-          Could not reach analytics API.
-        </section>
-      </>
-    );
-  }
-
   return (
     <>
-      <PageHeader analytics={analytics} />
-
-      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <MetricTile
-          detail={`${formatInteger(analytics.overview.enabledWalletCount)} enabled`}
-          icon={WalletCards}
-          label="Scoring coverage"
-          value={formatPercent(analytics.overview.scoringCoveragePct)}
-        />
-        <MetricTile
-          detail={`${formatInteger(analytics.overview.openPaperSourceCount)} open sources`}
-          icon={RadioTower}
-          label="Monitored sources"
-          value={formatInteger(analytics.overview.activeSourceCount)}
-        />
-        <MetricTile
-          detail={`${formatCurrency(analytics.overview.paperFeeUsd)} fees`}
-          icon={analytics.overview.paperRealizedPnlUsd.startsWith("-") ? TrendingDown : TrendingUp}
-          label="Paper realized PnL"
-          tone={analytics.overview.paperRealizedPnlUsd.startsWith("-") ? "danger" : "positive"}
-          value={formatCurrency(analytics.overview.paperRealizedPnlUsd)}
-        />
-        <MetricTile
-          detail={`${formatInteger(analytics.overview.openPaperPositionCount)} open positions`}
-          icon={Target}
-          label="Open paper margin"
-          value={formatCurrency(analytics.overview.paperOpenMarginUsd)}
-        />
-      </section>
-
-      <section className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
-        <Panel icon={BarChart3} title="Score Distribution">
-          <BucketList buckets={analytics.scoreBuckets} />
-          <div className="mt-4 border-t border-line pt-3">
-            <ScoreAverageGrid analytics={analytics} />
-          </div>
-        </Panel>
-
-        <Panel icon={ShieldCheck} title="Drawdown State">
-          <BucketList buckets={analytics.drawdownStatusBuckets} />
-          <FreshnessGrid analytics={analytics} />
-        </Panel>
-      </section>
-
-      <section className="grid gap-4 2xl:grid-cols-[1fr_1fr]">
-        <Panel icon={Target} title="Opportunity Wallets">
-          <WalletTable rows={analytics.opportunityWallets} variant="opportunity" />
-        </Panel>
-
-        <Panel icon={AlertTriangle} title="Risk Watchlist">
-          <WalletTable rows={analytics.riskWatchlist} variant="risk" />
-        </Panel>
-      </section>
-
-      <section className="grid gap-4 2xl:grid-cols-[1fr_1fr]">
-        <Panel icon={TrendingUp} title="30D Source Performance">
-          <SourcePerformanceTable rows={analytics.sourcePerformance} />
-        </Panel>
-
-        <Panel icon={LineChart} title="30D Coin Performance">
-          <CoinPerformanceTable rows={analytics.coinPerformance} />
-        </Panel>
-      </section>
-
-      <section className="grid gap-4 2xl:grid-cols-[1fr_1fr]">
-        <Panel icon={ListChecks} title="Paper Source Performance">
-          <PaperSourceTable rows={analytics.paperSources} />
-        </Panel>
-
-        <Panel icon={AlertTriangle} title="Paper Skip Reasons">
-          <SkipReasonTable rows={analytics.skipReasons} />
-        </Panel>
-      </section>
-
-      <Panel icon={Compass} title="Discovery Funnel">
-        <DiscoveryTable rows={analytics.discoverySources} />
-      </Panel>
+      <PageHeader
+        title="Analytics"
+        description="How the pool scores, which wallets look promising or risky, and how copying performs by source and coin."
+        actions={<RefreshControl intervalMs={30_000} updatedAt={analytics?.freshness.generatedAt} />}
+      />
+      {analytics ? <AnalyticsContent analytics={analytics} /> : (
+        <Callout tone="negative" title="Analytics are unavailable">
+          The analytics endpoint did not respond. Check the backend on the System page.
+        </Callout>
+      )}
     </>
   );
 }
 
-function PageHeader({ analytics }: { analytics?: AnalyticsResponse }) {
-  return (
-    <PageTopPanel
-      eyebrow="Pool, scoring, copy, and discovery analytics"
-      icon={LineChart}
-      title="Analytics"
-      actions={
-        analytics ? (
-          <>
-            <HeaderUpdatedLabel label={`Updated ${formatDate(analytics.freshness.generatedAt)}`} />
-            <StatusPill
-              label={`${formatInteger(analytics.overview.scoredWalletCount)} scored`}
-              tone="positive"
-            />
-            <StatusPill
-              label={`${formatPercent(analytics.overview.paperSkipRatePct)} paper skip rate`}
-              tone={numberValue(analytics.overview.paperSkipRatePct ?? 0) > 0.5 ? "warning" : "neutral"}
-            />
-          </>
-        ) : null
-      }
-      refresh={<HeaderRefreshButton intervalMs={30000} title="Refresh analytics data" />}
-    />
-  );
-}
-
-function MetricTile({
-  detail,
-  icon: Icon,
-  label,
-  tone = "neutral",
-  value,
-}: {
-  detail: string;
-  icon: LucideIcon;
-  label: string;
-  tone?: "positive" | "danger" | "neutral";
-  value: string;
-}) {
-  return (
-    <DashboardMetric detail={detail} icon={Icon} label={label} tone={tone} value={value} />
-  );
-}
-
-function Panel({
-  children,
-  icon: Icon,
-  title,
-}: {
-  children: ReactNode;
-  icon: LucideIcon;
-  title: string;
-}) {
-  return <DashboardPanel icon={Icon} title={title}>{children}</DashboardPanel>;
-}
-
-function BucketList({ buckets }: { buckets: AnalyticsBucket[] }) {
-  return (
-    <div className="grid gap-2">
-      {buckets.map((bucket) => (
-        <div key={bucket.label} className="grid grid-cols-[92px_1fr_72px] items-center gap-3">
-          <p className="truncate text-xs font-medium text-secondary">{bucket.label}</p>
-          <Bar value={numberValue(bucket.pct ?? 0)} />
-          <p className="text-right font-mono text-xs text-secondary">
-            {formatInteger(bucket.count)}
-          </p>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function ScoreAverageGrid({ analytics }: { analytics: AnalyticsResponse }) {
-  const rows = [
-    ["Final", analytics.scoreAverages.score],
+function AnalyticsContent({ analytics }: { analytics: AnalyticsResponse }) {
+  const { freshness, overview } = analytics;
+  const averages: Array<[string, string | null]> = [
     ["Profitability", analytics.scoreAverages.profitabilityScore],
     ["Consistency", analytics.scoreAverages.consistencyScore],
-    ["Risk", analytics.scoreAverages.riskScore],
+    ["Risk control", analytics.scoreAverages.riskScore],
     ["Copyability", analytics.scoreAverages.copyabilityScore],
     ["Recency", analytics.scoreAverages.recencyScore],
-    ["Penalty", analytics.scoreAverages.penaltyScore],
   ];
   return (
-    <div className="grid gap-2 sm:grid-cols-2">
-      {rows.map(([label, value]) => (
-        <div key={label} className="rounded-md border border-line bg-subtle px-3 py-2">
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-xs font-medium text-muted">{label}</p>
-            <p className="font-mono text-sm font-semibold text-ink">{formatScore(value)}</p>
-          </div>
-          <Bar value={clamp(numberValue(value ?? 0) / 100, 0, 1)} />
-        </div>
-      ))}
-    </div>
-  );
-}
+    <>
+      <StatStrip className="lg:grid-cols-6">
+        <Stat
+          label="Scoring coverage"
+          value={formatPercent(overview.scoringCoveragePct)}
+          sub={`${formatInteger(overview.scoredWalletCount)} of ${formatInteger(overview.enabledWalletCount)} enabled`}
+        />
+        <Stat label="Average score" tone={scoreTone(overview.averageScore)} value={formatScore(overview.averageScore)} sub={`penalty ${formatScore(analytics.scoreAverages.penaltyScore)} on average`} />
+        <Stat
+          label="Followed sources"
+          value={formatInteger(overview.activeSourceCount)}
+          sub={`${formatInteger(overview.openPaperSourceCount)} with open paper positions`}
+        />
+        <Stat
+          label="Paper realized PnL"
+          value={<Pnl value={overview.paperRealizedPnlUsd} />}
+          sub={`fees ${formatUsd(overview.paperFeeUsd)}`}
+        />
+        <Stat
+          label="Open paper margin"
+          value={<Usd value={overview.paperOpenMarginUsd} />}
+          sub={`${formatInteger(overview.openPaperPositionCount)} open positions`}
+        />
+        <Stat
+          label="Paper skip rate"
+          hint="Share of source trades the paper accounts did not copy"
+          tone={decimal(overview.paperSkipRatePct) > 0.5 ? "warning" : "neutral"}
+          value={formatPercent(overview.paperSkipRatePct)}
+          sub="see skip reasons below"
+        />
+      </StatStrip>
 
-function FreshnessGrid({ analytics }: { analytics: AnalyticsResponse }) {
-  return (
-    <div className="mt-4 grid gap-2 border-t border-line pt-3 sm:grid-cols-2">
-      <SmallMetric label="Latest fill" value={formatDate(analytics.freshness.latestWalletFillAt)} />
-      <SmallMetric label="Latest scoring" value={formatDate(analytics.freshness.latestScoringAt)} />
-      <SmallMetric
-        label="Latest positions"
-        value={formatDate(analytics.freshness.latestPositionSnapshotAt)}
-      />
-      <SmallMetric
-        label="Stale enabled"
-        value={formatInteger(analytics.freshness.staleEnabledWalletCount)}
-      />
-      <SmallMetric
-        label="Live drawdown gaps"
-        value={formatInteger(analytics.freshness.currentDrawdownUnavailableCount)}
-      />
-      <SmallMetric label="Average score" value={formatScore(analytics.overview.averageScore)} />
-    </div>
-  );
-}
-
-function SmallMetric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-md border border-line bg-subtle px-3 py-2">
-      <p className="truncate text-[11px] font-medium uppercase text-muted">{label}</p>
-      <p className="mt-1 truncate font-mono text-sm font-semibold text-ink">{value}</p>
-    </div>
-  );
-}
-
-function WalletTable({
-  rows,
-  variant,
-}: {
-  rows: AnalyticsWalletRow[];
-  variant: "opportunity" | "risk";
-}) {
-  if (rows.length === 0) {
-    return <EmptyState text="No wallets matched this analysis." />;
-  }
-  return (
-    <div className="divide-y divide-line">
-      {rows.map((wallet) => (
-        <div key={wallet.walletAddress} className="grid gap-3 py-3 lg:grid-cols-[1fr_180px_220px]">
-          <WalletIdentity wallet={wallet} />
-          <MetricStack
+      <div className="grid gap-4 xl:grid-cols-3">
+        <Panel title="Score distribution" meta={`${formatInteger(overview.scoredWalletCount)} wallets`} bodyClassName="px-3.5 py-3">
+          <Buckets buckets={analytics.scoreBuckets} tone="score" />
+        </Panel>
+        <Panel title="Average component scores" bodyClassName="px-3.5 py-3">
+          <ul className="grid gap-2.5">
+            {averages.map(([label, value]) => (
+              <li key={label} className="grid grid-cols-[110px_minmax(0,1fr)_40px] items-center gap-3 text-sm">
+                <span className="text-fg-2">{label}</span>
+                <Meter value={decimal(value) / 100} tone={scoreTone(value)} />
+                <span className={cx("text-right tabular-nums", toneText[scoreTone(value)])}>{formatScore(value)}</span>
+              </li>
+            ))}
+          </ul>
+        </Panel>
+        <Panel title="Data freshness" bodyClassName="px-3.5 py-2">
+          <KeyValues
             items={[
-              ["score", formatScore(wallet.score)],
-              ["trades", formatInteger(wallet.tradeCount)],
+              { label: "Latest stored fill", value: <TimeAgo value={freshness.latestWalletFillAt} /> },
+              { label: "Latest scoring", value: <TimeAgo value={freshness.latestScoringAt} /> },
+              { label: "Latest position snapshot", value: <TimeAgo value={freshness.latestPositionSnapshotAt} /> },
+              {
+                hint: "Enabled wallets without a recent poll",
+                label: "Stale enabled wallets",
+                tone: freshness.staleEnabledWalletCount > 0 ? "warning" : "neutral",
+                value: formatInteger(freshness.staleEnabledWalletCount),
+              },
+              {
+                hint: "Wallets whose current drawdown could not be read",
+                label: "Drawdown unavailable",
+                tone: freshness.currentDrawdownUnavailableCount > 0 ? "warning" : "neutral",
+                value: formatInteger(freshness.currentDrawdownUnavailableCount),
+              },
             ]}
           />
-          <MetricStack
-            items={
-              variant === "opportunity"
-                ? [
-                    ["copyable PnL", formatCurrency(wallet.copyablePnlUsd)],
-                    ["win rate", formatPercent(wallet.winRate)],
-                  ]
-                : [
-                    ["current DD", formatPercent(wallet.currentDrawdownPct)],
-                    ["margin stress", formatPercent(wallet.marginStressPct)],
-                  ]
-            }
-          />
-        </div>
-      ))}
-    </div>
-  );
-}
+          <p className="mt-3 text-xs font-medium text-fg-3">Current drawdown state</p>
+          <div className="mt-1.5">
+            <Buckets buckets={analytics.drawdownStatusBuckets} tone="neutral" humanizeLabels />
+          </div>
+        </Panel>
+      </div>
 
-function WalletIdentity({ wallet }: { wallet: AnalyticsWalletRow }) {
-  return (
-    <div className="min-w-0">
-      <Link
-        href={`/wallets/${wallet.walletAddress}`}
-        className="block min-w-0 max-w-full whitespace-normal wrap-break-word font-mono text-sm font-semibold text-ink hover:underline"
-      >
-        {wallet.label ?? shortAddress(wallet.walletAddress)}
-      </Link>
-      <p className="mt-1 truncate text-xs text-muted">
-        pool {wallet.poolRank ? `#${formatInteger(wallet.poolRank)}` : "-"},{" "}
-        {wallet.currentDrawdownStatus}, last fill {formatDate(wallet.lastSeenFillAt)}
+      <div className="grid gap-4 2xl:grid-cols-2">
+        <Panel title="Most promising wallets" description="Highest scores among wallets with enough history.">
+          <WalletTable rows={analytics.opportunityWallets} variant="opportunity" />
+        </Panel>
+        <Panel title="Risk watchlist" description="Wallets in a drawdown or under margin stress right now.">
+          <WalletTable rows={analytics.riskWatchlist} variant="risk" />
+        </Panel>
+      </div>
+
+      <div className="grid gap-4 2xl:grid-cols-2">
+        <Panel title="Source wallets, last 30 days" description="From the wallets' own closed trades.">
+          {analytics.sourcePerformance.length === 0 ? (
+            <EmptyState title="No closed source trades in the last 30 days" />
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Wallet</th>
+                    <th className="num">Score</th>
+                    <th className="num">Trades</th>
+                    <th className="num">Win rate</th>
+                    <th className="num">Net PnL</th>
+                    <th className="num" title="Net PnL divided by entry volume">
+                      ROI on volume
+                    </th>
+                    <th className="num">Avg hold</th>
+                    <th className="num">Last close</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {analytics.sourcePerformance.map((row) => (
+                    <tr key={row.sourceWallet}>
+                      <td>
+                        <WalletLink address={row.sourceWallet} label={row.sourceLabel} />
+                        <span className="sub">pool #{row.poolRank ?? "-"}</span>
+                      </td>
+                      <td className={cx("num", toneText[scoreTone(row.score)])}>{formatScore(row.score)}</td>
+                      <td className="num">{formatInteger(row.closedTradeCount)}</td>
+                      <td className="num text-fg-2">{formatPercent(row.winRate, { decimals: 0 })}</td>
+                      <td className="num">
+                        <Pnl value={row.netPnlUsd} compact />
+                      </td>
+                      <td className="num">
+                        <PnlPercent value={row.roiPct} />
+                      </td>
+                      <td className="num text-fg-2">{hours(row.averageDurationHours)}</td>
+                      <td className="num text-fg-3">
+                        <TimeAgo value={row.lastClosedAt} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Panel>
+        <Panel title="Coins, last 30 days" description="All source wallets' closed trades grouped by coin.">
+          {analytics.coinPerformance.length === 0 ? (
+            <EmptyState title="No coin performance yet" />
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Coin</th>
+                    <th className="num">Trades</th>
+                    <th className="num">Win rate</th>
+                    <th className="num">Net PnL</th>
+                    <th className="num">ROI on volume</th>
+                    <th className="num">Volume</th>
+                    <th className="num">Avg hold</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {analytics.coinPerformance.map((row) => (
+                    <tr key={row.coin}>
+                      <td className="font-medium">{row.coin}</td>
+                      <td className="num">{formatInteger(row.closedTradeCount)}</td>
+                      <td className="num text-fg-2">{formatPercent(row.winRate, { decimals: 0 })}</td>
+                      <td className="num">
+                        <Pnl value={row.netPnlUsd} compact />
+                      </td>
+                      <td className="num">
+                        <PnlPercent value={row.roiPct} />
+                      </td>
+                      <td className="num text-fg-2">
+                        <Usd value={row.entryNotionalUsd} compact />
+                      </td>
+                      <td className="num text-fg-2">{hours(row.averageDurationHours)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Panel>
+      </div>
+
+      <div className="grid gap-4 2xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
+        <Panel title="Paper copying by source" description="What the paper accounts got out of each source.">
+          {analytics.paperSources.length === 0 ? (
+            <EmptyState title="No paper copy activity yet" />
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Source wallet</th>
+                    <th className="num">Realized</th>
+                    <th className="num">Fees</th>
+                    <th className="num">Copied</th>
+                    <th className="num">Skip rate</th>
+                    <th className="num">Open</th>
+                    <th className="num">Last fill</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {analytics.paperSources.map((row) => (
+                    <tr key={row.sourceWallet}>
+                      <td>
+                        <WalletLink address={row.sourceWallet} label={row.sourceLabel} />
+                      </td>
+                      <td className="num">
+                        <Pnl value={row.realizedPnlUsd} />
+                      </td>
+                      <td className="num text-fg-2">
+                        <Usd value={row.feeUsd} />
+                      </td>
+                      <td className="num">{formatInteger(row.copiedFillCount)}</td>
+                      <td className={cx("num", decimal(row.skipRatePct) > 0.5 ? "text-warning" : "text-fg-2")}>
+                        {formatPercent(row.skipRatePct, { decimals: 0 })}
+                      </td>
+                      <td className="num">
+                        {formatInteger(row.openPositionCount)}
+                        {row.openPositionCount > 0 ? (
+                          <span className="sub">
+                            <Usd value={row.openMarginUsd} /> margin
+                          </span>
+                        ) : null}
+                      </td>
+                      <td className="num text-fg-3">
+                        <TimeAgo value={row.lastFillAt} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Panel>
+        <Panel title="Why paper trades are skipped" bodyClassName="px-3.5 py-3">
+          {analytics.skipReasons.length === 0 ? (
+            <p className="text-sm text-fg-3">No skipped trades.</p>
+          ) : (
+            <ul className="grid gap-2.5">
+              {analytics.skipReasons.map((row) => (
+                <li key={row.reason}>
+                  <div className="flex items-center justify-between gap-3 text-sm">
+                    <span className="truncate">{humanize(row.reason)}</span>
+                    <span className="shrink-0 tabular-nums text-fg-2">
+                      {formatInteger(row.count)}
+                      <span className="ml-2 text-xs text-fg-4">{formatPercent(row.pct, { decimals: 0 })}</span>
+                    </span>
+                  </div>
+                  <Meter className="mt-1" value={decimal(row.pct)} tone="neutral" />
+                  <p className="mt-0.5 text-2xs text-fg-4">
+                    last <TimeAgo value={row.lastSeenAt} />
+                  </p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Panel>
+      </div>
+
+      <p className="text-xs text-fg-3">
+        The discovery funnel per source is on the <Link href="/discovery" className="underline">Discovery</Link> page.
       </p>
-    </div>
+    </>
   );
 }
 
-function SourcePerformanceTable({ rows }: { rows: AnalyticsSourcePerformanceRow[] }) {
-  if (rows.length === 0) {
-    return <EmptyState text="No closed source trades in the last 30 days." />;
-  }
-  return (
-    <div className="divide-y divide-line">
-      {rows.map((row) => (
-        <div key={row.sourceWallet} className="grid gap-3 py-3 lg:grid-cols-[1fr_190px_220px]">
-          <SourceIdentity
-            address={row.sourceWallet}
-            label={row.sourceLabel}
-            meta={`pool ${row.poolRank ? `#${formatInteger(row.poolRank)}` : "-"}, ${formatInteger(row.closedTradeCount)} closed`}
-          />
-          <MetricStack
-            items={[
-              ["net PnL", formatCurrency(row.netPnlUsd)],
-              ["ROI", formatPercent(row.roiPct)],
-            ]}
-          />
-          <MetricStack
-            items={[
-              ["win rate", formatPercent(row.winRate)],
-              ["avg hold", formatHours(row.averageDurationHours)],
-            ]}
-          />
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function CoinPerformanceTable({ rows }: { rows: AnalyticsCoinPerformanceRow[] }) {
-  if (rows.length === 0) {
-    return <EmptyState text="No coin performance yet." />;
-  }
-  return (
-    <div className="grid gap-2">
-      {rows.map((row) => (
-        <div key={row.coin} className="grid grid-cols-[110px_1fr_96px] items-center gap-3">
-          <div className="min-w-0">
-            <p className="truncate font-mono text-sm font-semibold text-ink">{row.coin}</p>
-            <p className="truncate text-xs text-muted">{formatInteger(row.closedTradeCount)} trades</p>
-          </div>
-          <Bar value={clamp(Math.abs(numberValue(row.roiPct ?? 0)), 0, 1)} />
-          <div className="text-right">
-            <p className={pnlClass(row.netPnlUsd)}>{formatCurrency(row.netPnlUsd)}</p>
-            <p className="font-mono text-[11px] text-muted">{formatPercent(row.winRate)}</p>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function PaperSourceTable({ rows }: { rows: AnalyticsPaperSourceRow[] }) {
-  if (rows.length === 0) {
-    return <EmptyState text="No paper source activity yet." />;
-  }
-  return (
-    <div className="divide-y divide-line">
-      {rows.map((row) => (
-        <div key={row.sourceWallet} className="grid gap-3 py-3 lg:grid-cols-[1fr_190px_220px]">
-          <SourceIdentity
-            address={row.sourceWallet}
-            label={row.sourceLabel}
-            meta={`${formatInteger(row.openPositionCount)} open, last ${formatDate(row.lastFillAt)}`}
-          />
-          <MetricStack
-            items={[
-              ["realized", formatCurrency(row.realizedPnlUsd)],
-              ["open margin", formatCurrency(row.openMarginUsd)],
-            ]}
-          />
-          <MetricStack
-            items={[
-              ["fills", `${formatInteger(row.copiedFillCount)} copied`],
-              ["skip rate", formatPercent(row.skipRatePct)],
-            ]}
-          />
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function SkipReasonTable({ rows }: { rows: AnalyticsSkipReasonRow[] }) {
-  if (rows.length === 0) {
-    return <EmptyState text="No paper skips recorded." />;
-  }
-  return (
-    <div className="grid gap-2">
-      {rows.map((row) => (
-        <div key={row.reason} className="grid grid-cols-[1fr_120px] items-center gap-3">
-          <div className="min-w-0">
-            <p className="truncate text-sm font-medium text-ink">{humanReason(row.reason)}</p>
-            <p className="truncate text-xs text-muted">last {formatDate(row.lastSeenAt)}</p>
-          </div>
-          <div>
-            <div className="flex items-center justify-between gap-2">
-              <p className="font-mono text-xs font-semibold text-ink">{formatInteger(row.count)}</p>
-              <p className="font-mono text-xs text-muted">{formatPercent(row.pct)}</p>
-            </div>
-            <Bar value={numberValue(row.pct ?? 0)} />
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function DiscoveryTable({ rows }: { rows: AnalyticsDiscoverySourceRow[] }) {
-  if (rows.length === 0) {
-    return <EmptyState text="No discovery candidates yet." />;
-  }
-  return (
-    <div className="grid gap-2 xl:grid-cols-2">
-      {rows.map((row) => (
-        <div key={row.source} className="rounded-md border border-line bg-subtle p-3">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <p className="min-w-0 max-w-full whitespace-normal wrap-break-word text-sm font-semibold text-ink">{sourceLabel(row.source)}</p>
-              <p className="truncate text-xs text-muted">last seen {formatDate(row.lastSeenAt)}</p>
-            </div>
-            <p className="font-mono text-sm font-semibold text-ink">{formatInteger(row.total)}</p>
-          </div>
-          <div className="mt-3 grid grid-cols-4 gap-2">
-            <MiniStat label="accepted" value={formatInteger(row.accepted)} />
-            <MiniStat label="promoted" value={formatInteger(row.promoted)} />
-            <MiniStat label="rejected" value={formatInteger(row.rejected)} />
-            <MiniStat label="backfilled" value={formatInteger(row.backfillSucceeded)} />
-          </div>
-          <div className="mt-3 grid grid-cols-2 gap-2">
-            <MiniStat label="avg ROI" value={formatRawPercent(row.averageRoiPct)} />
-            <MiniStat label="avg TVL" value={formatCurrency(row.averageAccountValueUsd)} />
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function SourceIdentity({
-  address,
-  label,
-  meta,
+function Buckets({
+  buckets,
+  humanizeLabels = false,
+  tone,
 }: {
-  address: string;
-  label: string | null;
-  meta: string;
+  buckets: AnalyticsBucket[];
+  humanizeLabels?: boolean;
+  tone: "score" | "neutral";
 }) {
+  const max = Math.max(...buckets.map((bucket) => bucket.count), 1);
   return (
-    <div className="min-w-0">
-      <Link
-        href={`/wallets/${address}`}
-        className="block min-w-0 max-w-full whitespace-normal wrap-break-word font-mono text-sm font-semibold text-ink hover:underline"
-      >
-        {label ?? shortAddress(address)}
-      </Link>
-      <p className="mt-1 truncate text-xs text-muted">{meta}</p>
-    </div>
-  );
-}
-
-function MetricStack({ items }: { items: [string, string][] }) {
-  return (
-    <div className="grid grid-cols-2 gap-2 lg:grid-cols-1">
-      {items.map(([label, value]) => (
-        <div key={label} className="min-w-0">
-          <p className="truncate text-[11px] font-medium uppercase text-muted">{label}</p>
-          <p className="mt-0.5 truncate font-mono text-xs font-semibold text-ink">{value}</p>
-        </div>
+    <ul className="grid gap-1.5">
+      {buckets.map((bucket) => (
+        <li key={bucket.label} className="grid grid-cols-[84px_minmax(0,1fr)_44px] items-center gap-3 text-sm">
+          <span className="truncate text-fg-2">{humanizeLabels ? humanize(bucket.label) : bucket.label}</span>
+          <Meter
+            value={bucket.count / max}
+            tone={tone === "score" ? scoreTone(bucketScore(bucket.label)) : "neutral"}
+          />
+          <span className="text-right tabular-nums text-fg-2">{formatInteger(bucket.count)}</span>
+        </li>
       ))}
-    </div>
+    </ul>
   );
 }
 
-function MiniStat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="min-w-0 rounded-md border border-line bg-white px-2 py-1.5">
-      <p className="truncate text-[10px] font-medium uppercase text-muted">{label}</p>
-      <p className="mt-0.5 truncate font-mono text-xs font-semibold text-ink">{value}</p>
-    </div>
-  );
+function bucketScore(label: string) {
+  const parsed = Number.parseInt(label, 10);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function Bar({ value }: { value: number }) {
-  const width = `${clamp(value, 0, 1) * 100}%`;
-  return (
-    <div className="h-2 overflow-hidden rounded-full bg-line">
-      <div className="h-full rounded-full bg-positive" style={{ width }} />
-    </div>
-  );
-}
-
-function EmptyState({ text }: { text: string }) {
-  return <div className="py-6 text-center text-sm text-muted">{text}</div>;
-}
-
-function pnlClass(value: string | null) {
-  return `font-mono text-xs font-semibold ${numberValue(value ?? 0) < 0 ? "text-danger" : "text-success"}`;
-}
-
-function shortAddress(address: string) {
-  if (address.length <= 14) {
-    return address;
+function WalletTable({ rows, variant }: { rows: AnalyticsWalletRow[]; variant: "opportunity" | "risk" }) {
+  if (rows.length === 0) {
+    return <EmptyState title="No wallets match" />;
   }
-  return `${address.slice(0, 8)}...${address.slice(-6)}`;
+  return (
+    <div className="overflow-x-auto">
+      <table className="data-table">
+        <thead>
+          <tr>
+            <th>Wallet</th>
+            <th className="num">Score</th>
+            <th className="num">Trades</th>
+            {variant === "opportunity" ? (
+              <>
+                <th className="num">Win rate</th>
+                <th className="num">PF</th>
+                <th className="num" title="The wallet's own realized PnL in the scoring window">
+                  Realized PnL
+                </th>
+              </>
+            ) : (
+              <>
+                <th className="num">Current DD</th>
+                <th className="num" title="Margin used relative to the account">
+                  Margin stress
+                </th>
+                <th>Drawdown state</th>
+              </>
+            )}
+            <th className="num">Last trade</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.walletAddress}>
+              <td>
+                <WalletLink address={row.walletAddress} label={row.label} />
+                <span className="sub">pool #{row.poolRank ?? "-"}</span>
+              </td>
+              <td className={cx("num", toneText[scoreTone(row.score)])}>{formatScore(row.score)}</td>
+              <td className="num">{formatInteger(row.tradeCount)}</td>
+              {variant === "opportunity" ? (
+                <>
+                  <td className="num text-fg-2">{formatPercent(row.winRate, { decimals: 0 })}</td>
+                  <td className="num text-fg-2">{formatNumber(row.profitFactor, 2)}</td>
+                  <td className="num">
+                    <Pnl value={row.copyablePnlUsd} compact />
+                  </td>
+                </>
+              ) : (
+                <>
+                  <td className={cx("num", decimal(row.currentDrawdownPct) > 0.1 ? "text-negative" : "text-fg-2")}>
+                    {formatPercent(row.currentDrawdownPct)}
+                  </td>
+                  <td className={cx("num", decimal(row.marginStressPct) > 0.5 ? "text-warning" : "text-fg-2")}>
+                    {formatPercent(row.marginStressPct)}
+                  </td>
+                  <td>
+                    <StatusDot
+                      tone={row.currentDrawdownStatus === "ok" ? "neutral" : "warning"}
+                      label={humanize(row.currentDrawdownStatus)}
+                    />
+                  </td>
+                </>
+              )}
+              <td className="num text-fg-3">
+                <TimeAgo value={row.lastSeenFillAt} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
-function sourceLabel(source: string) {
-  return source.replaceAll("_", " ");
+function WalletLink({ address, label }: { address: string; label: string | null }) {
+  return (
+    <Link href={`/wallets/${address}`} className="block max-w-[220px] truncate font-medium hover:underline" title={address}>
+      {label?.trim() || shortAddress(address)}
+    </Link>
+  );
 }
 
-function humanReason(reason: string) {
-  return reason.replaceAll("_", " ");
-}
-
-function formatHours(value: string | null) {
+function hours(value: string | null) {
   if (value === null) {
     return "-";
   }
-  return `${formatScore(value)} h`;
-}
-
-function formatRawPercent(value: string | null) {
-  if (value === null) {
-    return "-";
-  }
-  return `${formatScore(value)}%`;
-}
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(Math.max(value, min), max);
+  const parsed = decimal(value);
+  return parsed >= 48 ? `${formatNumber(parsed / 24, 1)} d` : `${formatNumber(parsed, 1)} h`;
 }
