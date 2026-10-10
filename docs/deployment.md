@@ -41,12 +41,18 @@ readiness failure.
 
 ## Requirements
 
-- A Linux VPS with Docker and the Docker Compose plugin.
+- A Linux VPS with Docker and the Docker Compose plugin. The install steps
+  below are for Ubuntu, for example 24.04 LTS.
 - Recommended minimum for local Postgres: 2 vCPU, 4 GB RAM, and SSD storage.
+  The Postgres settings in `docker-compose.vps.yml` assume about 4 GB of RAM.
+  On a smaller server, add swap so the image builds do not run out of memory.
 - Either the VPS public IP for temporary HTTP access or a domain/subdomain for
   automatic HTTPS.
 - Port 80 open in the VPS and cloud firewalls. Also open port 443 when using a
   DNS hostname. Caddy provisions TLS and redirects HTTP to HTTPS in DNS mode.
+- Docker publishes the Caddy ports through its own iptables rules, which bypass
+  host firewalls such as `ufw`. Restricting ports 80 and 443 to your own IP
+  therefore has to happen in the VPS provider's firewall.
 
 ## Choosing IP-only HTTP or DNS with HTTPS
 
@@ -62,7 +68,8 @@ DASHBOARD_DOMAIN=:80
 ```
 
 Then open `http://VPS_PUBLIC_IP`. Basic Auth credentials are not encrypted in
-this mode, so restrict port 80 to your own IP in the firewall when practical.
+this mode, so restrict port 80 to your own IP in the provider firewall when
+practical.
 
 For automatic HTTPS:
 
@@ -80,28 +87,68 @@ For automatic HTTPS:
 
 ## First Install
 
-Install Docker:
+Run the deployment as a non-root user with `sudo` rights. Open the SSH port
+and the dashboard ports in the host firewall:
+
+```bash
+sudo ufw allow OpenSSH
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw enable
+```
+
+Install Docker from the official Docker apt repository. Ubuntu's own
+`docker.io` package does not include the `docker compose` plugin that every
+command in this guide uses:
 
 ```bash
 sudo apt update
-sudo apt install -y git docker.io
-sudo systemctl enable --now docker
+sudo apt install -y ca-certificates curl git
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+  | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo usermod -aG docker "$USER"
 ```
 
-If your distro does not provide `docker compose`, install Docker from the
-official Docker apt repository and install the Compose plugin from there.
+Log out and back in so the `docker` group applies, then check that
+`docker compose version` works. Docker starts at boot, and every long-running
+service restarts with it.
 
-Clone the repository:
+On a server with less than 4 GB of RAM, add swap before the first build:
 
 ```bash
-git clone <repo-url>
-cd copytrading-agent
+sudo fallocate -l 4G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 ```
 
-Create the environment file:
+Clone the repository and create the backup directory:
+
+```bash
+git clone https://github.com/DrottPoker/copytrading-agent.git
+cd copytrading-agent
+mkdir -p backups/postgres
+```
+
+Create `backups/postgres` before the first start. Otherwise Docker creates it
+as root for the backup bind mount, and the host-side scripts
+(`infra/deploy-vps.sh`, `infra/postgres-backup-local.sh`, and
+`infra/postgres-export-url.sh`) fail with "Permission denied" when they write a
+dump. If it already exists and is owned by root, run
+`sudo chown "$USER": backups/postgres`.
+
+Create the environment file. Do not copy a development `.env`, because it may
+point to another database:
 
 ```bash
 cp .env.example .env
+chmod 600 .env
 nano .env
 ```
 
@@ -177,6 +224,10 @@ Live entries also copy source cross or isolated mode. Migration
 `c9d5a1e7f3b2` must be applied before restarting the backend and trading worker
 because margin mode is persisted on live orders and positions.
 
+To keep data from an external database, follow
+[Moving From External Postgres](#moving-from-external-postgres) instead of the
+next step.
+
 Build the images and start the stack. The one-off `migrate` service applies
 the Alembic migrations first; the backend and both workers start only after it
 completes successfully:
@@ -213,11 +264,17 @@ when `DASHBOARD_DOMAIN` contains the matching DNS hostname.
 
 ## Moving From External Postgres
 
-Use this flow when the current VPS already uses Supabase, Neon, or another
-external Postgres database and you want to move the data into local VPS
-Postgres.
+Use this flow when the data lives in Supabase, Neon, or another external
+Postgres database and you want to move it into local VPS Postgres. It covers a
+VPS that already runs against the external database and a new VPS that takes
+over from another machine, such as a development computer.
 
-Save the current environment before editing it:
+On a new VPS, finish the [First Install](#first-install) steps up to and
+including `.env`, but do not start the stack. Stop the other machine's stack so
+the external database stops receiving writes, then continue below at "Start
+local Postgres".
+
+On an existing VPS, save the current environment before editing it:
 
 ```bash
 cp .env .env.before-local-postgres
@@ -251,11 +308,21 @@ docker compose -f docker-compose.vps.yml up -d postgres
 ```
 
 Export the old external database. Use the direct external URL, not the pooler
-URL:
+URL. On Neon, the pooler host name contains `-pooler`. The URL starts with
+`postgresql://`, not `postgresql+asyncpg://`:
 
 ```bash
 OLD_DATABASE_URL_DIRECT="$(grep '^DATABASE_URL_DIRECT=' .env.before-local-postgres | cut -d= -f2-)"
 SOURCE_DATABASE_URL="$OLD_DATABASE_URL_DIRECT" bash infra/postgres-export-url.sh
+```
+
+On a new VPS without `.env.before-local-postgres`, paste the URL at the prompt
+instead. It is not echoed and is not written to a file or the shell history:
+
+```bash
+read -rsp 'Source database URL: ' SOURCE_DATABASE_URL && echo && export SOURCE_DATABASE_URL
+bash infra/postgres-export-url.sh
+unset SOURCE_DATABASE_URL
 ```
 
 The export container uses the same Postgres major version as local Postgres.
@@ -577,6 +644,10 @@ execution and automatic live copy. Startup then requires
 acknowledgement flags, time-based arming values, global database gate, coin
 allowlist, or coin blocklist. The market-policy function currently allows every
 coin. The private key is not stored in Postgres.
+
+Run live trading for a Hyperliquid account from one deployment only. A second
+stack with the same account, for example on a development computer, copies the
+same source fills again and doubles every order.
 
 Default live risk limits are 10 percent loss over a rolling 24 hours, 20
 percent over a rolling 7 days, 25 percent drawdown from the peak performance

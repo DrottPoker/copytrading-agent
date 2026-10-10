@@ -62,6 +62,18 @@ used to live in the README.
   and the stream blocked for ten. It now blocks for four seconds and sends a
   keepalive.
 
+### Documentation
+
+- The VPS guide installs Docker from the official Docker apt repository, since
+  Ubuntu's `docker.io` package lacks the `docker compose` plugin. It adds `ufw`
+  rules, swap for servers under 4 GB of RAM, and notes that Docker's published
+  ports bypass `ufw`.
+- First install creates `backups/postgres` before the first start, so Docker
+  does not create it as root and break the host-side backup and export scripts.
+- Moving from an external database covers a new VPS taking over from another
+  machine, with the source URL entered at a hidden prompt.
+- Live trading must run from one deployment per Hyperliquid account.
+
 ## 2026-10-10
 
 ### Ten copied sources
