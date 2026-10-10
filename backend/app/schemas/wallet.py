@@ -60,6 +60,8 @@ class WalletRead(CamelModel):
     last_polled_at: datetime | None
     last_seen_fill_at: datetime | None
     notes: str | None
+    archived_at: datetime | None = None
+    archive_reason: str | None = None
     score: WalletScoreRead | None = None
     created_at: datetime
     updated_at: datetime

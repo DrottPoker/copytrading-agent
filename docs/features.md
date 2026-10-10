@@ -122,6 +122,10 @@ What it does:
   status, restart counts, last progress, last error, and realtime queue health.
 - Shows recent long-running operation statuses for discovery, pool reimport,
   scoring, and pruning.
+- Shows each configured discovery source's last run, last success, wallets
+  fetched, and consecutive failures. Several sources are unofficial endpoints
+  that can change without notice; a failing or empty source raises a warning
+  and a note, but never degrades overall health.
 - Refreshes the page data automatically every 15 seconds while the browser tab
   is visible.
 
@@ -186,6 +190,9 @@ What it does:
 - The Wallet Pool scoring coverage compares scored enabled wallets with all
   enabled wallets. Disabled wallets do not make the coverage look incomplete.
 - Wallet detail pages also show that wallet's current pool rank.
+- Archived wallets are hidden from the list. `GET /wallets?archived=true` lists
+  them with their archive time and reason, and enabling an archived wallet
+  returns it to the pool.
 - Deleting a wallet removes every wallet-owned research and materialization row
   defined by the shared dependency policy. Discovery records and completed
   execution history remain available.
@@ -254,8 +261,16 @@ What it does:
   stores fill/trade metrics on the candidate, and applies trade-quality rules.
 - Hyperliquid 429 responses are retried with backoff; if rate limits persist, the
   current backfill batch stops cleanly instead of failing the full API request.
+- Quality checks require at least 20 closed trades. Candidates that pass the
+  trade checks get their equity curve read from Hyperliquid `portfolio`; the
+  curve is stored for scoring and an equity drawdown above 40% rejects the
+  candidate with `max_drawdown_too_high`. Without readable equity history the
+  drawdown check is skipped and scoring applies its own fallback.
 - Candidates that pass backfill quality checks are inserted directly into the
   wallet pool and marked as `promoted`.
+- An archived wallet that appears in a discovery source is skipped with
+  `archived_cooldown` for 30 days after archiving. After that it is evaluated
+  again from scratch and readmitted to the pool if it passes.
 - Trade-quality reject reasons include `no_perp_fills`, `too_few_closed_trades`,
   `net_pnl_not_positive`, `profit_factor_below_min`,
   `max_drawdown_too_high`, `avg_trade_notional_too_small`, and
@@ -357,32 +372,35 @@ Endpoint:
 What it does:
 
 - Runs all active cleanup rules in one operation.
-- Orphan-fill cleanup removes stored fill data for addresses that are no longer
+- Every wallet rule archives instead of deleting. An archived wallet is
+  disabled and leaves the pool, scoring, polling, and copy allocation, but keeps
+  its reconstructed trades, score snapshots, and equity history, so it remains
+  available for score backtests. Its raw fills age out through fill retention.
+- Orphan-fill cleanup deletes stored fill data for addresses that are no longer
   present in the wallet pool.
-- Zero-fill cleanup removes polled wallets with exactly zero stored fills.
-- Stale-fill cleanup removes polled wallets that have stored fills, but whose
+- Zero-fill cleanup archives polled wallets with exactly zero stored fills.
+- Stale-fill cleanup archives polled wallets that have stored fills, but whose
   latest fill is older than the configured inactivity window. Default is 30 days.
-- Minimum closed-trades cleanup removes polled, scored wallets below the configured
-  reconstructed closed-trade threshold.
-- Realized drawdown cleanup removes polled, scored wallets whose reconstructed
-  closed-trade drawdown is at or above the configured threshold.
-- Low-score cleanup removes polled wallets whose reconstructed closed trade
+- Minimum closed-trades cleanup archives polled, scored wallets below 20
+  reconstructed closed trades.
+- Drawdown cleanup archives polled, scored wallets whose equity-curve drawdown
+  is at or above the configured threshold, 50% by default.
+- Low-score cleanup archives polled wallets whose reconstructed closed trade
   count is at least the configured minimum and whose final score matches the
   configured cutoff in `backend/config/prune.json`.
 - Excludes every source covered by the shared protection policy, including
   copy-enabled, active, exit-only, active-allocation, open-position, and
   non-terminal-order sources. Orphan-fill cleanup applies the same protection
   even when the `watched_wallets` root row is already missing.
-- Rechecks protection immediately before deletion. A newly protected source is
-  skipped and is not added to the discovery ignore list.
-- Deletes wallet-owned research and materialization rows through one explicit
-  dependency policy. This includes fills, positions, scores, score snapshots,
-  monitoring state, active-copy state, source-trade state, ignored fills,
-  inactive paper allocations, and legacy copy rows and links.
-- Preserves discovery candidates and completed paper or live order and fill
-  history as separate discovery and financial audit records.
-- Runs as a dry run by default and supports `dry_run=false` for deletion.
-- Returns totals and per-rule results for review in the Database dashboard.
+- Rechecks protection immediately before archiving. A newly protected source
+  is skipped.
+- Discovery treats an archived wallet as new again after 30 days
+  (`promotion.readmit_archived_after_days`) and readmits it to the pool when it
+  passes the quality checks. Pruning no longer adds wallets to the discovery
+  ignore list.
+- Runs as a dry run by default and supports `dry_run=false` to archive.
+- Returns totals, including archived wallets and deleted orphan fills, and
+  per-rule results for review in the Database dashboard.
 - Shows backend proxy and validation error details in the dashboard if the
   manual prune request cannot run.
 - Uses `SERVER_API_BASE_URL` as the only dashboard backend proxy upstream in
@@ -409,16 +427,14 @@ Normal manual pruning runs this through `POST /wallets/prune-all`.
 
 What it does:
 
-- Deletes polled wallets with at least one stored fill when `last_seen_fill_at`
-  is at least the configured number of days old.
+- Archives polled wallets with at least one stored fill when
+  `last_seen_fill_at` is at least the configured number of days old.
 - Requires `last_polled_at` to confirm the inactivity window has elapsed after
-  the latest known fill, so old unpolled wallets are not deleted as stale.
+  the latest known fill, so old unpolled wallets are not archived as stale.
 - Default inactivity window is 30 days.
 - Excludes copy-enabled, active, exit-only, never-polled, zero-fill, and every
   source protected by open exposure, active allocation, or in-flight execution.
-- Runs as a dry run by default and supports `dry_run=false` for deletion.
-- Adds deleted addresses to the discovery ignore list so inactive wallets are
-  not imported back into the pool immediately.
+- Runs as a dry run by default and supports `dry_run=false` to archive.
 
 Config:
 
@@ -444,15 +460,13 @@ What it does:
 - Fetches live Hyperliquid `clearinghouseState` for enabled pool wallets across
   default perp and known perp dex prefixes from stored fills, then checks
   `userAbstraction`.
-- Deletes wallets whose total open perp unrealized loss is at least the configured
-  share of account value. Unified wallets use unified USDC from
+- Archives wallets whose total open perp unrealized loss is at least the
+  configured share of account value. Unified wallets use unified USDC from
   `spotClearinghouseState`; standard wallets use perps account value. Default
   threshold is `0.80`, meaning unrealized PnL is `<= -80%` of account value.
 - Excludes copy-enabled, active, and exit-only wallets from cleanup candidates.
-- Runs as a dry run by default and supports `dry_run=false` for deletion.
-- Adds deleted addresses to the discovery ignore list so they are not imported
-  back into the pool immediately.
-- Reports Hyperliquid fetch errors per wallet and never deletes wallets whose
+- Runs as a dry run by default and supports `dry_run=false` to archive.
+- Reports Hyperliquid fetch errors per wallet and never archives wallets whose
   current state could not be fetched.
 
 Config:
@@ -466,29 +480,29 @@ Purpose:
 - Avoid promoting leaderboard accounts whose recent ranking is driven by realized
   history while their live account state is currently distressed.
 
-### Realized Drawdown Cleanup
+### Drawdown Cleanup
 
 Normal manual pruning runs this through `POST /wallets/prune-all`.
 
 What it does:
 
-- Uses stored `wallet_scores.max_drawdown_pct` from reconstructed closed perp
-  trades. The UI labels this as realized drawdown because it does not include
-  intratrade open-position drawdown.
-- Deletes polled, scored wallets whose realized drawdown is at least the
-  configured threshold. Default is `0.60`, meaning `>= 60%`.
+- Uses stored `wallet_scores.max_drawdown_pct`, the peak-to-trough drawdown of
+  the wallet's 30 day equity curve including unrealized PnL.
+- Archives polled, scored wallets whose equity drawdown is at least the
+  configured threshold. Default is `0.50`, meaning `>= 50%`. Wallets without
+  equity history are not matched.
 - Excludes copy-enabled, active, exit-only, never-polled, and unscored wallets.
-- Runs as a dry run by default and supports `dry_run=false` for deletion.
+- Runs as a dry run by default and supports `dry_run=false` to archive.
 
 Config:
 
-- `backend/config/prune.json`
+- `backend/config/prune.json` (`rules.max_drawdown.max_equity_drawdown_pct`)
 - `wallet_prune_max_drawdown_pct`
 
 Purpose:
 
-- Remove wallets whose realized trade history shows unacceptable drawdown even if
-  their current open-position state looks acceptable.
+- Remove wallets whose equity curve shows unacceptable drawdown, including
+  losses they are still sitting on.
 
 ### Low-Score Cleanup
 
@@ -506,9 +520,7 @@ What it does:
   or `gte`. The default is `lt`, so the default rule prunes wallets with at
   least 50 closed trades and score below 50.
 - Excludes copy-enabled, active, exit-only, and never-polled wallets.
-- Runs as a dry run by default and supports `dry_run=false` for deletion.
-- Adds deleted addresses to the discovery ignore list so they are not imported
-  back into the pool immediately.
+- Runs as a dry run by default and supports `dry_run=false` to archive.
 
 Config:
 
@@ -1724,7 +1736,9 @@ Purpose:
 
 - Calculate wallet score, profitability score, copyability score, risk score,
   consistency score, recency score, and penalties.
-- Rank wallets based on copyable performance, not just source-wallet PnL.
+- Rank candidate wallets by their own history. Copies are sized from the
+  source's equity, so the score looks at the wallet's return and drawdown on its
+  own equity and at whether its trades are large enough to copy at our size.
 - Dashboard-triggered scoring uses `POST /scores/recalculate/start` so the HTTP
   request returns immediately and progress is tracked through operation status.
   `POST /scores/recalculate` remains available for synchronous API calls.
@@ -1775,26 +1789,45 @@ Phase A behavior:
   window, so opens, adds, reduces, closes, and flips all count as activity.
   Liquidation fills do not refresh recency.
 - Keeps scoring tunables in organized `backend/config/scoring.json` sections:
-  schedule, window, component weights, profitability, consistency, risk,
-  copyability, recency, penalties, and window scores.
-- Profitability score is scale-invariant. It combines total net ROI against
-  reconstructed entry notional, capped average trade ROI, and median trade ROI.
-  The weights are 55/30/15, and each ROI subscore maps 0% or lower to 0 and +3%
-  to 100. Current-equity return is shown as reference data only because deposits
-  and withdrawals can distort it. Absolute dollar PnL is also reference data only
-  and does not increase the score.
+  schedule, window, equity, component weights, profitability, consistency, risk,
+  copyability, recency, penalties, shrinkage, and window scores.
+- Reads each wallet's equity curve from the Hyperliquid `portfolio` endpoint
+  (`perpMonth` plus the finer `perpWeek` points, or total account history for
+  unified accounts) and stores the 30 day time-weighted return, peak-to-trough
+  drawdown, and average account value in `wallet_equity_metrics`. Deposits and
+  withdrawals do not count as returns. Curves refresh at most every 6 hours for
+  up to 60 wallets per run, highest score first; failed reads retry after an
+  hour.
+- Profitability combines the 30 day equity return (50%, full score at 10%),
+  capped average trade ROI (20%), and median trade ROI (30%). Return on traded
+  notional and absolute dollar PnL are reference data only. Without equity
+  history the equity return input scores zero.
 - Consistency score measures repeatability and evenness, not profitability or
   win rate. It combines profit distribution, largest-win dependency, closed-trade
   ROI stability, downside ROI stability, active-day regularity, and max inactive
   gap. Win rate and profit factor remain reference stats outside the consistency
   component.
-- Copyability score measures practical followability, not sample confidence. It
-  combines copyable trade ratio, median trade notional, p25 trade notional,
-  and execution simplicity. Trade count is handled by sample caps and the
-  low-confidence penalty instead.
-- The stored `max_drawdown_pct` is exposed to the UI as realized drawdown. It is
-  based on reconstructed closed trades and does not include intratrade open
-  unrealized PnL.
+- Copyability measures whether trades can be copied at our size. Each closed
+  trade is scaled by our per-source allocation, the copy capital divided over
+  the copied sources, against the wallet's equity. The capital is the live
+  account equity when live trading is enabled, otherwise
+  `copyability.reference_equity_usd` (1000 USD). Inputs are the share of trades
+  that reach the 10 USD minimum order at our scale (40%), the median (20%) and
+  25th percentile (15%) copied trade size relative to the minimum order,
+  execution simplicity (10%), and forced-exit fill ratio (15%).
+- When fewer than half of a wallet's trades reach the minimum order at our
+  scale, the final score is capped proportionally from 45 down to 0. Rounding
+  those trades up to the minimum would make the copy far riskier than the
+  wallet, which is how a large wallet scaling into a losing position can put a
+  small account into a deep drawdown.
+- `wallet_scores.max_drawdown_pct` is the equity-curve drawdown, including
+  unrealized losses. `realized_drawdown_pct` keeps the closed-trade drawdown
+  relative to gross profit, which risk uses only when equity history is
+  missing. `equity_return_pct`, `copy_size_ratio`, and `underwater_add_ratio`
+  are stored as well.
+- Risk penalizes adds into losing positions: the share of closed-trade entry
+  notional added while the position was at a loss, up to 20 points at 40%.
+  Equity drawdown costs nothing up to 5% and the full 35 points at 40%.
 - When `scoring_current_drawdown_enabled` is true, scoring fetches live perp state
   from Hyperliquid for default perp and any perp dexes already observed in stored
   wallet fills, then checks `userAbstraction` and stores `current_drawdown_pct`
@@ -1827,15 +1860,21 @@ Phase A behavior:
   are configurable.
 - `GET /scores/{address}/detail` returns component-level explanations for the
   wallet detail scoring modal. The response includes gross score, penalty,
-  final score before caps, any live risk score cap, any sample cap, component
-  weights, weighted scores, and the input-level subscores used inside
-  profitability, consistency, risk, copyability, recency, and penalty
-  calculations.
+  final score before caps, any live risk score cap, sample cap, and small-copy
+  cap, sample credibility, equity inputs, component weights, weighted scores,
+  and the input-level subscores used inside profitability, consistency, risk,
+  copyability, recency, and penalty calculations. Profitability, risk, and
+  copyability scores are computed from the same items the modal shows.
 - If current state cannot be fetched completely or account value is zero, the
   wallet keeps a history-only risk component and receives the configured
   `scoring_current_drawdown_missing_penalty`.
-- Adds a confidence penalty up to `scoring_confidence_penalty_max` until the
-  wallet reaches `scoring_confidence_target_trades`.
+- Pulls profitability, consistency, and risk scores toward the neutral score
+  50 until the wallet has 40 closed trades (`shrinkage`), so a short lucky
+  streak cannot look like an established edge. This replaces the earlier
+  confidence penalty.
+- Writes one `wallet_score_snapshots` row per wallet and day with the score,
+  component scores, trade count, equity inputs, account value, and copy-size
+  ratio, the point-in-time record for score backtests.
 - Groups liquidation fills into account-level liquidation events for diagnostics.
 - Scores forced exits through the normal components instead of a separate
   final-score penalty. Risk includes forced-exit severity, based on
@@ -1848,7 +1887,7 @@ Phase A behavior:
 - Reconstructed source trades store liquidation flags, liquidation fill count,
   and liquidation notional. Wallet source trade history and paper closed trade
   history show a liquidation tag on affected closed trades.
-- Caps scores for wallets below the configured minimum trade count so tiny
+- Caps scores for wallets below the minimum of 20 closed trades so tiny
   samples cannot rank high. The sample-cap max score is configurable.
 - Runs after maintenance worker pool reimport only when that import persisted
   new fills.
@@ -1858,12 +1897,27 @@ Phase A behavior:
   a Detailed scoring modal beside the score header for inspecting how each score
   component was calculated.
 
+Score backtest:
+
+- `python -m app.cli.score_backtest` ranks wallets at each cutoff date with
+  information available at that time, from daily snapshots or a recompute from
+  trades that closed before the cutoff, then follows each wallet's realized net
+  PnL relative to its equity over the horizon.
+- The report compares the top-ranked wallets with all evaluable wallets and
+  with seeded random selections of the same size, and gives the rank
+  correlation between score and outcome. Options: `--horizon-days`,
+  `--step-days`, `--top` (defaults to the copied source count), `--samples`,
+  `--seed`, `--start`, `--end`, `--source auto|snapshots|recompute`, and
+  `--json PATH`.
+- Recomputed history is limited by fill retention; archived wallets keep their
+  trades, and daily snapshots extend the testable period over time.
+
 Important limitation:
 
 - Current scoring ranks observed source-wallet history and feeds the initial
-  paper allocation set. Do not use the score as a live allocation engine until
-  paper copy performance has been validated with latency, slippage, exits, and
-  account-level risk controls.
+  paper allocation set. Validate it with the score backtest and paper copy
+  performance, including latency, slippage, exits, and account-level risk
+  controls, before relying on it for live allocation.
 
 ### Active Copy Set Rotation
 

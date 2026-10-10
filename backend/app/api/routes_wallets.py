@@ -71,6 +71,7 @@ async def list_wallets_route(
     session: Annotated[AsyncSession, Depends(db_session)],
     settings: Annotated[Settings, Depends(get_settings)],
     enabled: Annotated[bool | None, Query()] = None,
+    archived: Annotated[bool, Query()] = False,
     q: Annotated[str | None, Query(min_length=1, max_length=128)] = None,
     limit: Annotated[int | None, Query(ge=1, le=1000)] = None,
     offset: Annotated[int, Query(ge=0)] = 0,
@@ -79,6 +80,7 @@ async def list_wallets_route(
     wallets, total = await list_wallets(
         session=session,
         enabled=enabled,
+        archived=archived,
         query=q,
         limit=resolved_limit,
         offset=offset,

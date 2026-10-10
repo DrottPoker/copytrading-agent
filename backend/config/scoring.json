@@ -8,21 +8,33 @@
     "days": 60,
     "min_fills": 20,
     "target_fills": 100,
-    "min_trades": 5,
+    "min_trades": 20,
     "sample_cap_max_score": 45
+  },
+  "equity": {
+    "enabled": true,
+    "refresh_hours": 6,
+    "max_wallets_per_run": 60,
+    "concurrency": 4,
+    "min_points": 8,
+    "min_coverage_days": 7,
+    "min_account_value_usd": 10
   },
   "component_weights": {
     "profitability": 0.25,
-    "consistency": 0.20,
+    "consistency": 0.2,
     "risk": 0.25,
     "copyability": 0.15,
     "recency": 0.15
   },
   "profitability": {
     "weights": {
-      "net_roi": 0.50,
-      "average_trade_roi": 0.20,
-      "median_trade_roi": 0.30
+      "equity_return": 0.5,
+      "average_trade_roi": 0.2,
+      "median_trade_roi": 0.3
+    },
+    "equity_return": {
+      "full_score_at": 0.1
     },
     "roi_score": {
       "full_score_at": 0.04
@@ -69,9 +81,18 @@
       "penalty_per_ratio": 40,
       "penalty_max": 40
     },
+    "equity_drawdown": {
+      "penalty_start_ratio": 0.05,
+      "full_penalty_ratio": 0.4,
+      "penalty_max": 35
+    },
     "realized_drawdown": {
       "penalty_per_ratio": 35,
       "penalty_max": 35
+    },
+    "underwater_adds": {
+      "full_penalty_ratio": 0.4,
+      "penalty_max": 20
     },
     "losing_trade_rate": {
       "penalty_per_ratio": 15
@@ -99,21 +120,20 @@
   },
   "copyability": {
     "weights": {
-      "copyable_trade_ratio": 0.35,
-      "median_trade_notional": 0.22,
-      "p25_trade_notional": 0.18,
-      "execution_simplicity": 0.10,
+      "copy_size_ratio": 0.4,
+      "median_copy_notional": 0.2,
+      "p25_copy_notional": 0.15,
+      "execution_simplicity": 0.1,
       "forced_exit_fill_ratio": 0.15
     },
-    "copyable_trade_ratio": {
-      "min_trade_notional_usd": 2
+    "reference_equity_usd": 1000,
+    "copy_notional": {
+      "median_full_score_multiple": 5,
+      "p25_full_score_multiple": 2
     },
-    "trade_notional": {
-      "min_full_score_usd": 50,
-      "max_full_score_usd": 250000,
-      "too_large_min_score_usd": 1000000,
-      "too_small_max_score": 70,
-      "too_large_min_score": 40
+    "small_copy_cap": {
+      "min_ratio": 0.5,
+      "max_score": 45
     },
     "execution_simplicity": {
       "full_score_fills_per_trade_at_or_below": 4,
@@ -131,11 +151,11 @@
     "low_sample_max": 20,
     "negative_pnl_max": 10,
     "stale_recency": 10,
-    "open_only": 10,
-    "confidence": {
-      "target_trades": 40,
-      "max": 8
-    }
+    "open_only": 10
+  },
+  "shrinkage": {
+    "full_credibility_trades": 40,
+    "neutral_score": 50
   },
   "window_scores": {
     "activity_trade_cap": 10,

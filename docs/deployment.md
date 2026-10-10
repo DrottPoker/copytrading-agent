@@ -414,19 +414,29 @@ write the same `request_id` to the frontend container log. The Trading dashboard
 shows that identifier with failed mutations. Use it to correlate a browser error
 with the upstream backend response without logging credentials or request bodies.
 
-The Alembic head for this update is `f3b7d9a1c5e8`. The chain includes the
+The Alembic head for this update is `c4e8a2f6b1d3`. The chain includes the
 funding-payment ledger, external account cash-flow ledger, cash-flow-adjusted
 performance snapshots, append-only live order attempts, and unified durable
 `live_copy_work` queue. It also adds transactional wallet fill revisions,
-partial scoring indexes, and the ordered source-trade stream index.
+partial scoring indexes, the ordered source-trade stream index, and the
+equity scoring and wallet archive schema. That last migration marks every
+materialized source trade set for one rebuild, so the first scoring run after
+the update takes longer than usual.
 
 The live-copy queue migration bridges only unfinished realtime inbox work. It
 does not replay the full historical fill table. The scoring migrations rebuild
 revision metadata and create indexes over the existing fill table, so they can
 take time on a multi-million-row deployment.
 
-The `current` command must show `f3b7d9a1c5e8` before the backend or workers
+The `current` command must show `c4e8a2f6b1d3` before the backend or workers
 are restarted.
+
+Run the score backtest against the live database from a one-off container. It
+only reads data:
+
+```bash
+docker compose -f docker-compose.vps.yml run --rm --no-deps backend python -m app.cli.score_backtest --horizon-days 14 --step-days 7
+```
 
 
 Paper trading state is stored in local Postgres, not in the worker containers.

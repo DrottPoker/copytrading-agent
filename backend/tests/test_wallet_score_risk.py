@@ -271,7 +271,6 @@ def risk_settings() -> Settings:
         scoring_current_drawdown_penalty_max=Decimal("100"),
         scoring_current_drawdown_score_cap_start_ratio=Decimal("0.25"),
         scoring_current_drawdown_score_cap_zero_ratio=Decimal("1"),
-        scoring_confidence_target_trades=50,
     )
 
 
@@ -289,7 +288,6 @@ def wallet_metrics(*, current_drawdown_pct: Decimal) -> WalletScoreMetrics:
         average_trade_notional_usd=Decimal("2000"),
         median_trade_notional_usd=Decimal("2000"),
         p25_trade_notional_usd=Decimal("1500"),
-        copyable_trade_ratio=Decimal("1"),
         average_fills_per_trade=Decimal("2"),
         average_trade_roi=Decimal("0.02"),
         median_trade_roi=Decimal("0.02"),
@@ -328,6 +326,14 @@ def wallet_metrics(*, current_drawdown_pct: Decimal) -> WalletScoreMetrics:
         trades_7d=10,
         notional_7d=Decimal("20000"),
         net_pnl_7d=Decimal("400"),
+        trade_notional_values=(Decimal("2000"),) * 50,
+        underwater_add_ratio=Decimal("0"),
+        equity_status="ok",
+        equity_return_pct=Decimal("0.10"),
+        equity_max_drawdown_pct=Decimal("0.03"),
+        equity_average_account_value_usd=Decimal("1000"),
+        copy_scale=Decimal("0.2"),
+        copy_allocation_usd=Decimal("200"),
     )
 
 

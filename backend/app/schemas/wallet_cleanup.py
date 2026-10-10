@@ -14,8 +14,9 @@ class ZeroFillWalletPruneResponse(CamelModel):
     dry_run: bool
     scanned_wallets: int
     candidate_wallets: int
-    deleted_wallets: int
-    deleted_fills: int
+    deleted_wallets: int = 0
+    deleted_fills: int = 0
+    archived_wallets: int = 0
     items: list[ZeroFillWalletCandidate]
 
 
@@ -33,8 +34,9 @@ class StaleFillPruneResponse(CamelModel):
     dry_run: bool
     scanned_wallets: int
     candidate_wallets: int
-    deleted_wallets: int
-    deleted_fills: int
+    deleted_wallets: int = 0
+    deleted_fills: int = 0
+    archived_wallets: int = 0
     min_days_without_fill: int
     items: list[StaleFillWalletCandidate]
 
@@ -51,8 +53,9 @@ class OrphanFillPruneResponse(CamelModel):
     dry_run: bool
     scanned_wallets: int
     candidate_wallets: int
-    deleted_wallets: int
-    deleted_fills: int
+    deleted_wallets: int = 0
+    deleted_fills: int = 0
+    archived_wallets: int = 0
     items: list[OrphanFillWalletCandidate]
 
 
@@ -76,8 +79,9 @@ class CurrentDrawdownPruneResponse(CamelModel):
     scanned_wallets: int
     candidate_wallets: int
     errored_wallets: int = 0
-    deleted_wallets: int
-    deleted_fills: int
+    deleted_wallets: int = 0
+    deleted_fills: int = 0
+    archived_wallets: int = 0
     threshold_ratio: str
     items: list[CurrentDrawdownWalletCandidate]
 
@@ -96,8 +100,9 @@ class MinClosedTradesPruneResponse(CamelModel):
     dry_run: bool
     scanned_wallets: int
     candidate_wallets: int
-    deleted_wallets: int
-    deleted_fills: int
+    deleted_wallets: int = 0
+    deleted_fills: int = 0
+    archived_wallets: int = 0
     min_closed_trades: int
     items: list[MinClosedTradesWalletCandidate]
 
@@ -117,8 +122,9 @@ class MaxDrawdownPruneResponse(CamelModel):
     dry_run: bool
     scanned_wallets: int
     candidate_wallets: int
-    deleted_wallets: int
-    deleted_fills: int
+    deleted_wallets: int = 0
+    deleted_fills: int = 0
+    archived_wallets: int = 0
     threshold_pct: str
     items: list[MaxDrawdownWalletCandidate]
 
@@ -137,8 +143,9 @@ class LowScorePruneResponse(CamelModel):
     dry_run: bool
     scanned_wallets: int
     candidate_wallets: int
-    deleted_wallets: int
-    deleted_fills: int
+    deleted_wallets: int = 0
+    deleted_fills: int = 0
+    archived_wallets: int = 0
     min_closed_trades: int
     score_threshold: str
     score_operator: str
@@ -168,8 +175,9 @@ class WalletPruneRuleResult(CamelModel):
     scanned_wallets: int
     candidate_wallets: int
     errored_wallets: int = 0
-    deleted_wallets: int
-    deleted_fills: int
+    deleted_wallets: int = 0
+    deleted_fills: int = 0
+    archived_wallets: int = 0
     rule: str
     items: list[WalletPruneCandidate]
 
@@ -179,6 +187,7 @@ class WalletPruneAllResponse(CamelModel):
     scanned_wallets: int
     candidate_wallets: int
     errored_wallets: int = 0
-    deleted_wallets: int
-    deleted_fills: int
+    deleted_wallets: int = 0
+    deleted_fills: int = 0
+    archived_wallets: int = 0
     rules: list[WalletPruneRuleResult]

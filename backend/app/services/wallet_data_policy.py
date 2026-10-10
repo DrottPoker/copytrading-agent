@@ -51,6 +51,12 @@ WALLET_DATA_DEPENDENCIES = (
     ),
     WalletDataDependency("wallet_scores", "wallet_address", "owned", delete_order=110),
     WalletDataDependency(
+        "wallet_equity_metrics",
+        "wallet_address",
+        "owned",
+        delete_order=105,
+    ),
+    WalletDataDependency(
         "wallet_score_snapshots",
         "wallet_address",
         "owned",

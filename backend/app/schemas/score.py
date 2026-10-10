@@ -20,6 +20,9 @@ class WalletScoreRead(CamelModel):
     profit_factor: Decimal | None
     max_drawdown_pct: Decimal | None
     realized_drawdown_pct: Decimal | None
+    equity_return_pct: Decimal | None = None
+    copy_size_ratio: Decimal | None = None
+    underwater_add_ratio: Decimal | None = None
     current_drawdown_pct: Decimal | None
     open_position_stress_pct: Decimal | None
     current_drawdown_status: str
@@ -98,6 +101,13 @@ class WalletScoreDetailResponse(CamelModel):
     current_margin_usage_pct: Decimal | None
     current_notional_exposure_pct: Decimal | None
     realized_drawdown_pct: Decimal | None
+    max_drawdown_pct: Decimal | None = None
+    equity_return_pct: Decimal | None = None
+    equity_status: str = "missing"
+    copy_size_ratio: Decimal | None = None
+    underwater_add_ratio: Decimal | None = None
+    small_copy_score_cap: Decimal | None = None
+    sample_credibility: Decimal = Decimal("1")
     current_drawdown_pct: Decimal | None
     open_position_stress_pct: Decimal | None
     live_risk_score_cap: Decimal | None

@@ -1685,15 +1685,15 @@ async def run_wallet_prune_once(
                         "scannedWallets": result.scanned_wallets,
                         "candidateWallets": result.candidate_wallets,
                         "erroredWallets": result.errored_wallets,
-                        "deletedWallets": result.deleted_wallets,
+                        "archivedWallets": result.archived_wallets,
                         "deletedFills": result.deleted_fills,
                     },
                 )
         logger.info(
-            "wallet prune completed scanned=%s candidates=%s deleted_wallets=%s deleted_fills=%s",
+            "wallet prune completed scanned=%s candidates=%s archived_wallets=%s deleted_fills=%s",
             result.scanned_wallets,
             result.candidate_wallets,
-            result.deleted_wallets,
+            result.archived_wallets,
             result.deleted_fills,
         )
         await publish_event(
@@ -1702,7 +1702,7 @@ async def run_wallet_prune_once(
             channel="events:system",
             message=(
                 "Wallet prune completed: "
-                f"{result.deleted_wallets} wallets deleted, "
+                f"{result.archived_wallets} wallets archived, "
                 f"{result.candidate_wallets} candidates."
             ),
             payload={
@@ -1710,7 +1710,7 @@ async def run_wallet_prune_once(
                 "scannedWallets": result.scanned_wallets,
                 "candidateWallets": result.candidate_wallets,
                 "erroredWallets": result.errored_wallets,
-                "deletedWallets": result.deleted_wallets,
+                "archivedWallets": result.archived_wallets,
                 "deletedFills": result.deleted_fills,
             },
         )

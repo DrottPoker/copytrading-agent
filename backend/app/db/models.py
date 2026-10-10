@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -7,6 +7,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
@@ -46,6 +47,7 @@ class WatchedWallet(Base, TimestampMixin, UpdatedAtMixin):
         Index("ix_watched_wallets_enabled_eligible", "enabled", "eligible"),
         Index("ix_watched_wallets_polling_tier", "polling_tier"),
         Index("ix_watched_wallets_last_seen_fill_at", "last_seen_fill_at"),
+        Index("ix_watched_wallets_archived_at", "archived_at"),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -65,6 +67,9 @@ class WatchedWallet(Base, TimestampMixin, UpdatedAtMixin):
     last_polled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_seen_fill_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     notes: Mapped[str | None] = mapped_column(Text)
+    # Pruned wallets are archived instead of deleted so selection can be evaluated later.
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archive_reason: Mapped[str | None] = mapped_column(Text)
 
 
 class WalletFill(Base, TimestampMixin):
@@ -299,7 +304,13 @@ class WalletScore(Base):
     )
     win_rate: Mapped[Decimal | None] = mapped_column(Numeric)
     profit_factor: Mapped[Decimal | None] = mapped_column(Numeric)
+    # Peak-to-trough drawdown of the wallet's equity curve, None without equity history.
     max_drawdown_pct: Mapped[Decimal | None] = mapped_column(Numeric)
+    # Closed-trade drawdown relative to gross profit, kept as a fallback risk input.
+    realized_drawdown_pct: Mapped[Decimal | None] = mapped_column(Numeric)
+    equity_return_pct: Mapped[Decimal | None] = mapped_column(Numeric)
+    copy_size_ratio: Mapped[Decimal | None] = mapped_column(Numeric)
+    underwater_add_ratio: Mapped[Decimal | None] = mapped_column(Numeric)
     current_drawdown_pct: Mapped[Decimal | None] = mapped_column(Numeric)
     open_position_stress_pct: Mapped[Decimal | None] = mapped_column(Numeric)
     current_drawdown_status: Mapped[str] = mapped_column(
@@ -313,27 +324,59 @@ class WalletScore(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
-    @property
-    def realized_drawdown_pct(self) -> Decimal | None:
-        return self.max_drawdown_pct
 
-    @realized_drawdown_pct.setter
-    def realized_drawdown_pct(self, value: Decimal | None) -> None:
-        self.max_drawdown_pct = value
+class WalletScoreSnapshot(Base, TimestampMixin, UpdatedAtMixin):
+    """Daily point-in-time score per wallet, the input for score backtests."""
 
-
-class WalletScoreSnapshot(Base, TimestampMixin):
     __tablename__ = "wallet_score_snapshots"
     __table_args__ = (
-        Index("ix_wallet_score_snapshots_wallet_created", "wallet_address", "created_at"),
+        UniqueConstraint(
+            "wallet_address",
+            "snapshot_date",
+            name="ux_wallet_score_snapshots_wallet_date",
+        ),
+        Index("ix_wallet_score_snapshots_date", "snapshot_date"),
     )
 
     id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
     wallet_address: Mapped[str] = mapped_column(Text, nullable=False)
+    snapshot_date: Mapped[date] = mapped_column(Date, nullable=False)
     score: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
     score_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+
+
+class WalletEquityMetric(Base):
+    """Equity-curve return and drawdown from the wallet's Hyperliquid portfolio history."""
+
+    __tablename__ = "wallet_equity_metrics"
+    __table_args__ = (
+        CheckConstraint(
+            "status in ('ok', 'insufficient', 'unavailable')",
+            name="ck_wallet_equity_metrics_status",
+        ),
+        CheckConstraint(
+            "basis is null or basis in ('perp', 'total')",
+            name="ck_wallet_equity_metrics_basis",
+        ),
+        Index("ix_wallet_equity_metrics_fetched_at", "fetched_at"),
+    )
+
+    wallet_address: Mapped[str] = mapped_column(Text, primary_key=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    basis: Mapped[str | None] = mapped_column(Text)
+    window_start_ms: Mapped[int | None] = mapped_column(BigInteger)
+    window_end_ms: Mapped[int | None] = mapped_column(BigInteger)
+    return_pct: Mapped[Decimal | None] = mapped_column(Numeric)
+    max_drawdown_pct: Mapped[Decimal | None] = mapped_column(Numeric)
+    average_account_value_usd: Mapped[Decimal | None] = mapped_column(Numeric)
+    latest_account_value_usd: Mapped[Decimal | None] = mapped_column(Numeric)
+    point_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    error: Mapped[str | None] = mapped_column(Text)
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class WalletMonitoringStat(Base, TimestampMixin, UpdatedAtMixin):
@@ -542,6 +585,10 @@ class SourceTrade(Base, UpdatedAtMixin):
         Integer, nullable=False, server_default=text("0")
     )
     liquidation_notional_usd: Mapped[Decimal] = mapped_column(
+        Numeric, nullable=False, server_default=text("0")
+    )
+    # Entry notional added while the position was underwater (averaging down).
+    underwater_add_notional_usd: Mapped[Decimal] = mapped_column(
         Numeric, nullable=False, server_default=text("0")
     )
 

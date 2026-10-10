@@ -112,6 +112,7 @@ async def test_wallet_data_cleanup_removes_all_derived_rows(
                 WalletScore(wallet_address=address, score=Decimal("10")),
                 WalletScoreSnapshot(
                     wallet_address=address,
+                    snapshot_date=now.date(),
                     score=Decimal("10"),
                     score_payload={},
                 ),

@@ -135,13 +135,16 @@ cash-flow-adjusted live performance snapshots.
 Migration `d6a8c1e4f9b2` adds transactional wallet fill revisions so scoring
 refreshes only changed wallets. Migration `e1f4a7c9d2b6` adds partial raw-fill
 indexes for scoring. Migration `f3b7d9a1c5e8` adds the ordered source-trade
-stream index and is the current head.
+stream index. Migration `c4e8a2f6b1d3` adds wallet equity metrics, daily score
+snapshots, the averaging-down trade column, new score columns, and wallet
+archiving; it marks every materialized trade set for one rebuild on the next
+scoring run. It is the current head.
 
 ```bash
 python -m alembic current
 ```
 
-The command must show `f3b7d9a1c5e8`. Do not start the backend or workers until
+The command must show `c4e8a2f6b1d3`. Do not start the backend or workers until
 that revision is current.
 
 For an existing VPS deployment after pulling this phase:
@@ -293,15 +296,27 @@ Notes:
   distribution, largest-win dependency, ROI stability, downside stability,
   active-day regularity, and max inactive gap. It does not score win rate or
   profit factor.
-- Profitability score is scale-invariant. It combines total net ROI, average
-  trade ROI, and median trade ROI with 55/30/15 weights instead of rewarding
-  absolute dollar PnL or current-equity effects from deposits and withdrawals.
-  Each ROI subscore maps 0% or lower to 0 and +3% to 100.
-- Copyability score excludes trade count because sample size is handled by
-  sample caps and the low-confidence penalty. It scores copyable trade ratio,
-  median trade notional, p25 trade notional, and execution simplicity.
-- Score rows are kept only for wallets that still exist in the watched wallet
-  pool, so pruned wallets do not remain rankable through stale scores.
+- The score ranks wallets by their own history. Copies are sized from the
+  source's equity, so the score uses the wallet's return and drawdown on its own
+  equity, read from the Hyperliquid `portfolio` equity curve and stored in
+  `wallet_equity_metrics`. Deposits and withdrawals never count as returns.
+- Profitability combines the 30 day time-weighted equity return (50%, full
+  score at 10%), capped average trade ROI (20%), and median trade ROI (30%).
+- Risk uses the equity-curve drawdown, which includes unrealized losses, and
+  penalizes adds into losing positions (averaging down). The closed-trade
+  drawdown is only a fallback when equity history is missing.
+- Copyability scales each closed trade to our per-source allocation, based on
+  the live account equity or `copyability.reference_equity_usd`, and scores how
+  many trades reach the minimum order. When fewer than half do, the final score
+  is capped, so very large wallets whose trades map to cents at our size cannot
+  enter the copy set.
+- Wallets need 20 closed trades, and profitability, consistency, and risk are
+  pulled toward a neutral 50 until a wallet has 40 closed trades.
+- Every scoring run writes a daily `wallet_score_snapshots` row per wallet for
+  later backtests. Run `python -m app.cli.score_backtest` to check whether the
+  score predicted later wallet performance against random selections.
+- Score rows are kept only for active pool wallets, so archived wallets do not
+  remain rankable through stale scores.
 - Wallet detail pages show reconstructed source trades from `GET /wallets/{address}/source-trades`.
 
 ## Phase 5
@@ -463,13 +478,22 @@ Notes:
 - Pool reimport and shared fill-import guards live in
   `backend/config/pool_fill_import.json`.
 - Discovery imports only new addresses, skipping wallets already in candidates or in the pool.
+  Archived wallets are evaluated again 30 days after archiving.
 - Discovery prefilters new candidates, then backfills accepted candidates.
-- Candidates that pass backfill quality checks are inserted directly into the wallet pool.
+- Candidates that pass backfill quality checks, including at least 20 closed
+  trades and at most 40% equity drawdown, are inserted directly into the wallet
+  pool.
+- Several discovery sources are unofficial endpoints. `/ops` shows each source's
+  last success and consecutive failures and warns when one breaks or returns no
+  wallets. Check each source's terms of use before relying on it.
 - Discovery retries Hyperliquid 429 responses with backoff and stops the current
   backfill batch cleanly if rate limits persist.
 - Manual pruning runs through `POST /wallets/prune-all`, which applies orphan-fill,
-  zero-fill, stale-fill, minimum closed-trades, realized drawdown, and low-score
-  cleanup in one reviewed operation.
+  zero-fill, stale-fill, minimum closed-trades, equity drawdown, and low-score
+  cleanup in one reviewed operation. Wallet rules archive instead of deleting:
+  archived wallets leave the pool, scoring, and copying, but keep their
+  reconstructed trades, score snapshots, and equity history for backtests.
+  `GET /wallets?archived=true` lists them.
 - Current drawdown is handled by scoring and paper allocation filters, not by
   the normal manual prune flow.
 - The Database dashboard surfaces backend proxy and validation errors directly
@@ -482,10 +506,11 @@ Notes:
   protect sources with active copy state, open source, paper, or live positions,
   active paper allocations, legacy open copy trades, or non-terminal trading
   orders. `DELETE /wallets/{address}` returns `409` while any protection remains.
-- Wallet cleanup removes research and materialized source data, including fills,
-  scores, monitoring state, reconstructed source trades, ignored-fill state,
-  inactive allocations, and legacy copy links. Discovery records and completed
-  paper or live execution history remain available for audit.
+- Manual wallet deletion removes research and materialized source data,
+  including fills, scores, equity metrics, monitoring state, reconstructed
+  source trades, ignored-fill state, inactive allocations, and legacy copy
+  links. Discovery records and completed paper or live execution history remain
+  available for audit.
 - Wallet risk scoring can include current open perp drawdown from Hyperliquid.
   It also calculates open position stress from live unrealized loss, margin
   usage, and notional exposure. Unified wallets use unified account value from
@@ -1293,7 +1318,7 @@ docker compose -f docker-compose.vps.yml run --rm backend python -m alembic curr
 docker compose -f docker-compose.vps.yml up -d
 ```
 
-The `current` command must report `f3b7d9a1c5e8` before the backend or workers
+The `current` command must report `c4e8a2f6b1d3` before the backend or workers
 start.
 
 The application images run as non-root users. Backend, frontend, and worker

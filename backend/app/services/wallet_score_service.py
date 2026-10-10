@@ -10,7 +10,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
-from app.db.models import WalletScore, WatchedWallet
+from app.db.models import TradingAccount, WalletScore, WalletScoreSnapshot, WatchedWallet
 from app.integrations.hyperliquid_client import HyperliquidClient
 from app.schemas.score import (
     WalletScoreComponentDetail,
@@ -22,6 +22,7 @@ from app.schemas.score import (
 )
 from app.schemas.wallet import normalize_wallet_address
 from app.services.job_lock_service import job_lock
+from app.services.live_trading_service import live_copy_allocation_equity
 from app.services.operation_status_service import (
     OperationCanceledError,
     mark_operation_canceled,
@@ -38,11 +39,17 @@ from app.services.source_trade_reconstruction_service import (
     realized_entry_notional_for_trade,
     sync_materialized_source_trades,
 )
+from app.services.trading_core import copy_allocation_pct
 from app.services.wallet_current_state_service import (
     load_known_wallet_perp_dexes_for_addresses,
     load_wallet_account_value_summary,
     load_wallet_perp_clearinghouse_states,
     summarize_perp_clearinghouse_states,
+)
+from app.services.wallet_equity_service import (
+    WalletEquityMetrics,
+    load_wallet_equity_metrics,
+    refresh_wallet_equity_metrics,
 )
 
 ZERO = Decimal("0")
@@ -72,7 +79,6 @@ class WalletScoreMetrics:
     average_trade_notional_usd: Decimal
     median_trade_notional_usd: Decimal | None
     p25_trade_notional_usd: Decimal | None
-    copyable_trade_ratio: Decimal | None
     average_fills_per_trade: Decimal | None
     average_trade_roi: Decimal | None
     median_trade_roi: Decimal | None
@@ -111,6 +117,17 @@ class WalletScoreMetrics:
     trades_7d: int
     notional_7d: Decimal
     net_pnl_7d: Decimal
+    # Entry notional of closed trades, used to size trades at our copy scale.
+    trade_notional_values: tuple[Decimal, ...] = ()
+    underwater_add_ratio: Decimal | None = None
+    # "missing" until equity history has been loaded for the wallet.
+    equity_status: str = "missing"
+    equity_return_pct: Decimal | None = None
+    equity_max_drawdown_pct: Decimal | None = None
+    equity_average_account_value_usd: Decimal | None = None
+    # Our per-source allocation divided by the wallet's equity.
+    copy_scale: Decimal | None = None
+    copy_allocation_usd: Decimal | None = None
 
     @property
     def liquidation_count(self) -> int:
@@ -139,6 +156,20 @@ class WalletScoreBreakdown:
     last_24h_score: Decimal | None
     last_7d_score: Decimal | None
     last_30d_score: Decimal | None
+    equity_return_pct: Decimal | None = None
+    copy_size_ratio: Decimal | None = None
+    underwater_add_ratio: Decimal | None = None
+    small_copy_score_cap: Decimal | None = None
+    sample_credibility: Decimal = ONE
+
+
+@dataclass(frozen=True)
+class CopySizeMetrics:
+    """How the wallet's closed trades size at our per-source copy allocation."""
+
+    ratio: Decimal | None
+    median_copy_notional_usd: Decimal | None
+    p25_copy_notional_usd: Decimal | None
 
 
 @dataclass(frozen=True)
@@ -289,6 +320,7 @@ async def _recalculate_wallet_scores(
     )
 
     records: list[dict[str, Any]] = []
+    snapshot_records: list[dict[str, Any]] = []
     for index, metric in enumerate(metrics):
         if index % 50 == 0:
             await raise_if_operation_cancellation_requested(
@@ -311,6 +343,10 @@ async def _recalculate_wallet_scores(
                 "win_rate": breakdown.win_rate,
                 "profit_factor": breakdown.profit_factor,
                 "max_drawdown_pct": breakdown.max_drawdown_pct,
+                "realized_drawdown_pct": breakdown.realized_drawdown_pct,
+                "equity_return_pct": breakdown.equity_return_pct,
+                "copy_size_ratio": breakdown.copy_size_ratio,
+                "underwater_add_ratio": breakdown.underwater_add_ratio,
                 "current_drawdown_pct": breakdown.current_drawdown_pct,
                 "open_position_stress_pct": breakdown.open_position_stress_pct,
                 "current_drawdown_status": breakdown.current_drawdown_status,
@@ -319,6 +355,9 @@ async def _recalculate_wallet_scores(
                 "last_7d_score": breakdown.last_7d_score,
                 "last_30d_score": breakdown.last_30d_score,
             }
+        )
+        snapshot_records.append(
+            score_snapshot_record(metric, breakdown=breakdown, snapshot_date=now.date())
         )
 
     await raise_if_operation_cancellation_requested(
@@ -338,6 +377,7 @@ async def _recalculate_wallet_scores(
                 set_=update_columns,
             )
         )
+    await upsert_score_snapshots(session, records=snapshot_records)
     await session.execute(
         delete(WalletScore).where(
             ~select(WatchedWallet.address)
@@ -361,6 +401,63 @@ async def _recalculate_wallet_scores(
         min_trades=resolved_settings.scoring_min_trades,
         updated_at=now,
     )
+
+
+def score_snapshot_record(
+    metric: WalletScoreMetrics,
+    *,
+    breakdown: WalletScoreBreakdown,
+    snapshot_date: date,
+) -> dict[str, Any]:
+    """Point-in-time score inputs a later backtest can rank and evaluate."""
+
+    def text_value(value: Decimal | None) -> str | None:
+        return str(value) if value is not None else None
+
+    return {
+        "wallet_address": metric.wallet_address,
+        "snapshot_date": snapshot_date,
+        "score": breakdown.score,
+        "score_payload": {
+            "pnlScore": str(breakdown.pnl_score),
+            "consistencyScore": str(breakdown.consistency_score),
+            "riskScore": str(breakdown.risk_score),
+            "copyabilityScore": str(breakdown.copyability_score),
+            "recencyScore": str(breakdown.recency_score),
+            "penaltyScore": str(breakdown.penalty_score),
+            "tradeCount": breakdown.trade_count,
+            "equityStatus": metric.equity_status,
+            "equityReturnPct": text_value(metric.equity_return_pct),
+            "equityMaxDrawdownPct": text_value(metric.equity_max_drawdown_pct),
+            "accountValueUsd": text_value(
+                metric.equity_average_account_value_usd or metric.current_account_value_usd
+            ),
+            "copySizeRatio": text_value(breakdown.copy_size_ratio),
+            "underwaterAddRatio": text_value(breakdown.underwater_add_ratio),
+        },
+    }
+
+
+async def upsert_score_snapshots(
+    session: AsyncSession,
+    *,
+    records: list[dict[str, Any]],
+) -> None:
+    """Keep one snapshot per wallet and day, holding the day's latest score."""
+
+    for start in range(0, len(records), 500):
+        batch = records[start : start + 500]
+        stmt = insert(WalletScoreSnapshot).values(batch)
+        await session.execute(
+            stmt.on_conflict_do_update(
+                constraint="ux_wallet_score_snapshots_wallet_date",
+                set_={
+                    "score": stmt.excluded.score,
+                    "score_payload": stmt.excluded.score_payload,
+                    "updated_at": func.now(),
+                },
+            )
+        )
 
 
 async def list_wallet_scores(
@@ -448,6 +545,13 @@ async def get_wallet_score_detail(
         current_margin_usage_pct=wallet_metrics.current_margin_usage_pct,
         current_notional_exposure_pct=wallet_metrics.current_notional_exposure_pct,
         realized_drawdown_pct=breakdown.realized_drawdown_pct,
+        max_drawdown_pct=breakdown.max_drawdown_pct,
+        equity_return_pct=breakdown.equity_return_pct,
+        equity_status=wallet_metrics.equity_status,
+        copy_size_ratio=breakdown.copy_size_ratio,
+        underwater_add_ratio=breakdown.underwater_add_ratio,
+        small_copy_score_cap=breakdown.small_copy_score_cap,
+        sample_credibility=breakdown.sample_credibility,
         current_drawdown_pct=breakdown.current_drawdown_pct,
         open_position_stress_pct=breakdown.open_position_stress_pct,
         live_risk_score_cap=breakdown.live_risk_score_cap,
@@ -497,6 +601,7 @@ async def load_wallet_score_metrics(
               select address
               from watched_wallets
               where (:include_disabled or enabled is true)
+                and (cast(:wallet_address as text) is not null or archived_at is null)
                 and (
                   cast(:wallet_address as text) is null
                   or address = cast(:wallet_address as text)
@@ -707,17 +812,176 @@ async def load_wallet_score_metrics(
             "progressPercent": 35,
         },
     )
-    if not settings.scoring_current_drawdown_enabled:
-        return reconstructed_metrics
+    enriched_metrics = reconstructed_metrics
+    if settings.scoring_equity_enabled:
+        enriched_metrics = await metrics_with_equity(
+            session,
+            metrics=enriched_metrics,
+            settings=settings,
+            now=now,
+            include_disabled=include_disabled,
+            report_progress=report_progress,
+        )
+    if settings.scoring_current_drawdown_enabled:
+        enriched_metrics = await metrics_with_current_drawdowns(
+            session,
+            metrics=enriched_metrics,
+            settings=settings,
+            include_disabled=include_disabled,
+            report_progress=report_progress,
+            operation_run_id=operation_run_id,
+        )
+    reference_equity = await resolve_copy_reference_equity(session, settings=settings)
+    return [
+        metric_with_copy_scale(metric, reference_equity_usd=reference_equity, settings=settings)
+        for metric in enriched_metrics
+    ]
 
-    return await metrics_with_current_drawdowns(
+
+async def metrics_with_equity(
+    session: AsyncSession,
+    *,
+    metrics: list[WalletScoreMetrics],
+    settings: Settings,
+    now: datetime,
+    include_disabled: bool = False,
+    report_progress: bool = False,
+) -> list[WalletScoreMetrics]:
+    """Attach equity-curve metrics, refreshing the most important stale wallets first."""
+
+    scorable = [metric for metric in metrics if metric.trade_count > 0]
+    if scorable:
+        persisted_scores = await load_persisted_scores(
+            session,
+            addresses=[metric.wallet_address for metric in scorable],
+        )
+        prioritized = sorted(
+            scorable,
+            key=lambda metric: (
+                -persisted_scores.get(
+                    metric.wallet_address,
+                    calculate_wallet_score(metric, settings=settings, now=now).score,
+                ),
+                metric.wallet_address,
+            ),
+        )
+        await report_wallet_scoring_progress(
+            session,
+            enabled=report_progress,
+            payload={
+                "windowDays": settings.scoring_window_days,
+                "includeDisabled": include_disabled,
+                "stage": "equity_history",
+                "stageLabel": "Equity history",
+                "stageDetail": "Refreshing stale wallet equity curves.",
+                "progressPercent": 36,
+            },
+        )
+        try:
+            await refresh_wallet_equity_metrics(
+                session,
+                addresses_by_priority=[metric.wallet_address for metric in prioritized],
+                settings=settings,
+                now=now,
+            )
+        except Exception:
+            # Stale or missing equity history must never block a scoring run.
+            await session.rollback()
+            logger.exception("wallet equity history refresh failed")
+
+    equity_by_address = await load_wallet_equity_metrics(
         session,
-        metrics=reconstructed_metrics,
-        settings=settings,
-        include_disabled=include_disabled,
-        report_progress=report_progress,
-        operation_run_id=operation_run_id,
+        addresses=[metric.wallet_address for metric in metrics],
     )
+    return [
+        metric_with_equity(
+            metric,
+            equity_by_address[metric.wallet_address][0]
+            if metric.wallet_address in equity_by_address
+            else None,
+        )
+        for metric in metrics
+    ]
+
+
+async def load_persisted_scores(
+    session: AsyncSession,
+    *,
+    addresses: list[str],
+) -> dict[str, Decimal]:
+    if not addresses:
+        return {}
+    result = await session.execute(
+        select(WalletScore.wallet_address, WalletScore.score).where(
+            WalletScore.wallet_address.in_(addresses)
+        )
+    )
+    return {str(address): Decimal(score) for address, score in result.all()}
+
+
+def metric_with_equity(
+    metric: WalletScoreMetrics,
+    equity: WalletEquityMetrics | None,
+) -> WalletScoreMetrics:
+    if equity is None:
+        return replace(metric, equity_status="missing")
+    if not equity.is_ok:
+        return replace(metric, equity_status=equity.status)
+    return replace(
+        metric,
+        equity_status="ok",
+        equity_return_pct=equity.return_pct,
+        equity_max_drawdown_pct=equity.max_drawdown_pct,
+        equity_average_account_value_usd=equity.average_account_value_usd,
+    )
+
+
+async def resolve_copy_reference_equity(
+    session: AsyncSession,
+    *,
+    settings: Settings,
+) -> Decimal:
+    """Copy capital for copyability: the live account when live, else the configured value."""
+
+    if settings.live_trading_enabled:
+        result = await session.execute(
+            select(TradingAccount).where(
+                TradingAccount.account_type == "live",
+                TradingAccount.archived_at.is_(None),
+                TradingAccount.status.in_(("enabled", "exit_only")),
+            )
+        )
+        live_equity = max(
+            (
+                live_copy_allocation_equity(account, settings=settings, dex=None)
+                for account in result.scalars().all()
+            ),
+            default=ZERO,
+        )
+        if live_equity > ZERO:
+            return live_equity
+    return settings.scoring_copyability_reference_equity_usd
+
+
+def metric_with_copy_scale(
+    metric: WalletScoreMetrics,
+    *,
+    reference_equity_usd: Decimal,
+    settings: Settings,
+) -> WalletScoreMetrics:
+    allocation_usd = reference_equity_usd * copy_allocation_pct(settings)
+    source_equity_usd = (
+        metric.equity_average_account_value_usd
+        if metric.equity_average_account_value_usd is not None
+        and metric.equity_average_account_value_usd > ZERO
+        else metric.current_account_value_usd
+    )
+    copy_scale = (
+        allocation_usd / source_equity_usd
+        if source_equity_usd is not None and source_equity_usd > ZERO
+        else None
+    )
+    return replace(metric, copy_scale=copy_scale, copy_allocation_usd=allocation_usd)
 
 
 async def metrics_with_current_drawdowns(
@@ -965,7 +1229,7 @@ def calculate_wallet_score(
             copyable_pnl_usd=ZERO,
             win_rate=None,
             profit_factor=None,
-            max_drawdown_pct=None,
+            max_drawdown_pct=metrics.equity_max_drawdown_pct,
             realized_drawdown_pct=None,
             current_drawdown_pct=metrics.current_drawdown_pct,
             open_position_stress_pct=metrics.open_position_stress_pct,
@@ -975,6 +1239,8 @@ def calculate_wallet_score(
             last_24h_score=ZERO,
             last_7d_score=ZERO,
             last_30d_score=ZERO,
+            equity_return_pct=metrics.equity_return_pct,
+            sample_credibility=ZERO,
         )
 
     closed_trade_count = metrics.profitable_trade_count + metrics.losing_trade_count
@@ -984,24 +1250,24 @@ def calculate_wallet_score(
         else None
     )
     profit_factor = calculate_profit_factor(metrics.gross_profit_usd, metrics.gross_loss_usd)
-    drawdown_base = max_decimal(metrics.gross_profit_usd, abs(metrics.net_pnl_usd), ONE)
-    max_drawdown_pct = (metrics.max_drawdown_usd / drawdown_base).quantize(RATIO_QUANT)
-
-    pnl_score = calculate_profitability_score(metrics, settings=settings)
-    consistency_score = calculate_consistency_score(
-        metrics=metrics,
+    credibility = sample_credibility(metrics.trade_count, settings=settings)
+    pnl_score = shrink_score(
+        calculate_profitability_score(metrics, settings=settings),
+        credibility=credibility,
         settings=settings,
     )
-    risk_score = calculate_risk_score(
-        metrics=metrics,
-        closed_trade_count=closed_trade_count,
-        drawdown_base=drawdown_base,
+    consistency_score = shrink_score(
+        calculate_consistency_score(metrics=metrics, settings=settings),
+        credibility=credibility,
         settings=settings,
     )
-    copyability_score = calculate_copyability_score(
-        metrics=metrics,
+    risk_score = shrink_score(
+        calculate_risk_score(metrics=metrics, settings=settings),
+        credibility=credibility,
         settings=settings,
     )
+    copy_size = copy_size_metrics(metrics, settings=settings)
+    copyability_score = calculate_copyability_score(metrics=metrics, settings=settings)
     recency_score = calculate_recency_score(
         metrics.last_trade_time_ms,
         now=now,
@@ -1017,17 +1283,9 @@ def calculate_wallet_score(
         metrics.current_drawdown_pct,
         settings=settings,
     )
+    copy_score_cap = small_copy_score_cap(copy_size.ratio, settings=settings)
 
-    weight_sum = (
-        settings.scoring_weight_pnl
-        + settings.scoring_weight_consistency
-        + settings.scoring_weight_risk
-        + settings.scoring_weight_copyability
-        + settings.scoring_weight_recency
-    )
-    if weight_sum <= ZERO:
-        weight_sum = ONE
-
+    weight_sum = score_weight_sum(settings)
     gross_score = (
         pnl_score * settings.scoring_weight_pnl
         + consistency_score * settings.scoring_weight_consistency
@@ -1038,6 +1296,8 @@ def calculate_wallet_score(
     final_score = score_value(gross_score - penalty_score)
     if live_risk_score_cap is not None:
         final_score = min_decimal(final_score, live_risk_score_cap)
+    if copy_score_cap is not None:
+        final_score = min_decimal(final_score, copy_score_cap)
     if metrics.trade_count < settings.scoring_min_trades:
         sample_cap = score_sample_cap(
             metrics.trade_count,
@@ -1048,17 +1308,17 @@ def calculate_wallet_score(
 
     return WalletScoreBreakdown(
         score=final_score,
-        pnl_score=score_value(pnl_score),
+        pnl_score=pnl_score,
         copyability_score=score_value(copyability_score),
-        risk_score=score_value(risk_score),
-        consistency_score=score_value(consistency_score),
+        risk_score=risk_score,
+        consistency_score=consistency_score,
         recency_score=score_value(recency_score),
         penalty_score=score_value(penalty_score),
         copyable_pnl_usd=metrics.net_pnl_usd,
         win_rate=win_rate.quantize(RATIO_QUANT) if win_rate is not None else None,
         profit_factor=profit_factor.quantize(SCORE_QUANT) if profit_factor is not None else None,
-        max_drawdown_pct=max_drawdown_pct,
-        realized_drawdown_pct=max_drawdown_pct,
+        max_drawdown_pct=metrics.equity_max_drawdown_pct,
+        realized_drawdown_pct=realized_drawdown_ratio(metrics).quantize(RATIO_QUANT),
         current_drawdown_pct=metrics.current_drawdown_pct,
         open_position_stress_pct=metrics.open_position_stress_pct,
         live_risk_score_cap=live_risk_score_cap,
@@ -1082,6 +1342,40 @@ def calculate_wallet_score(
             notional_usd=metrics.total_notional_usd,
             settings=settings,
         ),
+        equity_return_pct=metrics.equity_return_pct,
+        copy_size_ratio=copy_size.ratio,
+        underwater_add_ratio=metrics.underwater_add_ratio,
+        small_copy_score_cap=copy_score_cap,
+        sample_credibility=credibility,
+    )
+
+
+def sample_credibility(trade_count: int, *, settings: Settings) -> Decimal:
+    """Share of full trust in sample-based scores, reaching 1 at the configured trade count."""
+
+    full_trades = max(settings.scoring_shrinkage_full_credibility_trades, 1)
+    return min_decimal(Decimal(trade_count) / Decimal(full_trades), ONE).quantize(RATIO_QUANT)
+
+
+def shrink_score(score: Decimal, *, credibility: Decimal, settings: Settings) -> Decimal:
+    """Pull a sample-based score toward the neutral score in proportion to missing trust."""
+
+    neutral = settings.scoring_shrinkage_neutral_score
+    return score_value(neutral + credibility * (score - neutral))
+
+
+def small_copy_score_cap(copy_size_ratio: Decimal | None, *, settings: Settings) -> Decimal | None:
+    """Cap wallets whose trades mostly fall below our minimum order at our copy scale.
+
+    Such trades would be rounded up to the minimum order, so the copy would carry
+    far more risk than the wallet itself does.
+    """
+
+    min_ratio = settings.scoring_copyability_small_copy_min_ratio
+    if copy_size_ratio is None or min_ratio <= ZERO or copy_size_ratio >= min_ratio:
+        return None
+    return score_value(
+        copy_size_ratio / min_ratio * settings.scoring_copyability_small_copy_max_score
     )
 
 
@@ -1101,7 +1395,12 @@ def calculate_score_explanation(
             score=breakdown.pnl_score,
             weight=settings.scoring_weight_pnl,
             weight_sum=weight_sum,
-            detail=("Profitability scores total, average, and median realized trade ROI."),
+            detail=shrinkage_detail(
+                "Profitability scores the wallet's time-weighted equity return and its "
+                "average and median realized trade ROI.",
+                credibility=breakdown.sample_credibility,
+                settings=settings,
+            ),
             items=profitability_score_items(metrics, settings=settings),
         ),
         score_component_detail(
@@ -1110,8 +1409,10 @@ def calculate_score_explanation(
             score=breakdown.consistency_score,
             weight=settings.scoring_weight_consistency,
             weight_sum=weight_sum,
-            detail=(
-                "Consistency scores repeatability and evenness, not profitability or win rate."
+            detail=shrinkage_detail(
+                "Consistency scores repeatability and evenness, not profitability or win rate.",
+                credibility=breakdown.sample_credibility,
+                settings=settings,
             ),
             items=consistency_score_items(metrics, settings=settings),
         ),
@@ -1121,10 +1422,12 @@ def calculate_score_explanation(
             score=breakdown.risk_score,
             weight=settings.scoring_weight_risk,
             weight_sum=weight_sum,
-            detail=(
-                "Risk starts at 100 and subtracts realized and live-state risk "
-                "penalties plus forced-exit severity. Severe current drawdown "
-                "also caps the final score."
+            detail=shrinkage_detail(
+                "Risk starts at 100 and subtracts equity drawdown, averaging down, "
+                "live-state, and forced-exit penalties. Severe current drawdown also "
+                "caps the final score.",
+                credibility=breakdown.sample_credibility,
+                settings=settings,
             ),
             items=risk_score_items(metrics, settings=settings),
         ),
@@ -1135,8 +1438,9 @@ def calculate_score_explanation(
             weight=settings.scoring_weight_copyability,
             weight_sum=weight_sum,
             detail=(
-                "Copyability scores whether the trade set is practical to follow, "
-                "including forced-exit fill ratio."
+                "Copyability scores whether the wallet's trades are practical to follow "
+                "at our copy size. When most trades fall below our minimum order, the "
+                "final score is capped."
             ),
             items=copyability_score_items(metrics, settings=settings),
         ),
@@ -1194,15 +1498,24 @@ def calculate_score_explanation(
     )
 
 
+def shrinkage_detail(text: str, *, credibility: Decimal, settings: Settings) -> str:
+    if credibility >= ONE:
+        return text
+    return (
+        f"{text} Pulled toward {settings.scoring_shrinkage_neutral_score} with "
+        f"{credibility:.0%} sample credibility; full credibility needs "
+        f"{settings.scoring_shrinkage_full_credibility_trades} closed trades."
+    )
+
+
 def profitability_score_items(
     metrics: WalletScoreMetrics,
     *,
     settings: Settings,
 ) -> list[WalletScoreDetailItem]:
-    roi = profitability_roi(metrics)
-    roi_score = profitability_ratio_score(
-        roi,
-        full_gain=settings.scoring_profitability_roi_full_score_at,
+    equity_return_score = profitability_ratio_score(
+        metrics.equity_return_pct or ZERO,
+        full_gain=settings.scoring_profitability_equity_return_full_score_at,
     )
     average_trade_roi_score = profitability_ratio_score(
         metrics.average_trade_roi or ZERO,
@@ -1213,37 +1526,35 @@ def profitability_score_items(
         full_gain=settings.scoring_profitability_roi_full_score_at,
     )
     weight_sum = score_group_weight_sum(
-        settings.scoring_profitability_weight_net_roi,
+        settings.scoring_profitability_weight_equity_return,
         settings.scoring_profitability_weight_average_trade_roi,
         settings.scoring_profitability_weight_median_trade_roi,
     )
-    wallet_return = wallet_size_adjusted_return(metrics)
-    wallet_return_detail = (
-        "Reference only. Net realized PnL divided by current perp equity can be "
-        "distorted by deposits or withdrawals, so it is not scored."
-        if wallet_return is not None
+    equity_return_detail = (
+        "Time-weighted return on the wallet's equity over the last 30 days from "
+        "Hyperliquid portfolio history, including unrealized PnL. Deposits and "
+        "withdrawals do not count as returns. Copies are sized from the wallet's "
+        "equity, so this is the return a proportional copy follows. 0% or lower "
+        "gets zero score, "
+        f"{settings.scoring_profitability_equity_return_full_score_at:.0%} reaches full score."
+        if metrics.equity_status == "ok"
         else (
-            "Reference only. Current perp equity is missing or zero, and current "
-            "equity is not used for historical profitability scoring."
+            f"Equity history is {metrics.equity_status}, so this input scores zero "
+            "until the wallet's portfolio history can be read."
         )
     )
     return [
         detail_item(
-            key="roi",
-            label="ROI",
-            value=roi,
+            key="equity_return",
+            label="Equity return",
+            value=metrics.equity_return_pct,
             value_kind="percent",
-            score=roi_score,
+            score=equity_return_score,
             weight=score_group_weight(
-                settings.scoring_profitability_weight_net_roi,
+                settings.scoring_profitability_weight_equity_return,
                 weight_sum,
             ),
-            detail=(
-                "Net realized PnL divided by reconstructed realized entry notional, "
-                "including realized partial closes from still-open trades. "
-                "0% or lower gets zero score, "
-                f"{settings.scoring_profitability_roi_full_score_at:.2%} reaches full score."
-            ),
+            detail=equity_return_detail,
         ),
         detail_item(
             key="average_trade_roi",
@@ -1279,11 +1590,15 @@ def profitability_score_items(
             ),
         ),
         reference_detail_item(
-            key="wallet_size_adjusted_return",
-            label="Wallet-size adjusted return",
-            value=wallet_return,
+            key="notional_roi",
+            label="Return on traded notional",
+            value=profitability_roi(metrics),
             value_kind="percent",
-            detail=wallet_return_detail,
+            detail=(
+                "Reference only. Net realized PnL divided by reconstructed entry "
+                "notional. It ignores how much of its equity the wallet puts at risk, "
+                "so it is not scored."
+            ),
         ),
         reference_detail_item(
             key="net_pnl_reference",
@@ -1438,9 +1753,8 @@ def risk_score_items(
     settings: Settings,
 ) -> list[WalletScoreDetailItem]:
     closed_trade_count = metrics.profitable_trade_count + metrics.losing_trade_count
-    drawdown_base = max_decimal(metrics.gross_profit_usd, abs(metrics.net_pnl_usd), ONE)
     loss_ratio = metrics.gross_loss_usd / max_decimal(metrics.gross_profit_usd, ONE)
-    realized_drawdown = metrics.max_drawdown_usd / drawdown_base
+    realized_drawdown = realized_drawdown_ratio(metrics)
     current_drawdown = metrics.current_drawdown_pct or ZERO
     current_drawdown_penalty = current_drawdown_risk_penalty(
         current_drawdown,
@@ -1459,6 +1773,52 @@ def risk_score_items(
         if closed_trade_count > 0
         else ZERO
     )
+    realized_drawdown_penalty = min_decimal(
+        realized_drawdown * settings.scoring_risk_realized_drawdown_penalty_per_ratio,
+        settings.scoring_risk_realized_drawdown_penalty_max,
+    )
+    drawdown_items = (
+        [
+            penalty_detail_item(
+                key="equity_drawdown",
+                label="Equity drawdown",
+                value=metrics.equity_max_drawdown_pct,
+                value_kind="percent",
+                penalty=equity_drawdown_penalty(metrics.equity_max_drawdown_pct, settings=settings),
+                detail=(
+                    "Largest peak-to-trough fall of the wallet's 30 day equity curve, "
+                    "including unrealized losses. Penalty starts at "
+                    f"{settings.scoring_risk_equity_drawdown_penalty_start_ratio:.0%} and "
+                    f"reaches {settings.scoring_risk_equity_drawdown_penalty_max} points at "
+                    f"{settings.scoring_risk_equity_drawdown_full_penalty_ratio:.0%}."
+                ),
+            ),
+            reference_detail_item(
+                key="realized_drawdown",
+                label="Realized drawdown",
+                value=realized_drawdown,
+                value_kind="percent",
+                detail=(
+                    "Reference only while equity history is available. Closed-trade "
+                    "drawdown divided by gross profit."
+                ),
+            ),
+        ]
+        if metrics.equity_max_drawdown_pct is not None
+        else [
+            penalty_detail_item(
+                key="realized_drawdown",
+                label="Realized drawdown (fallback)",
+                value=realized_drawdown,
+                value_kind="percent",
+                penalty=realized_drawdown_penalty,
+                detail=(
+                    "Used because equity history is unavailable. Closed-trade drawdown "
+                    "divided by gross profit."
+                ),
+            )
+        ]
+    )
     return [
         penalty_detail_item(
             key="loss_ratio",
@@ -1471,16 +1831,19 @@ def risk_score_items(
             ),
             detail="Gross loss divided by gross profit.",
         ),
+        *drawdown_items,
         penalty_detail_item(
-            key="realized_drawdown",
-            label="Realized drawdown",
-            value=realized_drawdown,
+            key="underwater_adds",
+            label="Adds into losing positions",
+            value=metrics.underwater_add_ratio,
             value_kind="percent",
-            penalty=min_decimal(
-                realized_drawdown * settings.scoring_risk_realized_drawdown_penalty_per_ratio,
-                settings.scoring_risk_realized_drawdown_penalty_max,
+            penalty=underwater_add_penalty(metrics.underwater_add_ratio, settings=settings),
+            detail=(
+                "Share of closed-trade entry notional added while the position was at "
+                "a loss. Averaging down hides losses until the trade closes. Full "
+                f"penalty of {settings.scoring_risk_underwater_add_penalty_max} points at "
+                f"{settings.scoring_risk_underwater_add_full_penalty_ratio:.0%}."
             ),
-            detail="Closed-trade drawdown divided by realized drawdown base.",
         ),
         reference_detail_item(
             key="current_drawdown_candidate",
@@ -1552,19 +1915,62 @@ def risk_score_items(
     ]
 
 
+def realized_drawdown_ratio(metrics: WalletScoreMetrics) -> Decimal:
+    drawdown_base = max_decimal(metrics.gross_profit_usd, abs(metrics.net_pnl_usd), ONE)
+    return metrics.max_drawdown_usd / drawdown_base
+
+
+def equity_drawdown_penalty(drawdown_pct: Decimal | None, *, settings: Settings) -> Decimal:
+    return ramp_penalty(
+        drawdown_pct,
+        start=settings.scoring_risk_equity_drawdown_penalty_start_ratio,
+        full=settings.scoring_risk_equity_drawdown_full_penalty_ratio,
+        maximum=settings.scoring_risk_equity_drawdown_penalty_max,
+    )
+
+
+def underwater_add_penalty(ratio: Decimal | None, *, settings: Settings) -> Decimal:
+    return ramp_penalty(
+        ratio,
+        start=ZERO,
+        full=settings.scoring_risk_underwater_add_full_penalty_ratio,
+        maximum=settings.scoring_risk_underwater_add_penalty_max,
+    )
+
+
+def ramp_penalty(
+    value: Decimal | None,
+    *,
+    start: Decimal,
+    full: Decimal,
+    maximum: Decimal,
+) -> Decimal:
+    """Zero up to ``start``, linear to ``maximum`` at ``full``, flat above."""
+
+    if value is None or value <= start:
+        return ZERO
+    if value >= full or full <= start:
+        return maximum
+    return (value - start) / (full - start) * maximum
+
+
 def copyability_score_items(
     metrics: WalletScoreMetrics,
     *,
     settings: Settings,
 ) -> list[WalletScoreDetailItem]:
-    copyable_trade_score = copyable_trade_ratio_score(metrics.copyable_trade_ratio)
-    median_notional_score = trade_notional_score(
-        metrics.median_trade_notional_usd,
-        settings=settings,
+    copy_size = copy_size_metrics(metrics, settings=settings)
+    min_order = settings.trading_copy_min_order_notional_usd
+    ratio_score = score_value((copy_size.ratio or ZERO) * HUNDRED)
+    median_score = copy_notional_score(
+        copy_size.median_copy_notional_usd,
+        full_multiple=settings.scoring_copyability_median_full_score_multiple,
+        min_order_usd=min_order,
     )
-    p25_notional_score = trade_notional_score(
-        metrics.p25_trade_notional_usd,
-        settings=settings,
+    p25_score = copy_notional_score(
+        copy_size.p25_copy_notional_usd,
+        full_multiple=settings.scoring_copyability_p25_full_score_multiple,
+        min_order_usd=min_order,
     )
     execution_score = execution_simplicity_score(
         metrics.average_fills_per_trade,
@@ -1572,51 +1978,72 @@ def copyability_score_items(
     )
     forced_exit_score = forced_exit_fill_ratio_score(metrics, settings=settings)
     weight_sum = score_group_weight_sum(
-        settings.scoring_copyability_weight_copyable_trade_ratio,
-        settings.scoring_copyability_weight_median_trade_notional,
-        settings.scoring_copyability_weight_p25_trade_notional,
+        settings.scoring_copyability_weight_copy_size_ratio,
+        settings.scoring_copyability_weight_median_copy_notional,
+        settings.scoring_copyability_weight_p25_copy_notional,
         settings.scoring_copyability_weight_execution_simplicity,
         settings.scoring_copyability_weight_forced_exit_fill_ratio,
     )
+    allocation_text = (
+        f"our {metrics.copy_allocation_usd:.2f} USD allocation"
+        if metrics.copy_allocation_usd is not None
+        else "our allocation"
+    )
+    ratio_detail = (
+        f"Share of closed trades whose entry, scaled by {allocation_text} against the "
+        f"wallet's equity, reaches the {min_order} USD minimum order. Below "
+        f"{settings.scoring_copyability_small_copy_min_ratio:.0%} the final score is "
+        "capped, because rounding small trades up to the minimum would overweight them."
+        if metrics.copy_scale is not None
+        else (
+            "The wallet's equity is unknown, so its trades cannot be scaled to our "
+            "copy size and this input scores zero."
+        )
+    )
     return [
         detail_item(
-            key="copyable_trade_ratio",
-            label="Copyable trade ratio",
-            value=metrics.copyable_trade_ratio,
+            key="copy_size_ratio",
+            label="Trades copyable at our size",
+            value=copy_size.ratio,
             value_kind="percent",
-            score=copyable_trade_score,
+            score=ratio_score,
             weight=score_group_weight(
-                settings.scoring_copyability_weight_copyable_trade_ratio,
+                settings.scoring_copyability_weight_copy_size_ratio,
+                weight_sum,
+            ),
+            detail=ratio_detail,
+        ),
+        detail_item(
+            key="median_copy_notional",
+            label="Median copied trade size",
+            value=copy_size.median_copy_notional_usd,
+            value_kind="currency",
+            score=median_score,
+            weight=score_group_weight(
+                settings.scoring_copyability_weight_median_copy_notional,
                 weight_sum,
             ),
             detail=(
-                "Share of closed trades with reconstructed entry notional at or above "
-                f"{settings.scoring_copyability_copyable_trade_min_notional_usd} USD."
+                "Median closed-trade entry at our copy scale. "
+                f"{settings.scoring_copyability_median_full_score_multiple}x the minimum "
+                "order reaches full score."
             ),
         ),
         detail_item(
-            key="median_trade_notional",
-            label="Median trade notional",
-            value=metrics.median_trade_notional_usd,
+            key="p25_copy_notional",
+            label="P25 copied trade size",
+            value=copy_size.p25_copy_notional_usd,
             value_kind="currency",
-            score=median_notional_score,
+            score=p25_score,
             weight=score_group_weight(
-                settings.scoring_copyability_weight_median_trade_notional,
+                settings.scoring_copyability_weight_p25_copy_notional,
                 weight_sum,
             ),
-            detail="Median reconstructed entry notional per closed trade.",
-        ),
-        detail_item(
-            key="p25_trade_notional",
-            label="P25 trade notional",
-            value=metrics.p25_trade_notional_usd,
-            value_kind="currency",
-            score=p25_notional_score,
-            weight=score_group_weight(
-                settings.scoring_copyability_weight_p25_trade_notional,
-                weight_sum,
+            detail=(
+                "25th percentile closed-trade entry at our copy scale. "
+                f"{settings.scoring_copyability_p25_full_score_multiple}x the minimum "
+                "order reaches full score."
             ),
-            detail="25th percentile reconstructed entry notional per closed trade.",
         ),
         detail_item(
             key="execution_simplicity",
@@ -1647,7 +2074,45 @@ def copyability_score_items(
                 "or more scores zero for this input."
             ),
         ),
+        reference_detail_item(
+            key="median_trade_notional",
+            label="Median trade notional",
+            value=metrics.median_trade_notional_usd,
+            value_kind="currency",
+            detail="Reference only. The wallet's own median closed-trade entry notional.",
+        ),
     ]
+
+
+def copy_size_metrics(metrics: WalletScoreMetrics, *, settings: Settings) -> CopySizeMetrics:
+    if metrics.copy_scale is None or not metrics.trade_notional_values:
+        return CopySizeMetrics(
+            ratio=None, median_copy_notional_usd=None, p25_copy_notional_usd=None
+        )
+    copied = sorted(value * metrics.copy_scale for value in metrics.trade_notional_values)
+    min_order = settings.trading_copy_min_order_notional_usd
+    copyable = sum(1 for value in copied if value >= min_order)
+    median = median_decimal(copied)
+    p25 = percentile_decimal(copied, Decimal("0.25"))
+    return CopySizeMetrics(
+        ratio=(Decimal(copyable) / Decimal(len(copied))).quantize(RATIO_QUANT),
+        median_copy_notional_usd=median.quantize(SCORE_QUANT) if median is not None else None,
+        p25_copy_notional_usd=p25.quantize(SCORE_QUANT) if p25 is not None else None,
+    )
+
+
+def copy_notional_score(
+    copy_notional_usd: Decimal | None,
+    *,
+    full_multiple: Decimal,
+    min_order_usd: Decimal,
+) -> Decimal:
+    if copy_notional_usd is None or copy_notional_usd <= ZERO:
+        return ZERO
+    target = min_order_usd * full_multiple
+    if target <= ZERO:
+        return HUNDRED
+    return score_value(min_decimal(copy_notional_usd / target, ONE) * HUNDRED)
 
 
 def recency_score_items(
@@ -1812,27 +2277,21 @@ def calculate_profitability_score(
     *,
     settings: Settings,
 ) -> Decimal:
-    net_roi_score = profitability_ratio_score(
-        profitability_roi(metrics),
-        full_gain=settings.scoring_profitability_roi_full_score_at,
-    )
-    average_trade_roi_score = profitability_ratio_score(
-        metrics.average_trade_roi or ZERO,
-        full_gain=settings.scoring_profitability_roi_full_score_at,
-    )
-    median_trade_roi_score = profitability_ratio_score(
-        metrics.median_trade_roi or ZERO,
-        full_gain=settings.scoring_profitability_roi_full_score_at,
-    )
+    return score_from_items(profitability_score_items(metrics, settings=settings))
+
+
+def score_from_items(items: list[WalletScoreDetailItem]) -> Decimal:
+    """Weighted score of the scored detail items, so scores match their explanation."""
+
     return weighted_score(
-        (
-            (net_roi_score, settings.scoring_profitability_weight_net_roi),
-            (
-                average_trade_roi_score,
-                settings.scoring_profitability_weight_average_trade_roi,
-            ),
-            (median_trade_roi_score, settings.scoring_profitability_weight_median_trade_roi),
-        )
+        tuple((item.score or ZERO, item.weight or ZERO) for item in items if item.effect == "add")
+    )
+
+
+def penalty_from_items(items: list[WalletScoreDetailItem]) -> Decimal:
+    return sum(
+        ((item.contribution or ZERO) for item in items if item.effect == "subtract"),
+        ZERO,
     )
 
 
@@ -1853,12 +2312,6 @@ def profitability_roi(metrics: WalletScoreMetrics) -> Decimal:
     if metrics.total_notional_usd <= ZERO:
         return ZERO
     return metrics.net_pnl_usd / metrics.total_notional_usd
-
-
-def wallet_size_adjusted_return(metrics: WalletScoreMetrics) -> Decimal | None:
-    if metrics.current_account_value_usd is None or metrics.current_account_value_usd <= ZERO:
-        return None
-    return metrics.net_pnl_usd / metrics.current_account_value_usd
 
 
 def source_trade_roi_values(trades: ReconstructedWalletTrades) -> list[Decimal]:
@@ -1888,21 +2341,6 @@ def source_trade_notional_values(trades: ReconstructedWalletTrades) -> list[Deci
         for item in trades.items
         if item.status == "closed" and item.entry_notional_usd > ZERO
     ]
-
-
-def copyable_trade_ratio(
-    trade_notional_values: list[Decimal],
-    *,
-    settings: Settings,
-) -> Decimal | None:
-    if not trade_notional_values:
-        return None
-    copyable_count = sum(
-        1
-        for notional_usd in trade_notional_values
-        if notional_usd >= settings.scoring_copyability_copyable_trade_min_notional_usd
-    )
-    return Decimal(copyable_count) / Decimal(len(trade_notional_values))
 
 
 def average_fills_per_trade(trades: ReconstructedWalletTrades) -> Decimal | None:
@@ -2195,41 +2633,9 @@ def calculate_open_position_stress_pct(
 def calculate_risk_score(
     *,
     metrics: WalletScoreMetrics,
-    closed_trade_count: int,
-    drawdown_base: Decimal,
     settings: Settings,
 ) -> Decimal:
-    loss_ratio = metrics.gross_loss_usd / max_decimal(metrics.gross_profit_usd, ONE)
-    drawdown_ratio = metrics.max_drawdown_usd / drawdown_base
-    current_drawdown_ratio = metrics.current_drawdown_pct or ZERO
-    current_drawdown_penalty = current_drawdown_risk_penalty(
-        current_drawdown_ratio,
-        settings=settings,
-    )
-    open_position_stress_penalty = min_decimal(
-        (metrics.open_position_stress_pct or ZERO)
-        * settings.scoring_open_position_stress_penalty_max,
-        settings.scoring_open_position_stress_penalty_max,
-    )
-    losing_rate = (
-        Decimal(metrics.losing_trade_count) / Decimal(closed_trade_count)
-        if closed_trade_count > 0
-        else ZERO
-    )
-    penalty = (
-        min_decimal(
-            loss_ratio * settings.scoring_risk_loss_ratio_penalty_per_ratio,
-            settings.scoring_risk_loss_ratio_penalty_max,
-        )
-        + min_decimal(
-            drawdown_ratio * settings.scoring_risk_realized_drawdown_penalty_per_ratio,
-            settings.scoring_risk_realized_drawdown_penalty_max,
-        )
-        + max_decimal(current_drawdown_penalty, open_position_stress_penalty)
-        + forced_exit_severity_penalty(metrics, settings=settings)
-        + losing_rate * settings.scoring_risk_losing_trade_rate_penalty_per_ratio
-    )
-    return score_value(HUNDRED - penalty)
+    return score_value(HUNDRED - penalty_from_items(risk_score_items(metrics, settings=settings)))
 
 
 def current_drawdown_risk_penalty(
@@ -2274,78 +2680,7 @@ def calculate_copyability_score(
     metrics: WalletScoreMetrics,
     settings: Settings,
 ) -> Decimal:
-    copyable_trade_score = copyable_trade_ratio_score(metrics.copyable_trade_ratio)
-    median_notional_score = trade_notional_score(
-        metrics.median_trade_notional_usd,
-        settings=settings,
-    )
-    p25_notional_score = trade_notional_score(
-        metrics.p25_trade_notional_usd,
-        settings=settings,
-    )
-    execution_score = execution_simplicity_score(
-        metrics.average_fills_per_trade,
-        settings=settings,
-    )
-    forced_exit_score = forced_exit_fill_ratio_score(metrics, settings=settings)
-    return weighted_score(
-        (
-            (
-                copyable_trade_score,
-                settings.scoring_copyability_weight_copyable_trade_ratio,
-            ),
-            (
-                median_notional_score,
-                settings.scoring_copyability_weight_median_trade_notional,
-            ),
-            (
-                p25_notional_score,
-                settings.scoring_copyability_weight_p25_trade_notional,
-            ),
-            (
-                execution_score,
-                settings.scoring_copyability_weight_execution_simplicity,
-            ),
-            (
-                forced_exit_score,
-                settings.scoring_copyability_weight_forced_exit_fill_ratio,
-            ),
-        )
-    )
-
-
-def copyable_trade_ratio_score(copyable_ratio: Decimal | None) -> Decimal:
-    if copyable_ratio is None:
-        return ZERO
-    return score_value(copyable_ratio * HUNDRED)
-
-
-def trade_notional_score(
-    notional_usd: Decimal | None,
-    *,
-    settings: Settings,
-) -> Decimal:
-    if notional_usd is None or notional_usd <= ZERO:
-        return ZERO
-    min_full = settings.scoring_copyability_trade_notional_min_full_score_usd
-    max_full = settings.scoring_copyability_trade_notional_max_full_score_usd
-    large_min_score_at = settings.scoring_copyability_trade_notional_too_large_min_score_usd
-    if notional_usd < min_full:
-        return score_value(
-            notional_usd
-            / min_full
-            * settings.scoring_copyability_trade_notional_too_small_max_score
-        )
-    if notional_usd <= max_full:
-        return HUNDRED
-    if notional_usd >= large_min_score_at:
-        return settings.scoring_copyability_trade_notional_too_large_min_score
-    reduction = (
-        (notional_usd - max_full)
-        / (large_min_score_at - max_full)
-        * (HUNDRED - settings.scoring_copyability_trade_notional_too_large_min_score)
-    )
-    return score_value(HUNDRED - reduction)
+    return score_from_items(copyability_score_items(metrics, settings=settings))
 
 
 def execution_simplicity_score(
@@ -2477,12 +2812,6 @@ def calculate_penalty_items(
         if metrics.open_trade_count > 0 and metrics.trade_count == 0
         else ZERO
     )
-    confidence_trade_count = max(settings.scoring_confidence_target_trades, 1)
-    confidence_ratio = min_decimal(
-        Decimal(metrics.trade_count) / Decimal(confidence_trade_count),
-        ONE,
-    )
-    confidence_penalty = (ONE - confidence_ratio) * settings.scoring_confidence_penalty_max
     current_drawdown_penalty = (
         settings.scoring_current_drawdown_missing_penalty
         if metrics.current_drawdown_status in {"unavailable", "zero_equity"}
@@ -2498,16 +2827,6 @@ def calculate_penalty_items(
             detail=(
                 f"{metrics.trade_count} closed trades reconstructed; "
                 f"target minimum is {min_trades}."
-            ),
-        ),
-        penalty_item(
-            key="confidence",
-            label="Low confidence",
-            value=confidence_penalty,
-            max_value=settings.scoring_confidence_penalty_max,
-            detail=(
-                f"{metrics.trade_count} closed trades reconstructed; confidence target is "
-                f"{settings.scoring_confidence_target_trades}."
             ),
         ),
         penalty_item(
@@ -2609,7 +2928,6 @@ def base_metrics_from_row(row: Any) -> WalletScoreMetrics:
         average_trade_notional_usd=ZERO,
         median_trade_notional_usd=None,
         p25_trade_notional_usd=None,
-        copyable_trade_ratio=None,
         average_fills_per_trade=None,
         average_trade_roi=None,
         median_trade_roi=None,
@@ -2675,7 +2993,6 @@ def metrics_with_reconstructed_trades(
             average_trade_notional_usd=ZERO,
             median_trade_notional_usd=None,
             p25_trade_notional_usd=None,
-            copyable_trade_ratio=None,
             average_fills_per_trade=None,
             average_trade_roi=None,
             median_trade_roi=None,
@@ -2734,7 +3051,6 @@ def metrics_with_reconstructed_trades(
         average_trade_notional_usd=trades.average_trade_notional_usd,
         median_trade_notional_usd=median_decimal(trade_notional_values),
         p25_trade_notional_usd=percentile_decimal(trade_notional_values, Decimal("0.25")),
-        copyable_trade_ratio=copyable_trade_ratio(trade_notional_values, settings=settings),
         average_fills_per_trade=average_fills_per_trade(trades),
         average_trade_roi=average_decimal(
             capped_trade_roi_values(profitability_trade_roi_values, settings=settings)
@@ -2779,6 +3095,14 @@ def metrics_with_reconstructed_trades(
         trades_7d=trades.trades_7d,
         notional_7d=trades.notional_7d,
         net_pnl_7d=trades.net_pnl_7d,
+        trade_notional_values=tuple(trade_notional_values),
+        underwater_add_ratio=(
+            (trades.closed_underwater_add_notional_usd / trades.closed_entry_notional_usd).quantize(
+                RATIO_QUANT
+            )
+            if trades.closed_entry_notional_usd > ZERO
+            else None
+        ),
     )
 
 

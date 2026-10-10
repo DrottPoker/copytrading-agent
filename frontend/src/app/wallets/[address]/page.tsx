@@ -253,8 +253,10 @@ function ScoreBreakdownSection({
   const penaltyItems = scoreDetail?.penaltyItems ?? [];
   const penalty = numberValue(scoreDetail?.penaltyScore ?? score.penaltyScore);
   const liquidationEvents = scoreDetail?.liquidationEventCount ?? scoreDetail?.liquidationCount ?? 0;
-  const realizedDrawdownPct =
-    scoreDetail?.realizedDrawdownPct ?? score.realizedDrawdownPct ?? score.maxDrawdownPct;
+  const realizedDrawdownPct = scoreDetail?.realizedDrawdownPct ?? score.realizedDrawdownPct;
+  const equityDrawdownPct = scoreDetail?.maxDrawdownPct ?? score.maxDrawdownPct ?? null;
+  const equityReturnPct = scoreDetail?.equityReturnPct ?? score.equityReturnPct ?? null;
+  const copySizeRatio = scoreDetail?.copySizeRatio ?? score.copySizeRatio ?? null;
   const currentDrawdownPct = scoreDetail?.currentDrawdownPct ?? score.currentDrawdownPct;
   const openPositionStressPct =
     scoreDetail?.openPositionStressPct ?? score.openPositionStressPct;
@@ -312,7 +314,10 @@ function ScoreBreakdownSection({
               </p>
               <p>Win rate {formatPercent(score.winRate)}</p>
               <p>Profit factor {formatNullableNumber(score.profitFactor)}</p>
+              <p>30D equity return {formatPercent(equityReturnPct)}</p>
+              <p>30D equity drawdown {formatPercent(equityDrawdownPct)}</p>
               <p>Realized drawdown {formatPercent(realizedDrawdownPct)}</p>
+              <p>Trades copyable at our size {formatPercent(copySizeRatio)}</p>
               <p>
                 Current drawdown {formatPercent(currentDrawdownPct)}
                 {formatCurrentDrawdownStatus(currentDrawdownStatus)}
@@ -997,7 +1002,7 @@ type ScoreComponent = {
 function scoreComponents(score: WalletScore): ScoreComponent[] {
   return [
     {
-      detail: "Total, average, and median realized trade ROI.",
+      detail: "Time-weighted equity return plus average and median realized trade ROI.",
       key: "pnl",
       label: "Profitability",
       value: numberValue(score.pnlScore),
@@ -1009,13 +1014,14 @@ function scoreComponents(score: WalletScore): ScoreComponent[] {
       value: numberValue(score.consistencyScore),
     },
     {
-      detail: "Loss ratio, realized drawdown, live drawdown, margin stress, and losing trade rate.",
+      detail:
+        "Loss ratio, equity drawdown, adds into losing positions, live drawdown, margin stress, and losing trade rate.",
       key: "risk",
       label: "Risk",
       value: numberValue(score.riskScore),
     },
     {
-      detail: "Copyable trade ratio, trade size, and execution simplicity.",
+      detail: "Share of trades that reach our minimum order at our copy size, and execution simplicity.",
       key: "copyability",
       label: "Copyability",
       value: numberValue(score.copyabilityScore),

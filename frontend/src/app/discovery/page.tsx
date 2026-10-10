@@ -482,7 +482,7 @@ function CandidateRow({ candidate }: { candidate: DiscoveryCandidate }) {
           <MetricLine label="Net PnL" value={formatCurrency(candidate.netPnlUsd)} />
           <MetricLine label="Profit factor" value={formatScore(candidate.profitFactor)} />
           <MetricLine label="Win rate" value={formatPercent(candidate.winRate)} />
-          <MetricLine label="Max DD" value={formatPercent(candidate.maxDrawdownPct)} />
+          <MetricLine label="Equity DD" value={formatPercent(candidate.maxDrawdownPct)} />
           <MetricLine label="Avg notional" value={formatCurrency(candidate.averageTradeNotionalUsd)} />
           <MetricLine label="Last trade" value={formatMs(candidate.lastTradeTimeMs)} />
         </div>

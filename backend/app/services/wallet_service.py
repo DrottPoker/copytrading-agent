@@ -14,11 +14,14 @@ async def list_wallets(
     session: AsyncSession,
     *,
     enabled: bool | None = None,
+    archived: bool = False,
     query: str | None = None,
     limit: int = 100,
     offset: int = 0,
 ) -> tuple[list[WatchedWallet], int]:
-    filters: list[ColumnElement[bool]] = []
+    filters: list[ColumnElement[bool]] = [
+        WatchedWallet.archived_at.is_not(None) if archived else WatchedWallet.archived_at.is_(None)
+    ]
     if enabled is not None:
         filters.append(WatchedWallet.enabled.is_(enabled))
     if query:
@@ -120,6 +123,10 @@ async def update_wallet(
     updates = payload.model_dump(exclude_unset=True)
     for key, value in updates.items():
         setattr(wallet, key, value)
+    if updates.get("enabled") is True:
+        # Re-enabling an archived wallet returns it to the pool.
+        wallet.archived_at = None
+        wallet.archive_reason = None
 
     await session.commit()
     await session.refresh(wallet)

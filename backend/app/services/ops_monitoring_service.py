@@ -6,6 +6,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
@@ -15,6 +16,7 @@ from app.schemas.ops import (
     OpsBackupStatus,
     OpsDatabaseSummary,
     OpsDependencyStatus,
+    OpsDiscoverySourceHealth,
     OpsDiskStats,
     OpsHealthResponse,
     OpsLoadStats,
@@ -37,6 +39,9 @@ OPS_OPERATION_KEYS = (
     "wallet_scoring",
     "wallet_prune",
 )
+# Consecutive failed runs before a discovery source counts as down.
+DISCOVERY_SOURCE_DEGRADED_FAILURES = 3
+DISCOVERY_SOURCE_RECENT_RUNS = 10
 
 
 async def get_ops_health(*, settings: Settings) -> OpsHealthResponse:
@@ -54,7 +59,7 @@ async def get_ops_health(*, settings: Settings) -> OpsHealthResponse:
         stale_after_seconds=settings.backup_status_stale_seconds,
         now=measured_at,
     )
-    database, workers, operations, db_notes = await load_database_backed_ops(
+    database, workers, operations, discovery_sources, db_notes = await load_database_backed_ops(
         settings=settings,
         now=measured_at,
     )
@@ -63,6 +68,7 @@ async def get_ops_health(*, settings: Settings) -> OpsHealthResponse:
         *db_notes,
         *status_note("postgres", postgres_status),
         *status_note("redis", redis_status),
+        *discovery_source_notes(discovery_sources),
     ]
     status = aggregate_status(
         postgres_status=postgres_status,
@@ -73,6 +79,7 @@ async def get_ops_health(*, settings: Settings) -> OpsHealthResponse:
         backup=backup,
         database=database,
         workers=workers,
+        discovery_sources=discovery_sources,
     )
 
     return OpsHealthResponse(
@@ -101,6 +108,7 @@ async def get_ops_health(*, settings: Settings) -> OpsHealthResponse:
         database=database,
         workers=workers,
         operations=operations,
+        discovery_sources=discovery_sources,
         notes=notes,
     )
 
@@ -109,10 +117,22 @@ async def load_database_backed_ops(
     *,
     settings: Settings,
     now: datetime,
-) -> tuple[OpsDatabaseSummary, list[OpsWorkerHeartbeat], list[Any], list[str]]:
+) -> tuple[
+    OpsDatabaseSummary,
+    list[OpsWorkerHeartbeat],
+    list[Any],
+    list[OpsDiscoverySourceHealth],
+    list[str],
+]:
     sessionmaker = get_sessionmaker(settings)
     if sessionmaker is None:
-        return empty_database_summary("not_configured"), [], [], ["Database is not configured."]
+        return (
+            empty_database_summary("not_configured"),
+            [],
+            [],
+            [],
+            ["Database is not configured."],
+        )
 
     try:
         async with sessionmaker() as session:
@@ -123,14 +143,121 @@ async def load_database_backed_ops(
                 settings=settings,
                 now=now,
             )
-            return database, workers, operations, []
+            discovery_sources = await load_discovery_source_health(session, settings=settings)
+            return database, workers, operations, discovery_sources, []
     except Exception as exc:
         return (
             empty_database_summary("error", error=exc.__class__.__name__),
             [],
             [],
+            [],
             [f"Database-backed ops checks failed: {exc.__class__.__name__}."],
         )
+
+
+async def load_discovery_source_health(
+    session: AsyncSession,
+    *,
+    settings: Settings,
+) -> list[OpsDiscoverySourceHealth]:
+    """Health of each configured discovery source from its recent import runs.
+
+    Several sources are unofficial endpoints that can change without notice, so
+    repeated failures or empty results are surfaced instead of failing silently.
+    """
+
+    if not settings.discovery_enabled or not settings.discovery_default_sources:
+        return []
+    result = await session.execute(
+        text(
+            """
+            select source, status, fetched_count, error, started_at
+            from (
+              select
+                source,
+                status,
+                fetched_count,
+                error,
+                started_at,
+                row_number() over (partition by source order by started_at desc) as recent_rank
+              from discovery_import_runs
+              where source = any(:sources)
+                and status in ('succeeded', 'failed')
+            ) ranked
+            where recent_rank <= :limit
+            order by source, started_at desc
+            """
+        ),
+        {
+            "sources": list(settings.discovery_default_sources),
+            "limit": DISCOVERY_SOURCE_RECENT_RUNS,
+        },
+    )
+    runs_by_source: dict[str, list[dict[str, Any]]] = {}
+    for row in result.mappings().all():
+        runs_by_source.setdefault(str(row["source"]), []).append(dict(row))
+    return [
+        discovery_source_health(source, runs_by_source.get(source, []))
+        for source in settings.discovery_default_sources
+    ]
+
+
+def discovery_source_health(
+    source: str,
+    runs: list[dict[str, Any]],
+) -> OpsDiscoverySourceHealth:
+    """Summarize newest-first runs of one source."""
+
+    if not runs:
+        return OpsDiscoverySourceHealth(
+            source=source,
+            status="unknown",
+            last_run_at=None,
+            last_success_at=None,
+            consecutive_failures=0,
+            last_fetched_count=None,
+            last_error=None,
+        )
+    consecutive_failures = 0
+    for run in runs:
+        if run["status"] != "failed":
+            break
+        consecutive_failures += 1
+    last_success = next((run for run in runs if run["status"] == "succeeded"), None)
+    last_failure = next((run for run in runs if run["status"] == "failed"), None)
+    last_fetched_count = int(last_success["fetched_count"]) if last_success else None
+    if consecutive_failures >= DISCOVERY_SOURCE_DEGRADED_FAILURES:
+        status = "degraded"
+    elif consecutive_failures > 0 or last_fetched_count == 0:
+        status = "warning"
+    else:
+        status = "ok"
+    return OpsDiscoverySourceHealth(
+        source=source,
+        status=status,
+        last_run_at=runs[0]["started_at"],
+        last_success_at=last_success["started_at"] if last_success else None,
+        consecutive_failures=consecutive_failures,
+        last_fetched_count=last_fetched_count,
+        last_error=(
+            str(last_failure["error"])
+            if consecutive_failures > 0 and last_failure and last_failure["error"]
+            else None
+        ),
+    )
+
+
+def discovery_source_notes(sources: list[OpsDiscoverySourceHealth]) -> list[str]:
+    notes: list[str] = []
+    for source in sources:
+        if source.consecutive_failures > 0:
+            notes.append(
+                f"Discovery source {source.source} failed {source.consecutive_failures} "
+                f"run(s) in a row: {source.last_error or 'unknown error'}."
+            )
+        elif source.last_fetched_count == 0:
+            notes.append(f"Discovery source {source.source} returned no wallets last run.")
+    return notes
 
 
 async def load_database_summary(session: AsyncSession) -> OpsDatabaseSummary:
@@ -531,6 +658,7 @@ def aggregate_status(
     backup: OpsBackupStatus,
     database: OpsDatabaseSummary,
     workers: list[OpsWorkerHeartbeat],
+    discovery_sources: list[OpsDiscoverySourceHealth] | None = None,
 ) -> str:
     if (
         postgres_status.get("status") != "ok"
@@ -548,6 +676,8 @@ def aggregate_status(
         or load.status not in {"ok", "unknown"}
         or backup.status not in {"ok", "disabled"}
         or any(worker.status != "ok" for worker in workers)
+        # Discovery feeds the pool slowly, so a broken source warns but never degrades.
+        or any(source.status in {"warning", "degraded"} for source in discovery_sources or [])
     ):
         return "warning"
     return "ok"

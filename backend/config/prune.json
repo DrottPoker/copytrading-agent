@@ -1,13 +1,13 @@
 {
   "rules": {
     "minimum_closed_trades": {
-      "min_closed_trades": 5
+      "min_closed_trades": 20
     },
     "stale_fills": {
       "min_days_without_fill": 31
     },
-    "realized_drawdown": {
-      "max_drawdown_pct": 0.6
+    "max_drawdown": {
+      "max_equity_drawdown_pct": 0.5
     },
     "low_score": {
       "min_closed_trades": 40,

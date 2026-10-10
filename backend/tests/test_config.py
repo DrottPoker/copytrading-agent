@@ -214,6 +214,29 @@ def test_scoring_config_bounds_live_current_drawdown_runtime(
     assert settings.scoring_current_drawdown_run_timeout_seconds == 300
 
 
+def test_strategy_scoring_config_is_loaded_from_files(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_live_env_overrides(monkeypatch)
+    config = load_app_config()
+    settings = Settings(_env_file=None, **config)
+
+    assert settings.scoring_min_trades == 20
+    assert settings.scoring_equity_enabled is True
+    assert settings.scoring_equity_refresh_hours == 6
+    assert settings.scoring_equity_max_wallets_per_run == 60
+    assert settings.scoring_profitability_weight_equity_return == Decimal("0.5")
+    assert settings.scoring_profitability_equity_return_full_score_at == Decimal("0.1")
+    assert settings.scoring_risk_equity_drawdown_full_penalty_ratio == Decimal("0.4")
+    assert settings.scoring_risk_underwater_add_penalty_max == Decimal("20")
+    assert settings.scoring_copyability_reference_equity_usd == Decimal("1000")
+    assert settings.scoring_copyability_small_copy_min_ratio == Decimal("0.5")
+    assert settings.scoring_shrinkage_full_credibility_trades == 40
+    assert settings.discovery_quality_min_closed_trades == 20
+    assert settings.discovery_quality_max_drawdown_pct == Decimal("0.4")
+    assert settings.discovery_promotion_readmit_archived_after_days == 30
+    assert settings.wallet_prune_min_closed_trades == 20
+    assert settings.wallet_prune_max_drawdown_pct == Decimal("0.5")
+
+
 def test_paper_config_does_not_seed_accounts(monkeypatch: pytest.MonkeyPatch) -> None:
     _clear_live_env_overrides(monkeypatch)
     config = load_app_config()

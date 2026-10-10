@@ -118,6 +118,16 @@ class OpsWorkerHeartbeat(CamelModel):
     realtime_queue: OpsRealtimeQueueHealth | None = None
 
 
+class OpsDiscoverySourceHealth(CamelModel):
+    source: str
+    status: CheckStatus
+    last_run_at: datetime | None
+    last_success_at: datetime | None
+    consecutive_failures: int
+    last_fetched_count: int | None
+    last_error: str | None
+
+
 class OpsServiceConfig(CamelModel):
     environment: str
     mode: str
@@ -143,5 +153,6 @@ class OpsHealthResponse(CamelModel):
     database: OpsDatabaseSummary
     workers: list[OpsWorkerHeartbeat]
     operations: list[OperationStatusRead]
+    discovery_sources: list[OpsDiscoverySourceHealth] = Field(default_factory=list)
     notes: list[str]
     metadata: dict[str, Any] = {}

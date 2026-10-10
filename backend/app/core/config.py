@@ -71,6 +71,9 @@ DISCOVERY_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ),
     ("promotion", "batch_size"): "discovery_promotion_batch_size",
     ("promotion", "require_backfill"): "discovery_promotion_require_backfill",
+    ("promotion", "readmit_archived_after_days"): (
+        "discovery_promotion_readmit_archived_after_days"
+    ),
 }
 POOL_FILL_IMPORT_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("pool_fill_import", "enabled"): "pool_fill_import_enabled",
@@ -101,7 +104,7 @@ PRUNE_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("rules", "current_drawdown", "concurrency"): ("wallet_prune_current_state_concurrency"),
     ("rules", "minimum_closed_trades", "min_closed_trades"): ("wallet_prune_min_closed_trades"),
     ("rules", "stale_fills", "min_days_without_fill"): ("wallet_prune_stale_fill_days"),
-    ("rules", "realized_drawdown", "max_drawdown_pct"): ("wallet_prune_max_drawdown_pct"),
+    ("rules", "max_drawdown", "max_equity_drawdown_pct"): ("wallet_prune_max_drawdown_pct"),
     ("rules", "low_score", "min_closed_trades"): ("wallet_prune_low_score_min_closed_trades"),
     ("rules", "low_score", "threshold"): "wallet_prune_low_score_threshold",
     ("rules", "low_score", "operator"): "wallet_prune_low_score_operator",
@@ -123,7 +126,14 @@ SCORING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("component_weights", "risk"): "scoring_weight_risk",
     ("component_weights", "copyability"): "scoring_weight_copyability",
     ("component_weights", "recency"): "scoring_weight_recency",
-    ("profitability", "weights", "net_roi"): "scoring_profitability_weight_net_roi",
+    ("equity", "enabled"): "scoring_equity_enabled",
+    ("equity", "refresh_hours"): "scoring_equity_refresh_hours",
+    ("equity", "max_wallets_per_run"): "scoring_equity_max_wallets_per_run",
+    ("equity", "concurrency"): "scoring_equity_concurrency",
+    ("equity", "min_points"): "scoring_equity_min_points",
+    ("equity", "min_coverage_days"): "scoring_equity_min_coverage_days",
+    ("equity", "min_account_value_usd"): "scoring_equity_min_account_value_usd",
+    ("profitability", "weights", "equity_return"): ("scoring_profitability_weight_equity_return"),
     (
         "profitability",
         "weights",
@@ -135,6 +145,9 @@ SCORING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
         "median_trade_roi",
     ): "scoring_profitability_weight_median_trade_roi",
     ("profitability", "roi_score", "full_score_at"): ("scoring_profitability_roi_full_score_at"),
+    ("profitability", "equity_return", "full_score_at"): (
+        "scoring_profitability_equity_return_full_score_at"
+    ),
     ("profitability", "average_trade_roi", "cap_min"): (
         "scoring_profitability_average_trade_roi_cap_min"
     ),
@@ -196,6 +209,17 @@ SCORING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("risk", "losing_trade_rate", "penalty_per_ratio"): (
         "scoring_risk_losing_trade_rate_penalty_per_ratio"
     ),
+    ("risk", "equity_drawdown", "penalty_start_ratio"): (
+        "scoring_risk_equity_drawdown_penalty_start_ratio"
+    ),
+    ("risk", "equity_drawdown", "full_penalty_ratio"): (
+        "scoring_risk_equity_drawdown_full_penalty_ratio"
+    ),
+    ("risk", "equity_drawdown", "penalty_max"): "scoring_risk_equity_drawdown_penalty_max",
+    ("risk", "underwater_adds", "full_penalty_ratio"): (
+        "scoring_risk_underwater_add_full_penalty_ratio"
+    ),
+    ("risk", "underwater_adds", "penalty_max"): "scoring_risk_underwater_add_penalty_max",
     ("risk", "current_drawdown", "enabled"): "scoring_current_drawdown_enabled",
     ("risk", "current_drawdown", "concurrency"): "scoring_current_drawdown_concurrency",
     ("risk", "current_drawdown", "run_timeout_seconds"): (
@@ -222,14 +246,12 @@ SCORING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("risk", "forced_exit", "event_gap_seconds"): ("scoring_forced_exit_event_gap_seconds"),
     ("risk", "forced_exit", "notional_full_ratio"): ("scoring_forced_exit_notional_full_ratio"),
     ("risk", "forced_exit", "penalty_max"): "scoring_forced_exit_penalty_max",
-    ("copyability", "weights", "copyable_trade_ratio"): (
-        "scoring_copyability_weight_copyable_trade_ratio"
+    ("copyability", "weights", "copy_size_ratio"): ("scoring_copyability_weight_copy_size_ratio"),
+    ("copyability", "weights", "median_copy_notional"): (
+        "scoring_copyability_weight_median_copy_notional"
     ),
-    ("copyability", "weights", "median_trade_notional"): (
-        "scoring_copyability_weight_median_trade_notional"
-    ),
-    ("copyability", "weights", "p25_trade_notional"): (
-        "scoring_copyability_weight_p25_trade_notional"
+    ("copyability", "weights", "p25_copy_notional"): (
+        "scoring_copyability_weight_p25_copy_notional"
     ),
     ("copyability", "weights", "execution_simplicity"): (
         "scoring_copyability_weight_execution_simplicity"
@@ -237,24 +259,15 @@ SCORING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("copyability", "weights", "forced_exit_fill_ratio"): (
         "scoring_copyability_weight_forced_exit_fill_ratio"
     ),
-    ("copyability", "copyable_trade_ratio", "min_trade_notional_usd"): (
-        "scoring_copyability_copyable_trade_min_notional_usd"
+    ("copyability", "reference_equity_usd"): "scoring_copyability_reference_equity_usd",
+    ("copyability", "copy_notional", "median_full_score_multiple"): (
+        "scoring_copyability_median_full_score_multiple"
     ),
-    ("copyability", "trade_notional", "min_full_score_usd"): (
-        "scoring_copyability_trade_notional_min_full_score_usd"
+    ("copyability", "copy_notional", "p25_full_score_multiple"): (
+        "scoring_copyability_p25_full_score_multiple"
     ),
-    ("copyability", "trade_notional", "max_full_score_usd"): (
-        "scoring_copyability_trade_notional_max_full_score_usd"
-    ),
-    ("copyability", "trade_notional", "too_large_min_score_usd"): (
-        "scoring_copyability_trade_notional_too_large_min_score_usd"
-    ),
-    ("copyability", "trade_notional", "too_small_max_score"): (
-        "scoring_copyability_trade_notional_too_small_max_score"
-    ),
-    ("copyability", "trade_notional", "too_large_min_score"): (
-        "scoring_copyability_trade_notional_too_large_min_score"
-    ),
+    ("copyability", "small_copy_cap", "min_ratio"): "scoring_copyability_small_copy_min_ratio",
+    ("copyability", "small_copy_cap", "max_score"): "scoring_copyability_small_copy_max_score",
     ("copyability", "execution_simplicity", "full_score_fills_per_trade_at_or_below"): (
         "scoring_copyability_execution_full_score_fills_per_trade_at_or_below"
     ),
@@ -270,8 +283,8 @@ SCORING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("penalties", "negative_pnl_max"): "scoring_penalty_negative_pnl_max",
     ("penalties", "stale_recency"): "scoring_penalty_stale_recency",
     ("penalties", "open_only"): "scoring_penalty_open_only",
-    ("penalties", "confidence", "target_trades"): "scoring_confidence_target_trades",
-    ("penalties", "confidence", "max"): "scoring_confidence_penalty_max",
+    ("shrinkage", "full_credibility_trades"): "scoring_shrinkage_full_credibility_trades",
+    ("shrinkage", "neutral_score"): "scoring_shrinkage_neutral_score",
     ("window_scores", "activity_trade_cap"): "scoring_window_score_activity_trade_cap",
     ("window_scores", "weight_profitability"): ("scoring_window_score_weight_profitability"),
     ("window_scores", "weight_activity"): "scoring_window_score_weight_activity",
@@ -468,15 +481,18 @@ class Settings(BaseSettings):
     discovery_candidate_backfill_target_fills: int = Field(default=10000, ge=1, le=10000)
     discovery_candidate_backfill_batch_size: int = Field(default=10, ge=1, le=100)
     discovery_quality_min_fills: int = Field(default=20, ge=0)
-    discovery_quality_min_closed_trades: int = Field(default=5, ge=0)
+    discovery_quality_min_closed_trades: int = Field(default=20, ge=0)
     discovery_quality_require_positive_net_pnl: bool = True
     discovery_quality_min_profit_factor: Decimal | None = Decimal("1.2")
     discovery_quality_min_win_rate: Decimal | None = None
-    discovery_quality_max_drawdown_pct: Decimal | None = Decimal("0.25")
+    # Peak-to-trough drawdown of the candidate's equity curve.
+    discovery_quality_max_drawdown_pct: Decimal | None = Decimal("0.40")
     discovery_quality_min_average_trade_notional_usd: Decimal | None = Decimal("50")
     discovery_quality_max_average_trade_notional_usd: Decimal | None = Decimal("250000")
     discovery_promotion_batch_size: int = Field(default=25, ge=1, le=250)
     discovery_promotion_require_backfill: bool = True
+    # Archived wallets re-enter discovery only after this cooldown.
+    discovery_promotion_readmit_archived_after_days: int = Field(default=30, ge=0, le=3650)
     pool_fill_import_enabled: bool = True
     pool_fill_import_run_on_worker_start: bool = True
     pool_fill_import_start_delay_seconds: int = Field(default=0, ge=0)
@@ -489,9 +505,9 @@ class Settings(BaseSettings):
     pool_fill_import_overlap_seconds: int = Field(default=300, ge=0, le=86400)
     wallet_prune_unrealized_loss_ratio: Decimal = Field(default=Decimal("0.80"), ge=0, le=1)
     wallet_prune_current_state_concurrency: int = Field(default=8, ge=1, le=25)
-    wallet_prune_min_closed_trades: int = Field(default=5, ge=0)
+    wallet_prune_min_closed_trades: int = Field(default=20, ge=0)
     wallet_prune_stale_fill_days: int = Field(default=30, ge=1, le=3650)
-    wallet_prune_max_drawdown_pct: Decimal = Field(default=Decimal("0.60"), ge=0, le=1)
+    wallet_prune_max_drawdown_pct: Decimal = Field(default=Decimal("0.50"), ge=0, le=1)
     wallet_prune_low_score_min_closed_trades: int = Field(default=5, ge=0)
     wallet_prune_low_score_threshold: Decimal = Field(default=Decimal("30"), ge=0, le=100)
     wallet_prune_low_score_operator: Literal["lt", "lte", "gt", "gte"] = "lt"
@@ -515,11 +531,20 @@ class Settings(BaseSettings):
     scoring_window_days: int = Field(default=60, ge=1, le=365)
     scoring_min_fills: int = Field(default=20, ge=1)
     scoring_target_fills: int = Field(default=100, ge=1)
-    scoring_min_trades: int = Field(default=5, ge=1)
+    scoring_min_trades: int = Field(default=20, ge=1)
     scoring_stale_days: int = Field(default=7, ge=1)
     scoring_sample_cap_max_score: Decimal = Field(default=Decimal("45"), ge=0, le=100)
-    scoring_confidence_target_trades: int = Field(default=50, ge=1)
-    scoring_confidence_penalty_max: Decimal = Field(default=Decimal("20"), ge=0, le=100)
+    # Profitability, consistency, and risk scores are pulled toward the neutral
+    # score until a wallet has this many closed trades.
+    scoring_shrinkage_full_credibility_trades: int = Field(default=40, ge=1)
+    scoring_shrinkage_neutral_score: Decimal = Field(default=Decimal("50"), ge=0, le=100)
+    scoring_equity_enabled: bool = True
+    scoring_equity_refresh_hours: int = Field(default=6, ge=1, le=168)
+    scoring_equity_max_wallets_per_run: int = Field(default=60, ge=1, le=1000)
+    scoring_equity_concurrency: int = Field(default=4, ge=1, le=16)
+    scoring_equity_min_points: int = Field(default=8, ge=2, le=200)
+    scoring_equity_min_coverage_days: int = Field(default=7, ge=1, le=31)
+    scoring_equity_min_account_value_usd: Decimal = Field(default=Decimal("10"), ge=0)
     scoring_current_drawdown_enabled: bool = True
     scoring_current_drawdown_concurrency: int = Field(default=8, ge=1, le=25)
     scoring_current_drawdown_run_timeout_seconds: int = Field(default=300, ge=1, le=3600)
@@ -575,7 +600,11 @@ class Settings(BaseSettings):
     scoring_weight_risk: Decimal = Field(default=Decimal("0.20"), ge=0, le=1)
     scoring_weight_copyability: Decimal = Field(default=Decimal("0.20"), ge=0, le=1)
     scoring_weight_recency: Decimal = Field(default=Decimal("0.10"), ge=0, le=1)
-    scoring_profitability_weight_net_roi: Decimal = Field(default=Decimal("0.55"), ge=0, le=1)
+    scoring_profitability_weight_equity_return: Decimal = Field(
+        default=Decimal("0.50"),
+        ge=0,
+        le=1,
+    )
     scoring_profitability_weight_average_trade_roi: Decimal = Field(
         default=Decimal("0.30"),
         ge=0,
@@ -588,6 +617,11 @@ class Settings(BaseSettings):
     )
     scoring_profitability_roi_full_score_at: Decimal = Field(
         default=Decimal("0.05"),
+        gt=0,
+        le=10,
+    )
+    scoring_profitability_equity_return_full_score_at: Decimal = Field(
+        default=Decimal("0.10"),
         gt=0,
         le=10,
     )
@@ -702,18 +736,43 @@ class Settings(BaseSettings):
         ge=0,
         le=1000,
     )
-    scoring_copyability_weight_copyable_trade_ratio: Decimal = Field(
-        default=Decimal("0.35"),
+    scoring_risk_equity_drawdown_penalty_start_ratio: Decimal = Field(
+        default=Decimal("0.05"),
         ge=0,
         le=1,
     )
-    scoring_copyability_weight_median_trade_notional: Decimal = Field(
-        default=Decimal("0.22"),
+    scoring_risk_equity_drawdown_full_penalty_ratio: Decimal = Field(
+        default=Decimal("0.40"),
+        gt=0,
+        le=1,
+    )
+    scoring_risk_equity_drawdown_penalty_max: Decimal = Field(
+        default=Decimal("35"),
+        ge=0,
+        le=100,
+    )
+    scoring_risk_underwater_add_full_penalty_ratio: Decimal = Field(
+        default=Decimal("0.40"),
+        gt=0,
+        le=1,
+    )
+    scoring_risk_underwater_add_penalty_max: Decimal = Field(
+        default=Decimal("20"),
+        ge=0,
+        le=100,
+    )
+    scoring_copyability_weight_copy_size_ratio: Decimal = Field(
+        default=Decimal("0.40"),
         ge=0,
         le=1,
     )
-    scoring_copyability_weight_p25_trade_notional: Decimal = Field(
-        default=Decimal("0.18"),
+    scoring_copyability_weight_median_copy_notional: Decimal = Field(
+        default=Decimal("0.20"),
+        ge=0,
+        le=1,
+    )
+    scoring_copyability_weight_p25_copy_notional: Decimal = Field(
+        default=Decimal("0.15"),
         ge=0,
         le=1,
     )
@@ -727,29 +786,25 @@ class Settings(BaseSettings):
         ge=0,
         le=1,
     )
-    scoring_copyability_copyable_trade_min_notional_usd: Decimal = Field(
+    # Fallback copy capital when no live account equity is available.
+    scoring_copyability_reference_equity_usd: Decimal = Field(default=Decimal("1000"), gt=0)
+    scoring_copyability_median_full_score_multiple: Decimal = Field(
         default=Decimal("5"),
         gt=0,
+        le=1000,
     )
-    scoring_copyability_trade_notional_min_full_score_usd: Decimal = Field(
-        default=Decimal("50"),
+    scoring_copyability_p25_full_score_multiple: Decimal = Field(
+        default=Decimal("2"),
         gt=0,
+        le=1000,
     )
-    scoring_copyability_trade_notional_max_full_score_usd: Decimal = Field(
-        default=Decimal("250000"),
-        gt=0,
-    )
-    scoring_copyability_trade_notional_too_large_min_score_usd: Decimal = Field(
-        default=Decimal("1000000"),
-        gt=0,
-    )
-    scoring_copyability_trade_notional_too_small_max_score: Decimal = Field(
-        default=Decimal("70"),
+    scoring_copyability_small_copy_min_ratio: Decimal = Field(
+        default=Decimal("0.5"),
         ge=0,
-        le=100,
+        le=1,
     )
-    scoring_copyability_trade_notional_too_large_min_score: Decimal = Field(
-        default=Decimal("40"),
+    scoring_copyability_small_copy_max_score: Decimal = Field(
+        default=Decimal("45"),
         ge=0,
         le=100,
     )
@@ -909,20 +964,12 @@ class Settings(BaseSettings):
                 "scoring_current_drawdown_score_cap_zero_ratio."
             )
         if (
-            self.scoring_copyability_trade_notional_min_full_score_usd
-            > self.scoring_copyability_trade_notional_max_full_score_usd
+            self.scoring_risk_equity_drawdown_penalty_start_ratio
+            >= self.scoring_risk_equity_drawdown_full_penalty_ratio
         ):
             raise ValueError(
-                "scoring_copyability_trade_notional_min_full_score_usd must be less "
-                "than or equal to scoring_copyability_trade_notional_max_full_score_usd."
-            )
-        if (
-            self.scoring_copyability_trade_notional_max_full_score_usd
-            >= self.scoring_copyability_trade_notional_too_large_min_score_usd
-        ):
-            raise ValueError(
-                "scoring_copyability_trade_notional_too_large_min_score_usd must be "
-                "greater than scoring_copyability_trade_notional_max_full_score_usd."
+                "scoring_risk_equity_drawdown_penalty_start_ratio must be less than "
+                "scoring_risk_equity_drawdown_full_penalty_ratio."
             )
         if (
             self.scoring_copyability_execution_full_score_fills_per_trade_at_or_below

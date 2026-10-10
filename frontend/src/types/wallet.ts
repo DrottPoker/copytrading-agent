@@ -11,6 +11,8 @@ export type Wallet = {
   lastPolledAt: string | null;
   lastSeenFillAt: string | null;
   notes: string | null;
+  archivedAt?: string | null;
+  archiveReason?: string | null;
   score: WalletScore | null;
   createdAt: string;
   updatedAt: string;
@@ -31,6 +33,9 @@ export type WalletScore = {
   profitFactor: string | null;
   maxDrawdownPct: string | null;
   realizedDrawdownPct: string | null;
+  equityReturnPct?: string | null;
+  copySizeRatio?: string | null;
+  underwaterAddRatio?: string | null;
   currentDrawdownPct: string | null;
   openPositionStressPct: string | null;
   currentDrawdownStatus: string;
@@ -89,6 +94,13 @@ export type WalletScoreDetail = {
   currentMarginUsagePct: string | null;
   currentNotionalExposurePct: string | null;
   realizedDrawdownPct: string | null;
+  maxDrawdownPct?: string | null;
+  equityReturnPct?: string | null;
+  equityStatus?: string;
+  copySizeRatio?: string | null;
+  underwaterAddRatio?: string | null;
+  smallCopyScoreCap?: string | null;
+  sampleCredibility?: string;
   currentDrawdownPct: string | null;
   openPositionStressPct: string | null;
   liveRiskScoreCap: string | null;

@@ -1,5 +1,5 @@
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
 import httpx
-from sqlalchemy import ColumnElement, func, or_, select, update
+from sqlalchemy import ColumnElement, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -55,6 +55,10 @@ from app.services.source_trade_reconstruction_service import (
     reconstruct_wallet_trades,
 )
 from app.services.wallet_cleanup_service import delete_wallet_data_rows
+from app.services.wallet_equity_service import (
+    fetch_wallet_equity_metrics,
+    store_wallet_equity_metrics,
+)
 from app.services.wallet_ignore_service import load_ignored_wallet_addresses
 
 HYPERLIQUID_LEADERBOARD_SOURCES = {
@@ -696,6 +700,9 @@ async def _run_discovery_import(
                 session,
                 run_id=run.id,
                 candidates=source_result.candidates,
+                readmit_archived_after_days=(
+                    settings.discovery_promotion_readmit_archived_after_days
+                ),
             )
             merge_counts(skip_reasons, source_result.skip_reasons)
             merge_counts(skip_reasons, upsert_result.skip_reasons)
@@ -1796,6 +1803,7 @@ async def upsert_discovery_candidates(
     *,
     run_id: UUID,
     candidates: list[DiscoveryCandidate],
+    readmit_archived_after_days: int = 30,
 ) -> DiscoveryUpsertResult:
     deduped: dict[str, DiscoveryCandidate] = {}
     for candidate in candidates:
@@ -1820,18 +1828,46 @@ async def upsert_discovery_candidates(
     )
     existing_candidate_addresses = set(existing_candidate_result.scalars().all())
     existing_pool_result = await session.execute(
-        select(WatchedWallet.address).where(WatchedWallet.address.in_(addresses))
+        select(WatchedWallet.address, WatchedWallet.archived_at).where(
+            WatchedWallet.address.in_(addresses)
+        )
     )
-    existing_pool_addresses = set(existing_pool_result.scalars().all())
+    readmit_cutoff = datetime.now(UTC) - timedelta(days=readmit_archived_after_days)
+    existing_pool_addresses: set[str] = set()
+    archived_cooldown_addresses: set[str] = set()
+    readmittable_addresses: set[str] = set()
+    for address, archived_at in existing_pool_result.all():
+        if archived_at is None:
+            existing_pool_addresses.add(address)
+        elif archived_at <= readmit_cutoff:
+            readmittable_addresses.add(address)
+        else:
+            archived_cooldown_addresses.add(address)
+    if readmittable_addresses:
+        # Archived wallets past the cooldown are evaluated again from scratch.
+        await session.execute(
+            delete(DiscoveryWalletCandidate).where(
+                DiscoveryWalletCandidate.wallet_address.in_(readmittable_addresses)
+            )
+        )
+        existing_candidate_addresses -= readmittable_addresses
     ignored_addresses = await load_ignored_wallet_addresses(session)
     address_set = set(addresses)
     already_pool = existing_pool_addresses & address_set
-    already_candidate = (existing_candidate_addresses - existing_pool_addresses) & address_set
+    already_candidate = (
+        existing_candidate_addresses - existing_pool_addresses - archived_cooldown_addresses
+    ) & address_set
     ignored_candidates = ignored_addresses & address_set
     add_count(skip_reasons, "already_in_pool", len(already_pool))
+    add_count(skip_reasons, "archived_cooldown", len(archived_cooldown_addresses & address_set))
     add_count(skip_reasons, "already_in_candidates", len(already_candidate))
     add_count(skip_reasons, "ignored_wallet", len(ignored_candidates))
-    skipped_addresses = existing_candidate_addresses | existing_pool_addresses | ignored_candidates
+    skipped_addresses = (
+        existing_candidate_addresses
+        | existing_pool_addresses
+        | archived_cooldown_addresses
+        | ignored_candidates
+    )
     new_candidates = [
         candidate for address, candidate in deduped.items() if address not in skipped_addresses
     ]
@@ -2038,6 +2074,15 @@ async def backfill_discovery_candidates(
                     days=settings.discovery_candidate_backfill_days,
                 )
                 decision = evaluate_candidate_trade_quality(metrics, settings=settings)
+                if decision.status == "accepted":
+                    metrics = await candidate_metrics_with_equity_drawdown(
+                        session,
+                        metrics=metrics,
+                        address=candidate.wallet_address,
+                        client=hyperliquid_client,
+                        settings=settings,
+                    )
+                    decision = evaluate_candidate_trade_quality(metrics, settings=settings)
                 update_candidate_backfill_state(
                     candidate,
                     metrics=metrics,
@@ -2239,6 +2284,8 @@ async def promote_backfilled_candidate_to_pool(
         )
         if exists is None:
             return "insert_conflict"
+        if await readmit_archived_wallets(session, addresses=[candidate.wallet_address]):
+            pool_action = "inserted"
 
     candidate.status = "promoted"
     candidate.fail_reason = None
@@ -2290,10 +2337,11 @@ async def promote_discovery_candidates(
         )
 
     addresses = [candidate.wallet_address for candidate in candidates]
+    readmitted_addresses = await readmit_archived_wallets(session, addresses=addresses)
     existing_result = await session.execute(
         select(WatchedWallet.address).where(WatchedWallet.address.in_(addresses))
     )
-    existing_addresses = set(existing_result.scalars().all())
+    existing_addresses = set(existing_result.scalars().all()) - readmitted_addresses
 
     records = [
         watched_wallet_record_from_candidate(candidate)
@@ -2310,6 +2358,7 @@ async def promote_discovery_candidates(
         )
         insert_result = await session.execute(stmt)
         inserted_addresses = set(insert_result.scalars().all())
+    inserted_addresses |= readmitted_addresses
 
     promoted = 0
     duplicate = 0
@@ -2399,6 +2448,28 @@ async def promote_all_discovery_candidates(
             break
 
     return totals
+
+
+async def readmit_archived_wallets(session: AsyncSession, *, addresses: list[str]) -> set[str]:
+    """Return archived wallets that passed discovery again to the active pool."""
+
+    if not addresses:
+        return set()
+    result = await session.execute(
+        update(WatchedWallet)
+        .where(
+            WatchedWallet.address.in_(addresses),
+            WatchedWallet.archived_at.is_not(None),
+        )
+        .values(
+            archived_at=None,
+            archive_reason=None,
+            enabled=True,
+            polling_tier="pool",
+        )
+        .returning(WatchedWallet.address)
+    )
+    return {str(address) for address in result.scalars().all()}
 
 
 def watched_wallet_record_from_candidate(candidate: DiscoveryWalletCandidate) -> dict[str, Any]:
@@ -2494,8 +2565,6 @@ async def load_candidate_trade_metrics(
         if closed_trade_count > 0
         else None
     )
-    drawdown_base = max(trades.gross_profit_usd, abs(trades.net_pnl_usd), Decimal("1"))
-    max_drawdown_pct = trades.max_drawdown_usd / drawdown_base if closed_trade_count > 0 else None
     return CandidateTradeMetrics(
         fill_count=fill_count,
         closed_trade_count=closed_trade_count,
@@ -2504,10 +2573,34 @@ async def load_candidate_trade_metrics(
         net_pnl_usd=trades.net_pnl_usd,
         profit_factor=profit_factor,
         win_rate=win_rate,
-        max_drawdown_pct=max_drawdown_pct,
+        max_drawdown_pct=None,
         average_trade_notional_usd=trades.average_trade_notional_usd,
         last_trade_time_ms=trades.last_trade_time_ms,
     )
+
+
+async def candidate_metrics_with_equity_drawdown(
+    session: AsyncSession,
+    *,
+    metrics: CandidateTradeMetrics,
+    address: str,
+    client: HyperliquidClient,
+    settings: Settings,
+) -> CandidateTradeMetrics:
+    """Add the candidate's equity-curve drawdown and keep the curve for scoring.
+
+    Without readable equity history the drawdown stays unknown and the candidate
+    is not rejected for it; scoring applies its own fallback later.
+    """
+
+    equity = await fetch_wallet_equity_metrics(client, address=address, settings=settings)
+    await store_wallet_equity_metrics(
+        session,
+        address=address,
+        metrics=equity,
+        fetched_at=datetime.now(UTC),
+    )
+    return replace(metrics, max_drawdown_pct=equity.max_drawdown_pct if equity.is_ok else None)
 
 
 def update_candidate_backfill_state(

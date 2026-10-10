@@ -51,6 +51,7 @@ class ReconstructedSourceTrade:
     has_liquidation: bool = False
     liquidation_fill_count: int = 0
     liquidation_notional_usd: Decimal = ZERO
+    underwater_add_notional_usd: Decimal = ZERO
 
 
 @dataclass(frozen=True)
@@ -79,6 +80,7 @@ class OpenSourceTrade:
     has_liquidation: bool = False
     liquidation_fill_count: int = 0
     liquidation_notional_usd: Decimal = ZERO
+    underwater_add_notional_usd: Decimal = ZERO
 
     def add_entry(
         self,
@@ -90,6 +92,8 @@ class OpenSourceTrade:
     ) -> None:
         if self.entry_fill_count == 0:
             self.opened_at_ms = timestamp_ms
+        elif self.is_underwater_at(notional_usd / size):
+            self.underwater_add_notional_usd += notional_usd
         self.entry_size += size
         self.remaining_size += size
         self.entry_notional_usd += notional_usd
@@ -121,6 +125,16 @@ class OpenSourceTrade:
             self.liquidation_fill_count += 1
             self.liquidation_notional_usd += notional_usd * ratio
         return closed_size
+
+    def is_underwater_at(self, price: Decimal) -> bool:
+        """Whether the open position is at a loss when the market trades at ``price``."""
+
+        average_entry_price = self.average_entry_price
+        if self.remaining_size <= POSITION_EPSILON or average_entry_price is None:
+            return False
+        if self.side == "long":
+            return price < average_entry_price
+        return price > average_entry_price
 
     @property
     def is_closed(self) -> bool:
@@ -157,6 +171,7 @@ class ReconstructedWalletTrades:
     coin_notional_usd: dict[str, Decimal] = field(default_factory=dict)
     total_entry_notional_usd: Decimal = ZERO
     closed_entry_notional_usd: Decimal = ZERO
+    closed_underwater_add_notional_usd: Decimal = ZERO
     realized_entry_notional_usd: Decimal = ZERO
     total_close_notional_usd: Decimal = ZERO
     realized_pnl_usd: Decimal = ZERO
@@ -239,6 +254,7 @@ class ReconstructedWalletTrades:
         )
         self.total_entry_notional_usd += trade.entry_notional_usd
         self.closed_entry_notional_usd += trade.entry_notional_usd
+        self.closed_underwater_add_notional_usd += trade.underwater_add_notional_usd
         self.realized_entry_notional_usd += trade.entry_notional_usd
         self.total_close_notional_usd += trade.close_notional_usd
         self.realized_pnl_usd += trade.realized_pnl_usd
@@ -319,6 +335,67 @@ class ReconstructedWalletTrades:
                 self.max_drawdown_usd,
                 self._peak_pnl_usd - self._cumulative_pnl_usd,
             )
+        self.items.append(item)
+
+    def record_closed_trade_item(
+        self,
+        item: ReconstructedSourceTrade,
+        *,
+        start_24h_ms: int,
+        start_7d_ms: int,
+    ) -> None:
+        """Add an already reconstructed closed trade, in close-time order."""
+
+        closed_at_ms = int(item.closed_at_ms or item.opened_at_ms)
+        net_pnl_usd = item.net_pnl_usd
+        self.closed_trade_count += 1
+        self.entry_fill_count += item.entry_fill_count
+        self.close_fill_count += item.close_fill_count
+        self.unique_coins.add(item.coin)
+        self.active_days.add(datetime.fromtimestamp(closed_at_ms / 1000, tz=UTC).date())
+        self.coin_notional_usd[item.coin] = (
+            self.coin_notional_usd.get(item.coin, ZERO) + item.entry_notional_usd
+        )
+        self.total_entry_notional_usd += item.entry_notional_usd
+        self.closed_entry_notional_usd += item.entry_notional_usd
+        self.closed_underwater_add_notional_usd += item.underwater_add_notional_usd
+        self.realized_entry_notional_usd += item.entry_notional_usd
+        self.total_close_notional_usd += item.close_notional_usd
+        self.realized_pnl_usd += item.realized_pnl_usd
+        self.fee_usd += item.fee_usd
+        self.net_pnl_usd += net_pnl_usd
+        if net_pnl_usd > ZERO:
+            self.gross_profit_usd += net_pnl_usd
+            self.winning_trade_count += 1
+            self.winning_trade_pnls.append(net_pnl_usd)
+        elif net_pnl_usd < ZERO:
+            self.gross_loss_usd += net_pnl_usd.copy_abs()
+            self.losing_trade_count += 1
+        if item.has_liquidation:
+            self.liquidation_trade_count += 1
+            self.liquidation_close_fill_count += item.liquidation_fill_count
+            self.liquidation_notional_usd += item.liquidation_notional_usd
+
+        self._cumulative_pnl_usd += net_pnl_usd
+        self._peak_pnl_usd = max(self._peak_pnl_usd, self._cumulative_pnl_usd)
+        self.max_drawdown_usd = max(
+            self.max_drawdown_usd,
+            self._peak_pnl_usd - self._cumulative_pnl_usd,
+        )
+
+        if self.first_trade_time_ms is None:
+            self.first_trade_time_ms = closed_at_ms
+        self.last_trade_time_ms = closed_at_ms
+
+        if closed_at_ms >= start_24h_ms:
+            self.trades_24h += 1
+            self.notional_24h += item.entry_notional_usd
+            self.net_pnl_24h += net_pnl_usd
+        if closed_at_ms >= start_7d_ms:
+            self.trades_7d += 1
+            self.notional_7d += item.entry_notional_usd
+            self.net_pnl_7d += net_pnl_usd
+
         self.items.append(item)
 
     def record_ignored_fill(self, fill: "FillParts", *, reason: str) -> None:
@@ -651,6 +728,8 @@ async def load_source_trade_refresh_candidates(
               select address, fill_revision
               from watched_wallets
               where (:include_disabled or enabled is true)
+                -- Archived wallets keep the trades they had when archived.
+                and archived_at is null
                 and (
                   cast(:wallet_address as text) is null
                   or address = cast(:wallet_address as text)
@@ -802,6 +881,7 @@ def source_trade_record(item: ReconstructedSourceTrade) -> dict[str, Any]:
         "has_liquidation": item.has_liquidation,
         "liquidation_fill_count": item.liquidation_fill_count,
         "liquidation_notional_usd": item.liquidation_notional_usd,
+        "underwater_add_notional_usd": item.underwater_add_notional_usd,
     }
 
 
@@ -858,7 +938,8 @@ async def load_materialized_wallet_trades(
               st.close_fill_count,
               st.has_liquidation,
               st.liquidation_fill_count,
-              st.liquidation_notional_usd
+              st.liquidation_notional_usd,
+              st.underwater_add_notional_usd
             from source_trades st
             left join watched_wallets ww on ww.address = st.wallet_address
             where (
@@ -961,60 +1042,11 @@ def record_materialized_trade(
     if item.status == "open":
         wallet_trades.record_open_trade_item(item)
         return
-
-    closed_at_ms = int(item.closed_at_ms or item.opened_at_ms)
-    net_pnl_usd = item.net_pnl_usd
-    wallet_trades.closed_trade_count += 1
-    wallet_trades.entry_fill_count += item.entry_fill_count
-    wallet_trades.close_fill_count += item.close_fill_count
-    wallet_trades.unique_coins.add(item.coin)
-    wallet_trades.active_days.add(datetime.fromtimestamp(closed_at_ms / 1000, tz=UTC).date())
-    wallet_trades.coin_notional_usd[item.coin] = (
-        wallet_trades.coin_notional_usd.get(item.coin, ZERO) + item.entry_notional_usd
+    wallet_trades.record_closed_trade_item(
+        item,
+        start_24h_ms=start_24h_ms,
+        start_7d_ms=start_7d_ms,
     )
-    wallet_trades.total_entry_notional_usd += item.entry_notional_usd
-    wallet_trades.closed_entry_notional_usd += item.entry_notional_usd
-    wallet_trades.realized_entry_notional_usd += item.entry_notional_usd
-    wallet_trades.total_close_notional_usd += item.close_notional_usd
-    wallet_trades.realized_pnl_usd += item.realized_pnl_usd
-    wallet_trades.fee_usd += item.fee_usd
-    wallet_trades.net_pnl_usd += net_pnl_usd
-    if net_pnl_usd > ZERO:
-        wallet_trades.gross_profit_usd += net_pnl_usd
-        wallet_trades.winning_trade_count += 1
-        wallet_trades.winning_trade_pnls.append(net_pnl_usd)
-    elif net_pnl_usd < ZERO:
-        wallet_trades.gross_loss_usd += net_pnl_usd.copy_abs()
-        wallet_trades.losing_trade_count += 1
-    if item.has_liquidation:
-        wallet_trades.liquidation_trade_count += 1
-        wallet_trades.liquidation_close_fill_count += item.liquidation_fill_count
-        wallet_trades.liquidation_notional_usd += item.liquidation_notional_usd
-
-    wallet_trades._cumulative_pnl_usd += net_pnl_usd
-    wallet_trades._peak_pnl_usd = max(
-        wallet_trades._peak_pnl_usd,
-        wallet_trades._cumulative_pnl_usd,
-    )
-    wallet_trades.max_drawdown_usd = max(
-        wallet_trades.max_drawdown_usd,
-        wallet_trades._peak_pnl_usd - wallet_trades._cumulative_pnl_usd,
-    )
-
-    if wallet_trades.first_trade_time_ms is None:
-        wallet_trades.first_trade_time_ms = closed_at_ms
-    wallet_trades.last_trade_time_ms = closed_at_ms
-
-    if closed_at_ms >= start_24h_ms:
-        wallet_trades.trades_24h += 1
-        wallet_trades.notional_24h += item.entry_notional_usd
-        wallet_trades.net_pnl_24h += net_pnl_usd
-    if closed_at_ms >= start_7d_ms:
-        wallet_trades.trades_7d += 1
-        wallet_trades.notional_7d += item.entry_notional_usd
-        wallet_trades.net_pnl_7d += net_pnl_usd
-
-    wallet_trades.items.append(item)
 
 
 def reconstructed_source_trade_from_row(row: Mapping[Any, Any]) -> ReconstructedSourceTrade:
@@ -1042,6 +1074,7 @@ def reconstructed_source_trade_from_row(row: Mapping[Any, Any]) -> Reconstructed
         has_liquidation=bool(row["has_liquidation"]),
         liquidation_fill_count=int(row["liquidation_fill_count"] or 0),
         liquidation_notional_usd=decimal_value(row["liquidation_notional_usd"]),
+        underwater_add_notional_usd=decimal_value(row.get("underwater_add_notional_usd")),
     )
 
 
@@ -1080,6 +1113,7 @@ def source_trade_from_open_trade(
         has_liquidation=trade.has_liquidation,
         liquidation_fill_count=trade.liquidation_fill_count,
         liquidation_notional_usd=trade.liquidation_notional_usd,
+        underwater_add_notional_usd=trade.underwater_add_notional_usd,
     )
 
 

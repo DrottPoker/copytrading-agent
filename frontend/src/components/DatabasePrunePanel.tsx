@@ -27,7 +27,7 @@ export function DatabasePrunePanel() {
   async function runPrune(dryRun: boolean) {
     if (!dryRun) {
       const confirmed = window.confirm(
-        "Run all configured prune rules now? Matching wallets and related rows will be deleted.",
+        "Run all configured prune rules now? Matching wallets are archived and orphan fills are deleted.",
       );
       if (!confirmed) {
         return;
@@ -116,8 +116,11 @@ export function DatabasePrunePanel() {
               <PruneMetric label="Scanned" value={formatInteger(result.scannedWallets)} />
               <PruneMetric label="Candidates" value={formatInteger(result.candidateWallets)} />
               <PruneMetric label="Errors" value={formatInteger(result.erroredWallets)} />
-              <PruneMetric label="Deleted wallets" value={formatInteger(result.deletedWallets)} />
-              <PruneMetric label="Deleted fills" value={formatInteger(result.deletedFills)} />
+              <PruneMetric
+                label="Archived wallets"
+                value={formatInteger(result.archivedWallets ?? 0)}
+              />
+              <PruneMetric label="Deleted orphan fills" value={formatInteger(result.deletedFills)} />
             </div>
 
             <div className="grid gap-4 xl:grid-cols-3">
@@ -157,7 +160,7 @@ function RuleResult({ rule }: { rule: WalletPruneAllResponse["rules"][number] })
 
       <div className="mt-3 grid gap-2 sm:grid-cols-2">
         <SmallMetric label="Scanned" value={formatInteger(rule.scannedWallets)} />
-        <SmallMetric label="Deleted" value={formatInteger(rule.deletedWallets)} />
+        <SmallMetric label="Archived" value={formatInteger(rule.archivedWallets ?? 0)} />
       </div>
 
       <div className="mt-3 max-h-96 overflow-y-auto divide-y divide-line rounded-md border border-line bg-white px-3">
@@ -197,7 +200,7 @@ function candidateValue(item: WalletPruneCandidate) {
     return formatCurrency(item.totalUnrealizedPnlUsd);
   }
   if (item.maxDrawdownPct) {
-    return `${formatPercent(item.maxDrawdownPct)} realized DD`;
+    return `${formatPercent(item.maxDrawdownPct)} equity DD`;
   }
   if (item.closedTradeCount !== null && item.closedTradeCount !== undefined) {
     return `${formatInteger(item.closedTradeCount)} trades`;

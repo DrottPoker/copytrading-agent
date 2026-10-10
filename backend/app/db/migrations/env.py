@@ -34,6 +34,7 @@ from app.db.models import (  # noqa: F401
     TradingOrderDispatch,
     TradingPosition,
     TradingReconciliationRun,
+    WalletEquityMetric,
     WalletFill,
     WalletPosition,
     WalletScore,

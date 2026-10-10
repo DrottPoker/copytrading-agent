@@ -14,6 +14,7 @@ export type LowScorePruneResponse = {
   candidateWallets: number;
   deletedWallets: number;
   deletedFills: number;
+  archivedWallets?: number;
   minClosedTrades: number;
   scoreThreshold: string;
   scoreOperator: "lt" | "lte" | "gt" | "gte";
@@ -35,6 +36,7 @@ export type ZeroFillPruneResponse = {
   candidateWallets: number;
   deletedWallets: number;
   deletedFills: number;
+  archivedWallets?: number;
   items: ZeroFillWalletCandidate[];
 };
 
@@ -54,6 +56,7 @@ export type StaleFillPruneResponse = {
   candidateWallets: number;
   deletedWallets: number;
   deletedFills: number;
+  archivedWallets?: number;
   minDaysWithoutFill: number;
   items: StaleFillWalletCandidate[];
 };
@@ -83,6 +86,7 @@ export type WalletPruneRuleResult = {
   erroredWallets: number;
   deletedWallets: number;
   deletedFills: number;
+  archivedWallets?: number;
   rule: string;
   items: WalletPruneCandidate[];
 };
@@ -94,5 +98,6 @@ export type WalletPruneAllResponse = {
   erroredWallets: number;
   deletedWallets: number;
   deletedFills: number;
+  archivedWallets?: number;
   rules: WalletPruneRuleResult[];
 };

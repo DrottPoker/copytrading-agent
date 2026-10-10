@@ -108,6 +108,16 @@ export type OpsWorkerHeartbeat = {
   realtimeQueue: OpsRealtimeQueueHealth | null;
 };
 
+export type OpsDiscoverySourceHealth = {
+  source: string;
+  status: OpsCheckStatus;
+  lastRunAt: string | null;
+  lastSuccessAt: string | null;
+  consecutiveFailures: number;
+  lastFetchedCount: number | null;
+  lastError: string | null;
+};
+
 export type OpsServiceConfig = {
   environment: string;
   mode: string;
@@ -133,6 +143,7 @@ export type OpsHealthResponse = {
   database: OpsDatabaseSummary;
   workers: OpsWorkerHeartbeat[];
   operations: OperationStatus[];
+  discoverySources?: OpsDiscoverySourceHealth[];
   notes: string[];
   metadata: Record<string, unknown>;
 };

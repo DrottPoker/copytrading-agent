@@ -8,6 +8,7 @@ import {
   HardDrive,
   MemoryStick,
   RadioTower,
+  Radar,
   ServerCog,
   ShieldCheck,
   type LucideIcon,
@@ -32,6 +33,7 @@ import type {
   OpsCheckStatus,
   OpsDatabaseSummary,
   OpsDependencyStatus,
+  OpsDiscoverySourceHealth,
   OpsDiskStats,
   OpsHealthResponse,
   OpsLoadStats,
@@ -137,6 +139,16 @@ export default async function OpsPage() {
           </div>
         </Panel>
       </section>
+
+      {ops.discoverySources && ops.discoverySources.length > 0 ? (
+        <Panel icon={Radar} title="Discovery Sources">
+          <div className="divide-y divide-line">
+            {ops.discoverySources.map((source) => (
+              <DiscoverySourceRow key={source.source} source={source} />
+            ))}
+          </div>
+        </Panel>
+      ) : null}
 
       {ops.notes.length > 0 ? (
         <Panel icon={AlertTriangle} title="Notes">
@@ -423,6 +435,32 @@ function OperationRow({ operation }: { operation: OperationStatus }) {
       <div className="min-w-0 text-sm text-muted">
         <p className="truncate">Last success {formatDate(operation.lastSuccessAt)}</p>
         {operation.lastError ? <p className="mt-1 truncate text-danger">{operation.lastError}</p> : null}
+      </div>
+    </div>
+  );
+}
+
+function DiscoverySourceRow({ source }: { source: OpsDiscoverySourceHealth }) {
+  return (
+    <div className="grid gap-3 py-3 sm:grid-cols-[220px_120px_1fr] sm:items-center">
+      <div className="min-w-0">
+        <p className="truncate text-sm font-semibold">{source.source}</p>
+        <p className="mt-1 text-xs text-muted">Last run {formatDate(source.lastRunAt)}</p>
+      </div>
+      <StatusPill label={source.status} tone={toneForStatus(source.status)} />
+      <div className="min-w-0 text-sm text-muted">
+        <p className="truncate">
+          Last success {formatDate(source.lastSuccessAt)}
+          {source.lastFetchedCount !== null
+            ? `, ${formatInteger(source.lastFetchedCount)} wallets`
+            : ""}
+        </p>
+        {source.consecutiveFailures > 0 ? (
+          <p className="mt-1 truncate text-danger">
+            {formatInteger(source.consecutiveFailures)} failed in a row
+            {source.lastError ? `: ${source.lastError}` : ""}
+          </p>
+        ) : null}
       </div>
     </div>
   );

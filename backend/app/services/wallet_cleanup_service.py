@@ -3,7 +3,7 @@ import logging
 from dataclasses import dataclass
 from decimal import Decimal
 
-from sqlalchemy import bindparam, select, text
+from sqlalchemy import bindparam, delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import WalletScore, WatchedWallet
@@ -41,7 +41,6 @@ from app.services.wallet_data_policy import (
     wallet_not_protected_sql,
     wallet_owned_dependencies,
 )
-from app.services.wallet_ignore_service import add_ignored_wallet_addresses
 
 logger = logging.getLogger(__name__)
 ZERO = Decimal("0")
@@ -66,6 +65,13 @@ class WalletDataDeleteResult:
     @property
     def deleted_fills(self) -> int:
         return self.deleted_rows.get("wallet_fills", 0)
+
+
+@dataclass(frozen=True)
+class WalletArchiveResult:
+    requested_addresses: tuple[str, ...]
+    archived_addresses: tuple[str, ...]
+    protected_reasons: dict[str, tuple[str, ...]]
 
 
 class WalletDataProtectedError(ValueError):
@@ -167,6 +173,7 @@ async def prune_all_wallets(
         errored_wallets=sum(rule.errored_wallets for rule in rules),
         deleted_wallets=sum(rule.deleted_wallets for rule in rules),
         deleted_fills=sum(rule.deleted_fills for rule in rules),
+        archived_wallets=sum(rule.archived_wallets for rule in rules),
         rules=rules,
     )
 
@@ -182,6 +189,7 @@ def zero_fill_rule_result(
         candidate_wallets=result.candidate_wallets,
         deleted_wallets=result.deleted_wallets,
         deleted_fills=result.deleted_fills,
+        archived_wallets=result.archived_wallets,
         rule="polled, 0 fills",
         items=[
             WalletPruneCandidate(
@@ -208,6 +216,7 @@ def orphan_fill_rule_result(
         candidate_wallets=result.candidate_wallets,
         deleted_wallets=result.deleted_wallets,
         deleted_fills=result.deleted_fills,
+        archived_wallets=result.archived_wallets,
         rule="stored fills for wallets not in pool",
         items=[
             WalletPruneCandidate(
@@ -234,6 +243,7 @@ def stale_fill_rule_result(
         candidate_wallets=result.candidate_wallets,
         deleted_wallets=result.deleted_wallets,
         deleted_fills=result.deleted_fills,
+        archived_wallets=result.archived_wallets,
         rule=f"no fills for {result.min_days_without_fill}+ days",
         items=[
             WalletPruneCandidate(
@@ -262,6 +272,7 @@ def low_score_rule_result(
         candidate_wallets=result.candidate_wallets,
         deleted_wallets=result.deleted_wallets,
         deleted_fills=result.deleted_fills,
+        archived_wallets=result.archived_wallets,
         rule=(
             f"{result.min_closed_trades}+ closed trades, "
             f"score {score_operator_label} {result.score_threshold}"
@@ -292,6 +303,7 @@ def min_closed_trades_rule_result(
         candidate_wallets=result.candidate_wallets,
         deleted_wallets=result.deleted_wallets,
         deleted_fills=result.deleted_fills,
+        archived_wallets=result.archived_wallets,
         rule=f"closed trades < {result.min_closed_trades}",
         items=[
             WalletPruneCandidate(
@@ -320,6 +332,7 @@ def max_drawdown_rule_result(
         candidate_wallets=result.candidate_wallets,
         deleted_wallets=result.deleted_wallets,
         deleted_fills=result.deleted_fills,
+        archived_wallets=result.archived_wallets,
         rule=f"realized drawdown >= {result.threshold_pct}",
         items=[
             WalletPruneCandidate(
@@ -350,6 +363,7 @@ def current_drawdown_rule_result(
         errored_wallets=result.errored_wallets,
         deleted_wallets=result.deleted_wallets,
         deleted_fills=result.deleted_fills,
+        archived_wallets=result.archived_wallets,
         rule=f"unrealized loss >= {result.threshold_ratio} of perp equity",
         items=[
             WalletPruneCandidate(
@@ -393,30 +407,22 @@ async def prune_zero_fill_wallets(
     scanned_wallets = await count_zero_fill_scan_wallets(session)
     candidates = await load_zero_fill_wallet_candidates(session, limit=limit)
     addresses = [candidate.address for candidate in candidates]
-    deleted_fills = 0
-    deleted_wallets = 0
+    archived_wallets = 0
 
     if not dry_run and addresses:
-        delete_result = await delete_wallet_related_rows_detailed(
+        archive_result = await archive_wallets(
             session,
             addresses=addresses,
+            reason="zero_fill_prune",
         )
-        deleted_fills = delete_result.deleted_fills
-        deleted_wallets = delete_result.deleted_wallets
-        if delete_result.deleted_addresses:
-            await add_ignored_wallet_addresses(
-                session,
-                addresses=list(delete_result.deleted_addresses),
-                reason="zero_fill_prune",
-            )
+        archived_wallets = len(archive_result.archived_addresses)
         await session.commit()
 
     return ZeroFillWalletPruneResponse(
         dry_run=dry_run,
         scanned_wallets=scanned_wallets,
         candidate_wallets=len(candidates),
-        deleted_wallets=deleted_wallets,
-        deleted_fills=deleted_fills,
+        archived_wallets=archived_wallets,
         items=candidates,
     )
 
@@ -449,30 +455,22 @@ async def prune_stale_fill_wallets(
         limit=limit,
     )
     addresses = [candidate.address for candidate in candidates]
-    deleted_fills = 0
-    deleted_wallets = 0
+    archived_wallets = 0
 
     if not dry_run and addresses:
-        delete_result = await delete_wallet_related_rows_detailed(
+        archive_result = await archive_wallets(
             session,
             addresses=addresses,
+            reason="stale_fill_prune",
         )
-        deleted_fills = delete_result.deleted_fills
-        deleted_wallets = delete_result.deleted_wallets
-        if delete_result.deleted_addresses:
-            await add_ignored_wallet_addresses(
-                session,
-                addresses=list(delete_result.deleted_addresses),
-                reason="stale_fill_prune",
-            )
+        archived_wallets = len(archive_result.archived_addresses)
         await session.commit()
 
     return StaleFillPruneResponse(
         dry_run=dry_run,
         scanned_wallets=scanned_wallets,
         candidate_wallets=len(candidates),
-        deleted_wallets=deleted_wallets,
-        deleted_fills=deleted_fills,
+        archived_wallets=archived_wallets,
         min_days_without_fill=min_days_without_fill,
         items=candidates,
     )
@@ -610,30 +608,22 @@ async def prune_min_closed_trades_wallets(
         limit=limit,
     )
     addresses = [candidate.address for candidate in candidates]
-    deleted_fills = 0
-    deleted_wallets = 0
+    archived_wallets = 0
 
     if not dry_run and addresses:
-        delete_result = await delete_wallet_related_rows_detailed(
+        archive_result = await archive_wallets(
             session,
             addresses=addresses,
+            reason="min_closed_trades_prune",
         )
-        deleted_fills = delete_result.deleted_fills
-        deleted_wallets = delete_result.deleted_wallets
-        if delete_result.deleted_addresses:
-            await add_ignored_wallet_addresses(
-                session,
-                addresses=list(delete_result.deleted_addresses),
-                reason="min_closed_trades_prune",
-            )
+        archived_wallets = len(archive_result.archived_addresses)
         await session.commit()
 
     return MinClosedTradesPruneResponse(
         dry_run=dry_run,
         scanned_wallets=scanned_wallets,
         candidate_wallets=len(candidates),
-        deleted_wallets=deleted_wallets,
-        deleted_fills=deleted_fills,
+        archived_wallets=archived_wallets,
         min_closed_trades=min_closed_trades,
         items=candidates,
     )
@@ -662,6 +652,7 @@ async def load_min_closed_trades_wallet_candidates(
             where ww.last_polled_at is not null
               and ww.copy_enabled is false
               and ww.polling_tier <> 'active'
+              and ww.archived_at is null
               and {wallet_not_protected_sql("ww.address")}
               and ws.trade_count < :min_closed_trades
             group by
@@ -705,6 +696,7 @@ async def count_min_closed_trades_scan_wallets(session: AsyncSession) -> int:
                 where ww.last_polled_at is not null
                   and ww.copy_enabled is false
                   and ww.polling_tier <> 'active'
+                  and ww.archived_at is null
                   and {wallet_not_protected_sql("ww.address")}
                 """
             )
@@ -738,30 +730,22 @@ async def prune_max_drawdown_wallets(
         limit=limit,
     )
     addresses = [candidate.address for candidate in candidates]
-    deleted_fills = 0
-    deleted_wallets = 0
+    archived_wallets = 0
 
     if not dry_run and addresses:
-        delete_result = await delete_wallet_related_rows_detailed(
+        archive_result = await archive_wallets(
             session,
             addresses=addresses,
+            reason="max_drawdown_prune",
         )
-        deleted_fills = delete_result.deleted_fills
-        deleted_wallets = delete_result.deleted_wallets
-        if delete_result.deleted_addresses:
-            await add_ignored_wallet_addresses(
-                session,
-                addresses=list(delete_result.deleted_addresses),
-                reason="max_drawdown_prune",
-            )
+        archived_wallets = len(archive_result.archived_addresses)
         await session.commit()
 
     return MaxDrawdownPruneResponse(
         dry_run=dry_run,
         scanned_wallets=scanned_wallets,
         candidate_wallets=len(candidates),
-        deleted_wallets=deleted_wallets,
-        deleted_fills=deleted_fills,
+        archived_wallets=archived_wallets,
         threshold_pct=str(threshold_pct),
         items=candidates,
     )
@@ -791,6 +775,7 @@ async def load_max_drawdown_wallet_candidates(
             where ww.last_polled_at is not null
               and ww.copy_enabled is false
               and ww.polling_tier <> 'active'
+              and ww.archived_at is null
               and {wallet_not_protected_sql("ww.address")}
               and ws.max_drawdown_pct is not null
               and ws.max_drawdown_pct >= :threshold_pct
@@ -837,6 +822,7 @@ async def count_max_drawdown_scan_wallets(session: AsyncSession) -> int:
                 where ww.last_polled_at is not null
                   and ww.copy_enabled is false
                   and ww.polling_tier <> 'active'
+                  and ww.archived_at is null
                   and {wallet_not_protected_sql("ww.address")}
                   and ws.max_drawdown_pct is not null
                 """
@@ -866,6 +852,7 @@ async def load_zero_fill_wallet_candidates(
             where ww.last_polled_at is not null
               and ww.copy_enabled is false
               and ww.polling_tier <> 'active'
+              and ww.archived_at is null
               and {wallet_not_protected_sql("ww.address")}
               and not exists (
                 select 1
@@ -901,6 +888,7 @@ async def count_zero_fill_scan_wallets(session: AsyncSession) -> int:
                 where ww.last_polled_at is not null
                   and ww.copy_enabled is false
                   and ww.polling_tier <> 'active'
+                  and ww.archived_at is null
                   and {wallet_not_protected_sql("ww.address")}
                 """
             )
@@ -948,6 +936,7 @@ async def load_stale_fill_wallet_candidates(
                 from wallet_fills wf
                 where wf.wallet_address = ww.address
               )
+              and ww.archived_at is null
               and {wallet_not_protected_sql("ww.address")}
             order by ww.last_seen_fill_at asc, ww.address asc
             limit :limit
@@ -988,6 +977,7 @@ async def count_stale_fill_scan_wallets(session: AsyncSession) -> int:
                     from wallet_fills wf
                     where wf.wallet_address = ww.address
                   )
+                  and ww.archived_at is null
                   and {wallet_not_protected_sql("ww.address")}
                 """
             )
@@ -1053,6 +1043,57 @@ async def delete_wallet_related_rows_detailed(
         protected_reasons=protected_reasons,
         deleted_rows=data_result.deleted_rows,
         deleted_wallets=len(deleted_addresses),
+    )
+
+
+async def archive_wallets(
+    session: AsyncSession,
+    *,
+    addresses: list[str],
+    reason: str,
+) -> WalletArchiveResult:
+    """Archive pruned wallets instead of deleting them.
+
+    Archived wallets leave the pool, scoring, polling, and copy allocation, but
+    keep their reconstructed trades, score snapshots, and equity history so the
+    selection can be evaluated later. Raw fills age out through fill retention.
+    The current score row is removed because it no longer describes a candidate.
+    """
+
+    normalized_addresses = normalize_wallet_addresses(addresses)
+    protected_reasons = await load_wallet_protection_reasons(
+        session,
+        addresses=normalized_addresses,
+    )
+    archivable = [address for address in normalized_addresses if address not in protected_reasons]
+    if not archivable:
+        return WalletArchiveResult(tuple(normalized_addresses), (), protected_reasons)
+
+    result = await session.execute(
+        update(WatchedWallet)
+        .where(
+            WatchedWallet.address.in_(archivable),
+            WatchedWallet.archived_at.is_(None),
+        )
+        .values(
+            archived_at=func.now(),
+            archive_reason=reason,
+            enabled=False,
+            eligible=False,
+            copy_enabled=False,
+            polling_tier="pool",
+        )
+        .returning(WatchedWallet.address)
+    )
+    archived_addresses = tuple(str(address) for address in result.scalars().all())
+    if archived_addresses:
+        await session.execute(
+            delete(WalletScore).where(WalletScore.wallet_address.in_(archived_addresses))
+        )
+    return WalletArchiveResult(
+        requested_addresses=tuple(normalized_addresses),
+        archived_addresses=archived_addresses,
+        protected_reasons=protected_reasons,
     )
 
 
@@ -1218,22 +1259,15 @@ async def prune_current_drawdown_wallets(
             errored_wallets,
         )
 
-    deleted_fills = 0
-    deleted_wallets = 0
+    archived_wallets = 0
     addresses = [candidate.address for candidate in candidates]
     if not dry_run and addresses:
-        delete_result = await delete_wallet_related_rows_detailed(
+        archive_result = await archive_wallets(
             session,
             addresses=addresses,
+            reason="current_unrealized_loss_prune",
         )
-        deleted_fills = delete_result.deleted_fills
-        deleted_wallets = delete_result.deleted_wallets
-        if delete_result.deleted_addresses:
-            await add_ignored_wallet_addresses(
-                session,
-                addresses=list(delete_result.deleted_addresses),
-                reason="current_unrealized_loss_prune",
-            )
+        archived_wallets = len(archive_result.archived_addresses)
         await session.commit()
 
     return CurrentDrawdownPruneResponse(
@@ -1241,8 +1275,7 @@ async def prune_current_drawdown_wallets(
         scanned_wallets=len(wallets),
         candidate_wallets=len(candidates),
         errored_wallets=errored_wallets,
-        deleted_wallets=deleted_wallets,
-        deleted_fills=deleted_fills,
+        archived_wallets=archived_wallets,
         threshold_ratio=str(threshold_ratio),
         items=[*candidates, *errored_candidates],
     )
@@ -1280,30 +1313,22 @@ async def prune_low_score_wallets(
         limit=limit,
     )
     addresses = [candidate.address for candidate in candidates]
-    deleted_fills = 0
-    deleted_wallets = 0
+    archived_wallets = 0
 
     if not dry_run and addresses:
-        delete_result = await delete_wallet_related_rows_detailed(
+        archive_result = await archive_wallets(
             session,
             addresses=addresses,
+            reason="low_score_prune",
         )
-        deleted_fills = delete_result.deleted_fills
-        deleted_wallets = delete_result.deleted_wallets
-        if delete_result.deleted_addresses:
-            await add_ignored_wallet_addresses(
-                session,
-                addresses=list(delete_result.deleted_addresses),
-                reason="low_score_prune",
-            )
+        archived_wallets = len(archive_result.archived_addresses)
         await session.commit()
 
     return LowScorePruneResponse(
         dry_run=dry_run,
         scanned_wallets=scanned_wallets,
         candidate_wallets=len(candidates),
-        deleted_wallets=deleted_wallets,
-        deleted_fills=deleted_fills,
+        archived_wallets=archived_wallets,
         min_closed_trades=min_closed_trades,
         score_threshold=str(score_threshold),
         score_operator=normalized_operator,
@@ -1470,6 +1495,7 @@ async def load_current_drawdown_scan_wallets(
         .outerjoin(WalletScore, WalletScore.wallet_address == WatchedWallet.address)
         .where(
             WatchedWallet.enabled.is_(True),
+            WatchedWallet.archived_at.is_(None),
             WatchedWallet.copy_enabled.is_(False),
             WatchedWallet.polling_tier != "active",
             text(wallet_not_protected_sql("watched_wallets.address")),
@@ -1525,6 +1551,7 @@ def low_score_statement(sql: str, *, score_operator: str):
           where ww.copy_enabled is false
             and ww.polling_tier <> 'active'
             and ww.last_polled_at is not null
+            and ww.archived_at is null
             and {wallet_not_protected_sql("ww.address")}
           group by
             ww.address,
