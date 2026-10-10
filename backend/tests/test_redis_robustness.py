@@ -139,6 +139,31 @@ async def test_event_stream_closes_when_redis_is_unavailable(
 
 
 @pytest.mark.asyncio
+async def test_event_stream_blocks_shorter_than_the_redis_socket_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    block_windows: list[int] = []
+
+    async def empty_read(
+        *_args: object, block_ms: int, **_kwargs: object
+    ) -> list[dict[str, object]]:
+        block_windows.append(block_ms)
+        return []
+
+    monkeypatch.setattr(routes_events, "get_redis", lambda: object())
+    monkeypatch.setattr(routes_events, "read_event_stream", empty_read)
+    stream = routes_events.stream_events(FakeRequest())
+
+    assert "SSE connected." in await anext(stream)
+    assert await anext(stream) == ": keepalive\n\n"
+    await stream.aclose()
+
+    # redis-py 8 times out socket reads after 5 s unless a client sets its own timeout.
+    assert block_windows == [routes_events.EVENT_STREAM_BLOCK_MS]
+    assert routes_events.EVENT_STREAM_BLOCK_MS < 5_000
+
+
+@pytest.mark.asyncio
 async def test_event_stream_does_not_swallow_cancellation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -20,6 +20,9 @@ router = APIRouter(tags=["events"])
 logger = logging.getLogger(__name__)
 EVENT_RECENT_TIMEOUT_SECONDS = 3
 EVENT_STREAM_READ_TIMEOUT_SECONDS = 12
+# redis-py 8 times out socket reads after 5 s by default, so a blocking read must
+# return before that or the stream closes and every client reconnects.
+EVENT_STREAM_BLOCK_MS = 4_000
 
 
 @router.get("/events/recent", response_model=LiveEventListResponse)
@@ -79,7 +82,7 @@ async def stream_events(request: Request) -> AsyncIterator[str]:
                 read_event_stream(
                     redis,
                     last_event_id=last_event_id,
-                    block_ms=10_000,
+                    block_ms=EVENT_STREAM_BLOCK_MS,
                 ),
                 timeout=EVENT_STREAM_READ_TIMEOUT_SECONDS,
             )
