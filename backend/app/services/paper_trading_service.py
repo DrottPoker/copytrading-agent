@@ -4,7 +4,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
-from typing import Any, TypeGuard
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import and_, delete, func, literal, or_, select, text, tuple_, update
@@ -15,6 +15,7 @@ from app.core.config import Settings, get_settings
 from app.db.models import (
     AuditLog,
     LiveCopyFillState,
+    PaperAccountEquitySnapshot,
     PaperCopyAllocation,
     PaperCopyFill,
     PaperPosition,
@@ -34,7 +35,53 @@ from app.schemas.paper_trading import (
     PaperTradingSummaryResponse,
 )
 from app.schemas.wallet import normalize_wallet_address
-from app.services.copy_execution_cache import AllocationSnapshotCache, SourceAccountStateCache
+from app.services.copy_decision import (
+    ALLOCATION_INACTIVE,
+    CLOSE_BELOW_MIN_ORDER,
+    CLOSE_RATIO_MISSING,
+    CLOSE_SIZE_ZERO,
+    INVALID_SOURCE_PRICE,
+    MATCHING_POSITION_MISSING,
+    OPPOSITE_POSITION,
+    SOURCE_EQUITY_MISSING,
+    CopyPosition,
+    aggregate_below_min_close,
+    decide_close,
+    decide_entry,
+    entry_precheck,
+)
+from app.services.copy_execution_cache import AllocationSnapshotCache
+from app.services.copy_signal_service import (
+    ExecutionContext,
+    ExecutionMarketPrices,
+    SourceAccountState,
+    SourceFillPart,
+    SourceStateCache,
+    UnifiedEquityCache,
+    apply_adverse_slippage,
+    decimal_or_none,
+    decimal_or_zero,
+    dex_from_coin,
+    fill_datetime,
+    leverage_for_fill,
+    load_execution_market_prices,
+    load_mark_prices,
+    load_source_account_state,
+    load_source_account_states,
+    part_requires_source_equity,
+    plan_source_fill,
+    raw_json_from_fill,
+    resolve_coin_decimal,
+    resolve_coin_margin_mode,
+    resolve_source_current_position,
+    side_from_fill_direction,
+    sorted_source_fills,
+    source_fill_age_exceeds_entry_limit,
+    source_fill_from_wallet_fill,
+    source_state_available_for_reconciliation,
+    timestamp_ms,
+    unique_strings,
+)
 from app.services.live_copy_state_service import (
     POSITION_EPSILON as LIVE_POSITION_EPSILON,
 )
@@ -45,37 +92,42 @@ from app.services.live_copy_state_service import (
 from app.services.live_trading_service import (
     LIVE_EXCHANGE_SOURCE,
     LIVE_MANUAL_TEST_SOURCE,
-    live_spot_usdc_available,
-    live_spot_usdc_total,
-    user_abstraction_is_unified,
 )
 from app.services.market_price_cache import MarketPriceCache
+from app.services.paper_execution_simulator import (
+    IocFill,
+    OrderBook,
+    ioc_limit_price,
+    parse_order_book,
+    position_pnl,
+    simulate_ioc_fill,
+)
+from app.services.paper_risk_service import (
+    apply_account_fee,
+    apply_account_realized_result,
+    clear_paper_account_exit_only,
+    paper_entry_risk_reason,
+)
 from app.services.realtime_subscription_state_service import (
     RealtimeSubscriptionSnapshot,
     load_realtime_subscription_state,
     realtime_subscription_stale_after_seconds,
 )
-from app.services.source_fill_ordering import source_fill_order_key
 from app.services.trading_account_service import sync_paper_trading_account_mirrors
-from app.services.trading_core import (
-    MarginMode,
-    TradeIntent,
-    TradeSide,
-    build_copy_trade_intent,
-    copy_allocation_pct,
-    entry_sizing_limits,
-    margin_from_notional,
-    parse_trade_action,
-    parse_trade_side,
-    plan_entry_sizing,
-    safe_leverage,
-    source_position_after_fill,
-    trade_intent_payload,
-)
 from app.services.trading_core import (
     MinOrderAdjustment as PaperMinOrderAdjustment,
 )
-from app.services.wallet_current_state_service import object_or_empty
+from app.services.trading_core import (
+    TradeIntent,
+    build_copy_trade_intent,
+    copy_allocation_pct,
+    margin_from_notional,
+    parse_trade_action,
+    parse_trade_side,
+    safe_leverage,
+    trade_intent_payload,
+    trade_is_buy,
+)
 
 logger = logging.getLogger(__name__)
 ZERO = Decimal("0")
@@ -87,7 +139,6 @@ PAPER_COPY_SOURCE_LOCK_NAMESPACE = "paper_copy_source"
 MONITORING_MIN_SNAPSHOT_GAP_SECONDS = 60
 POSITION_ADD_FILL_ACTIONS = frozenset({"add"})
 POSITION_CLOSE_FILL_ACTIONS = frozenset({"reduce", "close", "flip_close"})
-SOURCE_EQUITY_ACTIONS = frozenset({"open", "add", "flip_open"})
 RETRIABLE_EXIT_SKIP_REASONS = frozenset(
     {
         "source_account_state_missing",
@@ -99,6 +150,17 @@ RETRIABLE_EXIT_SKIP_REASONS = frozenset(
     }
 )
 SUMMARY_MARKET_PRICE_CACHE = MarketPriceCache()
+# Stored paper reason names for engine-neutral decision reasons.
+PAPER_DECISION_REASONS = {
+    INVALID_SOURCE_PRICE: "invalid_price",
+    OPPOSITE_POSITION: "opposite_paper_position",
+    ALLOCATION_INACTIVE: "retained_source_new_position_blocked",
+    SOURCE_EQUITY_MISSING: "source_perp_equity_zero",
+    MATCHING_POSITION_MISSING: "no_matching_paper_position",
+    CLOSE_RATIO_MISSING: "missing_source_start_position",
+    CLOSE_SIZE_ZERO: "invalid_close_size",
+}
+PAPER_CLOSE_AGGREGATED_REASON = "close_aggregated"
 
 
 class PaperPositionCloseError(Exception):
@@ -183,23 +245,6 @@ class PaperSourceAllocation:
 
 
 @dataclass(frozen=True)
-class PaperSourceAccountState:
-    dex: str
-    perp_equity: Decimal
-    leverage_by_coin: dict[str, Decimal]
-    positions_by_coin: dict[str, "PaperSourceCurrentPosition"]
-    margin_mode_by_coin: dict[str, MarginMode] = field(default_factory=dict)
-    skip_reason: str | None = None
-
-
-@dataclass(frozen=True)
-class PaperSourceCurrentPosition:
-    coin: str
-    side: str
-    size: Decimal
-
-
-@dataclass(frozen=True)
 class WalletMonitoringSummary:
     first_monitored_at: datetime | None
     current_monitoring_started_at: datetime | None
@@ -207,38 +252,7 @@ class WalletMonitoringSummary:
     monitored_seconds: int
 
 
-@dataclass(frozen=True)
-class SourceFillPart:
-    action: str
-    side: TradeSide
-    source_size: Decimal
-    source_notional_usd: Decimal
-    sequence_index: int
-    close_ratio: Decimal | None = None
-    start_position: Decimal | None = None
-
-
-@dataclass(frozen=True)
-class PaperExecutionContext:
-    source_price: Decimal
-    observed_price: Decimal
-    execution_price: Decimal
-    price_drift_bps: Decimal
-    slippage_bps: Decimal
-    latency_ms: int
-    price_source: str
-
-
-@dataclass(frozen=True)
-class ExecutionMarketPrices:
-    prices: dict[str, Decimal]
-    sources: dict[str, str]
-
-
 CopyAllocationCache = AllocationSnapshotCache[dict[str, PaperSourceAllocation]]
-SourceStateCache = SourceAccountStateCache[PaperSourceAccountState]
-# Per-batch unified equity lookups, shared by concurrent per-dex state loads.
-UnifiedEquityCache = dict[str, "asyncio.Task[Decimal | None]"]
 
 
 @dataclass(frozen=True)
@@ -316,7 +330,7 @@ async def get_paper_trading_summary(
     )
     closed_trades_result = await session.execute(
         select(PaperCopyFill)
-        .where(PaperCopyFill.action.in_(("close", "flip_close")))
+        .where(PaperCopyFill.action.in_(("close", "flip_close", "liquidation")))
         .order_by(PaperCopyFill.filled_at.desc(), PaperCopyFill.created_at.desc())
         .limit(closed_trade_limit)
     )
@@ -445,48 +459,12 @@ async def load_open_position_market_prices(
     price_cache: MarketPriceCache | None = None,
     max_age_seconds: float = 15.0,
 ) -> dict[str, Decimal]:
-    coins = {position.coin for position in positions if position.coin}
-    if not coins:
-        return {}
-
-    market_prices: dict[str, Decimal] = {}
-    missing_coins = set(coins)
-    if price_cache is not None:
-        cached = await price_cache.get_many(coins, max_age_seconds=max_age_seconds)
-        market_prices.update(cached.prices)
-        missing_coins = cached.missing_coins
-        if not missing_coins:
-            return market_prices
-
-    try:
-        mids = await client.all_mids()
-    except Exception as exc:
-        logger.warning("paper summary allMids fetch failed error=%s", exc)
-        mids = {}
-    if price_cache is not None:
-        await price_cache.update_mids(mids)
-
-    for coin in missing_coins:
-        price = resolve_coin_decimal(mids, coin)
-        if price is not None and price > ZERO:
-            market_prices[coin] = price
-
-    missing_dexes = {
-        dex_from_coin(coin)
-        for coin in missing_coins
-        if coin not in market_prices and dex_from_coin(coin)
-    }
-    for dex in sorted(missing_dexes):
-        dex_prices = await load_dex_market_prices(client=client, dex=dex)
-        if price_cache is not None:
-            await price_cache.update_mids(dex_prices, dex=dex)
-        for coin in missing_coins:
-            if coin in market_prices or dex_from_coin(coin) != dex:
-                continue
-            price = resolve_coin_decimal(dex_prices, coin)
-            if price is not None and price > ZERO:
-                market_prices[coin] = price
-    return market_prices
+    return await load_mark_prices(
+        client=client,
+        coins=(position.coin for position in positions),
+        price_cache=price_cache,
+        max_age_seconds=max_age_seconds,
+    )
 
 
 async def close_paper_position_manually(
@@ -585,7 +563,7 @@ async def close_paper_position_manually(
         sequence_index=0,
         close_ratio=ONE,
     )
-    execution_context = PaperExecutionContext(
+    execution_context = ExecutionContext(
         source_price=mark_price,
         observed_price=mark_price,
         execution_price=execution_price,
@@ -794,6 +772,8 @@ def paper_position_read(
         "notional_usd": position.notional_usd,
         "leverage": position.leverage,
         "margin_usd": position.margin_usd,
+        "margin_mode": position.margin_mode,
+        "funding_usd": position.funding_usd,
         "realized_pnl_usd": position.realized_pnl_usd,
         "mark_price": mark_price,
         "current_notional_usd": current_notional,
@@ -878,7 +858,7 @@ def paper_account_reads(
         unrealized_pnl = sum_decimal(
             position["unrealized_pnl_usd"] for position in account_positions
         )
-        total_pnl = account.realized_pnl_usd + unrealized_pnl
+        total_pnl = account.realized_pnl_usd + account.funding_usd + unrealized_pnl
         rows.append(
             {
                 "key": account.key,
@@ -903,7 +883,10 @@ def paper_account_reads(
                     position["margin_usd"] for position in account_positions
                 ),
                 "fee_usd": account.fee_usd,
+                "funding_usd": account.funding_usd,
                 "enabled": account.enabled,
+                "exit_only_at": account.exit_only_at,
+                "exit_only_reason": account.exit_only_reason,
                 "created_at": account.created_at,
                 "updated_at": account.updated_at,
             }
@@ -1271,6 +1254,7 @@ def paper_closed_trade_reads(
                     fill.source_fill_id,
                 )
                 in liquidation_source_fill_ids,
+                "is_paper_liquidation": fill.action == "liquidation",
                 "opened_at": opened_at,
                 "closed_at": fill.filled_at,
                 "duration_ms": duration_ms,
@@ -1558,6 +1542,11 @@ async def process_paper_copy_fills(
         source_account_states_task,
         market_prices_task,
     )
+    order_books = await load_paper_order_books(
+        client,
+        coins={str(fill.get("coin") or "") for fill in fills},
+        settings=resolved_settings,
+    )
 
     await lock_paper_source_mutation(session, source_wallet=normalized_source_wallet)
     accounts = await load_paper_accounts_for_source_copy(
@@ -1568,13 +1557,30 @@ async def process_paper_copy_fills(
     if not accounts:
         return PaperCopyBatchResult(skipped_fills=len(fills))
 
+    risk_mark_prices = dict(market_prices.prices)
+    if resolved_settings.paper_copy_loss_limits_enabled:
+        open_coins = set(
+            (
+                await session.scalars(
+                    select(PaperPosition.coin)
+                    .where(PaperPosition.source_wallet == normalized_source_wallet)
+                    .distinct()
+                )
+            ).all()
+        )
+        missing_coins = open_coins - set(risk_mark_prices)
+        if missing_coins:
+            risk_mark_prices.update(
+                await load_mark_prices(client=client, coins=missing_coins, price_cache=price_cache)
+            )
+
     processed = 0
     skipped = 0
     realized_pnl = ZERO
     fee_usd = ZERO
     accounts_updated: set[str] = set()
 
-    for fill in sorted_paper_source_fills(fills):
+    for fill in sorted_source_fills(fills):
         parts = plan_source_fill(fill)
         if not parts:
             skip_result = await record_skip_for_accounts(
@@ -1634,10 +1640,13 @@ async def process_paper_copy_fills(
                     allocation=allocation,
                     fill=fill,
                     part=part,
+                    source_account_state=source_account_state,
                     source_perp_equity=source_perp_equity,
                     source_leverages=source_leverages,
                     market_prices=market_prices,
                     settings=resolved_settings,
+                    order_book=order_books.get(str(fill.get("coin") or "")),
+                    mark_prices=risk_mark_prices,
                 )
                 processed += fill_result.processed_fills
                 skipped += fill_result.skipped_fills
@@ -1832,25 +1841,7 @@ async def load_wallet_fills_for_paper_copy_recovery(
         .order_by(WalletFill.timestamp_ms.asc(), WalletFill.external_fill_id.asc())
         .limit(limit)
     )
-    return [paper_source_fill_from_wallet_fill(fill) for fill in result.scalars().all()]
-
-
-def paper_source_fill_from_wallet_fill(fill: WalletFill) -> dict[str, Any]:
-    return {
-        "id": str(fill.id),
-        "externalFillId": fill.external_fill_id,
-        "coin": fill.coin,
-        "side": fill.side,
-        "price": str(fill.price),
-        "size": str(fill.size),
-        "notionalUsd": str(fill.notional_usd) if fill.notional_usd is not None else None,
-        "feeUsd": str(fill.fee_usd) if fill.fee_usd is not None else None,
-        "pnlUsd": str(fill.pnl_usd) if fill.pnl_usd is not None else None,
-        "timestampMs": fill.timestamp_ms,
-        "sourceTimestampMs": fill.source_timestamp_ms,
-        "ingestLatencyMs": fill.ingest_latency_ms,
-        "rawJson": fill.raw_json,
-    }
+    return [source_fill_from_wallet_fill(fill) for fill in result.scalars().all()]
 
 
 async def reconcile_open_paper_positions_for_source(
@@ -1939,43 +1930,6 @@ async def reconcile_open_paper_positions_for_source(
     )
 
 
-def source_state_available_for_reconciliation(
-    source_state: PaperSourceAccountState | None,
-) -> TypeGuard[PaperSourceAccountState]:
-    if source_state is None:
-        return False
-    return source_state.skip_reason not in {
-        "source_account_state_fetch_failed",
-        "source_account_margin_summary_missing",
-    }
-
-
-def resolve_source_current_position(
-    positions_by_coin: dict[str, PaperSourceCurrentPosition],
-    coin: str,
-) -> PaperSourceCurrentPosition | None:
-    candidates = coin_symbol_candidates(coin)
-    for candidate in candidates:
-        position = positions_by_coin.get(candidate)
-        if position is not None:
-            return position
-
-    casefold_index = {
-        key.casefold(): position for key, position in positions_by_coin.items() if key.strip()
-    }
-    for candidate in candidates:
-        position = casefold_index.get(candidate.casefold())
-        if position is not None:
-            return position
-
-    normalized_candidates = {normalize_coin_symbol(candidate) for candidate in candidates}
-    normalized_candidates.discard("")
-    for key, position in positions_by_coin.items():
-        if normalize_coin_symbol(key) in normalized_candidates:
-            return position
-    return None
-
-
 async def load_open_paper_positions_for_source(
     session: AsyncSession,
     *,
@@ -2024,8 +1978,8 @@ async def load_source_account_states_for_positions(
     client: HyperliquidClient,
     source_wallet: str,
     positions: list[PaperPosition],
-) -> dict[str, PaperSourceAccountState]:
-    states: dict[str, PaperSourceAccountState] = {}
+) -> dict[str, SourceAccountState]:
+    states: dict[str, SourceAccountState] = {}
     unified_equity_cache: UnifiedEquityCache = {}
     for dex in sorted({dex_from_coin(position.coin) for position in positions}):
         states[dex] = await load_source_account_state(
@@ -2093,7 +2047,7 @@ async def reconcile_closed_source_position(
         sequence_index=0,
         close_ratio=ONE,
     )
-    execution_context = PaperExecutionContext(
+    execution_context = ExecutionContext(
         source_price=mark_price,
         observed_price=mark_price,
         execution_price=execution_price,
@@ -2855,6 +2809,14 @@ async def reset_paper_trading_account_balance(
     account.equity_usd = account.starting_balance_usd
     account.realized_pnl_usd = ZERO
     account.fee_usd = ZERO
+    account.funding_usd = ZERO
+    clear_paper_account_exit_only(account)
+    # Loss limits restart from the new balance.
+    await session.execute(
+        delete(PaperAccountEquitySnapshot).where(
+            PaperAccountEquitySnapshot.account_key == account.key
+        )
+    )
     session.add(
         AuditLog(
             actor="dashboard",
@@ -2890,6 +2852,9 @@ async def set_paper_trading_account_enabled(
         raise PaperAccountControlNotFoundError("Paper account was not found.")
 
     account.enabled = enabled
+    if enabled:
+        # Starting the account again lifts a tripped loss limit, as for live accounts.
+        clear_paper_account_exit_only(account)
     await sync_paper_trading_account_mirrors(
         session,
         accounts=[account],
@@ -3115,581 +3080,6 @@ async def load_paper_accounts_for_source_copy(
     return list(result.scalars().all())
 
 
-async def load_source_account_states(
-    *,
-    client: HyperliquidClient,
-    source_wallet: str,
-    fills: list[dict[str, Any]],
-    cache: SourceStateCache | None = None,
-) -> dict[str, PaperSourceAccountState]:
-    """Load source account state per perp dex, reusing cached state when it is safe.
-
-    Cached state is only used when every fill is a pure entry and the cache
-    already holds leverage and margin mode for each copied coin. Exits, flips,
-    and coins the source did not hold yet always read fresh state, so close
-    sizing and new margin settings never depend on an older snapshot.
-    """
-
-    dexes = {dex_from_coin(fill.get("coin")) for fill in fills}
-    if not dexes:
-        dexes.add("")
-
-    states: dict[str, PaperSourceAccountState] = {}
-    missing_dexes: list[str] = []
-    entry_only = fills_are_entry_only(fills)
-    for dex in sorted(dexes):
-        cached = cache.get(source_wallet, dex) if cache is not None and entry_only else None
-        if cached is not None and cached_state_covers_fills(cached.state, fills=fills, dex=dex):
-            states[dex] = cached.state
-        else:
-            missing_dexes.append(dex)
-
-    unified_equity_cache: UnifiedEquityCache = {}
-    requested_at = cache.now() if cache is not None else 0.0
-    fetched = await asyncio.gather(
-        *(
-            load_source_account_state(
-                client=client,
-                source_wallet=source_wallet,
-                dex=dex,
-                unified_equity_cache=unified_equity_cache,
-            )
-            for dex in missing_dexes
-        )
-    )
-    for dex, state in zip(missing_dexes, fetched, strict=True):
-        states[dex] = state
-        if cache is not None and state.skip_reason != "source_account_state_fetch_failed":
-            cache.store(source_wallet, dex, state, requested_at=requested_at)
-    return states
-
-
-def fills_are_entry_only(fills: list[dict[str, Any]]) -> bool:
-    parts = [part for fill in fills for part in plan_source_fill(fill)]
-    return bool(parts) and all(part.action in SOURCE_EQUITY_ACTIONS for part in parts)
-
-
-def cached_state_covers_fills(
-    state: PaperSourceAccountState,
-    *,
-    fills: list[dict[str, Any]],
-    dex: str,
-) -> bool:
-    if state.skip_reason is not None:
-        return False
-    for fill in fills:
-        coin = str(fill.get("coin") or "")
-        if dex_from_coin(coin) != dex:
-            continue
-        if resolve_coin_decimal(state.leverage_by_coin, coin) is None:
-            return False
-        if resolve_coin_margin_mode(state.margin_mode_by_coin, coin) is None:
-            return False
-    return True
-
-
-async def warm_source_state_cache(
-    *,
-    client: HyperliquidClient,
-    cache: SourceStateCache,
-    source_wallets: set[str],
-    refresh_after_seconds: float,
-) -> int:
-    """Refetch aging source states so later adds can skip the network lookup.
-
-    Only states with open source positions are kept warm, because entries on
-    coins the source does not hold yet always need a fresh state anyway.
-    Returns the number of states fetched.
-    """
-
-    cache.retain(source_wallets)
-    due = cache.due_for_refresh(
-        source_wallets,
-        refresh_after_seconds=refresh_after_seconds,
-        keep_warm=lambda state: bool(state.positions_by_coin),
-    )
-    if not due:
-        return 0
-    unified_equity_cache: UnifiedEquityCache = {}
-    requested_at = cache.now()
-    fetched = await asyncio.gather(
-        *(
-            load_source_account_state(
-                client=client,
-                source_wallet=wallet,
-                dex=dex,
-                unified_equity_cache=unified_equity_cache,
-            )
-            for wallet, dex in due
-        )
-    )
-    for (wallet, dex), state in zip(due, fetched, strict=True):
-        if state.skip_reason != "source_account_state_fetch_failed":
-            cache.store(wallet, dex, state, requested_at=requested_at)
-    return len(due)
-
-
-async def load_source_account_state(
-    *,
-    client: HyperliquidClient,
-    source_wallet: str,
-    dex: str,
-    unified_equity_cache: UnifiedEquityCache | None = None,
-) -> PaperSourceAccountState:
-    try:
-        clearinghouse_state = await client.clearinghouse_state(
-            user=source_wallet,
-            dex=dex or None,
-        )
-    except Exception as exc:
-        logger.warning(
-            "paper copy source account fetch failed wallet=%s dex=%s error=%s",
-            source_wallet,
-            dex or "default",
-            exc,
-        )
-        return PaperSourceAccountState(
-            dex=dex,
-            perp_equity=ZERO,
-            leverage_by_coin={},
-            positions_by_coin={},
-            skip_reason="source_account_state_fetch_failed",
-        )
-
-    leverage_by_coin = parse_source_leverages(clearinghouse_state)
-    margin_mode_by_coin = parse_source_margin_modes(clearinghouse_state)
-    positions_by_coin = parse_source_current_positions(clearinghouse_state)
-    margin_summary_raw = clearinghouse_state.get("marginSummary")
-    if not isinstance(margin_summary_raw, dict):
-        return PaperSourceAccountState(
-            dex=dex,
-            perp_equity=ZERO,
-            leverage_by_coin=leverage_by_coin,
-            positions_by_coin=positions_by_coin,
-            margin_mode_by_coin=margin_mode_by_coin,
-            skip_reason="source_account_margin_summary_missing",
-        )
-
-    perp_equity = decimal_or_none(margin_summary_raw.get("accountValue"))
-    if perp_equity is None:
-        return PaperSourceAccountState(
-            dex=dex,
-            perp_equity=ZERO,
-            leverage_by_coin=leverage_by_coin,
-            positions_by_coin=positions_by_coin,
-            margin_mode_by_coin=margin_mode_by_coin,
-            skip_reason="source_perp_equity_missing",
-        )
-    if perp_equity <= ZERO:
-        unified_equity = await load_source_unified_equity_cached(
-            client=client,
-            source_wallet=source_wallet,
-            cache=unified_equity_cache,
-        )
-        if unified_equity is not None and unified_equity > ZERO:
-            return PaperSourceAccountState(
-                dex=dex,
-                perp_equity=unified_equity,
-                leverage_by_coin=leverage_by_coin,
-                positions_by_coin=positions_by_coin,
-                margin_mode_by_coin=margin_mode_by_coin,
-            )
-        return PaperSourceAccountState(
-            dex=dex,
-            perp_equity=ZERO,
-            leverage_by_coin=leverage_by_coin,
-            positions_by_coin=positions_by_coin,
-            margin_mode_by_coin=margin_mode_by_coin,
-            skip_reason="source_perp_equity_zero",
-        )
-
-    return PaperSourceAccountState(
-        dex=dex,
-        perp_equity=perp_equity,
-        leverage_by_coin=leverage_by_coin,
-        positions_by_coin=positions_by_coin,
-        margin_mode_by_coin=margin_mode_by_coin,
-    )
-
-
-async def load_source_unified_equity_cached(
-    *,
-    client: HyperliquidClient,
-    source_wallet: str,
-    cache: UnifiedEquityCache | None,
-) -> Decimal | None:
-    if cache is None:
-        return await load_source_unified_equity(client=client, source_wallet=source_wallet)
-    key = source_wallet.lower()
-    task = cache.get(key)
-    if task is None:
-        task = asyncio.create_task(
-            load_source_unified_equity(client=client, source_wallet=source_wallet)
-        )
-        cache[key] = task
-    return await task
-
-
-async def load_source_unified_equity(
-    *,
-    client: HyperliquidClient,
-    source_wallet: str,
-) -> Decimal | None:
-    try:
-        user_abstraction = await client.user_abstraction(user=source_wallet)
-    except Exception as exc:
-        logger.warning(
-            "paper copy source abstraction fetch failed wallet=%s error=%s",
-            source_wallet,
-            exc,
-        )
-        return None
-    if not user_abstraction_is_unified(user_abstraction):
-        return None
-    try:
-        spot_state = await client.spot_clearinghouse_state(user=source_wallet)
-    except Exception as exc:
-        logger.warning(
-            "paper copy source spot state fetch failed wallet=%s error=%s",
-            source_wallet,
-            exc,
-        )
-        return None
-    total = live_spot_usdc_total(spot_state)
-    if total > ZERO:
-        return total
-    available = live_spot_usdc_available(spot_state)
-    return available if available > ZERO else None
-
-
-def parse_source_leverages(payload: dict[str, Any]) -> dict[str, Decimal]:
-    raw_positions = payload.get("assetPositions")
-    if not isinstance(raw_positions, list):
-        return {}
-
-    leverages: dict[str, Decimal] = {}
-    for item in raw_positions:
-        if not isinstance(item, dict):
-            continue
-        position = object_or_empty(item.get("position"))
-        coin = str(position.get("coin") or "")
-        leverage = object_or_empty(position.get("leverage"))
-        leverage_value = decimal_or_none(leverage.get("value"))
-        if coin and leverage_value is not None and leverage_value > ZERO:
-            leverages[coin] = leverage_value
-    return leverages
-
-
-def parse_source_margin_modes(payload: dict[str, Any]) -> dict[str, MarginMode]:
-    raw_positions = payload.get("assetPositions")
-    if not isinstance(raw_positions, list):
-        return {}
-
-    margin_modes: dict[str, MarginMode] = {}
-    for item in raw_positions:
-        if not isinstance(item, dict):
-            continue
-        position = object_or_empty(item.get("position"))
-        coin = str(position.get("coin") or "")
-        leverage = object_or_empty(position.get("leverage"))
-        margin_mode = normalize_margin_mode(leverage.get("type"))
-        if coin and margin_mode is not None:
-            margin_modes[coin] = margin_mode
-    return margin_modes
-
-
-def normalize_margin_mode(value: Any) -> MarginMode | None:
-    normalized = str(value or "").strip().casefold()
-    if normalized == "cross":
-        return "cross"
-    if normalized == "isolated":
-        return "isolated"
-    return None
-
-
-def parse_source_current_positions(
-    payload: dict[str, Any],
-) -> dict[str, PaperSourceCurrentPosition]:
-    raw_positions = payload.get("assetPositions")
-    if not isinstance(raw_positions, list):
-        return {}
-
-    positions: dict[str, PaperSourceCurrentPosition] = {}
-    for item in raw_positions:
-        if not isinstance(item, dict):
-            continue
-        position = object_or_empty(item.get("position"))
-        coin = str(position.get("coin") or "")
-        signed_size = decimal_or_none(position.get("szi"))
-        if not coin or signed_size is None or signed_size.copy_abs() <= POSITION_EPSILON:
-            continue
-        positions[coin] = PaperSourceCurrentPosition(
-            coin=coin,
-            side="long" if signed_size > ZERO else "short",
-            size=signed_size.copy_abs(),
-        )
-    return positions
-
-
-async def load_execution_market_prices(
-    *,
-    client: HyperliquidClient,
-    fills: list[dict[str, Any]],
-    settings: Settings,
-    latency_ms: int | None = None,
-    price_cache: MarketPriceCache | None = None,
-) -> ExecutionMarketPrices:
-    if not settings.trading_copy_use_live_mid_price:
-        return ExecutionMarketPrices(prices={}, sources={})
-    resolved_latency_ms = settings.paper_copy_latency_ms if latency_ms is None else latency_ms
-    if resolved_latency_ms > 0:
-        await asyncio.sleep(resolved_latency_ms / 1000)
-
-    coins = {str(fill.get("coin") or "") for fill in fills}
-    coins.discard("")
-    if not coins:
-        return ExecutionMarketPrices(prices={}, sources={})
-
-    market_prices: dict[str, Decimal] = {}
-    price_sources: dict[str, str] = {}
-    missing_coins = set(coins)
-    if price_cache is not None and settings.trading_copy_market_price_cache_enabled:
-        cached = await price_cache.get_many(
-            missing_coins,
-            max_age_seconds=settings.trading_copy_market_price_cache_stale_seconds,
-        )
-        market_prices.update(cached.prices)
-        price_sources.update(cached.sources)
-        missing_coins = cached.missing_coins
-
-    if not missing_coins:
-        return ExecutionMarketPrices(prices=market_prices, sources=price_sources)
-
-    try:
-        mids = await client.all_mids()
-    except Exception as exc:
-        logger.warning("paper copy allMids fetch failed error=%s", exc)
-        mids = {}
-
-    for coin in missing_coins:
-        price = resolve_coin_decimal(mids, coin)
-        if price is not None and price > ZERO:
-            market_prices[coin] = price
-            price_sources[coin] = "http_mid"
-
-    missing_dexes = {
-        dex_from_coin(coin)
-        for coin in missing_coins
-        if coin not in market_prices and dex_from_coin(coin)
-    }
-    if price_cache is not None and settings.trading_copy_market_price_cache_enabled:
-        await price_cache.request_dexes(missing_dexes)
-    for dex in sorted(missing_dexes):
-        dex_prices = await load_dex_market_prices(client=client, dex=dex)
-        for coin in missing_coins:
-            if coin in market_prices or dex_from_coin(coin) != dex:
-                continue
-            price = resolve_coin_decimal(dex_prices, coin)
-            if price is not None and price > ZERO:
-                market_prices[coin] = price
-                price_sources[coin] = "http_mid"
-    return ExecutionMarketPrices(prices=market_prices, sources=price_sources)
-
-
-async def load_dex_market_prices(
-    *,
-    client: HyperliquidClient,
-    dex: str,
-) -> dict[str, Decimal]:
-    try:
-        mids = await client.all_mids(dex=dex)
-    except Exception as exc:
-        logger.warning("paper copy dex allMids fetch failed dex=%s error=%s", dex, exc)
-    else:
-        prices = market_prices_from_mids(mids)
-        if prices:
-            return prices
-
-    try:
-        payload = await client.meta_and_asset_ctxs(dex=dex)
-    except Exception as exc:
-        logger.warning("paper copy dex market price fetch failed dex=%s error=%s", dex, exc)
-        return {}
-    return market_prices_from_meta_and_asset_ctxs(payload)
-
-
-def market_prices_from_mids(mids: dict[str, Any]) -> dict[str, Decimal]:
-    prices: dict[str, Decimal] = {}
-    for coin, raw_price in mids.items():
-        price = decimal_or_none(raw_price)
-        if coin and price is not None and price > ZERO:
-            prices[str(coin)] = price
-    return prices
-
-
-def market_prices_from_meta_and_asset_ctxs(payload: list[Any]) -> dict[str, Decimal]:
-    if len(payload) < 2:
-        return {}
-    meta = payload[0]
-    contexts = payload[1]
-    if not isinstance(meta, dict) or not isinstance(contexts, list):
-        return {}
-    universe = meta.get("universe")
-    if not isinstance(universe, list):
-        return {}
-
-    prices: dict[str, Decimal] = {}
-    for asset, context in zip(universe, contexts, strict=False):
-        if not isinstance(asset, dict) or not isinstance(context, dict):
-            continue
-        coin = str(asset.get("name") or "")
-        price = (
-            decimal_or_none(context.get("midPx"))
-            or decimal_or_none(context.get("markPx"))
-            or decimal_or_none(context.get("oraclePx"))
-        )
-        if coin and price is not None and price > ZERO:
-            prices[coin] = price
-    return prices
-
-
-def plan_source_fill(fill: dict[str, Any]) -> list[SourceFillPart]:
-    raw_json = raw_json_from_fill(fill)
-    direction = str(raw_json.get("dir") or "")
-    source_size = decimal_or_zero(fill.get("size"))
-    source_price = decimal_or_zero(fill.get("price"))
-    source_notional = decimal_or_zero(fill.get("notionalUsd")) or source_price * source_size
-    start_position = decimal_or_none(raw_json.get("startPosition"))
-
-    if source_size <= ZERO or source_price <= ZERO or source_notional <= ZERO:
-        return []
-    if direction == "Open Long":
-        return [
-            SourceFillPart(
-                action="open",
-                side="long",
-                source_size=source_size,
-                source_notional_usd=source_notional,
-                sequence_index=0,
-                start_position=start_position,
-            )
-        ]
-    if direction == "Open Short":
-        return [
-            SourceFillPart(
-                action="open",
-                side="short",
-                source_size=source_size,
-                source_notional_usd=source_notional,
-                sequence_index=0,
-                start_position=start_position,
-            )
-        ]
-    if direction == "Close Long":
-        return close_parts(
-            side="long",
-            source_size=source_size,
-            source_notional=source_notional,
-            start_position=start_position,
-            action="close",
-        )
-    if direction == "Close Short":
-        return close_parts(
-            side="short",
-            source_size=source_size,
-            source_notional=source_notional,
-            start_position=start_position,
-            action="close",
-        )
-    if direction == "Long > Short":
-        return flip_parts(
-            close_side="long",
-            open_side="short",
-            source_size=source_size,
-            source_notional=source_notional,
-            start_position=start_position,
-        )
-    if direction == "Short > Long":
-        return flip_parts(
-            close_side="short",
-            open_side="long",
-            source_size=source_size,
-            source_notional=source_notional,
-            start_position=start_position,
-        )
-    return []
-
-
-def close_parts(
-    *,
-    side: TradeSide,
-    source_size: Decimal,
-    source_notional: Decimal,
-    start_position: Decimal | None,
-    action: str,
-) -> list[SourceFillPart]:
-    close_ratio = close_ratio_from_start_position(source_size, start_position)
-    return [
-        SourceFillPart(
-            action=action,
-            side=side,
-            source_size=source_size,
-            source_notional_usd=source_notional,
-            sequence_index=0,
-            close_ratio=close_ratio,
-            start_position=start_position,
-        )
-    ]
-
-
-def flip_parts(
-    *,
-    close_side: TradeSide,
-    open_side: TradeSide,
-    source_size: Decimal,
-    source_notional: Decimal,
-    start_position: Decimal | None,
-) -> list[SourceFillPart]:
-    if start_position is None:
-        return close_parts(
-            side=close_side,
-            source_size=source_size,
-            source_notional=source_notional,
-            start_position=start_position,
-            action="flip_close",
-        )
-
-    close_size = min(source_size, start_position.copy_abs())
-    open_size = max(source_size - close_size, ZERO)
-    parts: list[SourceFillPart] = []
-    if close_size > ZERO:
-        close_notional = proportional_value(source_notional, close_size, source_size)
-        parts.append(
-            SourceFillPart(
-                action="flip_close",
-                side=close_side,
-                source_size=close_size,
-                source_notional_usd=close_notional,
-                sequence_index=0,
-                close_ratio=close_ratio_from_start_position(close_size, start_position),
-                start_position=start_position,
-            )
-        )
-    if open_size > ZERO:
-        open_notional = proportional_value(source_notional, open_size, source_size)
-        parts.append(
-            SourceFillPart(
-                action="flip_open",
-                side=open_side,
-                source_size=open_size,
-                source_notional_usd=open_notional,
-                sequence_index=1,
-                start_position=ZERO,
-            )
-        )
-    return parts
-
-
 async def apply_paper_fill_part(
     session: AsyncSession,
     *,
@@ -3701,6 +3091,9 @@ async def apply_paper_fill_part(
     source_leverages: dict[str, Decimal],
     market_prices: ExecutionMarketPrices,
     settings: Settings,
+    source_account_state: SourceAccountState | None = None,
+    order_book: OrderBook | None = None,
+    mark_prices: dict[str, Decimal] | None = None,
 ) -> PaperCopyBatchResult:
     source_fill_id = str(fill.get("externalFillId") or "")
     if not source_fill_id:
@@ -3729,6 +3122,9 @@ async def apply_paper_fill_part(
             source_leverages=source_leverages,
             market_prices=market_prices,
             settings=settings,
+            source_account_state=source_account_state,
+            order_book=order_book,
+            mark_prices=mark_prices,
         )
     return await apply_close_part(
         session,
@@ -3736,10 +3132,12 @@ async def apply_paper_fill_part(
         allocation=allocation,
         fill=fill,
         part=part,
+        source_account_state=source_account_state,
         source_perp_equity=source_perp_equity,
         source_leverages=source_leverages,
         market_prices=market_prices,
         settings=settings,
+        order_book=order_book,
     )
 
 
@@ -3754,207 +3152,120 @@ async def apply_open_part(
     source_leverages: dict[str, Decimal],
     market_prices: ExecutionMarketPrices,
     settings: Settings,
+    source_account_state: SourceAccountState | None = None,
+    order_book: OrderBook | None = None,
+    mark_prices: dict[str, Decimal] | None = None,
 ) -> PaperCopyBatchResult:
     source_leverage = leverage_for_fill(fill=fill, source_leverages=source_leverages)
+
+    async def skip(
+        reason: str,
+        execution_context: ExecutionContext | None = None,
+    ) -> PaperCopyBatchResult:
+        return await record_skip(
+            session,
+            account=account,
+            allocation=allocation,
+            fill=fill,
+            part=part,
+            source_perp_equity=source_perp_equity,
+            reason=PAPER_DECISION_REASONS.get(reason, reason),
+            settings=settings,
+            execution_context=execution_context,
+            leverage=source_leverage,
+        )
+
     if not account.enabled:
-        return await record_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            source_perp_equity=source_perp_equity,
-            reason="paper_account_disabled",
-            settings=settings,
-            leverage=source_leverage,
-        )
-
-    source_price = decimal_or_zero(fill.get("price"))
-    if source_price <= ZERO:
-        return await record_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            source_perp_equity=source_perp_equity,
-            reason="invalid_price",
-            settings=settings,
-            leverage=source_leverage,
-        )
+        return await skip("paper_account_disabled")
     if source_fill_age_exceeds_entry_limit(fill, settings=settings):
-        return await record_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            source_perp_equity=source_perp_equity,
-            reason="source_fill_too_old",
-            settings=settings,
-            leverage=source_leverage,
-        )
+        return await skip("source_fill_too_old")
 
+    coin = str(fill.get("coin") or "")
     position = await load_paper_position(
         session,
         account_key=account.key,
         source_wallet=allocation.source_wallet,
-        coin=str(fill.get("coin") or ""),
+        coin=coin,
     )
-    if position is None and is_preexisting_source_add(part.start_position, side=part.side):
-        return await record_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            source_perp_equity=source_perp_equity,
-            reason="preexisting_source_position",
-            settings=settings,
-            leverage=source_leverage,
-        )
-    if position is not None and position.side != part.side:
-        return await record_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            source_perp_equity=source_perp_equity,
-            reason="opposite_paper_position",
-            settings=settings,
-            leverage=source_leverage,
-        )
-    if position is None and not allocation.active:
-        return await record_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            source_perp_equity=source_perp_equity,
-            reason="retained_source_new_position_blocked",
-            settings=settings,
-            leverage=source_leverage,
-        )
-    if source_perp_equity <= ZERO:
-        return await record_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            source_perp_equity=source_perp_equity,
-            reason="source_perp_equity_zero",
-            settings=settings,
-            leverage=source_leverage,
-        )
-
-    execution_context = build_execution_context(
-        fill=fill,
+    copy_position = (
+        CopyPosition(side=position.side, size=position.size) if position is not None else None
+    )
+    precheck_reason = entry_precheck(
         part=part,
-        market_prices=market_prices,
+        position=copy_position,
+        allocation_active=allocation.active,
+        source_price=decimal_or_zero(fill.get("price")),
+    )
+    if precheck_reason is not None:
+        return await skip(precheck_reason)
+    risk_reason = await paper_entry_risk_reason(
+        session,
+        account=account,
+        source_wallet=allocation.source_wallet,
+        mark_prices=mark_prices if mark_prices is not None else market_prices.prices,
         settings=settings,
     )
-    if execution_context is None:
-        return await record_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            source_perp_equity=source_perp_equity,
-            reason="execution_price_unavailable",
-            settings=settings,
-            leverage=source_leverage,
-        )
-    if execution_context.price_drift_bps > settings.trading_copy_max_price_drift_bps:
-        return await record_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            source_perp_equity=source_perp_equity,
-            reason="price_drift_too_high",
-            settings=settings,
-            execution_context=execution_context,
-            leverage=source_leverage,
-        )
-    price = execution_context.execution_price
+    if risk_reason is not None:
+        return await skip(risk_reason)
 
-    if position is not None and part.start_position is None:
-        return await record_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            source_perp_equity=source_perp_equity,
-            reason="source_position_unknown",
-            settings=settings,
-            execution_context=execution_context,
-            leverage=source_leverage,
-        )
-    account_equity_usd = max(account.equity_usd, ZERO)
-    allocation_usd = account_equity_usd * allocation.allocation_pct
-    source_exposure_pct = part.source_notional_usd / source_perp_equity
-    sizing = plan_entry_sizing(
-        opening=position is None,
-        allocation_usd=allocation_usd,
-        account_equity_usd=account_equity_usd,
+    decision = decide_entry(
+        fill=fill,
+        part=part,
+        position=copy_position,
+        allocation_active=allocation.active,
+        allocation_pct=allocation.allocation_pct,
+        account_equity_usd=account.equity_usd,
         source_equity_usd=source_perp_equity,
-        source_fill_size=part.source_size,
-        source_position_after=source_position_after_fill(
-            start_position=part.start_position,
-            fill_size=part.source_size,
-        ),
-        current_position_size=position.size if position is not None else ZERO,
-        price=price,
+        source_leverage=source_leverage,
+        market_prices=market_prices,
         source_exposure_usd=await open_notional_for_source(
             session,
             account_key=account.key,
             source_wallet=allocation.source_wallet,
         ),
         account_exposure_usd=await open_notional_for_account(session, account_key=account.key),
-        limits=entry_sizing_limits(settings),
+        settings=settings,
+        min_order_notional_usd=settings.trading_copy_min_order_notional_usd,
     )
-    if sizing.skip_reason is not None:
-        return await record_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            source_perp_equity=source_perp_equity,
-            reason=sizing.skip_reason,
-            settings=settings,
-            execution_context=execution_context,
-            leverage=source_leverage,
-        )
-    notional_usd = sizing.notional_usd
+    execution_context = decision.execution_context
+    if decision.reason is not None or execution_context is None or decision.sizing is None:
+        return await skip(decision.reason or "execution_price_unavailable", execution_context)
+
+    price = execution_context.execution_price
+    paper_size = decision.size
+    book_fill = simulate_paper_book_fill(
+        order_book,
+        is_buy=trade_is_buy(side=part.side, reduce_only=False),
+        size=paper_size,
+        observed_price=execution_context.observed_price,
+        settings=settings,
+    )
+    if book_fill is not None:
+        if book_fill.average_price is None:
+            return await skip("paper_ioc_unfilled", execution_context)
+        paper_size = book_fill.filled_size
+        price = book_fill.average_price
+    notional_usd = paper_size * price
     margin_usd = margin_from_notional(notional_usd, source_leverage)
     min_order_adjustment = (
         PaperMinOrderAdjustment(
-            original_notional_usd=sizing.desired_notional_usd,
+            original_notional_usd=decision.sizing.desired_notional_usd,
             adjusted_notional_usd=notional_usd,
             min_order_notional_usd=settings.trading_copy_min_order_notional_usd,
         )
-        if sizing.rounded_up
+        if decision.sizing.rounded_up
         else None
     )
-
-    paper_size = notional_usd / price
     fee = notional_usd * settings.paper_copy_fee_rate
     filled_at = fill_datetime(fill)
-    action = "add" if position is not None and part.action == "open" else part.action
+    action = decision.action
     trade_intent = build_copy_trade_intent(
         account_key=account.key,
         account_type="paper",
         source_wallet=allocation.source_wallet,
         source_fill_id=str(fill.get("externalFillId") or ""),
         sequence_index=part.sequence_index,
-        coin=str(fill.get("coin") or ""),
+        coin=coin,
         action=parse_trade_action(action),
         side=part.side,
         size=paper_size,
@@ -3967,9 +3278,9 @@ async def apply_open_part(
         price_drift_bps=execution_context.price_drift_bps,
         price_source=execution_context.price_source,
         allocation_pct=allocation.allocation_pct,
-        allocation_usd=allocation_usd,
+        allocation_usd=decision.allocation_usd,
         source_perp_equity_usd=source_perp_equity,
-        source_exposure_pct=source_exposure_pct,
+        source_exposure_pct=decision.source_exposure_pct,
         created_at=filled_at,
     )
 
@@ -3977,13 +3288,19 @@ async def apply_open_part(
         position = PaperPosition(
             account_key=account.key,
             source_wallet=allocation.source_wallet,
-            coin=str(fill.get("coin") or ""),
+            coin=coin,
             side=part.side,
             size=paper_size,
             entry_price=price,
             notional_usd=notional_usd,
             leverage=source_leverage,
             margin_usd=margin_usd,
+            margin_mode=(
+                resolve_coin_margin_mode(source_account_state.margin_mode_by_coin, coin)
+                if source_account_state is not None
+                else None
+            )
+            or "cross",
             fee_usd=fee,
             opened_at=filled_at,
         )
@@ -4024,11 +3341,12 @@ async def apply_open_part(
             fee_usd=fee,
             realized_pnl_usd=ZERO,
             source_perp_equity=source_perp_equity,
-            allocation_usd=allocation_usd,
+            allocation_usd=decision.allocation_usd,
             settings=settings,
             execution_context=execution_context,
             trade_intent=trade_intent,
             min_order_adjustment=min_order_adjustment,
+            book_fill=book_fill,
         )
     )
     return PaperCopyBatchResult(processed_fills=1, accounts_updated=1, fee_usd=fee)
@@ -4045,59 +3363,27 @@ async def apply_close_part(
     source_leverages: dict[str, Decimal],
     market_prices: ExecutionMarketPrices,
     settings: Settings,
+    source_account_state: SourceAccountState | None = None,
+    order_book: OrderBook | None = None,
 ) -> PaperCopyBatchResult:
-    source_price = decimal_or_zero(fill.get("price"))
-    if source_price <= ZERO:
-        return await record_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            source_perp_equity=source_perp_equity,
-            reason="invalid_price",
-            settings=settings,
-        )
+    coin = str(fill.get("coin") or "")
     position = await load_paper_position(
         session,
         account_key=account.key,
         source_wallet=allocation.source_wallet,
-        coin=str(fill.get("coin") or ""),
+        coin=coin,
     )
-    if position is None or position.side != part.side:
-        source_leverage = leverage_for_fill(fill=fill, source_leverages=source_leverages)
-        return await record_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            source_perp_equity=source_perp_equity,
-            reason="no_matching_paper_position",
-            settings=settings,
-            leverage=source_leverage,
-        )
-    leverage = safe_leverage(position.leverage)
-    if part.close_ratio is None or part.close_ratio <= ZERO:
-        return await record_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            source_perp_equity=source_perp_equity,
-            reason="missing_source_start_position",
-            settings=settings,
-            leverage=leverage,
-        )
+    leverage = (
+        safe_leverage(position.leverage)
+        if position is not None
+        else leverage_for_fill(fill=fill, source_leverages=source_leverages)
+    )
 
-    execution_context = build_execution_context(
-        fill=fill,
-        part=part,
-        market_prices=market_prices,
-        settings=settings,
-    )
-    if execution_context is None:
+    async def skip(
+        reason: str,
+        execution_context: ExecutionContext | None = None,
+        requested_close_size: Decimal | None = None,
+    ) -> PaperCopyBatchResult:
         return await record_skip(
             session,
             account=account,
@@ -4105,40 +3391,69 @@ async def apply_close_part(
             fill=fill,
             part=part,
             source_perp_equity=source_perp_equity,
-            reason="execution_price_unavailable",
-            settings=settings,
-            leverage=leverage,
-        )
-    if execution_context.price_drift_bps > settings.trading_copy_max_price_drift_bps:
-        return await record_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            source_perp_equity=source_perp_equity,
-            reason="price_drift_too_high",
+            reason=PAPER_DECISION_REASONS.get(reason, reason),
             settings=settings,
             execution_context=execution_context,
             leverage=leverage,
+            requested_close_size=requested_close_size,
         )
-    price = execution_context.execution_price
 
-    close_ratio = min(part.close_ratio, Decimal("1"))
-    close_size = min(position.size, position.size * close_ratio)
-    if close_size <= POSITION_EPSILON or price <= ZERO:
-        return await record_skip(
+    if decimal_or_zero(fill.get("price")) <= ZERO:
+        return await skip("invalid_price")
+    min_order_notional = settings.trading_copy_min_order_notional_usd
+    decision = decide_close(
+        fill=fill,
+        part=part,
+        position=(
+            CopyPosition(side=position.side, size=position.size) if position is not None else None
+        ),
+        available_size=position.size if position is not None else ZERO,
+        source_account_state=source_account_state,
+        market_prices=market_prices,
+        settings=settings,
+        min_order_notional_usd=min_order_notional,
+    )
+    aggregated_skips: list[PaperCopyFill] = []
+    if decision.needs_aggregation and position is not None:
+        aggregated_skips = await load_paper_below_min_close_skips(
             session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            source_perp_equity=source_perp_equity,
-            reason="invalid_close_size",
-            settings=settings,
-            leverage=leverage,
+            account_key=account.key,
+            source_wallet=allocation.source_wallet,
+            coin=coin,
+            side=part.side,
+            since=position.opened_at,
+        )
+        decision = aggregate_below_min_close(
+            decision,
+            previous_skipped_size=sum(
+                (paper_requested_close_size(item) for item in aggregated_skips),
+                ZERO,
+            ),
+            available_size=position.size,
+            min_order_notional_usd=min_order_notional,
+        )
+    execution_context = decision.execution_context
+    if decision.reason is not None or execution_context is None or position is None:
+        return await skip(
+            decision.reason or "execution_price_unavailable",
+            execution_context,
+            requested_close_size=decision.close_size if decision.close_size > ZERO else None,
         )
 
+    price = execution_context.execution_price
+    close_size = decision.close_size
+    book_fill = simulate_paper_book_fill(
+        order_book,
+        is_buy=trade_is_buy(side=part.side, reduce_only=True),
+        size=close_size,
+        observed_price=execution_context.observed_price,
+        settings=settings,
+    )
+    if book_fill is not None:
+        if book_fill.average_price is None:
+            return await skip("paper_ioc_unfilled", execution_context)
+        close_size = book_fill.filled_size
+        price = book_fill.average_price
     notional_usd = close_size * price
     margin_usd = margin_from_notional(notional_usd, leverage)
     source_exposure_pct = (
@@ -4162,7 +3477,7 @@ async def apply_close_part(
     remaining_size = previous_size - close_size
     if remaining_size <= POSITION_EPSILON:
         await session.delete(position)
-        action = "close" if part.action == "close" else part.action
+        action = "close" if part.action in {"close", "reduce"} else part.action
     else:
         remaining_ratio = remaining_size / previous_size if previous_size > ZERO else ZERO
         position.size = remaining_size
@@ -4181,7 +3496,7 @@ async def apply_close_part(
         source_wallet=allocation.source_wallet,
         source_fill_id=str(fill.get("externalFillId") or ""),
         sequence_index=part.sequence_index,
-        coin=str(fill.get("coin") or ""),
+        coin=coin,
         action=parse_trade_action(action),
         side=part.side,
         size=close_size,
@@ -4200,34 +3515,131 @@ async def apply_close_part(
         created_at=filled_at,
     )
     apply_account_realized_result(account, pnl_usd=realized_pnl, fee_usd=fee)
-    session.add(
-        paper_copy_fill(
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            action=action,
-            price=price,
-            size=close_size,
-            notional_usd=notional_usd,
-            leverage=leverage,
-            margin_usd=margin_usd,
-            fee_usd=fee,
-            realized_pnl_usd=realized_pnl,
-            source_perp_equity=source_perp_equity,
-            allocation_usd=allocation_usd,
-            settings=settings,
-            execution_context=execution_context,
-            trade_intent=trade_intent,
-            opened_at=opened_at,
-        )
+    close_fill = paper_copy_fill(
+        account=account,
+        allocation=allocation,
+        fill=fill,
+        part=part,
+        action=action,
+        price=price,
+        size=close_size,
+        notional_usd=notional_usd,
+        leverage=leverage,
+        margin_usd=margin_usd,
+        fee_usd=fee,
+        realized_pnl_usd=realized_pnl,
+        source_perp_equity=source_perp_equity,
+        allocation_usd=allocation_usd,
+        settings=settings,
+        execution_context=execution_context,
+        trade_intent=trade_intent,
+        opened_at=opened_at,
+        book_fill=book_fill,
     )
+    session.add(close_fill)
+    if decision.aggregated:
+        mark_paper_close_skips_aggregated(aggregated_skips, into=close_fill)
     return PaperCopyBatchResult(
         processed_fills=1,
         accounts_updated=1,
         realized_pnl_usd=realized_pnl,
         fee_usd=fee,
     )
+
+
+def simulate_paper_book_fill(
+    order_book: OrderBook | None,
+    *,
+    is_buy: bool,
+    size: Decimal,
+    observed_price: Decimal,
+    settings: Settings,
+) -> IocFill | None:
+    """Fill like a live IOC order at the live limit slippage; None without a book."""
+
+    if not settings.paper_copy_order_book_fills or order_book is None:
+        return None
+    return simulate_ioc_fill(
+        order_book,
+        is_buy=is_buy,
+        size=size,
+        limit_price=ioc_limit_price(
+            observed_price,
+            is_buy=is_buy,
+            slippage_bps=settings.live_trading_limit_slippage_bps,
+        ),
+    )
+
+
+async def load_paper_order_books(
+    client: HyperliquidClient,
+    *,
+    coins: set[str],
+    settings: Settings,
+) -> dict[str, OrderBook]:
+    """Current order books for the batch; coins without a book fall back to mid pricing."""
+
+    if not settings.paper_copy_order_book_fills:
+        return {}
+
+    async def load(coin: str) -> tuple[str, OrderBook | None]:
+        try:
+            return coin, parse_order_book(await client.l2_book(coin=coin))
+        except Exception as exc:
+            logger.warning("paper order book fetch failed coin=%s error=%s", coin, exc)
+            return coin, None
+
+    results = await asyncio.gather(*(load(coin) for coin in sorted(coin for coin in coins if coin)))
+    return {coin: book for coin, book in results if book is not None}
+
+
+async def load_paper_below_min_close_skips(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    source_wallet: str,
+    coin: str,
+    side: str,
+    since: datetime,
+) -> list[PaperCopyFill]:
+    """Partial closes skipped below the minimum order since the position opened."""
+
+    result = await session.scalars(
+        select(PaperCopyFill)
+        .where(
+            PaperCopyFill.account_key == account_key,
+            PaperCopyFill.source_wallet == source_wallet,
+            PaperCopyFill.coin == coin,
+            PaperCopyFill.side == side,
+            PaperCopyFill.action == "skip",
+            PaperCopyFill.skipped_reason == CLOSE_BELOW_MIN_ORDER,
+            PaperCopyFill.filled_at >= since,
+        )
+        .order_by(PaperCopyFill.filled_at.asc())
+    )
+    return list(result.all())
+
+
+def paper_requested_close_size(fill: PaperCopyFill) -> Decimal:
+    payload = fill.raw_payload if isinstance(fill.raw_payload, dict) else {}
+    return max(decimal_or_zero(payload.get("requestedCloseSize")), ZERO)
+
+
+def mark_paper_close_skips_aggregated(
+    skips: list[PaperCopyFill],
+    *,
+    into: PaperCopyFill,
+) -> None:
+    for skipped in skips:
+        payload = dict(skipped.raw_payload) if isinstance(skipped.raw_payload, dict) else {}
+        skipped.skipped_reason = PAPER_CLOSE_AGGREGATED_REASON
+        skipped.raw_payload = {
+            **payload,
+            "aggregatedInto": {
+                "sourceFillId": into.source_fill_id,
+                "sequenceIndex": into.sequence_index,
+            },
+        }
 
 
 async def record_batch_skip(
@@ -4295,8 +3707,9 @@ async def record_skip(
     source_perp_equity: Decimal,
     reason: str,
     settings: Settings,
-    execution_context: PaperExecutionContext | None = None,
+    execution_context: ExecutionContext | None = None,
     leverage: Decimal | None = None,
+    requested_close_size: Decimal | None = None,
 ) -> PaperCopyBatchResult:
     source_fill_id = str(fill.get("externalFillId") or "")
     if not source_fill_id:
@@ -4311,27 +3724,31 @@ async def record_skip(
         return PaperCopyBatchResult()
 
     allocation_usd = max(account.equity_usd, ZERO) * allocation.allocation_pct
-    session.add(
-        paper_copy_fill(
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            action="skip",
-            price=decimal_or_none(fill.get("price")),
-            size=None,
-            notional_usd=None,
-            leverage=leverage,
-            margin_usd=None,
-            fee_usd=ZERO,
-            realized_pnl_usd=ZERO,
-            source_perp_equity=source_perp_equity,
-            allocation_usd=allocation_usd,
-            settings=settings,
-            skipped_reason=reason,
-            execution_context=execution_context,
-        )
+    skipped_fill = paper_copy_fill(
+        account=account,
+        allocation=allocation,
+        fill=fill,
+        part=part,
+        action="skip",
+        price=decimal_or_none(fill.get("price")),
+        size=None,
+        notional_usd=None,
+        leverage=leverage,
+        margin_usd=None,
+        fee_usd=ZERO,
+        realized_pnl_usd=ZERO,
+        source_perp_equity=source_perp_equity,
+        allocation_usd=allocation_usd,
+        settings=settings,
+        skipped_reason=reason,
+        execution_context=execution_context,
     )
+    if requested_close_size is not None:
+        skipped_fill.raw_payload = {
+            **(skipped_fill.raw_payload or {}),
+            "requestedCloseSize": str(requested_close_size),
+        }
+    session.add(skipped_fill)
     return PaperCopyBatchResult(skipped_fills=1, skip_reasons={reason: 1})
 
 
@@ -4353,10 +3770,11 @@ def paper_copy_fill(
     allocation_usd: Decimal,
     settings: Settings,
     skipped_reason: str | None = None,
-    execution_context: PaperExecutionContext | None = None,
+    execution_context: ExecutionContext | None = None,
     trade_intent: TradeIntent | None = None,
     min_order_adjustment: PaperMinOrderAdjustment | None = None,
     opened_at: datetime | None = None,
+    book_fill: IocFill | None = None,
 ) -> PaperCopyFill:
     source_exposure_pct = (
         part.source_notional_usd / source_perp_equity if source_perp_equity > ZERO else None
@@ -4394,6 +3812,7 @@ def paper_copy_fill(
             margin_usd=margin_usd,
             min_order_adjustment=min_order_adjustment,
             opened_at=opened_at,
+            book_fill=book_fill,
         ),
     )
 
@@ -4512,108 +3931,6 @@ async def open_notional_for_account(session: AsyncSession, *, account_key: str) 
     return decimal_or_zero(value)
 
 
-def leverage_for_fill(
-    *,
-    fill: dict[str, Any],
-    source_leverages: dict[str, Decimal],
-) -> Decimal:
-    coin = str(fill.get("coin") or "")
-    return safe_leverage(resolve_coin_decimal(source_leverages, coin))
-
-
-def resolve_coin_decimal(values_by_coin: dict[str, Any], coin: str) -> Decimal | None:
-    candidates = coin_symbol_candidates(coin)
-    if not candidates:
-        return None
-
-    for candidate in candidates:
-        value = decimal_or_none(values_by_coin.get(candidate))
-        if value is not None:
-            return value
-
-    casefold_index = {
-        str(key).casefold(): value for key, value in values_by_coin.items() if str(key).strip()
-    }
-    for candidate in candidates:
-        value = decimal_or_none(casefold_index.get(candidate.casefold()))
-        if value is not None:
-            return value
-
-    normalized_candidates = {normalize_coin_symbol(candidate) for candidate in candidates}
-    normalized_candidates.discard("")
-    for key, raw_value in values_by_coin.items():
-        if normalize_coin_symbol(str(key)) in normalized_candidates:
-            value = decimal_or_none(raw_value)
-            if value is not None:
-                return value
-    return None
-
-
-def resolve_coin_margin_mode(
-    values_by_coin: dict[str, MarginMode],
-    coin: str,
-) -> MarginMode | None:
-    candidates = coin_symbol_candidates(coin)
-    if not candidates:
-        return None
-
-    for candidate in candidates:
-        value = normalize_margin_mode(values_by_coin.get(candidate))
-        if value is not None:
-            return value
-
-    casefold_index = {
-        str(key).casefold(): value for key, value in values_by_coin.items() if str(key).strip()
-    }
-    for candidate in candidates:
-        value = normalize_margin_mode(casefold_index.get(candidate.casefold()))
-        if value is not None:
-            return value
-
-    normalized_candidates = {normalize_coin_symbol(candidate) for candidate in candidates}
-    normalized_candidates.discard("")
-    for key, raw_value in values_by_coin.items():
-        if normalize_coin_symbol(str(key)) in normalized_candidates:
-            value = normalize_margin_mode(raw_value)
-            if value is not None:
-                return value
-    return None
-
-
-def coin_symbol_candidates(coin: str) -> list[str]:
-    value = str(coin or "").strip()
-    if not value:
-        return []
-
-    candidates = [value]
-    if ":" in value:
-        candidates.append(value.rsplit(":", maxsplit=1)[-1])
-    if "/" in value:
-        candidates.append(value.split("/", maxsplit=1)[0])
-
-    expanded: list[str] = []
-    for candidate in candidates:
-        if candidate:
-            expanded.append(candidate)
-            expanded.append(candidate.upper())
-            expanded.append(candidate.lower())
-    return unique_strings(expanded)
-
-
-def normalize_coin_symbol(value: str) -> str:
-    return "".join(character for character in value.casefold() if character.isalnum())
-
-
-def unique_strings(values: list[str]) -> list[str]:
-    seen: set[str] = set()
-    unique: list[str] = []
-    for value in values:
-        if value not in seen:
-            seen.add(value)
-            unique.append(value)
-    return unique
-
-
 def effective_leverage(
     *,
     notional_usd: Decimal,
@@ -4645,57 +3962,6 @@ def paper_trading_policy(settings: Settings) -> PaperTradingPolicyRead:
     )
 
 
-def close_ratio_from_start_position(
-    source_size: Decimal,
-    start_position: Decimal | None,
-) -> Decimal | None:
-    if start_position is None or start_position.copy_abs() <= ZERO:
-        return None
-    return min(source_size / start_position.copy_abs(), Decimal("1"))
-
-
-def sorted_paper_source_fills(fills: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return sorted(fills, key=paper_source_fill_sort_key)
-
-
-def paper_source_fill_sort_key(
-    fill: dict[str, Any],
-) -> tuple[int, str, int, Decimal, int, Decimal, str]:
-    """Return the durable ordering used for every source fill lifecycle."""
-
-    return source_fill_order_key(fill)
-
-
-def part_requires_source_equity(part: SourceFillPart) -> bool:
-    return part.action in SOURCE_EQUITY_ACTIONS
-
-
-def is_preexisting_source_add(start_position: Decimal | None, *, side: str) -> bool:
-    if start_position is None:
-        return False
-    if side == "long":
-        return start_position > POSITION_EPSILON
-    return start_position < -POSITION_EPSILON
-
-
-def apply_account_fee(account: PaperTradingAccount, fee: Decimal) -> None:
-    account.fee_usd += fee
-    account.cash_balance_usd -= fee
-    account.equity_usd = account.cash_balance_usd
-
-
-def apply_account_realized_result(
-    account: PaperTradingAccount,
-    *,
-    pnl_usd: Decimal,
-    fee_usd: Decimal,
-) -> None:
-    account.realized_pnl_usd += pnl_usd
-    account.fee_usd += fee_usd
-    account.cash_balance_usd += pnl_usd - fee_usd
-    account.equity_usd = account.cash_balance_usd
-
-
 def realized_pnl_for_close(
     *,
     side: str,
@@ -4703,9 +3969,7 @@ def realized_pnl_for_close(
     exit_price: Decimal,
     size: Decimal,
 ) -> Decimal:
-    if side == "long":
-        return (exit_price - entry_price) * size
-    return (entry_price - exit_price) * size
+    return position_pnl(side=side, entry_price=entry_price, exit_price=exit_price, size=size)
 
 
 def weighted_average_price(
@@ -4720,173 +3984,17 @@ def weighted_average_price(
     return ((current_price * current_size) + (added_price * added_size)) / total_size
 
 
-def proportional_value(value: Decimal, part: Decimal, total: Decimal) -> Decimal:
-    if total <= ZERO:
-        return ZERO
-    return value * part / total
-
-
-def build_execution_context(
-    *,
-    fill: dict[str, Any],
-    part: SourceFillPart,
-    market_prices: ExecutionMarketPrices,
-    settings: Settings,
-    slippage_bps: Decimal | None = None,
-    latency_ms: int | None = None,
-) -> PaperExecutionContext | None:
-    source_price = decimal_or_zero(fill.get("price"))
-    if source_price <= ZERO:
-        return None
-
-    coin = str(fill.get("coin") or "")
-    observed_price = (
-        market_prices.prices.get(coin) if settings.trading_copy_use_live_mid_price else None
-    )
-    if observed_price is None:
-        if settings.trading_copy_use_live_mid_price:
-            return None
-        observed_price = source_price
-    if observed_price <= ZERO:
-        return None
-
-    resolved_slippage_bps = (
-        settings.paper_copy_slippage_bps if slippage_bps is None else slippage_bps
-    )
-    resolved_latency_ms = settings.paper_copy_latency_ms if latency_ms is None else latency_ms
-    execution_price = apply_adverse_slippage(
-        price=observed_price,
-        side=part.side,
-        action=part.action,
-        slippage_bps=resolved_slippage_bps,
-    )
-    if execution_price <= ZERO:
-        return None
-
-    return PaperExecutionContext(
-        source_price=source_price,
-        observed_price=observed_price,
-        execution_price=execution_price,
-        price_drift_bps=adverse_price_drift_bps(
-            source_price=source_price,
-            observed_price=observed_price,
-            side=part.side,
-            action=part.action,
-        ),
-        slippage_bps=resolved_slippage_bps,
-        latency_ms=resolved_latency_ms,
-        price_source=(
-            market_prices.sources.get(coin, "live_mid")
-            if settings.trading_copy_use_live_mid_price
-            else "source_fill"
-        ),
-    )
-
-
-def apply_adverse_slippage(
-    *,
-    price: Decimal,
-    side: str,
-    action: str,
-    slippage_bps: Decimal,
-) -> Decimal:
-    adjustment = slippage_bps / BPS_DENOMINATOR
-    if is_buy_execution(side=side, action=action):
-        return price * (Decimal("1") + adjustment)
-    return price * max(Decimal("1") - adjustment, ZERO)
-
-
-def is_buy_execution(*, side: str, action: str) -> bool:
-    is_open = action in {"open", "add", "flip_open"}
-    if side == "long":
-        return is_open
-    return not is_open
-
-
-def adverse_price_drift_bps(
-    *,
-    source_price: Decimal,
-    observed_price: Decimal,
-    side: str,
-    action: str,
-) -> Decimal:
-    if source_price <= ZERO:
-        return ZERO
-    drift = observed_price - source_price
-    if is_buy_execution(side=side, action=action):
-        adverse_drift = max(drift, ZERO)
-    else:
-        adverse_drift = max(-drift, ZERO)
-    return adverse_drift / source_price * BPS_DENOMINATOR
-
-
-def raw_json_from_fill(fill: dict[str, Any]) -> dict[str, Any]:
-    raw_json = fill.get("rawJson")
-    return raw_json if isinstance(raw_json, dict) else {}
-
-
-def dex_from_coin(value: Any) -> str:
-    coin = str(value or "").strip()
-    if ":" not in coin:
-        return ""
-    dex = coin.split(":", maxsplit=1)[0].strip()
-    return dex
-
-
-def side_from_fill_direction(value: Any) -> TradeSide:
-    direction = str(value or "")
-    if "Short" in direction:
-        return "short"
-    return "long"
-
-
-def fill_datetime(fill: dict[str, Any]) -> datetime:
-    timestamp_ms = int(fill.get("timestampMs") or 0)
-    if timestamp_ms <= 0:
-        return datetime.now(UTC)
-    return datetime.fromtimestamp(timestamp_ms / 1000, tz=UTC)
-
-
-def source_fill_age_exceeds_entry_limit(
-    fill: dict[str, Any],
-    *,
-    settings: Settings,
-    now: datetime | None = None,
-) -> bool:
-    max_age_seconds = settings.trading_copy_max_entry_age_seconds
-    if max_age_seconds <= 0:
-        return False
-    age_seconds = source_fill_age_seconds(fill, now=now)
-    return age_seconds is not None and age_seconds > max_age_seconds
-
-
-def source_fill_age_seconds(
-    fill: dict[str, Any],
-    *,
-    now: datetime | None = None,
-) -> float | None:
-    timestamp_ms = int(fill.get("timestampMs") or 0)
-    if timestamp_ms <= 0:
-        return None
-    observed_at = now or datetime.now(UTC)
-    fill_at = datetime.fromtimestamp(timestamp_ms / 1000, tz=UTC)
-    return (observed_at - fill_at).total_seconds()
-
-
-def timestamp_ms(value: datetime) -> int:
-    return int(value.timestamp() * 1000)
-
-
 def paper_fill_payload(
     *,
     fill: dict[str, Any],
     settings: Settings,
-    execution_context: PaperExecutionContext | None = None,
+    execution_context: ExecutionContext | None = None,
     trade_intent: TradeIntent | None = None,
     leverage: Decimal | None = None,
     margin_usd: Decimal | None = None,
     min_order_adjustment: PaperMinOrderAdjustment | None = None,
     opened_at: datetime | None = None,
+    book_fill: IocFill | None = None,
 ) -> dict[str, Any]:
     filled_at = fill_datetime(fill)
     return {
@@ -4921,6 +4029,7 @@ def paper_fill_payload(
             "minOrderAdjustment": min_order_adjustment_payload(min_order_adjustment),
             "openedAt": opened_at.isoformat() if opened_at is not None else None,
             "durationMs": duration_between_ms(opened_at, filled_at),
+            "orderBookFill": book_fill.payload() if book_fill is not None else None,
         },
     }
 
@@ -4973,7 +4082,7 @@ def duration_between_ms(opened_at: datetime | None, closed_at: datetime | None) 
     return max(0, timestamp_ms(closed_at) - timestamp_ms(opened_at))
 
 
-def execution_payload(context: PaperExecutionContext | None) -> dict[str, Any] | None:
+def execution_payload(context: ExecutionContext | None) -> dict[str, Any] | None:
     if context is None:
         return None
     return {
@@ -4985,19 +4094,6 @@ def execution_payload(context: PaperExecutionContext | None) -> dict[str, Any] |
         "latencyMs": context.latency_ms,
         "priceSource": context.price_source,
     }
-
-
-def decimal_or_none(value: Any) -> Decimal | None:
-    if value is None:
-        return None
-    try:
-        return Decimal(str(value))
-    except (InvalidOperation, ValueError):
-        return None
-
-
-def decimal_or_zero(value: Any) -> Decimal:
-    return decimal_or_none(value) or ZERO
 
 
 def int_or_none(value: Any) -> int | None:

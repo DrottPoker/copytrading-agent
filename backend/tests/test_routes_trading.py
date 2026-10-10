@@ -17,7 +17,9 @@ from app.api.routes_trading import (
 from app.core.config import Settings
 from app.db.models import LiveCopyFillState, TradingAccountCashFlow, TradingPosition
 from app.schemas.trading import LiveCopyDecisionRead
-from app.services.paper_trading_service import WalletMonitoringSummary
+from app.services.paper_trading_service import (
+    WalletMonitoringSummary,
+)
 
 
 class MappingRows:

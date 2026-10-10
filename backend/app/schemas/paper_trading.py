@@ -27,7 +27,10 @@ class PaperTradingAccountRead(CamelModel):
     open_notional_usd: Decimal = Decimal("0")
     open_margin_usd: Decimal = Decimal("0")
     fee_usd: Decimal
+    funding_usd: Decimal = Decimal("0")
     enabled: bool
+    exit_only_at: datetime | None = None
+    exit_only_reason: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -68,6 +71,8 @@ class PaperPositionRead(CamelModel):
     notional_usd: Decimal
     leverage: Decimal
     margin_usd: Decimal
+    margin_mode: str = "cross"
+    funding_usd: Decimal = Decimal("0")
     realized_pnl_usd: Decimal
     mark_price: Decimal | None = None
     current_notional_usd: Decimal | None = None
@@ -196,6 +201,7 @@ class PaperClosedTradeRead(CamelModel):
     realized_pnl_usd: Decimal
     net_pnl_usd: Decimal
     is_source_liquidation: bool = False
+    is_paper_liquidation: bool = False
     opened_at: datetime | None = None
     closed_at: datetime
     duration_ms: int | None = None

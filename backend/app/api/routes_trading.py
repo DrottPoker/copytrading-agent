@@ -80,7 +80,9 @@ from app.services.live_trading_service import (
     stop_live_trading_account,
     submit_live_trade_intent,
 )
-from app.services.paper_trading_service import load_wallet_monitoring_stats
+from app.services.paper_trading_service import (
+    load_wallet_monitoring_stats,
+)
 from app.services.trading_account_service import list_trading_accounts
 from app.services.trading_core import copy_allocation_pct
 from app.services.wallet_service import wallet_pool_rank_cte

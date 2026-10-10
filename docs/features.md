@@ -770,6 +770,9 @@ What it does:
 - Splits the allocation budget (`trading_copy_max_total_allocation_pct`, 100% by
   default) equally between the copied sources, so five sources get 20% each.
 - Converts new non-snapshot realtime source fills into simulated paper fills.
+- Applies the same entry and exit rules as live copy through the shared
+  `copy_decision` module, so a paper result shows what the live rules would
+  have done with the same fill.
 - Sizes entries against a target position: allocation divided by source perp
   equity, times the source position right after the fill. The source position
   comes from the fill's `startPosition` plus its size. Orders are still placed
@@ -851,12 +854,38 @@ What it does:
   is 2 seconds.
 - Falls back to HTTP `allMids`, then dex-specific `allMids`, then Hyperliquid
   `metaAndAssetCtxs`, for missing or stale cache prices.
-- Applies adverse slippage from `paper_copy_slippage_bps` to the observed price.
-- Skips paper fills and live entries when adverse observed price movement is
-  more than `trading_copy_max_price_drift_bps` from the source fill price. The
-  default limit is 100 bps. Favorable drift in the execution direction is
-  allowed and recorded as 0 bps. Live reduce-only exits bypass the entry drift
-  guard so adverse price movement cannot strand copied exposure.
+- Fills paper orders against the Hyperliquid order book (`l2Book`) like a live
+  IOC order when `paper_copy_order_book_fills` is enabled. The limit price is
+  the execution mid plus or minus `live_trading_limit_slippage_bps`, and the
+  fill price is the volume-weighted average of the book levels inside that
+  limit. Orders that the book cannot fill completely are skipped as
+  `paper_ioc_unfilled`. Without a book, paper applies adverse slippage from
+  `paper_copy_slippage_bps` to the observed price.
+- Skips paper and live entries when adverse observed price movement is more
+  than `trading_copy_max_price_drift_bps` from the source fill price. The
+  default limit is 30 bps. Favorable drift in the execution direction is
+  allowed and recorded as 0 bps. Exits in both engines bypass the drift guard
+  so adverse price movement cannot strand copied exposure.
+- Copies the source's cross or isolated margin mode to the paper position.
+- Applies hourly Hyperliquid funding to open paper positions when
+  `paper_copy_funding_enabled` is enabled. Payments are stored once per
+  position and hour in `paper_funding_payments`, and the account shows total
+  funding next to fees.
+- Liquidates paper positions when `paper_copy_liquidation_enabled` is enabled:
+  an isolated position when its own margin no longer covers maintenance, and
+  all cross positions of an account when the account's cross value no longer
+  covers their combined maintenance. Maintenance margin comes from each coin's
+  maximum leverage in Hyperliquid `meta`. Liquidations appear in closed trades
+  with a `paper liquidation` marker.
+- Applies the live account loss limits to paper accounts when
+  `paper_copy_loss_limits_enabled` is enabled: 10% over a rolling 24 hours, 20%
+  over 7 days, and 25% drawdown from the peak, measured on equity snapshots
+  every `paper_copy_equity_snapshot_seconds`. A breach makes the paper account
+  exit-only, shown as `exit-only: <rule>` on the dashboard, until it is started
+  again or reset. New entries from a source that has lost more than the
+  per-source limit over 7 days are skipped as `source_loss_limit`.
+- Shows paper net realized PnL like live: realized PnL minus fees plus funding.
+  Total PnL adds current unrealized PnL.
 - Shows source price, live mid, adverse drift bps, the per-fill drift limit,
   and min-order adjustment markers in Recent Fills when execution details are
   available.
@@ -1127,6 +1156,12 @@ Config:
 - `paper_copy_slippage_bps`
 - `paper_copy_latency_ms`
 - `paper_copy_recovery_interval_seconds`
+- `paper_copy_order_book_fills`, defaults to true
+- `paper_copy_funding_enabled`, defaults to true
+- `paper_copy_liquidation_enabled`, defaults to true
+- `paper_copy_loss_limits_enabled`, defaults to true
+- `paper_copy_risk_check_seconds`, defaults to 15 seconds
+- `paper_copy_equity_snapshot_seconds`, defaults to 300 seconds
 
 Current limitations:
 
@@ -1137,9 +1172,11 @@ Current limitations:
   disabled. There is no coin allowlist or blocklist, so every market supported by
   the Hyperliquid adapter is eligible. Paper execution remains the default
   simulation layer.
-- The execution model is still deterministic: it uses live mids, configured
-  latency, configured adverse slippage, and a max drift guard, but it does not
-  simulate order book depth or partial fills yet.
+- The order book fill uses the book at execution time and does not model the
+  book moving during the configured latency, queue position, or market impact
+  on later fills. Funding is charged about a minute after each hour from
+  Hyperliquid's settled hourly rates, using the position's size and mark price
+  at that time, so a position closed in between misses that hour's payment.
 - Paper accounts are not backfilled from historical fills. They start recording
   only from new non-snapshot realtime fills after they exist.
 - Editing `starting_balance_usd` does not reset existing account state by
@@ -1598,7 +1635,8 @@ What it does:
   the source account state cache age and warm-up interval.
 - `backend/config/paper_trading.json` owns paper-only simulation settings:
   paper copy enablement, simulated fees, simulated slippage, simulated latency,
-  and recovery cadence.
+  recovery cadence, order book fills, funding, liquidation, paper loss limits,
+  and the paper risk loop cadence.
 - `backend/config/pool_fill_import.json` owns scheduled pool reimport and shared
   fill import storage and market-filter settings.
 - `backend/config/prune.json` owns wallet prune rules, scheduled prune behavior,

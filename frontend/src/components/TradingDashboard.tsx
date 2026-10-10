@@ -1420,6 +1420,7 @@ function ClosedTradeRow({ trade }: { trade: PaperClosedTrade }) {
             <p className="font-semibold text-ink">{trade.coin}</p>
             {trade.side ? <StatusPill label={trade.side} tone={trade.side === "long" ? "positive" : "warning"} /> : null}
             {trade.isSourceLiquidation ? <StatusPill label="liquidation" tone="danger" /> : null}
+            {trade.isPaperLiquidation ? <StatusPill label="paper liquidation" tone="danger" /> : null}
             <span className="text-xs text-muted">{formatCloseType(trade.closeType)}</span>
           </div>
           <Link
@@ -1605,13 +1606,28 @@ function buildPaperDashboardAccounts(summary: PaperTradingSummaryResponse): Dash
     openPositionCount: account.openPositionCount,
     paperAccount: account,
     feeUsd: numberValue(account.feeUsd),
-    fundingUsd: 0,
-    realizedPnlUsd: numberValue(account.realizedPnlUsd),
-    statusLabel: account.enabled ? "enabled" : "disabled",
-    statusTone: account.enabled ? "positive" : "warning",
-    totalPnlUsd: numberValue(account.totalPnlUsd),
+    fundingUsd: numberValue(account.fundingUsd ?? "0"),
+    realizedPnlUsd: paperNetRealizedPnl(account),
+    statusLabel: paperAccountStatusLabel(account),
+    statusTone: account.exitOnlyAt ? "warning" : account.enabled ? "positive" : "warning",
+    totalPnlUsd: paperNetRealizedPnl(account) + numberValue(account.unrealizedPnlUsd),
     unrealizedPnlUsd: numberValue(account.unrealizedPnlUsd),
   }));
+}
+
+function paperNetRealizedPnl(account: PaperTradingSummaryResponse["accounts"][number]) {
+  return (
+    numberValue(account.realizedPnlUsd) -
+    numberValue(account.feeUsd) +
+    numberValue(account.fundingUsd ?? "0")
+  );
+}
+
+function paperAccountStatusLabel(account: PaperTradingSummaryResponse["accounts"][number]) {
+  if (account.exitOnlyAt) {
+    return account.exitOnlyReason ? `exit-only: ${account.exitOnlyReason}` : "exit-only";
+  }
+  return account.enabled ? "enabled" : "disabled";
 }
 
 function buildLiveDashboardAccounts(

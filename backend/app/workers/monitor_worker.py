@@ -24,6 +24,11 @@ from app.services.copy_execution_cache import (
     LiveCopyLaneSyncTracker,
     SourceAccountStateCache,
 )
+from app.services.copy_signal_service import (
+    SourceStateCache,
+    source_fill_from_wallet_fill,
+    warm_source_state_cache,
+)
 from app.services.discovery_service import run_discovery_import
 from app.services.job_lock_service import JobLockAlreadyHeldError, job_lock
 from app.services.live_copy_service import (
@@ -62,17 +67,15 @@ from app.services.operation_status_service import (
     mark_operation_started,
     mark_operation_succeeded,
 )
+from app.services.paper_risk_service import PaperRiskLoopState, run_paper_risk_once
 from app.services.paper_trading_service import (
     CopyAllocationCache,
     PaperCopyBatchResult,
-    SourceStateCache,
-    paper_source_fill_from_wallet_fill,
     process_paper_copy_fills,
     process_paper_copy_recovery,
     record_wallet_monitoring_snapshot,
     refresh_paper_copy_allocations,
     store_copy_allocations,
-    warm_source_state_cache,
 )
 from app.services.pool_fill_import_service import import_due_pool_wallet_fills
 from app.services.realtime_event_service import publish_event as publish_realtime_event
@@ -489,6 +492,15 @@ async def run_monitor_loops(
         )
 
     if runs_trading and settings.paper_trading_enabled and settings.paper_copy_enabled:
+        add_supervised(
+            "paper-risk",
+            lambda: run_paper_risk_loop(
+                sessionmaker=sessionmaker,
+                stop_event=stop_event,
+                settings=settings,
+                price_cache=price_cache,
+            ),
+        )
         add_supervised(
             "paper-copy-recovery",
             lambda: run_paper_copy_recovery_loop(
@@ -2014,7 +2026,7 @@ async def run_live_copy_work_loop(
                     live_result = await process_live_copy_fills(
                         session,
                         source_wallet=claimed.wallet_address,
-                        fills=[paper_source_fill_from_wallet_fill(wallet_fill)],
+                        fills=[source_fill_from_wallet_fill(wallet_fill)],
                         settings=settings,
                         price_cache=price_cache,
                         origin=claimed.origin,
@@ -2301,6 +2313,35 @@ def live_copy_resource_kwargs(copy_resources: CopyExecutionResources | None) -> 
         "trading_client": copy_resources.trading_client,
         "lane_sync_tracker": copy_resources.lane_sync_tracker,
     }
+
+
+async def run_paper_risk_loop(
+    *,
+    sessionmaker: Any,
+    stop_event: asyncio.Event,
+    settings: Any,
+    price_cache: MarketPriceCache | None = None,
+) -> None:
+    """Liquidate, charge funding, and snapshot equity for paper accounts like live ones."""
+
+    state = PaperRiskLoopState()
+    async with HyperliquidClient(settings) as client:
+        while not stop_event.is_set():
+            result = await run_paper_risk_once(
+                sessionmaker,
+                client=client,
+                settings=settings,
+                state=state,
+                price_cache=price_cache,
+            )
+            if result.liquidated or result.funding_payments:
+                logger.info(
+                    "paper risk pass liquidated=%s funding_payments=%s snapshots=%s",
+                    result.liquidated,
+                    result.funding_payments,
+                    result.snapshots,
+                )
+            await sleep_until_stop(stop_event, settings.paper_copy_risk_check_seconds)
 
 
 async def run_source_state_warmup_loop(

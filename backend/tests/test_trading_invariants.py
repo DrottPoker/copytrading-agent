@@ -14,8 +14,8 @@ from app.integrations.hyperliquid_live_client import (
     live_order_wire_price,
     live_order_wire_values,
 )
-from app.services.live_copy_service import live_close_size_for_part
-from app.services.paper_trading_service import (
+from app.services.copy_decision import copy_close_size
+from app.services.copy_signal_service import (
     SourceFillPart,
     adverse_price_drift_bps,
     apply_adverse_slippage,
@@ -235,11 +235,10 @@ def test_close_size_never_exceeds_the_owned_position(
         close_ratio=close_ratio,
     )
 
-    close_size = live_close_size_for_part(
-        position=position,
+    close_size = copy_close_size(
+        position_size=position.size,
         part=part,
-        source_account_state=None,
-        coin="BTC",
+        final_close=False,
         available_size=available_size,
     )
 

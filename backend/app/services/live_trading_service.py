@@ -36,6 +36,11 @@ from app.integrations.hyperliquid_live_client import (
     HyperliquidLiveTradingConfigurationError,
     LiveOrderResult,
 )
+from app.services.copy_risk_rules import (
+    AccountLossState,
+    account_loss_breach,
+    performance_loss_pct,
+)
 from app.services.job_lock_service import (
     JobLockAlreadyHeldError,
     job_lock,
@@ -3021,35 +3026,17 @@ async def validate_live_entry_risk_guardrails(
             limit=settings.live_trading_reconciliation_max_snapshot_age_seconds,
             trip_account=False,
         )
-    loss_state = await live_account_loss_state(session, account_key=account.key, now=now)
-    if loss_state is not None:
-        for rule, label, observed, limit in (
-            (
-                "max_daily_loss",
-                "rolling 24 hour loss",
-                loss_state.daily_loss_pct,
-                settings.live_trading_max_daily_loss_pct,
-            ),
-            (
-                "max_weekly_loss",
-                "rolling 7 day loss",
-                loss_state.weekly_loss_pct,
-                settings.live_trading_max_weekly_loss_pct,
-            ),
-            (
-                "max_drawdown",
-                "drawdown from peak",
-                loss_state.drawdown_pct,
-                settings.live_trading_max_drawdown_pct,
-            ),
-        ):
-            if limit > ZERO and observed >= limit:
-                await reject(
-                    rule=rule,
-                    message=f"Live account {label} guard is active.",
-                    observed=str(observed),
-                    limit=str(limit),
-                )
+    breach = account_loss_breach(
+        await live_account_loss_state(session, account_key=account.key, now=now),
+        settings=settings,
+    )
+    if breach is not None:
+        await reject(
+            rule=breach.rule,
+            message=f"Live account {breach.label} guard is active.",
+            observed=str(breach.observed),
+            limit=str(breach.limit),
+        )
 
     if settings.live_trading_max_orders_per_minute > 0:
         recent_orders = await live_account_recent_order_count(
@@ -3066,19 +3053,12 @@ async def validate_live_entry_risk_guardrails(
             )
 
 
-@dataclass(frozen=True)
-class LiveAccountLossState:
-    daily_loss_pct: Decimal
-    weekly_loss_pct: Decimal
-    drawdown_pct: Decimal
-
-
 async def live_account_loss_state(
     session: AsyncSession,
     *,
     account_key: str,
     now: datetime,
-) -> LiveAccountLossState | None:
+) -> AccountLossState | None:
     """Rolling losses and drawdown from the time-weighted performance index.
 
     The index excludes deposits and withdrawals, so cash flows never look like
@@ -3114,17 +3094,11 @@ async def live_account_loss_state(
         return decimal_or_none(value) or decimal_or_none(baseline) or ZERO
 
     current = decimal_or_none(latest) or ZERO
-    return LiveAccountLossState(
+    return AccountLossState(
         daily_loss_pct=performance_loss_pct(current, await index_at(now - timedelta(days=1))),
         weekly_loss_pct=performance_loss_pct(current, await index_at(now - timedelta(days=7))),
         drawdown_pct=performance_loss_pct(current, decimal_or_none(peak) or ZERO),
     )
-
-
-def performance_loss_pct(current_index: Decimal, reference_index: Decimal) -> Decimal:
-    if reference_index <= ZERO:
-        return ZERO
-    return max(Decimal("1") - current_index / reference_index, ZERO)
 
 
 async def live_account_recent_order_count(

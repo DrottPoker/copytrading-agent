@@ -42,7 +42,9 @@ from app.db.models import (
 )
 
 if TYPE_CHECKING:
-    from app.services.paper_trading_service import SourceFillPart
+    from app.services.copy_signal_service import (
+        SourceFillPart,
+    )
 
 from app.services.source_fill_ordering import (
     SOURCE_CLOSE_DIRECTIONS,

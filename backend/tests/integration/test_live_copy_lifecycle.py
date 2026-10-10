@@ -18,6 +18,11 @@ from app.db.models import (
     WatchedWallet,
 )
 from app.services import live_copy_service, live_trading_service
+from app.services.copy_signal_service import (
+    ExecutionMarketPrices,
+    SourceAccountState,
+    SourceFillPart,
+)
 from app.services.live_copy_service import (
     finalize_live_copy_fill_disposition,
     process_live_copy_fills,
@@ -50,11 +55,8 @@ from app.services.live_trading_service import (
     submit_live_trade_intent,
 )
 from app.services.paper_trading_service import (
-    ExecutionMarketPrices,
     PaperCopyBatchResult,
-    PaperSourceAccountState,
     PaperSourceAllocation,
-    SourceFillPart,
     refresh_paper_copy_allocations,
 )
 from app.services.trading_core import build_copy_trade_intent
@@ -877,7 +879,7 @@ async def test_live_copy_uses_durable_first_observation_for_entry_admission(
 
     async def fake_source_account_states(*_args: object, **_kwargs: object):
         return {
-            "": PaperSourceAccountState(
+            "": SourceAccountState(
                 dex="",
                 perp_equity=Decimal("1000"),
                 leverage_by_coin={"HYPE": Decimal("1")},

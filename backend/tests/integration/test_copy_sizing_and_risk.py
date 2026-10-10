@@ -19,6 +19,10 @@ from app.db.models import (
     TradingPosition,
     WatchedWallet,
 )
+from app.services.copy_signal_service import (
+    ExecutionMarketPrices,
+    SourceFillPart,
+)
 from app.services.live_trading_service import (
     LIVE_EXCHANGE_SOURCE,
     live_account_loss_state,
@@ -26,9 +30,7 @@ from app.services.live_trading_service import (
     load_live_copy_exposure,
 )
 from app.services.paper_trading_service import (
-    ExecutionMarketPrices,
     PaperSourceAllocation,
-    SourceFillPart,
     apply_open_part,
 )
 

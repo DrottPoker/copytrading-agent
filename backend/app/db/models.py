@@ -1628,8 +1628,66 @@ class PaperTradingAccount(Base, TimestampMixin, UpdatedAtMixin):
         Numeric, nullable=False, server_default=text("0")
     )
     fee_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False, server_default=text("0"))
+    # Signed funding: positive when the account received funding.
+    funding_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False, server_default=text("0"))
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    # Set when a loss limit trips, like a live account going exit-only.
+    exit_only_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    exit_only_reason: Mapped[str | None] = mapped_column(Text)
     config_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+
+
+class PaperAccountEquitySnapshot(Base):
+    """Marked-to-market paper equity used for the paper account loss limits."""
+
+    __tablename__ = "paper_account_equity_snapshots"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["account_key"],
+            ["paper_trading_accounts.key"],
+            ondelete="CASCADE",
+            name="fk_paper_account_equity_snapshots_account",
+        ),
+        CheckConstraint("equity_usd >= 0", name="ck_paper_account_equity_snapshots_equity"),
+        Index("ix_paper_account_equity_snapshots_account_recorded", "account_key", "recorded_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    account_key: Mapped[str] = mapped_column(Text, nullable=False)
+    equity_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class PaperFundingPayment(Base, TimestampMixin):
+    """One hourly funding payment of a paper position, unique per position and hour."""
+
+    __tablename__ = "paper_funding_payments"
+    __table_args__ = (
+        UniqueConstraint(
+            "position_id",
+            "funding_time",
+            name="ux_paper_funding_payments_position_time",
+        ),
+        Index("ix_paper_funding_payments_account_time", "account_key", "funding_time"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    position_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    account_key: Mapped[str] = mapped_column(Text, nullable=False)
+    source_wallet: Mapped[str] = mapped_column(Text, nullable=False)
+    coin: Mapped[str] = mapped_column(Text, nullable=False)
+    side: Mapped[str] = mapped_column(Text, nullable=False)
+    funding_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    funding_rate: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    size: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    price: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    amount_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
 
 
 class PaperCopyAllocation(Base, UpdatedAtMixin):
@@ -1661,6 +1719,10 @@ class PaperPosition(Base, TimestampMixin, UpdatedAtMixin):
     __tablename__ = "paper_positions"
     __table_args__ = (
         CheckConstraint("side in ('long', 'short')", name="ck_paper_positions_side"),
+        CheckConstraint(
+            "margin_mode in ('cross', 'isolated')",
+            name="ck_paper_positions_margin_mode",
+        ),
         UniqueConstraint(
             "account_key",
             "source_wallet",
@@ -1683,10 +1745,13 @@ class PaperPosition(Base, TimestampMixin, UpdatedAtMixin):
     notional_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
     leverage: Mapped[Decimal] = mapped_column(Numeric, nullable=False, server_default=text("1"))
     margin_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False, server_default=text("0"))
+    # Copied from the source, it decides how the simulator liquidates the position.
+    margin_mode: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'cross'"))
     realized_pnl_usd: Mapped[Decimal] = mapped_column(
         Numeric, nullable=False, server_default=text("0")
     )
     fee_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False, server_default=text("0"))
+    funding_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False, server_default=text("0"))
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -1694,7 +1759,9 @@ class PaperCopyFill(Base, TimestampMixin):
     __tablename__ = "paper_copy_fills"
     __table_args__ = (
         CheckConstraint(
-            "action in ('open', 'add', 'reduce', 'close', 'flip_close', 'flip_open', 'skip')",
+            "action in ("
+            "'open', 'add', 'reduce', 'close', 'flip_close', 'flip_open', 'skip', 'liquidation'"
+            ")",
             name="ck_paper_copy_fills_action",
         ),
         CheckConstraint("side in ('long', 'short')", name="ck_paper_copy_fills_side"),

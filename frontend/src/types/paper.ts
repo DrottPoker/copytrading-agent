@@ -12,7 +12,10 @@ export type PaperTradingAccount = {
   openNotionalUsd: string;
   openMarginUsd: string;
   feeUsd: string;
+  fundingUsd?: string;
   enabled: boolean;
+  exitOnlyAt?: string | null;
+  exitOnlyReason?: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -53,6 +56,8 @@ export type PaperPosition = {
   notionalUsd: string;
   leverage: string;
   marginUsd: string;
+  marginMode?: "cross" | "isolated";
+  fundingUsd?: string;
   realizedPnlUsd: string;
   markPrice: string | null;
   currentNotionalUsd: string | null;
@@ -161,7 +166,7 @@ export type PaperClosedTrade = {
   sourceLabel: string | null;
   sourceFillId: string;
   coin: string;
-  closeType: "close" | "flip_close";
+  closeType: "close" | "flip_close" | "liquidation";
   side: "long" | "short" | null;
   exitPrice: string | null;
   size: string | null;
@@ -172,6 +177,7 @@ export type PaperClosedTrade = {
   realizedPnlUsd: string;
   netPnlUsd: string;
   isSourceLiquidation: boolean;
+  isPaperLiquidation?: boolean;
   openedAt: string | null;
   closedAt: string;
   durationMs: number | null;

@@ -24,7 +24,50 @@ from app.db.models import (
 )
 from app.integrations.hyperliquid_client import HyperliquidClient
 from app.integrations.hyperliquid_live_client import HyperliquidLiveTradingClient
+from app.services.copy_decision import (
+    ALLOCATION_INACTIVE,
+    CLOSE_ALREADY_PENDING,
+    CLOSE_BELOW_MIN_ORDER,
+    CLOSE_RATIO_MISSING,
+    CLOSE_SIZE_ZERO,
+    EXECUTION_PRICE_UNAVAILABLE,
+    INVALID_SOURCE_PRICE,
+    MATCHING_POSITION_MISSING,
+    OPPOSITE_POSITION,
+    PREEXISTING_SOURCE_POSITION,
+    PRICE_DRIFT_TOO_HIGH,
+    SOURCE_EQUITY_MISSING,
+    SOURCE_POSITION_UNKNOWN,
+    CopyPosition,
+    aggregate_below_min_close,
+    decide_close,
+    decide_entry,
+    entry_precheck,
+    entry_price_drift_blocked,
+)
 from app.services.copy_execution_cache import LiveCopyLaneSyncTracker
+from app.services.copy_risk_rules import source_loss_limit_usd
+from app.services.copy_signal_service import (
+    ExecutionMarketPrices,
+    SourceAccountState,
+    SourceFillPart,
+    SourceStateCache,
+    UnifiedEquityCache,
+    build_execution_context,
+    decimal_or_zero,
+    is_preexisting_source_add,
+    leverage_for_fill,
+    load_execution_market_prices,
+    load_source_account_state,
+    load_source_account_states,
+    part_requires_source_equity,
+    plan_source_fill,
+    resolve_coin_decimal,
+    resolve_coin_margin_mode,
+    sorted_source_fills,
+    source_fill_age_exceeds_entry_limit,
+    source_fill_from_wallet_fill,
+)
 from app.services.live_copy_state_service import (
     LIVE_COPY_ORIGIN_PERIODIC_RECOVERY,
     LIVE_COPY_ORIGIN_REALTIME,
@@ -76,32 +119,11 @@ from app.services.live_trading_service import (
 from app.services.market_price_cache import MarketPriceCache, dex_from_coin
 from app.services.paper_trading_service import (
     CopyAllocationCache,
-    ExecutionMarketPrices,
     PaperCopyBatchResult,
-    PaperSourceAccountState,
     PaperSourceAllocation,
-    SourceFillPart,
-    SourceStateCache,
-    UnifiedEquityCache,
-    build_execution_context,
     combine_skip_reasons,
     copy_allocations,
-    decimal_or_zero,
-    is_preexisting_source_add,
-    leverage_for_fill,
-    load_execution_market_prices,
-    load_source_account_state,
-    load_source_account_states,
-    paper_source_fill_from_wallet_fill,
-    part_requires_source_equity,
-    plan_source_fill,
     refresh_paper_copy_allocations,
-    resolve_coin_decimal,
-    resolve_coin_margin_mode,
-    resolve_source_current_position,
-    sorted_paper_source_fills,
-    source_fill_age_exceeds_entry_limit,
-    source_state_available_for_reconciliation,
 )
 from app.services.source_fill_ordering import (
     decimal_or_none as source_order_decimal_or_none,
@@ -117,12 +139,9 @@ from app.services.trading_core import (
     TradeSide,
     build_client_order_id,
     build_copy_trade_intent,
-    entry_sizing_limits,
     margin_from_notional,
     parse_margin_mode,
     parse_trade_action,
-    plan_entry_sizing,
-    source_position_after_fill,
     trade_intent_payload,
     trade_is_buy,
 )
@@ -164,6 +183,25 @@ LIVE_COPY_RETRYABLE_SKIP_REASONS = frozenset(
     }
 )
 LIVE_COPY_ENTRY_ACTIONS = frozenset({"open", "add", "flip_open"})
+# Stored live reason names for engine-neutral decision reasons; other reasons,
+# such as sizing outcomes, are stored with a live_ prefix.
+LIVE_DECISION_REASONS = {
+    INVALID_SOURCE_PRICE: "live_invalid_source_price",
+    PREEXISTING_SOURCE_POSITION: "live_preexisting_source_add",
+    OPPOSITE_POSITION: "live_position_side_mismatch",
+    ALLOCATION_INACTIVE: "live_allocation_inactive",
+    PRICE_DRIFT_TOO_HIGH: "live_price_drift_too_high",
+    SOURCE_POSITION_UNKNOWN: "live_source_position_unknown",
+    MATCHING_POSITION_MISSING: "live_matching_position_missing",
+    CLOSE_ALREADY_PENDING: "live_close_already_pending",
+    CLOSE_RATIO_MISSING: "live_close_ratio_missing",
+    CLOSE_SIZE_ZERO: "live_close_size_zero",
+    CLOSE_BELOW_MIN_ORDER: "live_close_below_min_order_notional",
+}
+
+
+def live_decision_reason(reason: str) -> str:
+    return LIVE_DECISION_REASONS.get(reason, f"live_{reason}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,17 +228,6 @@ class LiveEntryAdmission:
     @property
     def is_terminal(self) -> bool:
         return self.terminal_reason is not None
-
-
-def live_price_drift_blocks_action(
-    *,
-    action: str,
-    price_drift_bps: Decimal,
-    max_price_drift_bps: Decimal,
-) -> bool:
-    """Block only entries whose current mid moved adversely beyond the limit."""
-
-    return action in LIVE_COPY_ENTRY_ACTIONS and price_drift_bps > max_price_drift_bps
 
 
 class LiveCopyPartDeferred(RuntimeError):
@@ -661,7 +688,7 @@ async def process_live_copy_fills(
         skipped += count
         skip_reasons[reason] = skip_reasons.get(reason, 0) + count
 
-    sorted_fills = sorted_paper_source_fills(fills)
+    sorted_fills = sorted_source_fills(fills)
     planned_fills: list[tuple[dict[str, Any], list[SourceFillPart], LiveEntryAdmission | None]] = []
     for fill in sorted_fills:
         if not str(fill.get("externalFillId") or ""):
@@ -1647,7 +1674,7 @@ def order_live_source_lifecycle_fills(
             wallet_fill = wallet_fills_by_id.get(source_fill_id)
             if wallet_fill is None or wallet_fill.coin != fill.coin:
                 raise LiveCopyPartDeferred("live_source_attribution_ambiguous")
-            canonical_key = source_fill_order_key(paper_source_fill_from_wallet_fill(wallet_fill))
+            canonical_key = source_fill_order_key(source_fill_from_wallet_fill(wallet_fill))
             (
                 source_timestamp_ms,
                 _coin,
@@ -1780,7 +1807,7 @@ async def load_recovered_live_copy_lifecycle_order(
         state_lifecycle_order["columns"]["source_lifecycle_fill_id_numeric"] or ZERO,
         state_lifecycle_order["columns"]["source_lifecycle_fill_id"],
     )
-    if state_key != source_fill_order_key(paper_source_fill_from_wallet_fill(wallet_fill)):
+    if state_key != source_fill_order_key(source_fill_from_wallet_fill(wallet_fill)):
         return None
     return state_lifecycle_order
 
@@ -1816,7 +1843,7 @@ def live_copy_position_lifecycle_order_from_wallet_fill(
 ) -> dict[str, Any] | None:
     if fill is None:
         return None
-    source_fill = paper_source_fill_from_wallet_fill(fill)
+    source_fill = source_fill_from_wallet_fill(fill)
     direction_rank, position_rank, numeric_fill_id = source_fill_order_components(source_fill)
     return {
         "raw": {
@@ -2132,7 +2159,7 @@ async def sync_live_source_margin_settings(
     # the position read transaction open while it runs.
     await session.commit()
 
-    source_states: dict[str, PaperSourceAccountState] = {}
+    source_states: dict[str, SourceAccountState] = {}
     unified_equity_cache: UnifiedEquityCache = {}
     for dex in sorted({dex_from_coin(position.coin) for position in positions}):
         source_states[dex] = await load_source_account_state(
@@ -2368,7 +2395,7 @@ async def apply_live_copy_part(
     allocation: PaperSourceAllocation,
     fill: dict[str, Any],
     part: SourceFillPart,
-    source_account_state: PaperSourceAccountState | None,
+    source_account_state: SourceAccountState | None,
     source_perp_equity: Decimal,
     source_leverages: dict[str, Decimal],
     market_prices: ExecutionMarketPrices,
@@ -2425,7 +2452,7 @@ async def apply_live_open_part(
     allocation: PaperSourceAllocation,
     fill: dict[str, Any],
     part: SourceFillPart,
-    source_account_state: PaperSourceAccountState | None,
+    source_account_state: SourceAccountState | None,
     source_perp_equity: Decimal,
     source_leverages: dict[str, Decimal],
     market_prices: ExecutionMarketPrices,
@@ -2472,11 +2499,7 @@ async def apply_live_open_part(
         )
         if execution_context is None:
             raise LiveCopyPartDeferred("live_execution_price_unavailable")
-        if live_price_drift_blocks_action(
-            action=part.action,
-            price_drift_bps=execution_context.price_drift_bps,
-            max_price_drift_bps=settings.trading_copy_max_price_drift_bps,
-        ):
+        if entry_price_drift_blocked(execution_context, settings=settings):
             return await record_live_skip(
                 session,
                 account=account,
@@ -2594,57 +2617,50 @@ async def apply_live_open_part(
         source_wallet=allocation.source_wallet,
         coin=coin,
     )
-    if position is None and is_preexisting_source_add(part.start_position, side=part.side):
+    copy_position = (
+        CopyPosition(side=position.side, size=position.size) if position is not None else None
+    )
+
+    async def skip(
+        reason: str,
+        *,
+        limit_price: Decimal | None = None,
+        decision_context: dict[str, Any] | None = None,
+        sized: bool = False,
+    ) -> PaperCopyBatchResult:
         return await record_live_skip(
             session,
             account=account,
             allocation=allocation,
             fill=fill,
             part=part,
-            reason="live_preexisting_source_add",
+            reason=reason,
             leverage=source_leverage,
             margin_mode=source_margin_mode,
+            limit_price=limit_price,
+            margin_usd=ZERO if sized else None,
+            requested_notional_usd=ZERO if sized else None,
+            requested_size=ZERO if sized else None,
+            decision_context=decision_context,
         )
-    if position is not None and position.side != part.side:
-        if part.action == "flip_open":
-            raise LiveCopyPartDeferred("live_flip_close_pending")
-        return await record_live_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            reason="live_position_side_mismatch",
-            leverage=source_leverage,
-            margin_mode=source_margin_mode,
-        )
-    if position is None and not allocation.active:
-        return await record_live_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            reason="live_allocation_inactive",
-            leverage=source_leverage,
-            margin_mode=source_margin_mode,
-        )
+
+    precheck_reason = entry_precheck(
+        part=part,
+        position=copy_position,
+        allocation_active=allocation.active,
+        source_price=decimal_or_zero(fill.get("price")),
+    )
+    if precheck_reason == OPPOSITE_POSITION and part.action == "flip_open":
+        raise LiveCopyPartDeferred("live_flip_close_pending")
+    if precheck_reason is not None:
+        return await skip(live_decision_reason(precheck_reason))
     if await live_market_is_reserved_by_other_source(
         session,
         account_key=account.key,
         source_wallet=allocation.source_wallet,
         coin=coin,
     ):
-        return await record_live_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            reason="live_market_reserved_by_other_source",
-            leverage=source_leverage,
-            margin_mode=source_margin_mode,
-        )
+        return await skip("live_market_reserved_by_other_source")
     exchange_position = await load_live_source_position(
         session,
         account_key=account.key,
@@ -2657,84 +2673,24 @@ async def apply_live_open_part(
         side=part.side,
     )
     if exchange_conflict is not None:
-        return await record_live_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            reason=exchange_conflict,
-            leverage=source_leverage,
-            margin_mode=source_margin_mode,
-        )
+        return await skip(exchange_conflict)
 
-    execution_context = build_execution_context(
-        fill=fill,
-        part=part,
-        market_prices=market_prices,
-        settings=settings,
-        slippage_bps=settings.live_trading_limit_slippage_bps,
-        latency_ms=0,
-    )
-    if execution_context is None:
-        raise LiveCopyPartDeferred("live_execution_price_unavailable")
-    if live_price_drift_blocks_action(
-        action=part.action,
-        price_drift_bps=execution_context.price_drift_bps,
-        max_price_drift_bps=settings.trading_copy_max_price_drift_bps,
-    ):
-        return await record_live_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            reason="live_price_drift_too_high",
-            leverage=source_leverage,
-            margin_mode=source_margin_mode,
-            limit_price=execution_context.execution_price,
-        )
-
-    price = execution_context.execution_price
-    if position is not None and part.start_position is None:
-        return await record_live_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            reason="live_source_position_unknown",
-            leverage=source_leverage,
-            margin_mode=source_margin_mode,
-            limit_price=price,
-        )
     source_loss_usd = await live_source_net_loss_usd(
         session,
         account_key=account.key,
         source_wallet=allocation.source_wallet,
         now=datetime.now(UTC),
     )
-    source_loss_limit_usd = settings.live_trading_max_source_loss_pct * allocation_equity_usd
-    source_loss_limited = settings.live_trading_max_source_loss_pct > ZERO
-    if source_loss_limited and source_loss_usd >= source_loss_limit_usd:
-        return await record_live_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            reason="live_source_loss_limit",
-            leverage=source_leverage,
-            margin_mode=source_margin_mode,
-            limit_price=price,
+    source_loss_limit = source_loss_limit_usd(equity_usd=allocation_equity_usd, settings=settings)
+    if source_loss_limit is not None and source_loss_usd >= source_loss_limit:
+        return await skip(
+            "live_source_loss_limit",
             decision_context={
                 "sourceLossUsd": str(source_loss_usd),
-                "sourceLossLimitUsd": str(source_loss_limit_usd),
+                "sourceLossLimitUsd": str(source_loss_limit),
             },
         )
 
-    allocation_usd = allocation_equity_usd * allocation.allocation_pct
-    source_exposure_pct = part.source_notional_usd / source_perp_equity
     exposure = await load_live_copy_exposure(
         session,
         account=account,
@@ -2742,57 +2698,54 @@ async def apply_live_open_part(
         coin=coin,
         settings=settings,
     )
-    sizing = plan_entry_sizing(
-        opening=position is None,
-        allocation_usd=allocation_usd,
+    decision = decide_entry(
+        fill=fill,
+        part=part,
+        position=copy_position,
+        allocation_active=allocation.active,
+        allocation_pct=allocation.allocation_pct,
         account_equity_usd=allocation_equity_usd,
         source_equity_usd=source_perp_equity,
-        source_fill_size=part.source_size,
-        source_position_after=source_position_after_fill(
-            start_position=part.start_position,
-            fill_size=part.source_size,
-        ),
-        current_position_size=position.size if position is not None else ZERO,
-        price=price,
+        source_leverage=source_leverage,
+        market_prices=market_prices,
         source_exposure_usd=exposure.source_usd,
         account_exposure_usd=exposure.account_usd,
-        limits=entry_sizing_limits(
-            settings,
-            min_order_notional_usd=live_min_order_notional_usd(settings),
-        ),
+        settings=settings,
+        min_order_notional_usd=live_min_order_notional_usd(settings),
+        slippage_bps=settings.live_trading_limit_slippage_bps,
+        latency_ms=0,
     )
-    sizing_context = {
-        "allocationEquityUsd": str(allocation_equity_usd),
-        "allocationPct": str(allocation.allocation_pct),
-        "allocationUsd": str(allocation_usd),
-        "sourceExposureUsd": str(exposure.source_usd),
-        "accountExposureUsd": str(exposure.account_usd),
-        "targetNotionalUsd": str(sizing.target_notional_usd),
-        "fillTargetNotionalUsd": str(sizing.fill_target_notional_usd),
-        "desiredNotionalUsd": str(sizing.desired_notional_usd),
-        "roundedUp": sizing.rounded_up,
-        "capped": sizing.capped,
-    }
-    if sizing.skip_reason is not None:
-        return await record_live_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            reason=f"live_{sizing.skip_reason}",
-            leverage=source_leverage,
-            margin_mode=source_margin_mode,
-            limit_price=price,
-            margin_usd=ZERO,
-            requested_notional_usd=ZERO,
-            requested_size=ZERO,
+    if decision.reason == EXECUTION_PRICE_UNAVAILABLE:
+        raise LiveCopyPartDeferred("live_execution_price_unavailable")
+    if decision.reason == SOURCE_EQUITY_MISSING:
+        raise LiveCopyPartDeferred("live_source_equity_missing")
+    execution_context = decision.execution_context
+    limit_price = execution_context.execution_price if execution_context is not None else None
+    sizing = decision.sizing
+    sizing_context = (
+        {
+            "allocationEquityUsd": str(allocation_equity_usd),
+            "allocationPct": str(allocation.allocation_pct),
+            "allocationUsd": str(decision.allocation_usd),
+            "sourceExposureUsd": str(exposure.source_usd),
+            "accountExposureUsd": str(exposure.account_usd),
+            "targetNotionalUsd": str(sizing.target_notional_usd),
+            "fillTargetNotionalUsd": str(sizing.fill_target_notional_usd),
+            "desiredNotionalUsd": str(sizing.desired_notional_usd),
+            "roundedUp": sizing.rounded_up,
+            "capped": sizing.capped,
+        }
+        if sizing is not None
+        else None
+    )
+    if decision.reason is not None or execution_context is None:
+        return await skip(
+            live_decision_reason(decision.reason or EXECUTION_PRICE_UNAVAILABLE),
+            limit_price=limit_price,
             decision_context=sizing_context,
+            sized=sizing is not None,
         )
-    notional_usd = sizing.notional_usd
-    margin_usd = margin_from_notional(notional_usd, source_leverage)
 
-    action = "add" if position is not None and part.action == "open" else part.action
     intent = build_copy_trade_intent(
         account_key=account.key,
         account_type="live",
@@ -2800,22 +2753,22 @@ async def apply_live_open_part(
         source_fill_id=str(fill.get("externalFillId") or ""),
         sequence_index=part.sequence_index,
         coin=coin,
-        action=parse_trade_action(action),
+        action=parse_trade_action(decision.action),
         side=part.side,
-        size=notional_usd / price,
-        notional_usd=notional_usd,
-        margin_usd=margin_usd,
+        size=decision.size,
+        notional_usd=decision.notional_usd,
+        margin_usd=decision.margin_usd,
         leverage=source_leverage,
         margin_mode=source_margin_mode,
-        limit_price=price,
+        limit_price=execution_context.execution_price,
         source_price=execution_context.source_price,
         observed_price=execution_context.observed_price,
         price_drift_bps=execution_context.price_drift_bps,
         price_source=execution_context.price_source,
         allocation_pct=allocation.allocation_pct,
-        allocation_usd=allocation_usd,
+        allocation_usd=decision.allocation_usd,
         source_perp_equity_usd=source_perp_equity,
-        source_exposure_pct=source_exposure_pct,
+        source_exposure_pct=decision.source_exposure_pct,
     )
     return await submit_live_copy_intent(
         session,
@@ -2833,7 +2786,7 @@ async def apply_live_close_part(
     allocation: PaperSourceAllocation,
     fill: dict[str, Any],
     part: SourceFillPart,
-    source_account_state: PaperSourceAccountState | None,
+    source_account_state: SourceAccountState | None,
     source_perp_equity: Decimal,
     source_leverages: dict[str, Decimal],
     market_prices: ExecutionMarketPrices,
@@ -2855,122 +2808,40 @@ async def apply_live_close_part(
             coin=coin,
             side=part.side,
         )
-    if position is None:
-        source_leverage = leverage_for_fill(fill=fill, source_leverages=source_leverages)
-        return await record_live_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            reason="live_matching_position_missing",
-            leverage=source_leverage,
-        )
-    if position.side != part.side:
-        source_leverage = leverage_for_fill(fill=fill, source_leverages=source_leverages)
-        return await record_live_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            reason="live_matching_position_missing",
-            leverage=source_leverage,
-        )
-    pending_close_size = await live_pending_close_size_for_position(
-        session,
-        account_key=account.key,
-        source_wallet=allocation.source_wallet,
-        coin=coin,
-        since=position.last_reconciled_at,
+    leverage = (
+        position.leverage
+        if position is not None and position.leverage > ZERO
+        else leverage_for_fill(fill=fill, source_leverages=source_leverages)
     )
-    available_size = max(position.size - pending_close_size, ZERO)
-    if available_size <= POSITION_EPSILON:
-        return await record_live_skip(
+    available_size = ZERO
+    if position is not None and position.side == part.side:
+        pending_close_size = await live_pending_close_size_for_position(
             session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            reason="live_close_already_pending",
-            leverage=position.leverage,
+            account_key=account.key,
+            source_wallet=allocation.source_wallet,
+            coin=coin,
+            since=position.last_reconciled_at,
         )
-
-    execution_context = build_execution_context(
+        available_size = max(position.size - pending_close_size, ZERO)
+    min_order_notional = live_min_order_notional_usd(settings)
+    decision = decide_close(
         fill=fill,
         part=part,
+        position=(
+            CopyPosition(side=position.side, size=position.size) if position is not None else None
+        ),
+        available_size=available_size,
+        source_account_state=source_account_state,
         market_prices=market_prices,
         settings=settings,
+        min_order_notional_usd=min_order_notional,
         slippage_bps=settings.live_trading_limit_slippage_bps,
         latency_ms=0,
     )
-    if execution_context is None:
+    if decision.reason == EXECUTION_PRICE_UNAVAILABLE:
         raise LiveCopyPartDeferred("live_execution_price_unavailable")
-    if live_price_drift_blocks_action(
-        action=part.action,
-        price_drift_bps=execution_context.price_drift_bps,
-        max_price_drift_bps=settings.trading_copy_max_price_drift_bps,
-    ):
-        return await record_live_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            reason="live_price_drift_too_high",
-            leverage=position.leverage,
-            limit_price=execution_context.execution_price,
-        )
-
-    close_size = live_close_size_for_part(
-        position=position,
-        part=part,
-        source_account_state=source_account_state,
-        coin=coin,
-        available_size=available_size,
-    )
-    if close_size is None:
-        return await record_live_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            reason="live_close_ratio_missing",
-            leverage=position.leverage,
-        )
-    if close_size <= ZERO:
-        return await record_live_skip(
-            session,
-            account=account,
-            allocation=allocation,
-            fill=fill,
-            part=part,
-            reason="live_close_size_zero",
-            leverage=position.leverage,
-        )
-    price = execution_context.execution_price
-    notional_usd = close_size * price
-    leverage = (
-        position.leverage
-        if position.leverage > ZERO
-        else leverage_for_fill(
-            fill=fill,
-            source_leverages=source_leverages,
-        )
-    )
-    min_order_notional = live_min_order_notional_usd(settings)
-    final_source_close = live_source_position_is_final_close(
-        source_account_state,
-        coin=coin,
-        side=part.side,
-    )
-    close_below_min_order = live_close_below_min_order_notional(
-        notional_usd,
-        settings=settings,
-    )
     aggregate_skip_orders: list[TradingOrder] = []
-    if close_below_min_order and not final_source_close:
+    if decision.needs_aggregation and position is not None:
         aggregate_skip_orders = await load_live_below_min_close_skip_orders(
             session,
             account_key=account.key,
@@ -2981,34 +2852,42 @@ async def apply_live_close_part(
             current_sequence_index=part.sequence_index,
             since=position.last_reconciled_at or position.opened_at,
         )
-        aggregate_close_size = live_aggregated_below_min_close_size(
-            close_size=close_size,
-            previous_skip_orders=aggregate_skip_orders,
+        decision = aggregate_below_min_close(
+            decision,
+            previous_skipped_size=sum(
+                (
+                    order.requested_size
+                    for order in aggregate_skip_orders
+                    if order.requested_size > ZERO
+                ),
+                ZERO,
+            ),
             available_size=available_size,
+            min_order_notional_usd=min_order_notional,
         )
-        aggregate_notional_usd = aggregate_close_size * price
-        if live_close_below_min_order_notional(
-            aggregate_notional_usd,
-            settings=settings,
-        ):
-            return await record_live_skip(
-                session,
-                account=account,
-                allocation=allocation,
-                fill=fill,
-                part=part,
-                reason="live_close_below_min_order_notional",
-                leverage=leverage,
-                limit_price=price,
-                margin_usd=margin_from_notional(notional_usd, leverage),
-                requested_notional_usd=notional_usd,
-                requested_size=close_size,
-            )
-        close_size = aggregate_close_size
-        notional_usd = aggregate_notional_usd
-        close_below_min_order = False
+    execution_context = decision.execution_context
+    if decision.reason is not None or execution_context is None or position is None:
+        below_min = decision.reason == CLOSE_BELOW_MIN_ORDER
+        return await record_live_skip(
+            session,
+            account=account,
+            allocation=allocation,
+            fill=fill,
+            part=part,
+            reason=live_decision_reason(decision.reason or EXECUTION_PRICE_UNAVAILABLE),
+            leverage=leverage,
+            limit_price=execution_context.execution_price
+            if below_min and execution_context
+            else None,
+            margin_usd=margin_from_notional(decision.notional_usd, leverage) if below_min else None,
+            requested_notional_usd=decision.notional_usd if below_min else None,
+            requested_size=decision.close_size if below_min else None,
+        )
+
+    close_size = decision.close_size
+    notional_usd = decision.notional_usd
     order_notional_usd = (
-        max(notional_usd, min_order_notional) if final_source_close else notional_usd
+        max(notional_usd, min_order_notional) if decision.final_close else notional_usd
     )
     intent = build_copy_trade_intent(
         account_key=account.key,
@@ -3028,7 +2907,7 @@ async def apply_live_close_part(
             if position.margin_mode in MARGIN_MODES
             else "cross"
         ),
-        limit_price=price,
+        limit_price=execution_context.execution_price,
         source_price=execution_context.source_price,
         observed_price=execution_context.observed_price,
         price_drift_bps=execution_context.price_drift_bps,
@@ -3045,7 +2924,7 @@ async def apply_live_close_part(
         settings=settings,
         trading_client=trading_client,
     )
-    if result.processed_fills > 0:
+    if result.processed_fills > 0 and decision.aggregated:
         await mark_live_close_skips_aggregated(
             session,
             orders=aggregate_skip_orders,
@@ -3086,19 +2965,6 @@ async def load_live_below_min_close_skip_orders(
         query = query.where(TradingOrder.created_at >= since)
     result = await session.scalars(query.order_by(TradingOrder.created_at.asc()))
     return list(result.all())
-
-
-def live_aggregated_below_min_close_size(
-    *,
-    close_size: Decimal,
-    previous_skip_orders: list[TradingOrder],
-    available_size: Decimal,
-) -> Decimal:
-    previous_size = sum(
-        (order.requested_size for order in previous_skip_orders if order.requested_size > ZERO),
-        ZERO,
-    )
-    return min(max(close_size + previous_size, ZERO), available_size)
 
 
 async def mark_live_close_skips_aggregated(
@@ -3693,43 +3559,6 @@ def live_close_below_min_order_notional(
     settings: Settings,
 ) -> bool:
     return notional_usd < live_min_order_notional_usd(settings)
-
-
-def live_close_size_for_part(
-    *,
-    position: TradingPosition,
-    part: SourceFillPart,
-    source_account_state: PaperSourceAccountState | None,
-    coin: str,
-    available_size: Decimal | None = None,
-) -> Decimal | None:
-    position_size = (
-        min(position.size, available_size) if available_size is not None else position.size
-    )
-    if live_source_position_is_final_close(
-        source_account_state,
-        coin=coin,
-        side=part.side,
-    ):
-        return position_size
-    if part.close_ratio is None or part.close_ratio <= ZERO:
-        return None
-    return min(position_size, position_size * part.close_ratio)
-
-
-def live_source_position_is_final_close(
-    source_account_state: PaperSourceAccountState | None,
-    *,
-    coin: str,
-    side: str,
-) -> bool:
-    if not source_state_available_for_reconciliation(source_account_state):
-        return False
-    source_position = resolve_source_current_position(
-        source_account_state.positions_by_coin,
-        coin,
-    )
-    return source_position is None or source_position.side != side
 
 
 async def gather_two(first: Any, second: Any) -> tuple[Any, Any]:

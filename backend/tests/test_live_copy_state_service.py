@@ -7,6 +7,9 @@ from sqlalchemy import select
 from sqlalchemy.dialects import postgresql
 
 from app.db.models import LiveCopyFillState, LiveCopySourceState, TradingOrder
+from app.services.copy_signal_service import (
+    SourceFillPart,
+)
 from app.services.live_copy_state_service import (
     LIVE_COPY_ORIGIN_PERIODIC_RECOVERY,
     LIVE_COPY_ORIGIN_REALTIME,
@@ -24,7 +27,6 @@ from app.services.live_copy_state_service import (
     preexisting_market_matches_part,
     update_preexisting_markets_for_part,
 )
-from app.services.paper_trading_service import SourceFillPart
 from app.services.source_fill_ordering import source_fill_order_key
 
 

@@ -20,7 +20,9 @@ from app.services.live_copy_state_service import (
 )
 from app.services.live_copy_work_service import ClaimedLiveCopyWork
 from app.services.live_trading_service import LiveReconciliationError
-from app.services.paper_trading_service import PaperCopyBatchResult
+from app.services.paper_trading_service import (
+    PaperCopyBatchResult,
+)
 from app.services.realtime_execution_inbox_service import ClaimedRealtimeExecution
 from app.services.realtime_fill_service import StoredRealtimeFills
 from app.workers import monitor_worker
@@ -781,7 +783,7 @@ async def test_live_copy_work_loop_claims_processes_and_completes_durable_work(
     monkeypatch.setattr(monitor_worker, "load_claimed_live_copy_wallet_fill", fake_load)
     monkeypatch.setattr(
         monitor_worker,
-        "paper_source_fill_from_wallet_fill",
+        "source_fill_from_wallet_fill",
         lambda _fill: {"id": "1"},
     )
     monkeypatch.setattr(monitor_worker, "process_live_copy_fills", fake_process)
@@ -851,7 +853,7 @@ async def test_live_copy_work_loop_retries_after_processing_failure(monkeypatch)
     monkeypatch.setattr(monitor_worker, "load_claimed_live_copy_wallet_fill", fake_load)
     monkeypatch.setattr(
         monitor_worker,
-        "paper_source_fill_from_wallet_fill",
+        "source_fill_from_wallet_fill",
         lambda _fill: {"id": "1"},
     )
     monkeypatch.setattr(monitor_worker, "process_live_copy_fills", failing_process)
@@ -927,7 +929,7 @@ async def test_live_copy_work_loop_retries_deferred_processing_without_error_log
     monkeypatch.setattr(monitor_worker, "load_claimed_live_copy_wallet_fill", fake_load)
     monkeypatch.setattr(
         monitor_worker,
-        "paper_source_fill_from_wallet_fill",
+        "source_fill_from_wallet_fill",
         lambda _fill: {"id": "1"},
     )
     monkeypatch.setattr(monitor_worker, "process_live_copy_fills", deferred_process)
@@ -1236,7 +1238,7 @@ async def test_live_copy_work_receives_the_shared_resources(monkeypatch) -> None
 
     monkeypatch.setattr(monitor_worker, "claim_next_live_copy_work", fake_claim)
     monkeypatch.setattr(monitor_worker, "load_claimed_live_copy_wallet_fill", fake_load)
-    monkeypatch.setattr(monitor_worker, "paper_source_fill_from_wallet_fill", lambda _fill: {})
+    monkeypatch.setattr(monitor_worker, "source_fill_from_wallet_fill", lambda _fill: {})
     monkeypatch.setattr(monitor_worker, "process_live_copy_fills", fake_process)
     monkeypatch.setattr(monitor_worker, "complete_live_copy_work", fake_complete)
     stop_event = asyncio.Event()
@@ -1331,3 +1333,27 @@ async def test_source_state_warmup_refreshes_only_active_sources(monkeypatch) ->
     )
 
     assert warmed == [{"0xactive"}]
+
+
+@pytest.mark.asyncio
+async def test_paper_risk_loop_runs_a_pass_and_stops(monkeypatch) -> None:
+    passes: list[object] = []
+    stop_event = asyncio.Event()
+
+    async def fake_pass(*_args: object, **kwargs: object):
+        passes.append(kwargs["state"])
+        return SimpleNamespace(liquidated=0, funding_payments=0, snapshots=1)
+
+    async def stop_after_first_pass(event: asyncio.Event, _seconds: float) -> None:
+        event.set()
+
+    monkeypatch.setattr(monitor_worker, "run_paper_risk_once", fake_pass)
+    monkeypatch.setattr(monitor_worker, "sleep_until_stop", stop_after_first_pass)
+
+    await monitor_worker.run_paper_risk_loop(
+        sessionmaker=dummy_sessionmaker,
+        stop_event=stop_event,
+        settings=Settings(_env_file=None),
+    )
+
+    assert len(passes) == 1

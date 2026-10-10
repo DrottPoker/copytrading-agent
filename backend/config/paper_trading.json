@@ -3,5 +3,11 @@
   "paper_copy_fee_rate": 0.00045,
   "paper_copy_slippage_bps": 5,
   "paper_copy_latency_ms": 750,
-  "paper_copy_recovery_interval_seconds": 15
+  "paper_copy_recovery_interval_seconds": 15,
+  "paper_copy_order_book_fills": true,
+  "paper_copy_funding_enabled": true,
+  "paper_copy_liquidation_enabled": true,
+  "paper_copy_loss_limits_enabled": true,
+  "paper_copy_risk_check_seconds": 15,
+  "paper_copy_equity_snapshot_seconds": 300
 }

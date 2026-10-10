@@ -17,13 +17,12 @@ from app.integrations.hyperliquid_live_client import (
     HyperliquidLiveTradingConfigurationError,
 )
 from app.services import live_trading_service
+from app.services.copy_risk_rules import AccountLossState, performance_loss_pct
 from app.services.live_trading_service import (
-    LiveAccountLossState,
     LiveOrderSubmitError,
     LiveTradingServiceError,
     ensure_live_entry_intent_is_fresh,
     live_reconciliation_is_fresh,
-    performance_loss_pct,
     validate_live_account_can_start,
     validate_live_entry_risk_guardrails,
 )
@@ -213,21 +212,21 @@ class CommitSession:
     ("loss_state", "rule", "message", "observed", "limit"),
     [
         (
-            LiveAccountLossState(Decimal("0.12"), Decimal("0.12"), Decimal("0.12")),
+            AccountLossState(Decimal("0.12"), Decimal("0.12"), Decimal("0.12")),
             "max_daily_loss",
             "rolling 24 hour loss",
             "0.12",
             "0.10",
         ),
         (
-            LiveAccountLossState(Decimal("0.05"), Decimal("0.21"), Decimal("0.21")),
+            AccountLossState(Decimal("0.05"), Decimal("0.21"), Decimal("0.21")),
             "max_weekly_loss",
             "rolling 7 day loss",
             "0.21",
             "0.20",
         ),
         (
-            LiveAccountLossState(Decimal("0"), Decimal("0"), Decimal("0.30")),
+            AccountLossState(Decimal("0"), Decimal("0"), Decimal("0.30")),
             "max_drawdown",
             "drawdown from peak",
             "0.30",
@@ -237,7 +236,7 @@ class CommitSession:
 )
 async def test_account_loss_guards_trip_the_account(
     monkeypatch: pytest.MonkeyPatch,
-    loss_state: LiveAccountLossState,
+    loss_state: AccountLossState,
     rule: str,
     message: str,
     observed: str,
@@ -245,7 +244,7 @@ async def test_account_loss_guards_trip_the_account(
 ) -> None:
     tripped: dict[str, object] = {}
 
-    async def fake_loss_state(*_args: object, **_kwargs: object) -> LiveAccountLossState:
+    async def fake_loss_state(*_args: object, **_kwargs: object) -> AccountLossState:
         return loss_state
 
     async def fake_trip(*_args: object, **kwargs: object) -> None:
@@ -270,8 +269,8 @@ async def test_account_loss_guards_trip_the_account(
 async def test_account_loss_guards_allow_entries_below_the_limits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def fake_loss_state(*_args: object, **_kwargs: object) -> LiveAccountLossState:
-        return LiveAccountLossState(Decimal("0.09"), Decimal("0.19"), Decimal("0.24"))
+    async def fake_loss_state(*_args: object, **_kwargs: object) -> AccountLossState:
+        return AccountLossState(Decimal("0.09"), Decimal("0.19"), Decimal("0.24"))
 
     async def fail_trip(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("Losses below every limit must not trip the account.")

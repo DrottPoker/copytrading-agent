@@ -237,6 +237,20 @@ def test_strategy_scoring_config_is_loaded_from_files(monkeypatch: pytest.Monkey
     assert settings.wallet_prune_max_drawdown_pct == Decimal("0.5")
 
 
+def test_paper_market_simulation_config_is_loaded_from_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_live_env_overrides(monkeypatch)
+    settings = Settings(_env_file=None, **load_app_config())
+
+    assert settings.paper_copy_order_book_fills is True
+    assert settings.paper_copy_funding_enabled is True
+    assert settings.paper_copy_liquidation_enabled is True
+    assert settings.paper_copy_loss_limits_enabled is True
+    assert settings.paper_copy_risk_check_seconds == 15
+    assert settings.paper_copy_equity_snapshot_seconds == 300
+
+
 def test_paper_config_does_not_seed_accounts(monkeypatch: pytest.MonkeyPatch) -> None:
     _clear_live_env_overrides(monkeypatch)
     config = load_app_config()

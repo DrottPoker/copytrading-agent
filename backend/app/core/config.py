@@ -430,6 +430,14 @@ class Settings(BaseSettings):
     paper_copy_slippage_bps: Decimal = Field(default=Decimal("5"), ge=0, le=10000)
     paper_copy_latency_ms: int = Field(default=250, ge=0, le=60000)
     paper_copy_recovery_interval_seconds: int = Field(default=60, ge=10, le=3600)
+    # Market simulation: fill against the order book like a live IOC order.
+    paper_copy_order_book_fills: bool = True
+    paper_copy_funding_enabled: bool = True
+    paper_copy_liquidation_enabled: bool = True
+    # Apply the live account and source loss limits to paper accounts.
+    paper_copy_loss_limits_enabled: bool = True
+    paper_copy_risk_check_seconds: int = Field(default=15, ge=5, le=600)
+    paper_copy_equity_snapshot_seconds: int = Field(default=300, ge=60, le=3600)
 
     active_copy_wallets: int = Field(default=10, ge=1, le=10)
     max_realtime_wallets: int = Field(default=10, ge=1, le=10)

@@ -368,6 +368,30 @@ Postgres is the source of truth.
 It stores wallets, fills, positions, scores, active copy set state, copy signals,
 copy trades, risk events, settings, job locks, and audit logs.
 
+Tables by area:
+
+- Source wallets: `watched_wallets`, `wallet_fills`, `wallet_positions`,
+  `wallet_monitoring_stats`, `source_trades`, `source_trade_links`,
+  `source_trade_ignored_fills`, and `source_trade_sync_states`.
+- Scoring and discovery: `wallet_scores`, `wallet_score_snapshots`,
+  `wallet_equity_metrics`, `discovery_import_runs`, and
+  `discovery_wallet_candidates`.
+- Copy set and signals: `active_copy_wallets`, `copy_signals`, `copy_trades`,
+  and `risk_events`.
+- Live trading: `trading_accounts`, `trading_positions`, `trading_orders`,
+  `trading_order_dispatches`, `trading_fills`, `trading_funding_payments`,
+  `trading_account_cash_flows`, `trading_account_performance_snapshots`,
+  `trading_reconciliation_runs`, `trading_close_all_operations`,
+  `trading_close_all_items`, `live_copy_source_states`,
+  `live_copy_fill_states`, `live_copy_work`, and `realtime_execution_inbox`.
+- Paper trading: `paper_trading_accounts`, `paper_copy_allocations`,
+  `paper_positions`, `paper_copy_fills`, `paper_funding_payments`, and
+  `paper_account_equity_snapshots`.
+- Runtime: `settings`, `job_locks`, and `audit_logs`.
+
+Migrations live in `backend/app/db/migrations/versions`. The current head and
+the upgrade procedure are in [deployment.md](deployment.md).
+
 Trading accounts carry lifecycle version, status change time, reason, and
 optional archive time. Financial and idempotency
 children use account key and account type foreign keys with restricted deletion,
@@ -478,7 +502,10 @@ The backend config files are grouped by operational area:
   notional and rounding, price drift guard, live mid-price cache settings, and
   the source account state cache age and warm-up interval.
 - `paper_trading.json` owns paper-only simulation settings such as simulated
-  fees, simulated slippage, simulated latency, and recovery cadence.
+  fees, simulated slippage, simulated latency, recovery cadence, order book
+  fills, funding, liquidation, paper loss limits, and the paper risk loop
+  cadence. The paper loss limit thresholds are the live ones from
+  `live_trading.json`.
 - `pool_fill_import.json` owns scheduled pool reimport and shared fill import
   storage and market-filter settings.
 - `scoring.json` owns scoring schedule, score windows, equity history refresh,
@@ -995,10 +1022,15 @@ sequenceDiagram
     PriceCache-->>Worker: websocket_mid or cache miss
     Worker->>HL: HTTP allMids fallback on cache miss
   end
-  Worker->>DB: size paper fill and apply slippage or drift skip
+  Worker->>HL: l2Book for the fill coin
+  Worker->>Worker: shared copy decision, paper risk gate, and IOC book fill
   Worker->>DB: update paper account, position, and fill rows
   Worker->>Redis: publish paper_copy event
   Worker->>DB: recover missed paper fills after restart or snapshot
+  loop every paper_copy_risk_check_seconds
+    Worker->>HL: meta, fundingHistory, and mids
+    Worker->>DB: equity snapshots, funding, liquidations, and exit-only latch
+  end
   UI->>API: GET /paper-trading
   API->>DB: load paper state
   opt include_market_prices=true
@@ -1030,8 +1062,9 @@ sequenceDiagram
   API-->>UI: refreshed paper trading summary
 ```
 
-Paper and live share one entry sizing function, `plan_entry_sizing` in
-`trading_core.py`. Each copied source gets an equal share of the allocation
+Paper and live share one decision module, `copy_decision.py`, described in
+[Shared Copy Decisions](#shared-copy-decisions). Its entry sizing uses
+`plan_entry_sizing` in `trading_core.py`. Each copied source gets an equal share of the allocation
 budget (20% for the default five sources). The target position is allocation /
 source perp equity times the source position after the fill, taken from the
 fill's `startPosition` plus its size. Orders are placed at the source fill, and
@@ -1062,10 +1095,10 @@ Rounding never pushes an order past an exposure cap. The default minimum is
 10 USD to match Hyperliquid's live perp minimum order value. Paper execution
 starts the
 configured latency while source account state is fetched in parallel, then
-prices from live mids when enabled, applies adverse slippage, and skips fills
-whose adverse observed drift exceeds the configured max drift limit. Favorable
-price drift is allowed and recorded as 0 bps. Live reduce-only exits bypass the
-entry drift guard so price movement cannot strand copied exposure. New open or
+prices from live mids when enabled. Opens and adds are skipped when their
+adverse observed drift exceeds the configured max drift limit. Favorable price
+drift is allowed and recorded as 0 bps. Exits in both engines bypass the drift
+guard so price movement cannot strand copied exposure. New open or
 add fills are admitted only when their durable first observation is within
 `trading_copy_max_entry_age_seconds` of the source timestamp, so snapshot or
 recovery entries cannot open exposure minutes after the source traded. The
@@ -1121,7 +1154,9 @@ from PostgreSQL transaction-scoped `now()` values.
 
 Paper fees use
 Hyperliquid's base perp taker fee by default, 0.045%, because paper execution
-models immediate taker-style fills rather than resting maker orders.
+models immediate taker-style fills rather than resting maker orders. Funding,
+liquidation, order book fills, and the paper loss limits are described in
+[Paper Risk and Market Simulation](#paper-risk-and-market-simulation).
 Stored paper position notional and margin represent simulated entry exposure.
 Adds increase stored margin by the new fill margin, and partial closes reduce
 stored margin proportionally. Current notional is calculated separately from mark
@@ -1273,6 +1308,82 @@ Paper copy fill rows store source wallet sizing context in
 position snapshots store Hyperliquid `positionValue` in
 `wallet_positions.position_value_usd`, while historical fill notional remains in
 `wallet_fills.notional_usd`.
+
+### Shared Copy Decisions
+
+Paper and live copy apply the same rules to a source fill. The code is split so
+each engine keeps only its own execution and bookkeeping:
+
+- `copy_signal_service.py` turns a raw wallet fill into ordered fill parts
+  (open, add, reduce, close, flip-close), loads and caches source account state
+  (perp equity, per-coin leverage, margin mode, and current positions, including
+  unified-account USDC), and loads execution and mark prices from the WebSocket
+  mid cache with HTTP fallbacks.
+- `copy_decision.py` decides what to do with one fill part. `entry_precheck`
+  runs the price-free checks: valid source price, no pre-existing source
+  position, no opposite copied position, and an active allocation.
+  `decide_entry` adds source equity, execution price, entry price drift, and
+  the target-position sizing from `plan_entry_sizing`. `decide_close` sizes
+  exits from the source close ratio, closes the whole copied position when the
+  source no longer holds the coin (`source_position_is_final_close`), and never
+  blocks an exit on price drift. Partial closes below the minimum order are
+  combined with earlier skipped closes through `aggregate_below_min_close`
+  before they are sent.
+- `copy_risk_rules.py` holds the account loss rules (rolling 24 hour loss,
+  7 day loss, and drawdown from peak) and the per-source loss limit. It imports
+  no service modules, so the live and paper services can both depend on it.
+
+Decisions return engine-neutral reason codes. Paper maps them through
+`PAPER_DECISION_REASONS` and live through `LIVE_DECISION_REASONS`, which keeps
+the historic skip reasons that the dashboards and stored rows already use.
+Live defers a missing execution price or source equity for retry instead of
+terminalizing the decision, because the live work queue retries; paper records
+a skip.
+
+### Paper Risk and Market Simulation
+
+`paper_execution_simulator.py` holds pure functions for the simulated market,
+and `paper_risk_service.py` applies them to stored paper state.
+
+- Order book fills: with `paper_copy_order_book_fills`, each paper order fills
+  against the Hyperliquid `l2Book` for the coin like a live IOC order. The
+  limit is the execution mid plus or minus `live_trading_limit_slippage_bps`,
+  the order walks the book levels up to that limit, and the fill price is the
+  volume-weighted average. A partial or empty fill is recorded as the skip
+  `paper_ioc_unfilled`, because live would not have filled the full order
+  either. When no book is available, paper falls back to the fixed slippage
+  model. The fill details are stored in `raw_payload.orderBookFill`.
+- Margin mode: paper positions copy the source's cross or isolated margin mode
+  from Hyperliquid `clearinghouseState`, defaulting to cross.
+- Funding: with `paper_copy_funding_enabled`, the paper risk loop reads
+  Hyperliquid `fundingHistory` for coins with open paper positions once per
+  hour. Each hourly payment is stored in `paper_funding_payments`, unique per
+  position and funding time, so repeated runs never double count. Longs pay a
+  positive rate and shorts receive it. Funding updates the position, the
+  account cash balance, and the account's `funding_usd`.
+- Liquidation: with `paper_copy_liquidation_enabled`, maintenance margin is
+  half the initial margin at the coin's maximum leverage from Hyperliquid
+  `meta`, defaulting to 20x. An isolated position is liquidated when its margin
+  plus unrealized PnL and funding no longer covers maintenance, and its loss is
+  capped at the margin left after funding. Cross positions share the account: they are liquidated
+  together when cash minus isolated margin plus cross unrealized PnL falls to
+  the cross maintenance requirement. A liquidation is stored as a
+  `paper_copy_fills` row with action `liquidation`.
+- Loss limits: with `paper_copy_loss_limits_enabled`, paper accounts use the
+  live limits from `live_trading.json`. Marked-to-market equity is recorded in
+  `paper_account_equity_snapshots` every `paper_copy_equity_snapshot_seconds`
+  and kept for 35 days. A breach of the 24 hour, 7 day, or drawdown limit sets
+  `exit_only_at` and `exit_only_reason` on the account and writes an audit log
+  row. An exit-only paper account still reduces and closes positions but takes
+  no new entries or adds until it is started or reset. New entries from a
+  source are also skipped as `source_loss_limit` when that source's 7 day
+  realized net PnL plus current unrealized PnL has lost more than the
+  per-source limit.
+
+The `paper-risk` loop runs in the trading worker every
+`paper_copy_risk_check_seconds` when paper copy is enabled. It locks paper
+accounts in key order before their positions, the same order the copy engine
+uses, so the loop and fill processing cannot deadlock.
 
 ### Live-Ready Trading Core
 

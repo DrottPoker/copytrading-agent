@@ -4,8 +4,10 @@ from decimal import Decimal
 import pytest
 
 from app.core.config import Settings
+from app.services.copy_signal_service import (
+    load_execution_market_prices,
+)
 from app.services.market_price_cache import MarketPriceCache
-from app.services.paper_trading_service import load_execution_market_prices
 
 
 class FailingMidsClient:

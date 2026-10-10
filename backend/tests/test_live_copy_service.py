@@ -15,21 +15,33 @@ from app.db.models import (
     TradingPosition,
 )
 from app.services import live_copy_service, live_trading_service
+from app.services.copy_decision import (
+    CloseDecision,
+    CopyPosition,
+    aggregate_below_min_close,
+    copy_close_size,
+    decide_close,
+    entry_price_drift_blocked,
+    source_position_is_final_close,
+)
 from app.services.copy_execution_cache import AllocationSnapshotCache, LiveCopyLaneSyncTracker
+from app.services.copy_signal_service import (
+    ExecutionContext,
+    ExecutionMarketPrices,
+    SourceAccountState,
+    SourceCurrentPosition,
+    SourceFillPart,
+)
 from app.services.live_copy_service import (
     combine_batch_results,
-    live_aggregated_below_min_close_size,
     live_close_below_min_order_notional,
-    live_close_size_for_part,
     live_copy_account_snapshot_is_stale,
     live_copy_allocation_equity_usd,
     live_exchange_position_conflict,
     live_min_order_notional_usd,
     live_order_exists,
     live_pending_close_size_from_orders,
-    live_price_drift_blocks_action,
     live_skip,
-    live_source_position_is_final_close,
     record_live_skip,
     submit_live_copy_intent,
 )
@@ -37,12 +49,8 @@ from app.services.live_copy_state_service import LiveCopyPartClaim, LiveCopyProc
 from app.services.live_trading_service import LiveOrderSubmitError, LiveReconciliationError
 from app.services.paper_trading_service import (
     CopyAllocationCache,
-    ExecutionMarketPrices,
     PaperCopyBatchResult,
-    PaperSourceAccountState,
     PaperSourceAllocation,
-    PaperSourceCurrentPosition,
-    SourceFillPart,
     store_copy_allocations,
 )
 from app.services.trading_core import build_client_order_id, build_copy_trade_intent
@@ -59,27 +67,42 @@ def test_live_copy_account_snapshot_without_reconcile_is_stale() -> None:
     )
 
 
-@pytest.mark.parametrize("action", ["reduce", "close", "flip_close"])
-def test_live_price_drift_never_blocks_reduce_only_exits(action: str) -> None:
-    assert not live_price_drift_blocks_action(
-        action=action,
-        price_drift_bps=Decimal("10000"),
-        max_price_drift_bps=Decimal("100"),
+def drift_context(price_drift_bps: str) -> ExecutionContext:
+    return ExecutionContext(
+        source_price=Decimal("100"),
+        observed_price=Decimal("100"),
+        execution_price=Decimal("100"),
+        price_drift_bps=Decimal(price_drift_bps),
+        slippage_bps=Decimal("0"),
+        latency_ms=0,
+        price_source="test",
     )
 
 
-@pytest.mark.parametrize("action", ["open", "add", "flip_open"])
-def test_live_price_drift_blocks_only_entries_above_the_limit(action: str) -> None:
-    assert not live_price_drift_blocks_action(
-        action=action,
-        price_drift_bps=Decimal("100"),
-        max_price_drift_bps=Decimal("100"),
+def test_price_drift_never_blocks_exits() -> None:
+    position = CopyPosition(side="long", size=Decimal("1"))
+    decision = decide_close(
+        fill={"coin": "HYPE", "price": "100"},
+        part=live_close_part(close_ratio=Decimal("0.5")),
+        position=position,
+        available_size=Decimal("1"),
+        source_account_state=live_source_state(position_side="long"),
+        market_prices=ExecutionMarketPrices(prices={"HYPE": Decimal("50")}, sources={}),
+        settings=Settings(_env_file=None, trading_copy_max_price_drift_bps=Decimal("10")),
+        min_order_notional_usd=Decimal("10"),
+        latency_ms=0,
     )
-    assert live_price_drift_blocks_action(
-        action=action,
-        price_drift_bps=Decimal("100.01"),
-        max_price_drift_bps=Decimal("100"),
-    )
+
+    assert decision.reason is None
+    assert decision.execution_context is not None
+    assert decision.execution_context.price_drift_bps > Decimal("10")
+
+
+def test_price_drift_blocks_entries_only_above_the_limit() -> None:
+    settings = Settings(_env_file=None, trading_copy_max_price_drift_bps=Decimal("100"))
+
+    assert not entry_price_drift_blocked(drift_context("100"), settings=settings)
+    assert entry_price_drift_blocked(drift_context("100.01"), settings=settings)
 
 
 def test_live_copy_account_snapshot_older_than_interval_is_stale() -> None:
@@ -284,7 +307,7 @@ async def test_reconciliation_contention_defers_fill_without_trading_order(
 
     async def fake_source_states(**_kwargs):
         return {
-            "": PaperSourceAccountState(
+            "": SourceAccountState(
                 dex="",
                 perp_equity=Decimal("1000"),
                 leverage_by_coin={"CASHCAT": Decimal("3")},
@@ -425,7 +448,7 @@ async def test_under_ttl_ambiguous_entry_remains_retryable_without_trading_order
 
     async def fake_source_states(**_kwargs):
         return {
-            "": PaperSourceAccountState(
+            "": SourceAccountState(
                 dex="",
                 perp_equity=Decimal("1000"),
                 leverage_by_coin={"CASHCAT": Decimal("3")},
@@ -568,7 +591,7 @@ async def test_expired_entry_preparation_terminalizes_only_without_an_order(
 
     async def fake_source_states(*_args, **_kwargs):
         return {
-            "": PaperSourceAccountState(
+            "": SourceAccountState(
                 dex="",
                 perp_equity=Decimal("1000"),
                 leverage_by_coin={"CASHCAT": Decimal("3")},
@@ -739,7 +762,7 @@ async def test_unowned_close_becomes_lifecycle_state_without_trading_order(
 
     async def fake_source_states(**_kwargs):
         return {
-            "": PaperSourceAccountState(
+            "": SourceAccountState(
                 dex="",
                 perp_equity=Decimal("0"),
                 leverage_by_coin={},
@@ -909,7 +932,7 @@ async def test_stale_live_entry_becomes_terminal_state_without_trading_order(
 
     async def fake_source_states(*_args: object, **_kwargs: object):
         return {
-            "": PaperSourceAccountState(
+            "": SourceAccountState(
                 dex="",
                 perp_equity=Decimal("1000"),
                 leverage_by_coin={"CASHCAT": Decimal("3")},
@@ -1087,7 +1110,7 @@ async def test_fresh_live_open_is_claimed_once_and_executes_in_normal_pass(
 
     async def fake_source_states(*_args: object, **_kwargs: object):
         return {
-            "": PaperSourceAccountState(
+            "": SourceAccountState(
                 dex="",
                 perp_equity=Decimal("1000"),
                 leverage_by_coin={"CASHCAT": Decimal("3")},
@@ -2178,7 +2201,7 @@ async def test_flip_open_waits_until_old_side_is_reconciled(monkeypatch) -> None
                 sequence_index=1,
                 start_position=Decimal("0"),
             ),
-            source_account_state=PaperSourceAccountState(
+            source_account_state=SourceAccountState(
                 dex="",
                 perp_equity=Decimal("1000"),
                 leverage_by_coin={"HYPE": Decimal("3")},
@@ -2224,7 +2247,7 @@ async def test_defensive_stale_live_entry_guard_raises_terminal_decision() -> No
                 close_ratio=None,
                 start_position=Decimal("0"),
             ),
-            source_account_state=PaperSourceAccountState(
+            source_account_state=SourceAccountState(
                 dex="",
                 perp_equity=Decimal("1000"),
                 leverage_by_coin={"HYPE": Decimal("25")},
@@ -2301,7 +2324,7 @@ async def test_stale_live_entry_is_classified_before_missing_source_leverage() -
                 close_ratio=None,
                 start_position=Decimal("0"),
             ),
-            source_account_state=PaperSourceAccountState(
+            source_account_state=SourceAccountState(
                 dex="",
                 perp_equity=Decimal("1000"),
                 leverage_by_coin={},
@@ -2353,7 +2376,7 @@ async def test_live_entry_defers_when_source_margin_mode_is_missing() -> None:
                 close_ratio=None,
                 start_position=Decimal("0"),
             ),
-            source_account_state=PaperSourceAccountState(
+            source_account_state=SourceAccountState(
                 dex="",
                 perp_equity=Decimal("1000"),
                 leverage_by_coin={"HYPE": Decimal("1")},
@@ -2534,7 +2557,7 @@ async def test_recovery_syncs_current_source_leverage_and_margin_mode(monkeypatc
             return None
 
     async def fake_load_source_account_state(**_kwargs):
-        return PaperSourceAccountState(
+        return SourceAccountState(
             dex="",
             perp_equity=Decimal("1000"),
             leverage_by_coin={"HYPE": Decimal("1")},
@@ -2676,95 +2699,72 @@ def test_live_copy_allocation_equity_uses_standard_dex_equity() -> None:
     assert live_copy_allocation_equity_usd(account, dex="xyz", settings=settings) == Decimal("80")
 
 
-def test_live_close_size_uses_ratio_while_source_position_remains_open() -> None:
-    position = live_position(source_wallet="0xsource", side="long", size=Decimal("2"))
-    part = live_close_part(close_ratio=Decimal("0.25"))
-    source_state = live_source_state(position_side="long")
-
-    close_size = live_close_size_for_part(
-        position=position,
+def final_close_size(
+    *,
+    close_ratio: Decimal | None,
+    position_side: str | None,
+    available_size: Decimal | None = None,
+) -> Decimal | None:
+    part = live_close_part(close_ratio=close_ratio)
+    return copy_close_size(
+        position_size=Decimal("2"),
         part=part,
-        source_account_state=source_state,
-        coin="HYPE",
+        final_close=source_position_is_final_close(
+            live_source_state(position_side=position_side),
+            coin="HYPE",
+            side="long",
+        ),
+        available_size=available_size,
     )
 
-    assert close_size == Decimal("0.50")
+
+def test_close_size_uses_ratio_while_source_position_remains_open() -> None:
+    assert final_close_size(close_ratio=Decimal("0.25"), position_side="long") == Decimal("0.50")
 
 
-def test_live_close_size_closes_remaining_position_when_source_is_flat() -> None:
-    position = live_position(source_wallet="0xsource", side="long", size=Decimal("2"))
-    part = live_close_part(close_ratio=Decimal("0.05"))
-    source_state = live_source_state(position_side=None)
-
-    close_size = live_close_size_for_part(
-        position=position,
-        part=part,
-        source_account_state=source_state,
-        coin="HYPE",
-    )
-
-    assert close_size == Decimal("2")
+def test_close_size_closes_remaining_position_when_source_is_flat() -> None:
+    assert final_close_size(close_ratio=Decimal("0.05"), position_side=None) == Decimal("2")
 
 
-def test_live_close_size_closes_remaining_position_without_ratio_when_source_is_flat() -> None:
-    position = live_position(source_wallet="0xsource", side="long", size=Decimal("2"))
-    part = live_close_part(close_ratio=None)
-    source_state = live_source_state(position_side=None)
-
-    close_size = live_close_size_for_part(
-        position=position,
-        part=part,
-        source_account_state=source_state,
-        coin="HYPE",
-    )
-
-    assert close_size == Decimal("2")
+def test_close_size_closes_remaining_position_without_ratio_when_source_is_flat() -> None:
+    assert final_close_size(close_ratio=None, position_side=None) == Decimal("2")
 
 
-def test_live_close_size_uses_unreconciled_available_size() -> None:
-    position = live_position(source_wallet="0xsource", side="long", size=Decimal("2"))
-    part = live_close_part(close_ratio=Decimal("0.50"))
-    source_state = live_source_state(position_side="long")
-
-    close_size = live_close_size_for_part(
-        position=position,
-        part=part,
-        source_account_state=source_state,
-        coin="HYPE",
+def test_close_size_uses_unreconciled_available_size() -> None:
+    assert final_close_size(
+        close_ratio=Decimal("0.50"),
+        position_side="long",
         available_size=Decimal("1"),
-    )
-
-    assert close_size == Decimal("0.50")
+    ) == Decimal("0.50")
 
 
-def test_live_final_close_uses_unreconciled_available_size() -> None:
-    position = live_position(source_wallet="0xsource", side="long", size=Decimal("2"))
-    part = live_close_part(close_ratio=Decimal("0.05"))
-    source_state = live_source_state(position_side=None)
-
-    close_size = live_close_size_for_part(
-        position=position,
-        part=part,
-        source_account_state=source_state,
-        coin="HYPE",
+def test_final_close_uses_unreconciled_available_size() -> None:
+    assert final_close_size(
+        close_ratio=Decimal("0.05"),
+        position_side=None,
         available_size=Decimal("0.25"),
-    )
-
-    assert close_size == Decimal("0.25")
+    ) == Decimal("0.25")
 
 
-def test_live_aggregated_below_min_close_size_caps_available_size() -> None:
-    previous = live_order(
-        status="failed",
-        requested_size=Decimal("0.45"),
-        filled_size=Decimal("0"),
-    )
-
-    assert live_aggregated_below_min_close_size(
+def test_aggregated_below_min_close_size_caps_available_size() -> None:
+    small_close = CloseDecision(
+        reason=None,
+        execution_context=drift_context("0"),
         close_size=Decimal("0.35"),
-        previous_skip_orders=[previous],
+        notional_usd=Decimal("3.5"),
+        needs_aggregation=True,
+    )
+
+    aggregated = aggregate_below_min_close(
+        small_close,
+        previous_skipped_size=Decimal("0.45"),
         available_size=Decimal("0.70"),
-    ) == Decimal("0.70")
+        min_order_notional_usd=Decimal("10"),
+    )
+
+    assert aggregated.reason is None
+    assert aggregated.close_size == Decimal("0.70")
+    assert aggregated.aggregated
 
 
 @pytest.mark.asyncio
@@ -2922,10 +2922,10 @@ def test_live_pending_close_size_counts_uncertain_requested_size() -> None:
     assert live_pending_close_size_from_orders(orders) == Decimal("0.21")
 
 
-def test_live_source_position_is_final_close_when_source_flipped_side() -> None:
+def test_source_position_is_final_close_when_source_flipped_side() -> None:
     source_state = live_source_state(position_side="short")
 
-    assert live_source_position_is_final_close(source_state, coin="HYPE", side="long")
+    assert source_position_is_final_close(source_state, coin="HYPE", side="long")
 
 
 @pytest.mark.asyncio
@@ -2991,7 +2991,7 @@ async def test_final_live_dust_close_submits_min_notional_order(monkeypatch) -> 
             close_ratio=Decimal("1"),
             start_position=Decimal("-801"),
         ),
-        source_account_state=PaperSourceAccountState(
+        source_account_state=SourceAccountState(
             dex="",
             perp_equity=Decimal("1000"),
             leverage_by_coin={"BIO": Decimal("3")},
@@ -3093,7 +3093,7 @@ async def test_close_submits_after_safe_source_attribution_recovery(
             close_ratio=Decimal("1"),
             start_position=Decimal("-801"),
         ),
-        source_account_state=PaperSourceAccountState(
+        source_account_state=SourceAccountState(
             dex="",
             perp_equity=Decimal("1000"),
             leverage_by_coin={"BIO": Decimal("3")},
@@ -3696,7 +3696,7 @@ def live_open_retry_kwargs() -> dict[str, object]:
             close_ratio=None,
             start_position=Decimal("0"),
         ),
-        "source_account_state": PaperSourceAccountState(
+        "source_account_state": SourceAccountState(
             dex="",
             perp_equity=Decimal("1000"),
             leverage_by_coin={},
@@ -3833,15 +3833,15 @@ def live_close_part(close_ratio: Decimal | None) -> SourceFillPart:
     )
 
 
-def live_source_state(position_side: str | None) -> PaperSourceAccountState:
+def live_source_state(position_side: str | None) -> SourceAccountState:
     positions_by_coin = {}
     if position_side is not None:
-        positions_by_coin["HYPE"] = PaperSourceCurrentPosition(
+        positions_by_coin["HYPE"] = SourceCurrentPosition(
             coin="HYPE",
             side=position_side,
             size=Decimal("1"),
         )
-    return PaperSourceAccountState(
+    return SourceAccountState(
         dex="",
         perp_equity=Decimal("1000"),
         leverage_by_coin={"HYPE": Decimal("10")},
@@ -3868,7 +3868,7 @@ def target_sizing_kwargs(*, start_position: Decimal, source_size: str) -> dict:
             sequence_index=0,
             start_position=start_position,
         ),
-        "source_account_state": PaperSourceAccountState(
+        "source_account_state": SourceAccountState(
             dex="",
             perp_equity=Decimal("1000000"),
             leverage_by_coin={"HYPE": Decimal("3")},

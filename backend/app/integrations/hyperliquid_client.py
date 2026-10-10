@@ -321,6 +321,36 @@ class HyperliquidClient:
             )
         return result
 
+    async def l2_book(self, *, coin: str) -> dict[str, Any]:
+        result = await self.post_info({"type": "l2Book", "coin": coin})
+        return result if isinstance(result, dict) else {}
+
+    async def funding_history(
+        self,
+        *,
+        coin: str,
+        start_time_ms: int,
+        end_time_ms: int | None = None,
+    ) -> list[dict[str, Any]]:
+        payload: dict[str, Any] = {
+            "type": "fundingHistory",
+            "coin": coin,
+            "startTime": start_time_ms,
+        }
+        if end_time_ms is not None:
+            payload["endTime"] = end_time_ms
+        result = await self.post_info(payload)
+        return (
+            [item for item in result if isinstance(item, dict)] if isinstance(result, list) else []
+        )
+
+    async def meta(self, *, dex: str | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {"type": "meta"}
+        if dex:
+            payload["dex"] = dex
+        result = await self.post_info(payload)
+        return result if isinstance(result, dict) else {}
+
     async def all_mids(self, *, dex: str | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {"type": "allMids"}
         if dex:

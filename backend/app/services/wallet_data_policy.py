@@ -160,6 +160,7 @@ WALLET_DATA_DEPENDENCIES = (
         protection_reason="open_paper_position",
     ),
     WalletDataDependency("paper_copy_fills", "source_wallet", "audit"),
+    WalletDataDependency("paper_funding_payments", "source_wallet", "audit"),
 )
 
 
