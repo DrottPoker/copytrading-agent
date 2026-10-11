@@ -83,6 +83,10 @@ def build_worker_heartbeat_value(
     if isinstance(realtime_queue, Mapping):
         value["realtimeQueue"] = dict(realtime_queue)
 
+    hyperliquid_usage = runtime.get("hyperliquidUsage")
+    if isinstance(hyperliquid_usage, Mapping):
+        value["hyperliquidUsage"] = dict(hyperliquid_usage)
+
     return value
 
 

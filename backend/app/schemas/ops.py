@@ -100,6 +100,43 @@ class OpsRealtimeQueueHealth(CamelModel):
     status: CheckStatus
 
 
+class OpsHyperliquidRequestType(CamelModel):
+    type: str
+    weight: int
+
+
+class OpsHyperliquidProcessUsage(CamelModel):
+    """One process's Hyperliquid info request weight, over complete minutes."""
+
+    process: str
+    instance_id: str | None = None
+    updated_at: datetime | None = None
+    budget_mode: str
+    budget_weight_per_minute: int
+    weight_last_minute: int
+    weight_per_minute_15m: float
+    execution_weight_per_minute_15m: float
+    background_weight_per_minute_15m: float
+    peak_weight_per_minute_60m: int
+    requests_15m: int
+    execution_wait_seconds_15m: float
+    background_wait_seconds_15m: float
+    rate_limited_60m: int
+    top_request_types_15m: list[OpsHyperliquidRequestType] = Field(default_factory=list)
+
+
+class OpsHyperliquidBudget(CamelModel):
+    """Info request weight of every process against Hyperliquid's per-IP limit."""
+
+    status: CheckStatus
+    ip_weight_limit_per_minute: int
+    process_weight_per_minute: int
+    total_weight_last_minute: int
+    total_weight_per_minute_15m: float
+    rate_limited_60m: int
+    processes: list[OpsHyperliquidProcessUsage] = Field(default_factory=list)
+
+
 class OpsWorkerHeartbeat(CamelModel):
     key: str
     role: str
@@ -116,6 +153,7 @@ class OpsWorkerHeartbeat(CamelModel):
     capabilities: list[str] = Field(default_factory=list)
     loops: list[OpsWorkerLoopState] = Field(default_factory=list)
     realtime_queue: OpsRealtimeQueueHealth | None = None
+    hyperliquid_usage: OpsHyperliquidProcessUsage | None = None
 
 
 class OpsDiscoverySourceHealth(CamelModel):
@@ -168,5 +206,6 @@ class OpsHealthResponse(CamelModel):
     operations: list[OperationStatusRead]
     discovery_sources: list[OpsDiscoverySourceHealth] = Field(default_factory=list)
     live_signers: list[OpsLiveSigner] = Field(default_factory=list)
+    hyperliquid_budget: OpsHyperliquidBudget | None = None
     notes: list[str]
     metadata: dict[str, Any] = {}

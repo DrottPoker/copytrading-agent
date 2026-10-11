@@ -161,6 +161,14 @@ What it does:
   default.
 - Shows worker instance identity, capabilities, heartbeat freshness, per-loop
   status, restart counts, last progress, last error, and realtime queue health.
+- Shows the Hyperliquid request weight of every process against the 1,200 per
+  minute limit Hyperliquid applies per IP address: the API process measures
+  itself, and each worker reports with its heartbeat. Per process it lists the
+  budget, the weight of the last complete minute, the 15 minute average split
+  into copy execution and background work, the heaviest minute of the last
+  hour, how long requests waited for budget, how many requests Hyperliquid
+  answered with 429 in the last hour, and the request types that cost the most
+  weight. Any 429 response raises a warning and a note.
 - Shows recent long-running operation statuses for discovery, pool reimport,
   scoring, and pruning.
 - Shows each configured discovery source's last run, last success, wallets

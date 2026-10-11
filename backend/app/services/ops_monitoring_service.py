@@ -12,6 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings
 from app.db.models import TradingAccount
 from app.db.session import check_postgres, get_sessionmaker
+from app.integrations.hyperliquid_info_budget import (
+    HYPERLIQUID_IP_WEIGHT_LIMIT_PER_MINUTE,
+    info_usage_snapshot,
+)
 from app.integrations.redis_client import check_redis
 from app.schemas.ops import (
     OpsBackupStatus,
@@ -20,6 +24,9 @@ from app.schemas.ops import (
     OpsDiscoverySourceHealth,
     OpsDiskStats,
     OpsHealthResponse,
+    OpsHyperliquidBudget,
+    OpsHyperliquidProcessUsage,
+    OpsHyperliquidRequestType,
     OpsLiveSigner,
     OpsLoadStats,
     OpsMemoryStats,
@@ -74,6 +81,11 @@ async def get_ops_health(*, settings: Settings) -> OpsHealthResponse:
         live_signers,
         db_notes,
     ) = await load_database_backed_ops(settings=settings, now=measured_at)
+    hyperliquid_budget = build_hyperliquid_budget(
+        settings=settings,
+        workers=workers,
+        now=measured_at,
+    )
 
     notes = [
         *db_notes,
@@ -81,6 +93,7 @@ async def get_ops_health(*, settings: Settings) -> OpsHealthResponse:
         *status_note("redis", redis_status),
         *discovery_source_notes(discovery_sources),
         *live_signer_notes(live_signers, settings=settings),
+        *hyperliquid_budget_notes(hyperliquid_budget),
     ]
     status = aggregate_status(
         postgres_status=postgres_status,
@@ -93,6 +106,7 @@ async def get_ops_health(*, settings: Settings) -> OpsHealthResponse:
         workers=workers,
         discovery_sources=discovery_sources,
         live_signer_warning=bool(live_signer_notes(live_signers, settings=settings)),
+        hyperliquid_budget=hyperliquid_budget,
     )
 
     return OpsHealthResponse(
@@ -123,6 +137,7 @@ async def get_ops_health(*, settings: Settings) -> OpsHealthResponse:
         operations=operations,
         discovery_sources=discovery_sources,
         live_signers=live_signers,
+        hyperliquid_budget=hyperliquid_budget,
         notes=notes,
     )
 
@@ -423,6 +438,12 @@ def parse_worker_heartbeat(
         ]
     loops = parse_worker_loop_states(value.get("loops"))
     realtime_queue = parse_realtime_queue_health(value.get("realtimeQueue"))
+    hyperliquid_usage = parse_hyperliquid_usage(
+        value.get("hyperliquidUsage"),
+        process=role,
+        instance_id=instance_id,
+        updated_at=updated_at,
+    )
     status = worker_heartbeat_status(
         age_seconds=age_seconds,
         stale_after_seconds=stale_after_seconds,
@@ -446,7 +467,93 @@ def parse_worker_heartbeat(
         capabilities=capabilities,
         loops=loops,
         realtime_queue=realtime_queue,
+        hyperliquid_usage=hyperliquid_usage,
     )
+
+
+def parse_hyperliquid_usage(
+    value: object,
+    *,
+    process: str,
+    instance_id: str | None,
+    updated_at: datetime | None,
+) -> OpsHyperliquidProcessUsage | None:
+    if not isinstance(value, dict):
+        return None
+    raw_types = value.get("topRequestTypes15m")
+    request_types = [
+        OpsHyperliquidRequestType(
+            type=string_value(item.get("type")) or "unknown",
+            weight=non_negative_int(item.get("weight")),
+        )
+        for item in (raw_types if isinstance(raw_types, list) else [])
+        if isinstance(item, dict)
+    ]
+    return OpsHyperliquidProcessUsage(
+        process=process,
+        instance_id=instance_id,
+        updated_at=updated_at,
+        budget_mode=string_value(value.get("budgetMode")) or "unknown",
+        budget_weight_per_minute=non_negative_int(value.get("budgetWeightPerMinute")),
+        weight_last_minute=non_negative_int(value.get("weightLastMinute")),
+        weight_per_minute_15m=non_negative_float(value.get("weightPerMinute15m")),
+        execution_weight_per_minute_15m=non_negative_float(
+            value.get("executionWeightPerMinute15m")
+        ),
+        background_weight_per_minute_15m=non_negative_float(
+            value.get("backgroundWeightPerMinute15m")
+        ),
+        peak_weight_per_minute_60m=non_negative_int(value.get("peakWeightPerMinute60m")),
+        requests_15m=non_negative_int(value.get("requests15m")),
+        execution_wait_seconds_15m=non_negative_float(value.get("executionWaitSeconds15m")),
+        background_wait_seconds_15m=non_negative_float(value.get("backgroundWaitSeconds15m")),
+        rate_limited_60m=non_negative_int(value.get("rateLimited60m")),
+        top_request_types_15m=request_types,
+    )
+
+
+def build_hyperliquid_budget(
+    *,
+    settings: Settings,
+    workers: list[OpsWorkerHeartbeat],
+    now: datetime,
+) -> OpsHyperliquidBudget:
+    """Every process's info request weight, since they all share one IP limit."""
+
+    processes: list[OpsHyperliquidProcessUsage] = []
+    if not settings.worker_run_in_api_process:
+        # Workers inside the API process report this process through their heartbeat.
+        api_usage = parse_hyperliquid_usage(
+            info_usage_snapshot(settings),
+            process="api",
+            instance_id=None,
+            updated_at=now,
+        )
+        if api_usage is not None:
+            processes.append(api_usage)
+    processes.extend(
+        worker.hyperliquid_usage
+        for worker in workers
+        if worker.hyperliquid_usage is not None and worker.status != "stale"
+    )
+    rate_limited = sum(process.rate_limited_60m for process in processes)
+    return OpsHyperliquidBudget(
+        status="warning" if rate_limited > 0 else "ok",
+        ip_weight_limit_per_minute=HYPERLIQUID_IP_WEIGHT_LIMIT_PER_MINUTE,
+        process_weight_per_minute=settings.hyperliquid_info_weight_per_minute,
+        total_weight_last_minute=sum(process.weight_last_minute for process in processes),
+        total_weight_per_minute_15m=round(
+            sum(process.weight_per_minute_15m for process in processes), 1
+        ),
+        rate_limited_60m=rate_limited,
+        processes=processes,
+    )
+
+
+def hyperliquid_budget_notes(budget: OpsHyperliquidBudget) -> list[str]:
+    if budget.rate_limited_60m <= 0:
+        return []
+    return [f"Hyperliquid rate limited {budget.rate_limited_60m} info requests in the last hour."]
 
 
 def parse_worker_loop_states(value: object) -> list[OpsWorkerLoopState]:
@@ -719,6 +826,7 @@ def aggregate_status(
     workers: list[OpsWorkerHeartbeat],
     discovery_sources: list[OpsDiscoverySourceHealth] | None = None,
     live_signer_warning: bool = False,
+    hyperliquid_budget: OpsHyperliquidBudget | None = None,
 ) -> str:
     if (
         postgres_status.get("status") != "ok"
@@ -739,6 +847,7 @@ def aggregate_status(
         # Discovery feeds the pool slowly, so a broken source warns but never degrades.
         or any(source.status in {"warning", "degraded"} for source in discovery_sources or [])
         or live_signer_warning
+        or (hyperliquid_budget is not None and hyperliquid_budget.status != "ok")
     ):
         return "warning"
     return "ok"
@@ -844,6 +953,15 @@ def int_value(value: Any) -> int | None:
 
 def non_negative_int(value: object) -> int:
     return max(int_value(value) or 0, 0)
+
+
+def non_negative_float(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return 0.0
+    try:
+        return max(float(value), 0.0)
+    except ValueError:
+        return 0.0
 
 
 def safe_stat(path: Path) -> os.stat_result:

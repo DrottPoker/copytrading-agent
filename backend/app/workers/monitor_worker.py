@@ -12,6 +12,7 @@ from app.core.logging import configure_logging
 from app.db.models import PaperPosition, TradingAccount, TradingPosition, WalletScore, WatchedWallet
 from app.db.session import get_sessionmaker
 from app.integrations.hyperliquid_client import HyperliquidClient
+from app.integrations.hyperliquid_info_budget import info_usage_snapshot
 from app.integrations.hyperliquid_live_client import HyperliquidLiveTradingClient
 from app.integrations.hyperliquid_ws_client import (
     HyperliquidWebSocketError,
@@ -821,7 +822,10 @@ async def run_worker_heartbeat_loop(
                     trading_loops=trading_loops,
                     maintenance_loops=maintenance_loops,
                     started_at=service_started_at,
-                    runtime_payload=runtime.payload() if runtime is not None else None,
+                    runtime_payload={
+                        **(runtime.payload() if runtime is not None else {}),
+                        "hyperliquidUsage": info_usage_snapshot(settings),
+                    },
                 )
                 await session.commit()
         except Exception:

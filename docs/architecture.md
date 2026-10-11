@@ -260,6 +260,12 @@ work.
   per-process budget `hyperliquid_info_weight_per_minute` defaults to 550, so
   the trading and maintenance workers together stay below Hyperliquid's 1200
   per minute IP limit.
+- Every process measures its own info requests per minute for the last hour:
+  weight by priority and request type, request count, time spent waiting for
+  budget, and 429 responses. Weight includes the extra weight a response
+  reveals. Workers send the summary with each heartbeat, and `GET /ops/health`
+  adds the API process and returns the total as `hyperliquidBudget`. Only
+  complete minutes are reported, so a running minute never reads low.
 - Every WebSocket sends a ping after 30 seconds of silence. When nothing, not
   even the pong, arrives within 10 seconds, the connection is treated as dead
   and the loop reconnects instead of waiting on a half-open socket.

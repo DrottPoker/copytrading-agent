@@ -2,11 +2,12 @@ import asyncio
 import logging
 import time
 from email.utils import parsedate_to_datetime
-from typing import Any, Literal
+from typing import Any
 
 import httpx
 
 from app.core.config import Settings, get_settings
+from app.integrations.hyperliquid_info_budget import INFO_BUDGET, RequestPriority
 
 logger = logging.getLogger(__name__)
 
@@ -18,8 +19,6 @@ class HyperliquidClientError(Exception):
 class HyperliquidRateLimitError(HyperliquidClientError):
     pass
 
-
-RequestPriority = Literal["execution", "background"]
 
 # Hyperliquid info request weights against the shared 1200 per minute IP budget.
 LIGHT_INFO_REQUEST_TYPES = frozenset(
@@ -66,66 +65,6 @@ def info_response_extra_weight(payload: dict[str, Any], result: Any) -> int:
     return len(result) // items_per_unit
 
 
-class HyperliquidInfoRateLimiter:
-    """Weight-based token bucket where execution requests go before background work.
-
-    The budget is per process. Background callers yield while an execution
-    request is waiting, so copy execution never queues behind imports or
-    reconciliation in the same worker.
-    """
-
-    def __init__(self, *, clock: Any = time.monotonic, sleep: Any = asyncio.sleep) -> None:
-        self._clock = clock
-        self._sleep = sleep
-        self._tokens: float | None = None
-        self._updated_at = 0.0
-        self._waiting_execution = 0
-
-    async def acquire(
-        self,
-        weight: int,
-        *,
-        priority: RequestPriority,
-        weight_per_minute: int,
-    ) -> None:
-        if weight_per_minute <= 0:
-            return
-        rate = weight_per_minute / 60
-        capacity = max(float(weight), weight_per_minute / 4)
-        if priority == "execution":
-            self._waiting_execution += 1
-        try:
-            while True:
-                self._refill(rate=rate, capacity=capacity)
-                assert self._tokens is not None
-                may_take = priority == "execution" or self._waiting_execution == 0
-                if may_take and self._tokens >= weight:
-                    self._tokens -= weight
-                    return
-                missing = max(weight - self._tokens, 0.0)
-                await self._sleep(max(missing / rate, 0.05))
-        finally:
-            if priority == "execution":
-                self._waiting_execution -= 1
-
-    def charge(self, weight: int) -> None:
-        """Record extra weight that is only known from the response size."""
-
-        if weight > 0 and self._tokens is not None:
-            self._tokens -= weight
-
-    def _refill(self, *, rate: float, capacity: float) -> None:
-        now = self._clock()
-        if self._tokens is None:
-            self._tokens = capacity
-        else:
-            self._tokens = min(capacity, self._tokens + (now - self._updated_at) * rate)
-        self._updated_at = now
-
-
-INFO_RATE_LIMITER = HyperliquidInfoRateLimiter()
-
-
 class HyperliquidClient:
     def __init__(
         self,
@@ -161,43 +100,58 @@ class HyperliquidClient:
         last_response: httpx.Response | None = None
 
         weight = info_request_weight(payload)
+        request_type = str(payload.get("type") or "unknown")
         for attempt in range(attempts):
-            await INFO_RATE_LIMITER.acquire(
+            grant = await INFO_BUDGET.acquire(
                 weight,
                 priority=self.priority,
+                request_type=request_type,
                 weight_per_minute=self.settings.hyperliquid_info_weight_per_minute,
             )
-            response = await self._post_info_once(payload)
+            try:
+                response = await self._post_info_once(payload)
+            except BaseException:
+                await INFO_BUDGET.settle(grant, used_weight=weight)
+                raise
             last_response = response
 
-            if response.status_code == 429 or response.status_code >= 500:
-                if attempt < attempts - 1:
-                    delay_seconds = self._retry_delay_seconds(response, attempt=attempt)
-                    logger.warning(
-                        "Hyperliquid info request retrying status=%s attempt=%s/%s delay=%.2fs",
-                        response.status_code,
-                        attempt + 1,
-                        attempts,
-                        delay_seconds,
-                    )
-                    await asyncio.sleep(delay_seconds)
-                    continue
+            if not 200 <= response.status_code < 300:
+                await INFO_BUDGET.settle(grant, used_weight=weight)
                 if response.status_code == 429:
-                    raise HyperliquidRateLimitError(
-                        f"Hyperliquid info request was rate limited after {attempts} attempts."
+                    INFO_BUDGET.record_rate_limited()
+                if response.status_code == 429 or response.status_code >= 500:
+                    if attempt < attempts - 1:
+                        delay_seconds = self._retry_delay_seconds(response, attempt=attempt)
+                        logger.warning(
+                            "Hyperliquid info request retrying status=%s attempt=%s/%s delay=%.2fs",
+                            response.status_code,
+                            attempt + 1,
+                            attempts,
+                            delay_seconds,
+                        )
+                        await asyncio.sleep(delay_seconds)
+                        continue
+                    if response.status_code == 429:
+                        raise HyperliquidRateLimitError(
+                            f"Hyperliquid info request was rate limited after {attempts} attempts."
+                        )
+                    raise HyperliquidClientError(
+                        "Hyperliquid info request failed after retries with status "
+                        f"{response.status_code}."
                     )
-                raise HyperliquidClientError(
-                    "Hyperliquid info request failed after retries with status "
-                    f"{response.status_code}."
-                )
-
-            if response.status_code >= 400:
                 raise HyperliquidClientError(
                     f"Hyperliquid info request failed with status {response.status_code}."
                 )
 
-            result = response.json()
-            INFO_RATE_LIMITER.charge(info_response_extra_weight(payload, result))
+            try:
+                result = response.json()
+            except BaseException:
+                await INFO_BUDGET.settle(grant, used_weight=weight)
+                raise
+            await INFO_BUDGET.settle(
+                grant,
+                used_weight=weight + info_response_extra_weight(payload, result),
+            )
             return result
 
         raise HyperliquidClientError(

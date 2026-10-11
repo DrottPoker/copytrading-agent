@@ -6,6 +6,15 @@ used to live in the README.
 
 ## 2026-10-11
 
+### Hyperliquid request measurement
+
+- Every process now measures its Hyperliquid info requests: weight per minute
+  split into copy execution and background work, the heaviest minute, time
+  spent waiting for budget, 429 responses, and the most expensive request
+  types. Workers report it with their heartbeat and the System page shows all
+  processes against the 1,200 per minute limit per IP address. A 429 response
+  raises a warning.
+
 ### Faster discovery, reimport, and scoring
 
 Every Hyperliquid request the maintenance worker makes passes one rate budget,

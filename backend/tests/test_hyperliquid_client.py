@@ -8,10 +8,16 @@ from app.core.config import Settings
 from app.integrations import hyperliquid_client
 from app.integrations.hyperliquid_client import (
     HyperliquidClient,
-    HyperliquidInfoRateLimiter,
-    RequestPriority,
+    HyperliquidRateLimitError,
     info_request_weight,
     info_response_extra_weight,
+)
+from app.integrations.hyperliquid_info_budget import (
+    HyperliquidInfoBudget,
+    HyperliquidInfoRateLimiter,
+    InfoBudgetGrant,
+    InfoUsageMeter,
+    RequestPriority,
 )
 
 
@@ -169,34 +175,163 @@ async def test_rate_limiter_charges_response_weight_against_the_budget() -> None
     assert clock.now == pytest.approx(2)
 
 
+class RecordingBudget:
+    def __init__(self) -> None:
+        self.acquired: list[tuple[int, str, str, int]] = []
+        self.settled: list[tuple[int, int]] = []
+        self.rate_limited = 0
+
+    async def acquire(
+        self,
+        weight: int,
+        *,
+        priority: RequestPriority,
+        request_type: str,
+        weight_per_minute: int,
+    ) -> InfoBudgetGrant:
+        self.acquired.append((weight, priority, request_type, weight_per_minute))
+        return InfoBudgetGrant(weight=weight, priority=priority, request_type=request_type)
+
+    async def settle(self, grant: InfoBudgetGrant, *, used_weight: int) -> None:
+        self.settled.append((grant.weight, used_weight))
+
+    def record_rate_limited(self) -> None:
+        self.rate_limited += 1
+
+
+def client_with_responses(
+    settings: Settings,
+    responses: list[httpx.Response],
+    *,
+    priority: RequestPriority = "background",
+) -> HyperliquidClient:
+    client = HyperliquidClient(settings, priority=priority)
+    client._client = httpx.AsyncClient(
+        base_url="https://example.invalid",
+        transport=httpx.MockTransport(lambda _request: responses.pop(0)),
+    )
+    return client
+
+
 @pytest.mark.asyncio
 async def test_post_info_acquires_request_weight_with_client_priority(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    acquired: list[tuple[int, str, int]] = []
-    charged: list[int] = []
-
-    class RecordingLimiter:
-        async def acquire(self, weight: int, *, priority: str, weight_per_minute: int) -> None:
-            acquired.append((weight, priority, weight_per_minute))
-
-        def charge(self, weight: int) -> None:
-            charged.append(weight)
-
-    monkeypatch.setattr(hyperliquid_client, "INFO_RATE_LIMITER", RecordingLimiter())
+    budget = RecordingBudget()
+    monkeypatch.setattr(hyperliquid_client, "INFO_BUDGET", budget)
     settings = Settings(_env_file=None, hyperliquid_info_weight_per_minute=300)
-    client = HyperliquidClient(settings, priority="execution")
-    client._client = httpx.AsyncClient(
-        base_url="https://example.invalid",
-        transport=httpx.MockTransport(lambda _request: httpx.Response(200, json=[{}] * 40)),
+    client = client_with_responses(
+        settings,
+        [httpx.Response(200, json=[{}] * 40)],
+        priority="execution",
     )
     try:
         await client.post_info({"type": "userFills", "user": "0xuser"})
     finally:
         await client.aclose()
 
-    assert acquired == [(20, "execution", 300)]
-    assert charged == [2]
+    assert budget.acquired == [(20, "execution", "userFills", 300)]
+    assert budget.settled == [(20, 22)]
+
+
+@pytest.mark.asyncio
+async def test_rate_limited_attempts_are_settled_once_and_counted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    budget = RecordingBudget()
+    monkeypatch.setattr(hyperliquid_client, "INFO_BUDGET", budget)
+    settings = Settings(
+        _env_file=None,
+        hyperliquid_info_request_retries=1,
+        hyperliquid_info_retry_base_delay_seconds=0,
+    )
+    client = client_with_responses(
+        settings,
+        [httpx.Response(429), httpx.Response(429)],
+    )
+    try:
+        with pytest.raises(HyperliquidRateLimitError):
+            await client.post_info({"type": "portfolio", "user": "0xuser"})
+    finally:
+        await client.aclose()
+
+    assert budget.settled == [(20, 20), (20, 20)]
+    assert budget.rate_limited == 2
+
+
+def test_usage_meter_reports_complete_minutes_by_priority_and_type() -> None:
+    now = [600.0]
+    meter = InfoUsageMeter(clock=lambda: now[0])
+    meter.record_request(priority="execution", wait_seconds=0.5)
+    meter.record_weight(priority="execution", request_type="l2Book", weight=2)
+    meter.record_request(priority="background", wait_seconds=3)
+    meter.record_weight(priority="background", request_type="userFillsByTime", weight=120)
+    meter.record_rate_limited()
+    # The current minute is still running, so it is not reported yet.
+    assert (
+        meter.snapshot(budget_mode="local", budget_weight_per_minute=550)["weightLastMinute"] == 0
+    )
+
+    now[0] = 660.0
+    snapshot = meter.snapshot(budget_mode="local", budget_weight_per_minute=550)
+
+    assert snapshot["weightLastMinute"] == 122
+    assert snapshot["peakWeightPerMinute60m"] == 122
+    assert snapshot["weightPerMinute15m"] == pytest.approx(122 / 15, abs=0.1)
+    assert snapshot["executionWeightPerMinute15m"] == pytest.approx(2 / 15, abs=0.1)
+    assert snapshot["requests15m"] == 2
+    assert snapshot["executionWaitSeconds15m"] == 0.5
+    assert snapshot["backgroundWaitSeconds15m"] == 3
+    assert snapshot["rateLimited60m"] == 1
+    assert snapshot["topRequestTypes15m"][0] == {"type": "userFillsByTime", "weight": 120}
+
+
+def test_usage_meter_forgets_minutes_older_than_an_hour() -> None:
+    now = [0.0]
+    meter = InfoUsageMeter(clock=lambda: now[0])
+    meter.record_weight(priority="background", request_type="portfolio", weight=20)
+
+    now[0] = 61 * 60.0
+    meter.record_weight(priority="background", request_type="portfolio", weight=20)
+    now[0] = 62 * 60.0
+
+    assert (
+        meter.snapshot(budget_mode="local", budget_weight_per_minute=550)["peakWeightPerMinute60m"]
+        == 20
+    )
+
+
+@pytest.mark.asyncio
+async def test_budget_measures_waits_and_charges_response_weight() -> None:
+    limiter, clock = limiter_with_clock()
+    wall_clock = [600.0]
+    budget = HyperliquidInfoBudget(
+        limiter=limiter,
+        meter=InfoUsageMeter(clock=lambda: wall_clock[0]),
+        clock=clock,
+    )
+
+    first = await budget.acquire(
+        15,
+        priority="background",
+        request_type="userFills",
+        weight_per_minute=60,
+    )
+    await budget.settle(first, used_weight=20)
+    second = await budget.acquire(
+        2,
+        priority="background",
+        request_type="portfolio",
+        weight_per_minute=60,
+    )
+    await budget.settle(second, used_weight=2)
+    wall_clock[0] = 660.0
+    snapshot = budget.usage_snapshot(weight_per_minute=60)
+
+    # The response weight of the first request delays the second by its extra 5 units.
+    assert clock.now == pytest.approx(7)
+    assert snapshot["weightLastMinute"] == 22
+    assert snapshot["backgroundWaitSeconds15m"] == pytest.approx(7)
 
 
 @pytest.mark.asyncio

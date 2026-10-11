@@ -90,6 +90,40 @@ export type OpsRealtimeQueueHealth = {
   status: OpsCheckStatus;
 };
 
+export type OpsHyperliquidRequestType = {
+  type: string;
+  weight: number;
+};
+
+/** One process's Hyperliquid info request weight, over complete minutes. */
+export type OpsHyperliquidProcessUsage = {
+  process: string;
+  instanceId: string | null;
+  updatedAt: string | null;
+  budgetMode: string;
+  budgetWeightPerMinute: number;
+  weightLastMinute: number;
+  weightPerMinute15m: number;
+  executionWeightPerMinute15m: number;
+  backgroundWeightPerMinute15m: number;
+  peakWeightPerMinute60m: number;
+  requests15m: number;
+  executionWaitSeconds15m: number;
+  backgroundWaitSeconds15m: number;
+  rateLimited60m: number;
+  topRequestTypes15m: OpsHyperliquidRequestType[];
+};
+
+export type OpsHyperliquidBudget = {
+  status: OpsCheckStatus;
+  ipWeightLimitPerMinute: number;
+  processWeightPerMinute: number;
+  totalWeightLastMinute: number;
+  totalWeightPerMinute15m: number;
+  rateLimited60m: number;
+  processes: OpsHyperliquidProcessUsage[];
+};
+
 export type OpsWorkerHeartbeat = {
   key: string;
   role: string;
@@ -106,6 +140,7 @@ export type OpsWorkerHeartbeat = {
   capabilities: string[];
   loops: OpsWorkerLoopState[];
   realtimeQueue: OpsRealtimeQueueHealth | null;
+  hyperliquidUsage?: OpsHyperliquidProcessUsage | null;
 };
 
 export type OpsDiscoverySourceHealth = {
@@ -165,6 +200,7 @@ export type OpsHealthResponse = {
   operations: OperationStatus[];
   discoverySources?: OpsDiscoverySourceHealth[];
   liveSigners?: OpsLiveSigner[];
+  hyperliquidBudget?: OpsHyperliquidBudget | null;
   notes: string[];
   metadata: Record<string, unknown>;
 };

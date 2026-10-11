@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { JobsPanel } from "@/components/JobsPanel";
+import { HyperliquidBudgetPanel } from "@/components/system/HyperliquidBudgetPanel";
 import { MaintenanceTasks } from "@/components/system/MaintenanceTasks";
 import { RefreshControl, TimeAgo } from "@/components/ui/client";
 import {
@@ -162,6 +163,8 @@ function HealthContent({ ops, operations }: { ops: OpsHealthResponse; operations
           </div>
         )}
       </Panel>
+
+      <HyperliquidBudgetPanel budget={ops.hyperliquidBudget} />
 
       <div className="grid gap-4 xl:grid-cols-2">
         <JobsPanel initialItems={operations} />
