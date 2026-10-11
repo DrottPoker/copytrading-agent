@@ -214,6 +214,18 @@ def test_scoring_config_bounds_live_current_drawdown_runtime(
     assert settings.scoring_current_drawdown_enabled is True
     assert settings.scoring_current_drawdown_concurrency == 8
     assert settings.scoring_current_drawdown_run_timeout_seconds == 300
+    assert settings.scoring_current_drawdown_user_abstraction_refresh_hours == 24
+
+
+def test_discovery_config_rechecks_leaderboard_subaccounts_daily(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_live_env_overrides(monkeypatch)
+    config = load_app_config()
+    settings = Settings(_env_file=None, **config)
+
+    assert settings.discovery_import_subaccounts_enabled is True
+    assert settings.discovery_import_subaccounts_recheck_hours == 24
 
 
 def test_strategy_scoring_config_is_loaded_from_files(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -109,6 +109,7 @@ WALLET_DATA_DEPENDENCIES = (
     ),
     WalletDataDependency("discovery_wallet_candidates", "wallet_address", "discovery"),
     WalletDataDependency("discovery_wallet_candidates", "parent_address", "discovery"),
+    WalletDataDependency("discovery_subaccount_checks", "master_address", "discovery"),
     WalletDataDependency("trading_accounts", "wallet_address", "account"),
     WalletDataDependency("trading_accounts", "vault_address", "account"),
     WalletDataDependency(

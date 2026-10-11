@@ -269,6 +269,12 @@ Maintenance worker responsibilities:
 - Run configured discovery imports every 6 hours by default.
 - Import candidates from Hyperliquid leaderboard, HyperTracker segment,
   HyperTracker leaderboard, and Hyperdash discovery sources.
+- Fetch each source once per run: the leaderboard windows share one
+  leaderboard download and one subaccount lookup per master, both vault sources
+  share one vault list, and masters checked within the subaccount recheck
+  interval are skipped. `discovery_subaccount_checks` records when each
+  master's subaccounts were last listed, in the same transaction as the
+  candidates they produced.
 - Prefilter source candidates and store discovery run history. Several
   sources are unofficial endpoints, so `GET /ops/health` reports each configured source's
   last run, last success, consecutive failures, and empty results, and warns
@@ -405,8 +411,8 @@ Tables by area:
   `wallet_monitoring_stats`, `source_trades`, `source_trade_links`,
   `source_trade_ignored_fills`, and `source_trade_sync_states`.
 - Scoring and discovery: `wallet_scores`, `wallet_score_snapshots`,
-  `wallet_equity_metrics`, `discovery_import_runs`, and
-  `discovery_wallet_candidates`.
+  `wallet_equity_metrics`, `discovery_import_runs`,
+  `discovery_wallet_candidates`, and `discovery_subaccount_checks`.
 - Copy set and signals: `active_copy_wallets`, `copy_signals`, `copy_trades`,
   and `risk_events`.
 - Live trading: `trading_accounts`, `trading_positions`, `trading_orders`,
@@ -681,7 +687,9 @@ sequenceDiagram
 ```
 
 The maintenance worker runs pool reimport every 30 minutes by default. It
-imports all due pool wallets across configured batches. Scoring runs only when
+imports all due pool wallets across configured batches. A wallet promoted from
+discovery starts with `last_polled_at` at the end of its candidate backfill
+window, so its first pool import is incremental. Scoring runs only when
 that import persisted new fills, and sharp pruning runs only after successful
 scoring when `wallet_prune_worker_dry_run` is `false`. Manual pool reimport
 forces a refresh regardless of `last_polled_at` and still deduplicates
@@ -766,7 +774,8 @@ sequenceDiagram
   API->>DB: load materialized source trade metrics
   API->>HL: portfolio for stale equity curves, highest scores first
   API->>DB: upsert wallet_equity_metrics
-  API->>HL: fetch live perp state and userAbstraction for current drawdown
+  API->>DB: load cached account modes
+  API->>HL: fetch live perp state, and userAbstraction only when the cached mode is stale
   API->>DB: upsert wallet_scores and the daily wallet_score_snapshots row
   API-->>UI: score run summary
   UI->>API: GET /wallets
@@ -809,6 +818,11 @@ current drawdown also caps the final score. This prevents wallets with perfect
 realized win rates from ranking highly while they carry large unrealized losses.
 If live state is incomplete or account value is zero, the scoring run keeps the
 history-only risk component and applies the configured missing-state penalty.
+The account mode is cached on `watched_wallets` for the configured refresh
+interval, because `userAbstraction` weighs 20 against 2 for a perp state read.
+A zero account value with the cached mode triggers a fresh read, and a failed
+read falls back to the cached mode. Mode updates are written in a savepoint, so
+a failed cache write never fails the scoring run.
 Scoring only checks default perp plus dexes already observed in stored fills, so
 full HIP-3 discovery remains limited to single-wallet current-state views.
 The live-risk phase has a configured total runtime budget and processes wallets
@@ -973,6 +987,7 @@ sequenceDiagram
   Worker->>DB: insert fills, reconstruct source trades, and run the trade checks
   Worker->>DB: store the equity curve for candidates that pass
   Worker->>DB: insert approved candidates into wallet pool or readmit archived ones
+  Worker->>DB: mark their backfill as the first pool poll
   Worker->>Redis: publish discovery import/backfill events
 ```
 

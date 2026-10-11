@@ -70,6 +70,9 @@ class WatchedWallet(Base, TimestampMixin, UpdatedAtMixin):
     # Pruned wallets are archived instead of deleted so selection can be evaluated later.
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     archive_reason: Mapped[str | None] = mapped_column(Text)
+    # Hyperliquid account mode cached for scoring, since the lookup is a heavy request.
+    user_abstraction: Mapped[str | None] = mapped_column(Text)
+    user_abstraction_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class WalletFill(Base, TimestampMixin):
@@ -788,6 +791,16 @@ class DiscoveryWalletCandidate(Base, TimestampMixin, UpdatedAtMixin):
     @source_roi.setter
     def source_roi(self, value: Decimal | None) -> None:
         self.source_roi_pct = value
+
+
+class DiscoverySubaccountCheck(Base):
+    """When discovery last listed a leaderboard master's subaccounts."""
+
+    __tablename__ = "discovery_subaccount_checks"
+
+    master_address: Mapped[str] = mapped_column(Text, primary_key=True)
+    subaccount_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class Setting(Base):

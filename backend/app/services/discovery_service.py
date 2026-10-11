@@ -1,4 +1,4 @@
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -12,7 +12,13 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
-from app.db.models import DiscoveryImportRun, DiscoveryWalletCandidate, WalletFill, WatchedWallet
+from app.db.models import (
+    DiscoveryImportRun,
+    DiscoverySubaccountCheck,
+    DiscoveryWalletCandidate,
+    WalletFill,
+    WatchedWallet,
+)
 from app.integrations.hyperliquid_client import HyperliquidClient, HyperliquidRateLimitError
 from app.integrations.hyperliquid_leaderboard_client import HyperliquidLeaderboardClient
 from app.schemas.discovery import (
@@ -29,12 +35,18 @@ from app.schemas.discovery import (
 )
 from app.schemas.fill import WalletFillImportRequest
 from app.schemas.wallet import normalize_wallet_address
-from app.services.fill_import_service import FillImportStorageLimitError, import_address_fills
+from app.services.fill_import_service import (
+    FillImportStorageLimitError,
+    import_address_fills,
+    target_fills_for_pages,
+)
 from app.services.hyperliquid_leaderboard_source import (
+    MasterSubaccount,
+    fetch_master_subaccounts,
     get_window,
-    load_subaccount_wallet_candidates,
     select_ranked_rows,
     string_or_none,
+    subaccount_wallet_candidates,
 )
 from app.services.hyperliquid_leaderboard_source import (
     window_label as leaderboard_window_label,
@@ -281,6 +293,139 @@ class CandidateTradeMetrics:
     max_drawdown_pct: Decimal | None
     average_trade_notional_usd: Decimal
     last_trade_time_ms: int | None
+
+
+@dataclass(frozen=True)
+class SubaccountLookup:
+    subaccounts: list[MasterSubaccount]
+    checked_at: datetime
+
+
+class DiscoveryFetchContext:
+    """Upstream data shared by the sources of one discovery run.
+
+    The leaderboard windows read one leaderboard and share most of their wallets,
+    and both vault sources read one vault list, so each payload and each master's
+    subaccount lookup is fetched at most once per run. Masters an earlier run
+    checked within the recheck interval are not looked up at all.
+    """
+
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        recently_checked_masters: frozenset[str] = frozenset(),
+    ) -> None:
+        self.settings = settings
+        self.recently_checked_masters = recently_checked_masters
+        self.subaccount_lookups = 0
+        self.subaccount_lookups_skipped = 0
+        self._client: HyperliquidClient | None = None
+        self._leaderboard_rows: list[Any] | None = None
+        self._vault_rows: list[Any] | None = None
+        self._subaccounts_by_master: dict[str, SubaccountLookup] = {}
+        self._pending_subaccount_checks: dict[str, SubaccountLookup] = {}
+
+    async def __aenter__(self) -> DiscoveryFetchContext:
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+    async def leaderboard_rows(self) -> list[Any]:
+        if self._leaderboard_rows is None:
+            payload = await HyperliquidLeaderboardClient(self.settings).get_leaderboard()
+            rows = payload.get("leaderboardRows")
+            self._leaderboard_rows = rows if isinstance(rows, list) else []
+        return self._leaderboard_rows
+
+    async def vault_rows(self) -> list[Any]:
+        if self._vault_rows is None:
+            self._vault_rows = await fetch_hyperliquid_vault_rows(self.settings)
+        return self._vault_rows
+
+    async def master_subaccounts(self, master_address: str) -> list[MasterSubaccount]:
+        max_subaccounts = self.settings.discovery_import_max_subaccounts_per_wallet
+        if max_subaccounts <= 0:
+            return []
+        if master_address in self.recently_checked_masters:
+            self.subaccount_lookups_skipped += 1
+            return []
+        lookup = self._subaccounts_by_master.get(master_address)
+        if lookup is None:
+            if self._client is None:
+                self._client = HyperliquidClient(self.settings).open()
+            self.subaccount_lookups += 1
+            subaccounts = await fetch_master_subaccounts(
+                client=self._client,
+                master_address=master_address,
+                max_subaccounts=max_subaccounts,
+            )
+            if subaccounts is None:
+                # A failed lookup is retried by the next source that lists the master.
+                return []
+            lookup = SubaccountLookup(subaccounts=subaccounts, checked_at=datetime.now(UTC))
+            self._subaccounts_by_master[master_address] = lookup
+        else:
+            self.subaccount_lookups_skipped += 1
+        self._pending_subaccount_checks[master_address] = lookup
+        return lookup.subaccounts
+
+    def take_pending_subaccount_checks(self) -> dict[str, SubaccountLookup]:
+        """Checks whose subaccount candidates the current source returned."""
+
+        pending = self._pending_subaccount_checks
+        self._pending_subaccount_checks = {}
+        return pending
+
+    def discard_pending_subaccount_checks(self) -> None:
+        self._pending_subaccount_checks = {}
+
+
+async def load_recently_checked_subaccount_masters(
+    session: AsyncSession,
+    *,
+    settings: Settings,
+) -> frozenset[str]:
+    recheck_hours = settings.discovery_import_subaccounts_recheck_hours
+    if not settings.discovery_import_subaccounts_enabled or recheck_hours <= 0:
+        return frozenset()
+    cutoff = datetime.now(UTC) - timedelta(hours=recheck_hours)
+    result = await session.execute(
+        select(DiscoverySubaccountCheck.master_address).where(
+            DiscoverySubaccountCheck.checked_at >= cutoff
+        )
+    )
+    return frozenset(result.scalars().all())
+
+
+async def store_subaccount_checks(
+    session: AsyncSession,
+    checks: dict[str, SubaccountLookup],
+) -> None:
+    if not checks:
+        return
+    stmt = insert(DiscoverySubaccountCheck).values(
+        [
+            {
+                "master_address": master_address,
+                "subaccount_count": len(lookup.subaccounts),
+                "checked_at": lookup.checked_at,
+            }
+            for master_address, lookup in checks.items()
+        ]
+    )
+    await session.execute(
+        stmt.on_conflict_do_update(
+            index_elements=["master_address"],
+            set_={
+                "subaccount_count": stmt.excluded.subaccount_count,
+                "checked_at": stmt.excluded.checked_at,
+            },
+        )
+    )
 
 
 # Upper bound for evaluating candidates earlier runs imported but never prefiltered.
@@ -621,6 +766,7 @@ async def run_discovery_candidate_promotion(
                 limit=batch_limit,
                 require_backfill=require_backfill,
                 max_batches=max_batches,
+                settings=resolved_settings,
             )
         else:
             response = await promote_discovery_candidates(
@@ -628,6 +774,7 @@ async def run_discovery_candidate_promotion(
                 source=source,
                 limit=batch_limit,
                 require_backfill=require_backfill,
+                settings=resolved_settings,
             )
     except Exception as exc:
         await session.rollback()
@@ -671,137 +818,151 @@ async def _run_discovery_import(
     skip_reasons: dict[str, int] = {}
 
     source_count = max(1, len(sources))
-    for source_index, source in enumerate(sources, start=1):
-        await raise_if_operation_cancellation_requested(
-            session,
-            key="discovery_import",
-            run_id=operation_run_id,
-        )
-        await update_discovery_operation_progress(
-            session,
-            operation_payload,
-            stage="source_import",
-            stage_label="Importing candidates",
-            stage_detail=f"Fetching source {source_index} of {source_count}: {source}.",
-            progress_percent=progress_between(
-                start=0,
-                end=25,
-                current=source_index - 1,
-                total=source_count,
-            ),
-            extra={
-                "currentSource": source,
-                "sourceIndex": source_index,
-                "sourceCount": source_count,
-            },
-        )
-        run = DiscoveryImportRun(
-            id=uuid4(),
-            source=source,
-            status="running",
-            requested_limit=limit,
-        )
-        session.add(run)
-        await session.flush()
-
-        try:
-            source_result = await fetch_discovery_source(
-                source,
-                limit=limit,
-                settings=settings,
-            )
+    recently_checked_masters = await load_recently_checked_subaccount_masters(
+        session,
+        settings=settings,
+    )
+    async with DiscoveryFetchContext(
+        settings,
+        recently_checked_masters=recently_checked_masters,
+    ) as fetch_context:
+        for source_index, source in enumerate(sources, start=1):
             await raise_if_operation_cancellation_requested(
                 session,
                 key="discovery_import",
                 run_id=operation_run_id,
             )
-            upsert_result = await upsert_discovery_candidates(
-                session,
-                run_id=run.id,
-                candidates=source_result.candidates,
-                readmit_archived_after_days=(
-                    settings.discovery_promotion_readmit_archived_after_days
-                ),
-            )
-            merge_counts(skip_reasons, source_result.skip_reasons)
-            merge_counts(skip_reasons, upsert_result.skip_reasons)
-            run.status = "succeeded"
-            run.fetched_count = source_result.fetched
-            run.candidate_count = upsert_result.inserted + upsert_result.updated
-            run.inserted_count = upsert_result.inserted
-            run.updated_count = upsert_result.updated
-            run.skipped_count = source_result.skipped + upsert_result.skipped
-            run.finished_at = datetime.now(UTC)
-            run_skip_reasons: dict[str, int] = {}
-            merge_counts(run_skip_reasons, source_result.skip_reasons)
-            merge_counts(run_skip_reasons, upsert_result.skip_reasons)
-            run.run_metadata = {
-                **source_result.metadata,
-                "skipReasons": run_skip_reasons,
-            }
-            await session.commit()
-            runs.append(run)
             await update_discovery_operation_progress(
                 session,
                 operation_payload,
                 stage="source_import",
                 stage_label="Importing candidates",
-                stage_detail=(
-                    f"Imported {source}: {upsert_result.inserted} new, "
-                    f"{upsert_result.skipped} skipped."
-                ),
+                stage_detail=f"Fetching source {source_index} of {source_count}: {source}.",
                 progress_percent=progress_between(
                     start=0,
                     end=25,
-                    current=source_index,
+                    current=source_index - 1,
                     total=source_count,
                 ),
-                extra=discovery_run_progress_counts(runs)
-                | {"skipReasons": skip_reasons}
-                | {
+                extra={
                     "currentSource": source,
                     "sourceIndex": source_index,
                     "sourceCount": source_count,
                 },
             )
-        except OperationCanceledError:
-            await session.rollback()
-            raise
-        except Exception as exc:
-            error_message = str(exc) or exc.__class__.__name__
-            await session.rollback()
-            failed_run = DiscoveryImportRun(
-                id=run.id,
+            run = DiscoveryImportRun(
+                id=uuid4(),
                 source=source,
-                status="failed",
+                status="running",
                 requested_limit=limit,
-                error=error_message,
-                finished_at=datetime.now(UTC),
-                run_metadata={"source": source},
             )
-            session.add(failed_run)
-            await session.commit()
-            runs.append(failed_run)
-            await update_discovery_operation_progress(
-                session,
-                operation_payload,
-                stage="source_import",
-                stage_label="Importing candidates",
-                stage_detail=f"Source {source} failed: {error_message}.",
-                progress_percent=progress_between(
-                    start=0,
-                    end=25,
-                    current=source_index,
-                    total=source_count,
-                ),
-                extra=discovery_run_progress_counts(runs)
-                | {"skipReasons": skip_reasons}
-                | {
-                    "currentSource": source,
-                    "sourceIndex": source_index,
-                    "sourceCount": source_count,
-                },
-            )
+            session.add(run)
+            await session.flush()
+
+            try:
+                source_result = await fetch_discovery_source(
+                    source,
+                    limit=limit,
+                    settings=settings,
+                    context=fetch_context,
+                )
+                await raise_if_operation_cancellation_requested(
+                    session,
+                    key="discovery_import",
+                    run_id=operation_run_id,
+                )
+                upsert_result = await upsert_discovery_candidates(
+                    session,
+                    run_id=run.id,
+                    candidates=source_result.candidates,
+                    readmit_archived_after_days=(
+                        settings.discovery_promotion_readmit_archived_after_days
+                    ),
+                )
+                merge_counts(skip_reasons, source_result.skip_reasons)
+                merge_counts(skip_reasons, upsert_result.skip_reasons)
+                run.status = "succeeded"
+                run.fetched_count = source_result.fetched
+                run.candidate_count = upsert_result.inserted + upsert_result.updated
+                run.inserted_count = upsert_result.inserted
+                run.updated_count = upsert_result.updated
+                run.skipped_count = source_result.skipped + upsert_result.skipped
+                run.finished_at = datetime.now(UTC)
+                run_skip_reasons: dict[str, int] = {}
+                merge_counts(run_skip_reasons, source_result.skip_reasons)
+                merge_counts(run_skip_reasons, upsert_result.skip_reasons)
+                run.run_metadata = {
+                    **source_result.metadata,
+                    "skipReasons": run_skip_reasons,
+                }
+                await store_subaccount_checks(
+                    session,
+                    fetch_context.take_pending_subaccount_checks(),
+                )
+                await session.commit()
+                runs.append(run)
+                await update_discovery_operation_progress(
+                    session,
+                    operation_payload,
+                    stage="source_import",
+                    stage_label="Importing candidates",
+                    stage_detail=(
+                        f"Imported {source}: {upsert_result.inserted} new, "
+                        f"{upsert_result.skipped} skipped."
+                    ),
+                    progress_percent=progress_between(
+                        start=0,
+                        end=25,
+                        current=source_index,
+                        total=source_count,
+                    ),
+                    extra=discovery_run_progress_counts(runs)
+                    | {"skipReasons": skip_reasons}
+                    | {
+                        "currentSource": source,
+                        "sourceIndex": source_index,
+                        "sourceCount": source_count,
+                    },
+                )
+            except OperationCanceledError:
+                await session.rollback()
+                raise
+            except Exception as exc:
+                error_message = str(exc) or exc.__class__.__name__
+                await session.rollback()
+                fetch_context.discard_pending_subaccount_checks()
+                failed_run = DiscoveryImportRun(
+                    id=run.id,
+                    source=source,
+                    status="failed",
+                    requested_limit=limit,
+                    error=error_message,
+                    finished_at=datetime.now(UTC),
+                    run_metadata={"source": source},
+                )
+                session.add(failed_run)
+                await session.commit()
+                runs.append(failed_run)
+                await update_discovery_operation_progress(
+                    session,
+                    operation_payload,
+                    stage="source_import",
+                    stage_label="Importing candidates",
+                    stage_detail=f"Source {source} failed: {error_message}.",
+                    progress_percent=progress_between(
+                        start=0,
+                        end=25,
+                        current=source_index,
+                        total=source_count,
+                    ),
+                    extra=discovery_run_progress_counts(runs)
+                    | {"skipReasons": skip_reasons}
+                    | {
+                        "currentSource": source,
+                        "sourceIndex": source_index,
+                        "sourceCount": source_count,
+                    },
+                )
 
     await raise_if_operation_cancellation_requested(
         session,
@@ -1071,14 +1232,29 @@ async def fetch_discovery_source(
     *,
     limit: int,
     settings: Settings,
+    context: DiscoveryFetchContext | None = None,
 ) -> DiscoverySourceResult:
+    if context is None:
+        async with DiscoveryFetchContext(settings) as owned_context:
+            return await fetch_discovery_source(
+                source,
+                limit=limit,
+                settings=settings,
+                context=owned_context,
+            )
     if source in HYPERLIQUID_LEADERBOARD_SOURCES:
-        return await fetch_hyperliquid_leaderboard_source(source, limit=limit, settings=settings)
+        return await fetch_hyperliquid_leaderboard_source(
+            source,
+            limit=limit,
+            settings=settings,
+            context=context,
+        )
     if source in HYPERLIQUID_VAULT_SOURCES:
         return await fetch_hyperliquid_vault_leaders_source(
             source,
             limit=limit,
             settings=settings,
+            context=context,
         )
     if source in HYPERDASH_URL_SETTINGS:
         return await fetch_hyperdash_source(source, limit=limit, settings=settings)
@@ -1094,13 +1270,10 @@ async def fetch_hyperliquid_leaderboard_source(
     *,
     limit: int,
     settings: Settings,
+    context: DiscoveryFetchContext,
 ) -> DiscoverySourceResult:
     window = HYPERLIQUID_LEADERBOARD_SOURCES[source]
-    leaderboard_client = HyperliquidLeaderboardClient(settings)
-    payload = await leaderboard_client.get_leaderboard()
-    rows = payload.get("leaderboardRows")
-    if not isinstance(rows, list):
-        rows = []
+    rows = await context.leaderboard_rows()
 
     selected_rows = select_ranked_rows(
         rows,
@@ -1111,9 +1284,8 @@ async def fetch_hyperliquid_leaderboard_source(
     candidates: list[DiscoveryCandidate] = []
     skipped = 0
     skip_reasons: dict[str, int] = {}
-    subaccount_client = (
-        HyperliquidClient(settings) if settings.discovery_import_subaccounts_enabled else None
-    )
+    subaccount_lookups_before = context.subaccount_lookups
+    subaccount_lookups_skipped_before = context.subaccount_lookups_skipped
 
     for rank, row in enumerate(selected_rows, start=1):
         if not isinstance(row, dict):
@@ -1150,15 +1322,14 @@ async def fetch_hyperliquid_leaderboard_source(
             )
         )
 
-        if subaccount_client is not None:
-            subaccounts = await load_subaccount_wallet_candidates(
-                client=subaccount_client,
+        if settings.discovery_import_subaccounts_enabled:
+            subaccounts = subaccount_wallet_candidates(
+                await context.master_subaccounts(address),
                 master_address=address,
                 rank=rank,
                 display_name=display_name,
                 row=row,
                 window=window,
-                max_subaccounts=settings.discovery_import_max_subaccounts_per_wallet,
             )
             for subaccount in subaccounts:
                 candidates.append(
@@ -1193,6 +1364,10 @@ async def fetch_hyperliquid_leaderboard_source(
             "window": window,
             "sortMetric": settings.discovery_hyperliquid_sort_metric,
             "subaccountsEnabled": settings.discovery_import_subaccounts_enabled,
+            "subaccountLookups": context.subaccount_lookups - subaccount_lookups_before,
+            "subaccountLookupsSkipped": (
+                context.subaccount_lookups_skipped - subaccount_lookups_skipped_before
+            ),
         },
     )
 
@@ -1202,9 +1377,10 @@ async def fetch_hyperliquid_vault_leaders_source(
     *,
     limit: int,
     settings: Settings,
+    context: DiscoveryFetchContext,
 ) -> DiscoverySourceResult:
     window = HYPERLIQUID_VAULT_SOURCES[source]
-    rows = await fetch_hyperliquid_vault_rows(settings)
+    rows = await context.vault_rows()
     ranked_rows = sorted(
         [row for row in rows if isinstance(row, dict)],
         key=lambda row: vault_sort_value(row, window=window),
@@ -2096,6 +2272,7 @@ async def backfill_discovery_candidates(
                     settings=settings,
                 )
                 fetched = inserted = duplicate = 0
+                fills_fetched_at: datetime | None = None
                 equity_rejection = evaluate_candidate_equity(equity, settings=settings)
                 if equity_rejection is not None:
                     metrics = replace(
@@ -2117,6 +2294,10 @@ async def backfill_discovery_candidates(
                     fetched = import_result.fetched
                     inserted = import_result.inserted
                     duplicate = import_result.duplicate
+                    fills_fetched_at = datetime.fromtimestamp(
+                        import_result.end_time_ms / 1000,
+                        tz=UTC,
+                    )
                     metrics = await load_candidate_trade_metrics(
                         session,
                         address=candidate.wallet_address,
@@ -2138,13 +2319,18 @@ async def backfill_discovery_candidates(
                     inserted=inserted,
                     duplicate=duplicate,
                     decision=decision,
+                    backfilled_at=fills_fetched_at,
                 )
 
                 backfilled += 1
                 pool_action: str | None = None
                 if decision.status == "accepted":
                     accepted += 1
-                    pool_action = await promote_backfilled_candidate_to_pool(session, candidate)
+                    pool_action = await promote_backfilled_candidate_to_pool(
+                        session,
+                        candidate,
+                        settings=settings,
+                    )
                     if pool_action in {"inserted", "existing_pool_wallet"}:
                         promoted += 1
                     if pool_action == "inserted":
@@ -2325,6 +2511,8 @@ async def backfill_all_discovery_candidates(
 async def promote_backfilled_candidate_to_pool(
     session: AsyncSession,
     candidate: DiscoveryWalletCandidate,
+    *,
+    settings: Settings,
 ) -> str:
     stmt = (
         insert(WatchedWallet)
@@ -2347,7 +2535,55 @@ async def promote_backfilled_candidate_to_pool(
     candidate.status = "promoted"
     candidate.fail_reason = None
     candidate.updated_at = datetime.now(UTC)
+    await mark_promoted_wallets_polled(session, [candidate], settings=settings)
     return pool_action
+
+
+def candidate_backfill_covers_pool_import(settings: Settings) -> bool:
+    """Whether a candidate backfill fetches at least what a first pool import would."""
+
+    return (
+        settings.discovery_candidate_backfill_days >= settings.pool_fill_import_days
+        and settings.discovery_candidate_backfill_max_pages >= settings.pool_fill_import_max_pages
+        and settings.discovery_candidate_backfill_target_fills
+        >= target_fills_for_pages(settings.pool_fill_import_max_pages)
+    )
+
+
+async def mark_promoted_wallets_polled(
+    session: AsyncSession,
+    candidates: Sequence[DiscoveryWalletCandidate],
+    *,
+    settings: Settings,
+) -> None:
+    """Count a successful candidate backfill as the promoted wallet's latest pool poll.
+
+    The backfill fetched the fill window a first pool import would fetch, so the
+    pool import continues from it instead of downloading that history again.
+    """
+
+    if not candidate_backfill_covers_pool_import(settings):
+        return
+    for candidate in candidates:
+        polled_at = candidate.last_backfilled_at
+        if candidate.backfill_status != "succeeded" or polled_at is None:
+            continue
+        latest_fill_ms = (
+            select(func.max(WalletFill.timestamp_ms))
+            .where(WalletFill.wallet_address == candidate.wallet_address)
+            .scalar_subquery()
+        )
+        await session.execute(
+            update(WatchedWallet)
+            .where(WatchedWallet.address == candidate.wallet_address)
+            .values(
+                last_polled_at=func.greatest(WatchedWallet.last_polled_at, polled_at),
+                last_seen_fill_at=func.greatest(
+                    WatchedWallet.last_seen_fill_at,
+                    func.to_timestamp(latest_fill_ms / 1000.0),
+                ),
+            )
+        )
 
 
 async def delete_rejected_candidate_data(session: AsyncSession, wallet_address: str) -> int:
@@ -2365,6 +2601,7 @@ async def promote_discovery_candidates(
     source: str | None,
     limit: int,
     require_backfill: bool,
+    settings: Settings,
 ) -> DiscoveryPromoteResponse:
     filters = [DiscoveryWalletCandidate.status == "accepted"]
     if source:
@@ -2420,6 +2657,7 @@ async def promote_discovery_candidates(
     promoted = 0
     duplicate = 0
     items: list[DiscoveryPromoteItem] = []
+    promoted_candidates: list[DiscoveryWalletCandidate] = []
     now = datetime.now(UTC)
 
     for candidate in candidates:
@@ -2427,6 +2665,7 @@ async def promote_discovery_candidates(
         was_inserted = candidate.wallet_address in inserted_addresses
         if already_in_pool or was_inserted:
             promoted += 1
+            promoted_candidates.append(candidate)
             if already_in_pool:
                 duplicate += 1
             candidate.status = "promoted"
@@ -2453,6 +2692,7 @@ async def promote_discovery_candidates(
                 )
             )
 
+    await mark_promoted_wallets_polled(session, promoted_candidates, settings=settings)
     await session.commit()
     inserted = len(inserted_addresses)
     skipped = len(candidates) - promoted
@@ -2473,6 +2713,7 @@ async def promote_all_discovery_candidates(
     limit: int,
     require_backfill: bool,
     max_batches: int,
+    settings: Settings,
 ) -> DiscoveryPromoteResponse:
     totals = DiscoveryPromoteResponse(
         scanned=0,
@@ -2489,6 +2730,7 @@ async def promote_all_discovery_candidates(
             source=source,
             limit=limit,
             require_backfill=require_backfill,
+            settings=settings,
         )
         totals.scanned += batch.scanned
         totals.promoted += batch.promoted
@@ -2690,12 +2932,14 @@ def update_candidate_backfill_state(
     inserted: int,
     duplicate: int,
     decision: PrefilterDecision,
+    backfilled_at: datetime | None = None,
 ) -> None:
     candidate.status = decision.status
     candidate.fail_reason = decision.fail_reason
     candidate.backfill_status = "succeeded"
     candidate.backfill_error = None
-    candidate.last_backfilled_at = datetime.now(UTC)
+    # The end of the fetched fill window, so a promoted wallet's pool import resumes there.
+    candidate.last_backfilled_at = backfilled_at or datetime.now(UTC)
     candidate.backfill_fetched_count = fetched
     candidate.backfill_inserted_count = inserted
     candidate.backfill_duplicate_count = duplicate

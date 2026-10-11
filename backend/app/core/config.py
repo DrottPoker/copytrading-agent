@@ -40,6 +40,7 @@ DISCOVERY_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("import", "run_on_worker_start"): "discovery_import_on_worker_start",
     ("import", "subaccounts", "enabled"): "discovery_import_subaccounts_enabled",
     ("import", "subaccounts", "max_per_wallet"): ("discovery_import_max_subaccounts_per_wallet"),
+    ("import", "subaccounts", "recheck_hours"): ("discovery_import_subaccounts_recheck_hours"),
     ("prefilter", "enabled"): "discovery_prefilter_enabled",
     ("prefilter", "run_after_import"): "discovery_prefilter_run_after_import",
     ("prefilter", "reject_missing_source_pnl"): ("discovery_prefilter_reject_missing_source_pnl"),
@@ -227,6 +228,9 @@ SCORING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("risk", "current_drawdown", "concurrency"): "scoring_current_drawdown_concurrency",
     ("risk", "current_drawdown", "run_timeout_seconds"): (
         "scoring_current_drawdown_run_timeout_seconds"
+    ),
+    ("risk", "current_drawdown", "user_abstraction_refresh_hours"): (
+        "scoring_current_drawdown_user_abstraction_refresh_hours"
     ),
     ("risk", "current_drawdown", "missing_penalty"): ("scoring_current_drawdown_missing_penalty"),
     ("risk", "current_drawdown", "penalty_start_ratio"): (
@@ -471,6 +475,7 @@ class Settings(BaseSettings):
     discovery_hyperliquid_vaults_url: str | None = None
     discovery_import_subaccounts_enabled: bool = True
     discovery_import_max_subaccounts_per_wallet: int = Field(default=10, ge=0, le=50)
+    discovery_import_subaccounts_recheck_hours: int = Field(default=24, ge=0, le=720)
     discovery_hyperdash_copytrading_url: str | None = None
     discovery_hyperdash_cohorts_url: str | None = None
     discovery_hyperdash_very_profitable_url: str | None = None
@@ -561,6 +566,7 @@ class Settings(BaseSettings):
     scoring_current_drawdown_enabled: bool = True
     scoring_current_drawdown_concurrency: int = Field(default=8, ge=1, le=25)
     scoring_current_drawdown_run_timeout_seconds: int = Field(default=300, ge=1, le=3600)
+    scoring_current_drawdown_user_abstraction_refresh_hours: int = Field(default=24, ge=0, le=720)
     scoring_current_drawdown_missing_penalty: Decimal = Field(
         default=Decimal("18"),
         ge=0,

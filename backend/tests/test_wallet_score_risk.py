@@ -1,7 +1,7 @@
 import asyncio
 import inspect
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -13,6 +13,7 @@ from app.services.source_trade_reconstruction_service import (
     ReconstructedWalletTrades,
 )
 from app.services.wallet_score_service import (
+    CachedUserAbstraction,
     WalletScoreMetrics,
     calculate_profitability_score,
     calculate_wallet_score,
@@ -138,6 +139,12 @@ async def test_current_drawdown_runtime_budget_keeps_scoring_completable(
     async def fake_progress(*_args: object, **_kwargs: object) -> None:
         return None
 
+    async def fake_cached_abstractions(*_args: object, **_kwargs: object) -> dict:
+        return {}
+
+    async def fake_store_abstractions(*_args: object, **_kwargs: object) -> None:
+        return None
+
     class FakeClient:
         async def __aenter__(self) -> FakeClient:
             return self
@@ -152,6 +159,12 @@ async def test_current_drawdown_runtime_budget_keeps_scoring_completable(
     )
     monkeypatch.setattr(wallet_score_service, "metric_with_current_drawdown", fake_live_metric)
     monkeypatch.setattr(wallet_score_service, "mark_operation_progress", fake_progress)
+    monkeypatch.setattr(
+        wallet_score_service,
+        "load_cached_user_abstractions",
+        fake_cached_abstractions,
+    )
+    monkeypatch.setattr(wallet_score_service, "store_user_abstractions", fake_store_abstractions)
     monkeypatch.setattr(wallet_score_service, "HyperliquidClient", FakeClient)
 
     result = await metrics_with_current_drawdowns(
@@ -162,6 +175,106 @@ async def test_current_drawdown_runtime_budget_keeps_scoring_completable(
 
     assert result[0].current_drawdown_status == "ok"
     assert result[1].current_drawdown_status == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_current_drawdown_reuses_a_fresh_cached_account_mode() -> None:
+    client = FakeStandardWalletClient(account_value="1000")
+    updates: dict[str, CachedUserAbstraction] = {}
+
+    updated = await metric_with_current_drawdown(
+        wallet_metrics(current_drawdown_pct=Decimal("0")),
+        client=client,  # type: ignore[arg-type]
+        known_dexes=(),
+        settings=risk_settings(),
+        cached_user_abstraction=CachedUserAbstraction(
+            value="default",
+            checked_at=datetime.now(UTC) - timedelta(hours=1),
+        ),
+        user_abstraction_updates=updates,
+    )
+
+    assert client.abstraction_requests == 0
+    assert updates == {}
+    assert updated.current_account_value_usd == Decimal("1000")
+    assert updated.current_drawdown_status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_current_drawdown_reads_a_stale_account_mode_again() -> None:
+    client = FakeStandardWalletClient(account_value="1000")
+    updates: dict[str, CachedUserAbstraction] = {}
+    metric = wallet_metrics(current_drawdown_pct=Decimal("0"))
+
+    await metric_with_current_drawdown(
+        metric,
+        client=client,  # type: ignore[arg-type]
+        known_dexes=(),
+        settings=risk_settings(),
+        cached_user_abstraction=CachedUserAbstraction(
+            value="default",
+            checked_at=datetime.now(UTC) - timedelta(hours=25),
+        ),
+        user_abstraction_updates=updates,
+    )
+
+    assert client.abstraction_requests == 1
+    assert updates[metric.wallet_address].value == "default"
+
+
+@pytest.mark.asyncio
+async def test_zero_account_value_reads_a_cached_account_mode_again() -> None:
+    # The cache says standard, but the wallet switched to a unified account.
+    client = FakeUnifiedWalletClient()
+    updates: dict[str, CachedUserAbstraction] = {}
+    metric = wallet_metrics(current_drawdown_pct=Decimal("0"))
+
+    updated = await metric_with_current_drawdown(
+        metric,
+        client=client,  # type: ignore[arg-type]
+        known_dexes=(),
+        settings=risk_settings(),
+        cached_user_abstraction=CachedUserAbstraction(
+            value="default",
+            checked_at=datetime.now(UTC),
+        ),
+        user_abstraction_updates=updates,
+    )
+
+    assert client.abstraction_requests == 1
+    assert updates[metric.wallet_address].value == "unifiedAccount"
+    assert updated.current_account_value_usd == Decimal("200")
+    assert updated.current_drawdown_status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_failed_account_mode_read_falls_back_to_the_cached_mode() -> None:
+    client = FakeStandardWalletClient(account_value="1000", abstraction_fails=True)
+    updates: dict[str, CachedUserAbstraction] = {}
+
+    cached = await metric_with_current_drawdown(
+        wallet_metrics(current_drawdown_pct=Decimal("0")),
+        client=client,  # type: ignore[arg-type]
+        known_dexes=(),
+        settings=risk_settings(),
+        cached_user_abstraction=CachedUserAbstraction(
+            value="default",
+            checked_at=datetime.now(UTC) - timedelta(days=3),
+        ),
+        user_abstraction_updates=updates,
+    )
+    uncached = await metric_with_current_drawdown(
+        wallet_metrics(current_drawdown_pct=Decimal("0")),
+        client=client,  # type: ignore[arg-type]
+        known_dexes=(),
+        settings=risk_settings(),
+        user_abstraction_updates=updates,
+    )
+
+    assert updates == {}
+    assert cached.current_drawdown_status == "ok"
+    assert cached.current_account_value_usd == Decimal("1000")
+    assert uncached.current_drawdown_status == "unavailable"
 
 
 def test_forced_exit_severity_scales_with_notional_even_when_profitable() -> None:
@@ -357,7 +470,34 @@ def replace_forced_exit_metrics(
     )
 
 
+class FakeStandardWalletClient:
+    def __init__(self, *, account_value: str, abstraction_fails: bool = False) -> None:
+        self.account_value = account_value
+        self.abstraction_fails = abstraction_fails
+        self.abstraction_requests = 0
+
+    async def clearinghouse_state(self, *, user: str, dex: str | None = None) -> dict:
+        return {
+            "assetPositions": [],
+            "marginSummary": {
+                "accountValue": self.account_value,
+                "totalMarginUsed": "0",
+                "totalNtlPos": "0",
+            },
+            "withdrawable": self.account_value,
+        }
+
+    async def user_abstraction(self, *, user: str) -> str:
+        self.abstraction_requests += 1
+        if self.abstraction_fails:
+            raise RuntimeError("rate limited")
+        return "default"
+
+
 class FakeUnifiedWalletClient:
+    def __init__(self) -> None:
+        self.abstraction_requests = 0
+
     async def clearinghouse_state(self, *, user: str, dex: str | None = None) -> dict:
         return {
             "assetPositions": [
@@ -382,6 +522,7 @@ class FakeUnifiedWalletClient:
         }
 
     async def user_abstraction(self, *, user: str) -> str:
+        self.abstraction_requests += 1
         return "unifiedAccount"
 
     async def spot_clearinghouse_state(self, *, user: str) -> dict:

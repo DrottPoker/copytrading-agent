@@ -22,7 +22,10 @@ from app.schemas.score import (
 )
 from app.schemas.wallet import normalize_wallet_address
 from app.services.job_lock_service import job_lock
-from app.services.live_trading_service import live_copy_allocation_equity
+from app.services.live_trading_service import (
+    live_copy_allocation_equity,
+    normalize_user_abstraction,
+)
 from app.services.operation_status_service import (
     OperationCanceledError,
     mark_operation_canceled,
@@ -41,6 +44,10 @@ from app.services.source_trade_reconstruction_service import (
 )
 from app.services.trading_core import copy_allocation_pct
 from app.services.wallet_current_state_service import (
+    KnownUserAbstraction,
+    WalletAccountValueSummary,
+    WalletPerpStateSummary,
+    fetch_wallet_user_abstraction,
     load_known_wallet_perp_dexes_for_addresses,
     load_wallet_account_value_summary,
     load_wallet_perp_clearinghouse_states,
@@ -59,6 +66,12 @@ SCORE_QUANT = Decimal("0.01")
 RATIO_QUANT = Decimal("0.0001")
 CURRENT_DRAWDOWN_WALLET_TIMEOUT_SECONDS = 45
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class CachedUserAbstraction:
+    value: str | None
+    checked_at: datetime
 
 
 class WalletScoreDetailNotFoundError(Exception):
@@ -1010,6 +1023,8 @@ async def metrics_with_current_drawdowns(
         session,
         addresses=addresses,
     )
+    cached_abstractions = await load_cached_user_abstractions(session, addresses=addresses)
+    abstraction_updates: dict[str, CachedUserAbstraction] = {}
     concurrency = settings.scoring_current_drawdown_concurrency
     timeout_seconds = settings.scoring_current_drawdown_run_timeout_seconds
     deadline = asyncio.get_running_loop().time() + timeout_seconds
@@ -1025,6 +1040,8 @@ async def metrics_with_current_drawdowns(
                         client=client,
                         known_dexes=known_dexes_by_address.get(metric.wallet_address.lower(), ()),
                         settings=settings,
+                        cached_user_abstraction=cached_abstractions.get(metric.wallet_address),
+                        user_abstraction_updates=abstraction_updates,
                     ),
                     timeout=min(
                         timeout_seconds,
@@ -1111,6 +1128,7 @@ async def metrics_with_current_drawdowns(
             if pending:
                 break
 
+    await store_user_abstractions(session, abstraction_updates)
     return [
         (resolved_metrics.get(metric.wallet_address) or unavailable_current_drawdown_metric(metric))
         if metric.trade_count > 0
@@ -1139,6 +1157,8 @@ async def metric_with_current_drawdown(
     client: HyperliquidClient,
     known_dexes: tuple[str, ...],
     settings: Settings,
+    cached_user_abstraction: CachedUserAbstraction | None = None,
+    user_abstraction_updates: dict[str, CachedUserAbstraction] | None = None,
 ) -> WalletScoreMetrics:
     perp_states, errors = await load_wallet_perp_clearinghouse_states(
         client=client,
@@ -1155,10 +1175,13 @@ async def metric_with_current_drawdown(
         return replace(metric, current_drawdown_status="unavailable")
 
     perp_summary = summarize_perp_clearinghouse_states(perp_states)
-    account_value_summary = await load_wallet_account_value_summary(
+    account_value_summary = await scoring_account_value_summary(
         client=client,
         address=metric.wallet_address,
         perp_summary=perp_summary,
+        cached=cached_user_abstraction,
+        settings=settings,
+        updates=user_abstraction_updates,
     )
     if account_value_summary.error is not None:
         logger.debug(
@@ -1209,6 +1232,115 @@ async def metric_with_current_drawdown(
         open_position_stress_pct=open_position_stress_pct,
         current_drawdown_status=current_drawdown_status,
     )
+
+
+async def scoring_account_value_summary(
+    *,
+    client: HyperliquidClient,
+    address: str,
+    perp_summary: WalletPerpStateSummary,
+    cached: CachedUserAbstraction | None,
+    settings: Settings,
+    updates: dict[str, CachedUserAbstraction] | None,
+) -> WalletAccountValueSummary:
+    """Account value with the cached account mode while it is fresh.
+
+    A zero account value can mean the mode changed since it was cached, so the
+    mode is read again then. A failed read falls back to the cached mode.
+    """
+
+    if cached is not None and user_abstraction_is_fresh(cached, settings=settings):
+        summary = await load_wallet_account_value_summary(
+            client=client,
+            address=address,
+            perp_summary=perp_summary,
+            known_user_abstraction=KnownUserAbstraction(cached.value),
+        )
+        if summary.account_value_usd > ZERO:
+            return summary
+
+    value, error = await fetch_wallet_user_abstraction(client=client, address=address)
+    if error is None:
+        checked = CachedUserAbstraction(
+            value=normalize_user_abstraction(value),
+            checked_at=datetime.now(UTC),
+        )
+        if updates is not None:
+            updates[address] = checked
+        known = KnownUserAbstraction(checked.value)
+    elif cached is not None:
+        known = KnownUserAbstraction(cached.value)
+    else:
+        known = KnownUserAbstraction(None, error=error)
+    return await load_wallet_account_value_summary(
+        client=client,
+        address=address,
+        perp_summary=perp_summary,
+        known_user_abstraction=known,
+    )
+
+
+def user_abstraction_is_fresh(cached: CachedUserAbstraction, *, settings: Settings) -> bool:
+    refresh_hours = settings.scoring_current_drawdown_user_abstraction_refresh_hours
+    return refresh_hours > 0 and datetime.now(UTC) - cached.checked_at < timedelta(
+        hours=refresh_hours
+    )
+
+
+async def load_cached_user_abstractions(
+    session: AsyncSession,
+    *,
+    addresses: list[str],
+) -> dict[str, CachedUserAbstraction]:
+    if not addresses:
+        return {}
+    result = await session.execute(
+        select(
+            WatchedWallet.address,
+            WatchedWallet.user_abstraction,
+            WatchedWallet.user_abstraction_checked_at,
+        ).where(
+            WatchedWallet.address.in_(addresses),
+            WatchedWallet.user_abstraction_checked_at.is_not(None),
+        )
+    )
+    return {
+        str(address): CachedUserAbstraction(value=value, checked_at=checked_at)
+        for address, value, checked_at in result.all()
+        if checked_at is not None
+    }
+
+
+async def store_user_abstractions(
+    session: AsyncSession,
+    abstractions: dict[str, CachedUserAbstraction],
+) -> None:
+    """Cache the account modes read during a scoring run without risking the run."""
+
+    if not abstractions:
+        return
+    try:
+        async with session.begin_nested():
+            await session.execute(
+                text(
+                    """
+                    update watched_wallets
+                    set user_abstraction = :user_abstraction,
+                        user_abstraction_checked_at = :checked_at
+                    where address = :address
+                    """
+                ),
+                [
+                    {
+                        "address": address,
+                        "user_abstraction": cached.value,
+                        "checked_at": cached.checked_at,
+                    }
+                    for address, cached in abstractions.items()
+                ],
+            )
+    except Exception:
+        logger.exception("failed to cache wallet account modes")
 
 
 def calculate_wallet_score(

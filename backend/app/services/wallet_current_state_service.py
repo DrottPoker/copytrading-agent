@@ -57,6 +57,14 @@ class WalletAccountValueSummary:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class KnownUserAbstraction:
+    """An account mode read earlier, or the error of that read, so it is not repeated."""
+
+    value: str | None
+    error: str | None = None
+
+
 @dataclass
 class OpenPositionTradeStats:
     opened_at_ms: int | None = None
@@ -290,11 +298,16 @@ async def load_wallet_account_value_summary(
     address: str,
     perp_summary: WalletPerpStateSummary,
     spot_state: dict[str, Any] | None = None,
+    known_user_abstraction: KnownUserAbstraction | None = None,
 ) -> WalletAccountValueSummary:
-    user_abstraction, abstraction_error = await fetch_wallet_user_abstraction(
-        client=client,
-        address=address,
-    )
+    if known_user_abstraction is not None:
+        user_abstraction = known_user_abstraction.value
+        abstraction_error = known_user_abstraction.error
+    else:
+        user_abstraction, abstraction_error = await fetch_wallet_user_abstraction(
+            client=client,
+            address=address,
+        )
     normalized_abstraction = normalize_user_abstraction(user_abstraction)
     uses_unified_account = user_abstraction_is_unified(user_abstraction)
     resolved_spot_state = spot_state

@@ -1,10 +1,12 @@
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from app.integrations.hyperliquid_client import HyperliquidClient
 from app.schemas.wallet import normalize_wallet_address
+from app.services.live_trading_service import live_spot_usdc_total
 from app.services.wallet_current_state_service import (
     WalletPerpClearinghouseState,
     load_wallet_account_value_summary,
@@ -12,6 +14,13 @@ from app.services.wallet_current_state_service import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class MasterSubaccount:
+    address: str
+    name: str | None
+    account_value: str | None
 
 
 @dataclass(frozen=True)
@@ -50,29 +59,27 @@ def leaderboard_sort_value(row: dict[str, Any], *, window: str, metric: str) -> 
     return decimal_value(performance.get(metric))
 
 
-async def load_subaccount_wallet_candidates(
+async def fetch_master_subaccounts(
     *,
     client: HyperliquidClient,
     master_address: str,
-    rank: int,
-    display_name: str | None,
-    row: dict[str, Any],
-    window: str,
     max_subaccounts: int,
-) -> list[LeaderboardWalletCandidate]:
+) -> list[MasterSubaccount] | None:
+    """Subaccounts of one master wallet, or None when the lookup failed."""
+
     if max_subaccounts <= 0:
         return []
 
     try:
-        subaccounts = await client.post_info({"type": "subAccounts", "user": master_address})
+        payload = await client.post_info({"type": "subAccounts", "user": master_address})
     except Exception as exc:
         logger.warning("subaccount lookup failed master=%s error=%s", master_address, exc)
-        return []
-    if not isinstance(subaccounts, list):
+        return None
+    if not isinstance(payload, list):
         return []
 
-    candidates: list[LeaderboardWalletCandidate] = []
-    for subaccount in subaccounts[:max_subaccounts]:
+    subaccounts: list[MasterSubaccount] = []
+    for subaccount in payload[:max_subaccounts]:
         if not isinstance(subaccount, dict):
             continue
         raw_subaccount_address = subaccount.get("subAccountUser")
@@ -83,9 +90,6 @@ async def load_subaccount_wallet_candidates(
         except ValueError:
             continue
 
-        subaccount_name = (
-            subaccount.get("name") if isinstance(subaccount.get("name"), str) else None
-        )
         subaccount_value = subaccount_account_value(subaccount)
         if decimal_value(subaccount_value) <= Decimal("0"):
             subaccount_value = await resolve_subaccount_account_value(
@@ -93,27 +97,46 @@ async def load_subaccount_wallet_candidates(
                 subaccount=subaccount,
                 subaccount_address=subaccount_address,
             )
-        window_performance = get_window(row, window) or {}
-        candidates.append(
-            LeaderboardWalletCandidate(
-                rank=rank,
+        subaccounts.append(
+            MasterSubaccount(
                 address=subaccount_address,
-                display_name=display_name,
+                name=subaccount.get("name") if isinstance(subaccount.get("name"), str) else None,
                 account_value=subaccount_value,
-                window_pnl=string_or_none(window_performance.get("pnl")),
-                window_roi=string_or_none(window_performance.get("roi")),
-                account_role="subaccount",
-                parent_address=master_address,
-                subaccount_name=subaccount_name,
-                label=build_subaccount_label(
-                    rank=rank,
-                    window=window,
-                    parent_display_name=display_name,
-                    subaccount_name=subaccount_name,
-                ),
             )
         )
-    return candidates
+    return subaccounts
+
+
+def subaccount_wallet_candidates(
+    subaccounts: Sequence[MasterSubaccount],
+    *,
+    master_address: str,
+    rank: int,
+    display_name: str | None,
+    row: dict[str, Any],
+    window: str,
+) -> list[LeaderboardWalletCandidate]:
+    window_performance = get_window(row, window) or {}
+    return [
+        LeaderboardWalletCandidate(
+            rank=rank,
+            address=subaccount.address,
+            display_name=display_name,
+            account_value=subaccount.account_value,
+            window_pnl=string_or_none(window_performance.get("pnl")),
+            window_roi=string_or_none(window_performance.get("roi")),
+            account_role="subaccount",
+            parent_address=master_address,
+            subaccount_name=subaccount.name,
+            label=build_subaccount_label(
+                rank=rank,
+                window=window,
+                parent_display_name=display_name,
+                subaccount_name=subaccount.name,
+            ),
+        )
+        for subaccount in subaccounts
+    ]
 
 
 def subaccount_account_value(subaccount: dict[str, Any]) -> str | None:
@@ -137,6 +160,12 @@ async def resolve_subaccount_account_value(
     clearinghouse_state = subaccount.get("clearinghouseState")
     if not isinstance(clearinghouse_state, dict):
         return fallback
+    # The lookup already carries the spot balances. A unified account is worth its
+    # spot USDC, so without any the account mode cannot change the value.
+    spot_state = subaccount.get("spotState")
+    known_spot_state = spot_state if isinstance(spot_state, dict) else None
+    if known_spot_state is not None and live_spot_usdc_total(known_spot_state) <= Decimal("0"):
+        return fallback
     perp_summary = summarize_perp_clearinghouse_states(
         [WalletPerpClearinghouseState(dex="", payload=clearinghouse_state)]
     )
@@ -144,6 +173,7 @@ async def resolve_subaccount_account_value(
         client=client,
         address=subaccount_address,
         perp_summary=perp_summary,
+        spot_state=known_spot_state,
     )
     if account_summary.error is not None:
         return fallback

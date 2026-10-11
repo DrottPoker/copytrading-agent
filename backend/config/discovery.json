@@ -42,7 +42,8 @@
     "run_on_worker_start": true,
     "subaccounts": {
       "enabled": true,
-      "max_per_wallet": 10
+      "max_per_wallet": 10,
+      "recheck_hours": 24
     }
   },
   "prefilter": {

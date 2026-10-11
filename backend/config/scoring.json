@@ -102,6 +102,7 @@
       "concurrency": 8,
       "missing_penalty": 10,
       "run_timeout_seconds": 300,
+      "user_abstraction_refresh_hours": 24,
       "penalty_start_ratio": 0.05,
       "full_penalty_ratio": 0.75,
       "penalty_max": 100,

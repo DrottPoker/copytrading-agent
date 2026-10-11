@@ -6,6 +6,32 @@ used to live in the README.
 
 ## 2026-10-11
 
+### Faster discovery, reimport, and scoring
+
+Every Hyperliquid request the maintenance worker makes passes one rate budget,
+so the jobs now spend less of it on repeated work.
+
+- The three leaderboard sources downloaded the 39 MB leaderboard once each and
+  looked up every master's subaccounts once per window, about 300 lookups of
+  weight 20 per run. They now share one download and one lookup per master per
+  run, and a master whose subaccounts were listed within the last 24 hours is
+  skipped (`import.subaccounts.recheck_hours`). The two vault sources share one
+  vault list.
+- Subaccounts without perp value are valued from the spot balances the lookup
+  already returns. The account mode request runs only when the subaccount holds
+  spot USDC, and the separate spot request is gone.
+- A promoted discovery wallet no longer has its full 90-day fill history
+  downloaded a second time by its first pool import. The candidate backfill
+  counts as that poll.
+- Scoring read every scored wallet's account mode (`userAbstraction`, weight
+  20) in every run, ten times the cost of its perp state. The mode is now cached
+  on the wallet for 24 hours (`risk.current_drawdown.user_abstraction_refresh_hours`)
+  and read again when the account value comes out as zero, so the live risk
+  step costs about a sixth of the weight.
+- Integration tests close the app's cached database engine after each test, so
+  a test that writes operation status after another one no longer fails with a
+  closed event loop.
+
 ### Dashboard redesign
 
 - The dashboard has a new design and structure. Seven pages replace nine:

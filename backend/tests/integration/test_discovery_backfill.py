@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
-from app.db.models import DiscoveryWalletCandidate, WalletFill
+from app.db.models import DiscoveryWalletCandidate, WalletFill, WatchedWallet
 from app.schemas.fill import WalletFillImportRequest
 from app.services import discovery_service
 from app.services.discovery_service import (
@@ -19,6 +19,7 @@ from app.services.discovery_service import (
     run_discovery_import,
 )
 from app.services.fill_import_service import import_address_fills
+from app.services.pool_fill_import_service import load_due_pool_fill_targets
 
 pytestmark = pytest.mark.integration
 
@@ -251,3 +252,76 @@ async def test_a_discovery_run_finishes_candidates_an_interrupted_run_left_behin
     assert candidates[HEALTHY_WALLET].backfill_status == "succeeded"
     assert candidates[DRAWDOWN_WALLET].backfill_status == "succeeded"
     assert candidates[DRAWDOWN_WALLET].fail_reason == "max_drawdown_too_high"
+
+
+def closed_trade_fills(start_ms: int, count: int) -> list[dict[str, Any]]:
+    """Profitable long round trips, one per hour, that pass the trade quality checks."""
+
+    fills: list[dict[str, Any]] = []
+    for index in range(count):
+        open_ms = start_ms + index * 3_600_000
+        fills.append(hyperliquid_fill(2 * index + 1, open_ms))
+        fills.append(
+            hyperliquid_fill(2 * index + 2, open_ms + 1_800_000)
+            | {"px": "102", "side": "A", "dir": "Close Long", "startPosition": "1"}
+            | {"closedPnl": "2"}
+        )
+    return fills
+
+
+class FillServingHyperliquidClient(FakeHyperliquidClient):
+    fills: list[dict[str, Any]] = []
+
+    async def user_fills_by_time(self, *, user: str, start_time_ms: int, **_: object) -> list:
+        self.fill_requests.append((user, start_time_ms))
+        return [fill for fill in self.fills if fill["time"] >= start_time_ms]
+
+
+@pytest.mark.asyncio
+async def test_a_promoted_candidate_continues_pool_import_from_its_backfill(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    start_ms = int((datetime.now(UTC) - timedelta(days=10)).timestamp() * 1000)
+    FillServingHyperliquidClient.fills = closed_trade_fills(start_ms, 25)
+    FakeHyperliquidClient.instances = []
+    monkeypatch.setattr(discovery_service, "HyperliquidClient", FillServingHyperliquidClient)
+    backfill_settings = settings().model_copy(
+        update={"discovery_candidate_backfill_days": 90, "pool_fill_import_days": 90}
+    )
+    async with integration_sessionmaker() as session:
+        session.add(
+            DiscoveryWalletCandidate(
+                wallet_address=HEALTHY_WALLET,
+                source="test",
+                status="accepted",
+                backfill_status="not_started",
+            )
+        )
+        await session.commit()
+
+        result = await backfill_discovery_candidates(
+            session,
+            source=None,
+            limit=10,
+            retry_failed=False,
+            settings=backfill_settings,
+        )
+        candidate = await session.scalar(select(DiscoveryWalletCandidate))
+        wallet = await session.scalar(
+            select(WatchedWallet).where(WatchedWallet.address == HEALTHY_WALLET)
+        )
+        due = await load_due_pool_fill_targets(
+            session,
+            limit=10,
+            min_wallet_interval_seconds=1800,
+        )
+
+    latest_fill_ms = max(fill["time"] for fill in FillServingHyperliquidClient.fills)
+    assert result.pool_inserted == 1
+    assert candidate is not None and wallet is not None
+    assert candidate.status == "promoted"
+    # The backfill counts as the first pool poll, so the wallet is not due again yet.
+    assert wallet.last_polled_at == candidate.last_backfilled_at
+    assert wallet.last_seen_fill_at == datetime.fromtimestamp(latest_fill_ms / 1000, tz=UTC)
+    assert due == []

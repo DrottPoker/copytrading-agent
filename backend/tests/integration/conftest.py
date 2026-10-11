@@ -12,8 +12,10 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from app.core.config import get_settings
 from app.db import models as _models  # noqa: F401
 from app.db.base import Base
+from app.db.session import get_engine
 
 
 def required_test_url(name: str) -> str:
@@ -30,6 +32,18 @@ async def truncate_application_tables(engine: AsyncEngine) -> None:
     quoted_names = ", ".join(f'"{name}"' for name in table_names)
     async with engine.begin() as connection:
         await connection.execute(text(f"truncate table {quoted_names} restart identity cascade"))
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def release_app_engine() -> AsyncIterator[None]:
+    """Close the app's cached engine so its pool never outlives the test's event loop."""
+
+    yield
+    if get_engine.cache_info().currsize:
+        engine = get_engine(get_settings().database_url)
+        if engine is not None:
+            await engine.dispose()
+        get_engine.cache_clear()
 
 
 @pytest_asyncio.fixture

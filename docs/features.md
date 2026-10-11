@@ -281,6 +281,18 @@ What it does:
   All-time leaderboard discovery remains available manually, but is not enabled
   by default because current activity is more useful for copy trading.
 - Imports leaderboard subaccounts as candidates by default.
+- The leaderboard windows share one leaderboard download per discovery run, and
+  both vault sources share one vault list. Each master's subaccounts are looked
+  up once per run, even when several windows list it. A master whose
+  subaccounts an earlier run listed within `import.subaccounts.recheck_hours`
+  (24 by default) is not looked up again, because existing candidates are
+  skipped anyway. Set it to 0 to look up every master in every run. Each run's
+  metadata reports `subaccountLookups` and `subaccountLookupsSkipped` per
+  leaderboard source.
+- A subaccount without perp value is valued from the spot balances its lookup
+  already returns. Only when it holds spot USDC does discovery read its account
+  mode, a request of weight 20, to decide whether that USDC is its account
+  value.
 - Imports Hyperliquid vault discovery candidates as both the vault address
   (`account_role = vault`) and the vault leader address
   (`account_role = vault_leader`), so vault trading and manager trading can be
@@ -328,6 +340,11 @@ What it does:
   and fills already read are skipped, so no fill at a page boundary is lost.
 - Candidates that pass backfill quality checks are inserted directly into the
   wallet pool and marked as `promoted`.
+- A promoted wallet's backfill counts as its first pool poll: `last_polled_at`
+  is set to the end of the fetched fill window and `last_seen_fill_at` to its
+  latest stored fill, so pool reimport continues from there instead of
+  downloading the same 90 days again. This applies only while the candidate
+  backfill window, page limit, and fill target are at least the pool import's.
 - Each discovery run also finishes what an interrupted earlier run left behind,
   for example after a deploy, a worker restart, or a rate-limit pause: imported
   candidates that were never prefiltered are evaluated, and every accepted
@@ -1953,6 +1970,13 @@ Phase A behavior:
   and `current_drawdown_status` on `wallet_scores`. Current drawdown is open
   unrealized perp loss divided by account value. Unified wallets use unified
   USDC from `spotClearinghouseState`; standard wallets use perps account value.
+- The account mode from `userAbstraction` costs weight 20 per wallet, ten times
+  a perp state read, and rarely changes. Scoring stores it on
+  `watched_wallets.user_abstraction` and reuses it for
+  `risk.current_drawdown.user_abstraction_refresh_hours` (24 by default). A
+  wallet whose account value comes out as zero with the stored mode is read
+  again, since that is what a mode change looks like, and a failed read falls
+  back to the stored mode. Set the interval to 0 to read the mode in every run.
 - Live current-drawdown enrichment is bounded by
   `scoring_current_drawdown_run_timeout_seconds`, default 300 seconds. It
   evaluates the strongest history-based candidates first and reports batch
