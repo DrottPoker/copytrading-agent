@@ -6,6 +6,26 @@ used to live in the README.
 
 ## 2026-10-11
 
+### Fill imports keep the newest fills
+
+- Hyperliquid returns the oldest 2,000 fills of a time range per request, and
+  imports read forward from 90 days back until a five page limit. For a busy
+  wallet with more than about 10,000 fills in that window, the import stopped
+  weeks before now, and later polls only continued from the time of the
+  import, so the newest weeks were never stored. In a recent discovery run 20
+  promoted wallets missed between one and 54 days of their newest fills, and
+  some were then archived as stale or low scoring.
+- Imports now read one page forward, which covers most wallets. When that page
+  is full, they anchor on the newest page and read back in windows sized by the
+  wallet's fill rate, so a page limit cuts the oldest history instead and the
+  stored fills never have a gap.
+- `python -m app.cli.repair_fill_gaps` finds and fills gaps left by the old
+  reader, including the missing stretch up to each wallet's last poll.
+  `--include-archived` also repairs archived wallets and lists those that had
+  missing fills, so they can be reviewed and readmitted.
+- A manual fill import reports when the page limit kept only the newest
+  history.
+
 ### Job timers
 
 - Running background jobs show a timer that counts up from their start, in the

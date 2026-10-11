@@ -230,6 +230,10 @@ export type WalletFillImportResponse = {
   startTimeMs: number;
   endTimeMs: number;
   latestFillTimeMs: number | null;
+  /** False when a page limit cut the oldest history; every fill from historyStartMs on is stored. */
+  historyComplete?: boolean;
+  historyStartMs?: number | null;
+  historyEndMs?: number | null;
 };
 
 export type WalletWindowStats = {

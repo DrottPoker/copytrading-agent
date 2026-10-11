@@ -156,25 +156,40 @@ async def test_candidates_failing_the_equity_curve_never_fetch_fills(
 
 
 class PagedFillClient:
-    """Two full pages whose boundary falls inside a burst of same-millisecond fills."""
+    """Answers like Hyperliquid, with a burst of same-millisecond fills on a page boundary."""
 
     def __init__(self, start_ms: int) -> None:
         self.burst_ms = start_ms + 1_000_000
-        first_page = [hyperliquid_fill(tid, start_ms + tid) for tid in range(1, 1998)]
-        burst = [hyperliquid_fill(tid, self.burst_ms) for tid in range(1998, 2006)]
-        self.pages = [first_page + burst[:3], burst + [hyperliquid_fill(2006, self.burst_ms + 5)]]
-        self.requests: list[int] = []
+        fills = [hyperliquid_fill(tid, start_ms + tid) for tid in range(1, 1998)]
+        fills += [hyperliquid_fill(tid, self.burst_ms) for tid in range(1998, 2006)]
+        fills.append(hyperliquid_fill(2006, self.burst_ms + 5))
+        self.fills = fills
+        self.requests: list[tuple[str, int | None]] = []
 
-    async def user_fills_by_time(self, *, start_time_ms: int, **_: object) -> list:
-        self.requests.append(start_time_ms)
-        return self.pages[len(self.requests) - 1] if len(self.requests) <= len(self.pages) else []
+    async def user_fills_by_time(
+        self,
+        *,
+        start_time_ms: int,
+        end_time_ms: int | None = None,
+        **_: object,
+    ) -> list:
+        self.requests.append(("userFillsByTime", start_time_ms))
+        end = end_time_ms if end_time_ms is not None else 2**63
+        return [fill for fill in self.fills if start_time_ms <= fill["time"] <= end][:2000]
+
+    async def user_fills(self, **_: object) -> list:
+        self.requests.append(("userFills", None))
+        return list(reversed(self.fills[-2000:]))
 
 
+@pytest.mark.parametrize("newest_page", [True, False])
 @pytest.mark.asyncio
 async def test_fills_sharing_the_last_timestamp_of_a_page_are_not_lost(
     integration_sessionmaker: async_sessionmaker[AsyncSession],
+    newest_page: bool,
 ) -> None:
     start_ms = int((datetime.now(UTC) - timedelta(days=30)).timestamp() * 1000)
+    end_ms = None if newest_page else int(datetime.now(UTC).timestamp() * 1000)
     client = PagedFillClient(start_ms)
     async with integration_sessionmaker() as session:
         result = await import_address_fills(
@@ -182,6 +197,7 @@ async def test_fills_sharing_the_last_timestamp_of_a_page_are_not_lost(
             address=HEALTHY_WALLET,
             payload=WalletFillImportRequest(
                 start_time_ms=start_ms,
+                end_time_ms=end_ms,
                 max_pages=3,
                 target_fills=10000,
             ),
@@ -190,10 +206,11 @@ async def test_fills_sharing_the_last_timestamp_of_a_page_are_not_lost(
         await session.commit()
         stored = await session.scalar(select(func.count()).select_from(WalletFill))
 
-    # The second page restarts at the burst timestamp instead of one millisecond after it.
-    assert client.requests[1] == client.burst_ms
+    # The first page ends inside the burst; the rest of it is read on the next request.
+    assert client.requests[0] == ("userFillsByTime", start_ms)
     assert stored == 2006
     assert result.inserted == 2006
+    assert result.history_complete is True
 
 
 @pytest.mark.asyncio

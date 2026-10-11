@@ -691,11 +691,31 @@ sequenceDiagram
   participant DB as Postgres
 
   UI->>API: POST /wallets/{address}/fills/import
-  API->>HL: userFillsByTime
+  API->>HL: userFillsByTime for the oldest page of the window
+  API->>HL: userFills and earlier windows when the first page is full
   HL-->>API: historical fills
-  API->>DB: insert fills with dedupe
-  API-->>UI: inserted and duplicate counts
+  API->>DB: insert the newest contiguous fills with dedupe
+  API-->>UI: inserted and duplicate counts, stored span
 ```
+
+Hyperliquid's `userFillsByTime` returns the oldest 2,000 fills of a range, and a
+busy wallet can have tens of thousands of fills in 90 days. Reading forward from
+the oldest fill used to stop at the page limit weeks before now, and later
+polls continued from the time of that import, so the newest weeks were never
+stored. The importer now reads one page forward, which covers most wallets,
+and otherwise anchors on the newest page from `userFills` and reads back in
+windows sized by the fill rate. A window cut short by the page budget is
+dropped, so the stored fills always run without a gap from `historyStartMs` to
+now. A wallet's `last_polled_at` is the end of the stored span, so the next poll
+continues exactly where the stored history ends.
+
+`python -m app.cli.repair_fill_gaps` repairs history stored by the old reader.
+It finds, per wallet, the longest gaps between consecutive stored fills and
+between the newest stored fill and `last_polled_at`, reads each gap again
+oldest first, and stores the missing fills. A quiet period costs one light
+request. Inserted fills advance `fill_revision`, so the next scoring run
+rebuilds the affected trades. `--include-archived` also repairs archived
+wallets, which may have been archived on incomplete history.
 
 ### Pool Fill Import
 
@@ -972,8 +992,9 @@ the requester-pays S3 bucket `hl-mainnet-node-data`: `node_fills_by_block` has
 every fill grouped by block with the trading wallet's address, and the older
 `node_fills` uses the same fill format as the API. Reading it needs an AWS
 account, and the requester pays the transfer. The system does not import it
-yet; the API import keeps up to 10,000 recent fills per wallet. Hyperliquid's
-`hyperliquid-archive` bucket only has order book snapshots and asset contexts.
+yet; an API import keeps up to 10,000 of a wallet's newest fills per run.
+Hyperliquid's `hyperliquid-archive` bucket only has order book snapshots and
+asset contexts.
 Wallet list and wallet detail responses expose `poolRank`, which is calculated
 from the latest stored wallet score ordering and is independent of realtime
 monitor slots.

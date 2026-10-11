@@ -351,9 +351,8 @@ What it does:
   equity history these checks are skipped and the trade checks decide.
 - Quality checks require at least 20 closed trades. The curve read before the
   fills is stored for scoring when the candidate passes the trade checks.
-- Fill imports page forward in pages of 2,000. A full page that ends inside a
-  burst of fills sharing one millisecond is continued from that millisecond,
-  and fills already read are skipped, so no fill at a page boundary is lost.
+- Fill imports keep the newest fills when a wallet has more than the page
+  limit allows; see Historical Fill Import below.
 - Candidates that pass backfill quality checks are inserted directly into the
   wallet pool and marked as `promoted`.
 - A promoted wallet's backfill counts as its first pool poll: `last_polled_at`
@@ -385,12 +384,24 @@ Endpoint:
 
 What it does:
 
-- Pulls historical fills from Hyperliquid `userFillsByTime`.
+- Pulls historical fills from Hyperliquid `userFillsByTime` and `userFills`.
 - Stores them in Postgres.
 - Defaults to storing only perp fills, based on Hyperliquid fill direction such as
   `Open Long`, `Close Short`, or flip directions.
-- Paginates in 2k Hyperliquid chunks until it reaches the requested `targetFills`
-  count after filtering, with an API cap of 10k stored perp fills per import call.
+- Hyperliquid returns the oldest 2,000 fills of a time range per request, and
+  busy wallets have far more than 10,000 fills in 90 days. The first page
+  covers most wallets on its own. When it is full, the import reads the newest
+  2,000 fills with `userFills` and then walks back from them in time windows
+  sized by the wallet's fill rate, until it meets the first page or the page or
+  `targetFills` limit is reached. A limit therefore cuts the oldest history,
+  never the newest, and only a contiguous run of the newest fills is stored, so
+  no gap is left inside it. The response reports `historyComplete` and the
+  stored span as `historyStartMs` and `historyEndMs`.
+- An import with a fixed end time has no newest page to anchor on, so it reads
+  forward and reports where it stopped; the wallet's next poll continues there.
+- A full page that ends inside a burst of fills sharing one millisecond is
+  continued from that millisecond, and fills already read are skipped, so no
+  fill at a page boundary is lost.
 - Deduplicates fills by wallet and external fill ID.
 - Stores only configured raw payload fields, default `dir`, `liquidation`, `startPosition`, and `twapId`.
 - Updates wallet last poll and last seen fill timestamps.

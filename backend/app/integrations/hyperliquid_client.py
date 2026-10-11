@@ -213,6 +213,21 @@ class HyperliquidClient:
             )
         return [item for item in result if isinstance(item, dict)]
 
+    async def user_fills(
+        self,
+        *,
+        user: str,
+        aggregate_by_time: bool = False,
+    ) -> list[dict[str, Any]]:
+        """The user's newest fills, at most one page, newest first."""
+
+        result = await self.post_info(
+            {"type": "userFills", "user": user, "aggregateByTime": aggregate_by_time}
+        )
+        if not isinstance(result, list):
+            raise HyperliquidClientError("Hyperliquid userFills returned an unexpected shape.")
+        return [item for item in result if isinstance(item, dict)]
+
     async def user_funding(
         self,
         *,

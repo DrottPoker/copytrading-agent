@@ -527,6 +527,21 @@ take time on a multi-million-row deployment.
 The `current` command must show `b7c3e5a9d1f2` before the backend or workers
 are restarted.
 
+Fill imports before October 11, 2026 read a busy wallet's history oldest
+first and stopped at the page limit, so the newest weeks of those wallets were
+never stored. After updating, list the gaps, then fill them. The repair shares
+the Hyperliquid request budget with the running workers:
+
+```bash
+docker compose -f docker-compose.vps.yml run --rm --no-deps backend python -m app.cli.repair_fill_gaps --dry-run
+docker compose -f docker-compose.vps.yml run --rm --no-deps backend python -m app.cli.repair_fill_gaps --include-archived
+```
+
+It lists archived wallets that had missing fills; they may have been archived
+as stale or low scoring because of the missing history. Review them on the
+Wallets page and readmit the ones you want back. The next scoring run rebuilds
+the trades of every repaired wallet.
+
 Run the score backtest against the live database from a one-off container. It
 only reads data:
 

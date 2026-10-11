@@ -2294,8 +2294,9 @@ async def backfill_discovery_candidates(
                     fetched = import_result.fetched
                     inserted = import_result.inserted
                     duplicate = import_result.duplicate
+                    # Where the stored history ends, so the pool continues from there.
                     fills_fetched_at = datetime.fromtimestamp(
-                        import_result.end_time_ms / 1000,
+                        (import_result.history_end_ms or import_result.end_time_ms) / 1000,
                         tz=UTC,
                     )
                     metrics = await load_candidate_trade_metrics(

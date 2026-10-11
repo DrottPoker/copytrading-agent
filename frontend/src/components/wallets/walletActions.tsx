@@ -7,7 +7,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Menu, useConfirm, type MenuItem } from "@/components/ui/client";
 import { buttonClass, Spinner } from "@/components/ui/primitives";
 import { frontendConfig } from "@/lib/config";
-import { formatInteger, shortAddress } from "@/lib/format";
+import { formatDateTime, formatInteger, shortAddress } from "@/lib/format";
 import { apiRequest, errorMessage } from "@/lib/http";
 import { numericPayload } from "@/lib/operations";
 import type { OperationStatus, OperationStatusListResponse } from "@/types/operation";
@@ -62,7 +62,10 @@ export function useWalletActions(onNotice: (notice: Notice) => void) {
           fallback: "Fill import failed",
           method: "POST",
         });
-        return `Imported ${formatInteger(result.inserted)} new fills for ${shortAddress(wallet.address)} (${formatInteger(result.duplicate)} already stored, ${formatInteger(result.pagesFetched)} pages).`;
+        const summary = `Imported ${formatInteger(result.inserted)} new fills for ${shortAddress(wallet.address)} (${formatInteger(result.duplicate)} already stored, ${formatInteger(result.pagesFetched)} pages).`;
+        return result.historyComplete === false && result.historyStartMs
+          ? `${summary} The page limit kept the newest history, from ${formatDateTime(result.historyStartMs)}.`
+          : summary;
       }),
     [run],
   );

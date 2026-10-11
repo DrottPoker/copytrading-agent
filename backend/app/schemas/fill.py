@@ -28,6 +28,10 @@ class WalletFillImportResponse(CamelModel):
     start_time_ms: int
     end_time_ms: int
     latest_fill_time_ms: int | None
+    # Every fill between these times is stored; a page limit cuts the oldest history.
+    history_complete: bool = True
+    history_start_ms: int | None = None
+    history_end_ms: int | None = None
 
 
 class WalletFillRead(CamelModel):
