@@ -3,7 +3,7 @@
     "enabled": true,
     "run_on_worker_start": true,
     "start_delay_seconds": 0,
-    "interval_seconds": 1800,
+    "interval_seconds": 3600,
     "min_wallet_interval_seconds": 1800,
     "batch_size": 50,
     "max_batches": 200,

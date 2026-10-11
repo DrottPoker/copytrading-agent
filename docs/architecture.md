@@ -735,14 +735,14 @@ sequenceDiagram
   API->>DB: manual trigger via POST /wallets/fills/import-pool?force=true
 ```
 
-The maintenance worker runs pool reimport every 30 minutes by default. It
-imports all due pool wallets across configured batches. A wallet promoted from
-discovery starts with `last_polled_at` at the end of its candidate backfill
-window, so its first pool import is incremental. Scoring runs only when
-that import persisted new fills, and sharp pruning runs only after successful
-scoring when `wallet_prune_worker_dry_run` is `false`. Manual pool reimport
-forces a refresh regardless of `last_polled_at` and still deduplicates
-overlapping fills.
+The maintenance worker runs pool reimport 60 minutes after the previous run
+finished, by default. It imports all due pool wallets across configured
+batches. A wallet promoted from discovery starts with `last_polled_at` at the
+end of its candidate backfill window, so its first pool import is incremental.
+Scoring runs only when that import persisted new fills, and sharp pruning runs
+only after successful scoring when `wallet_prune_worker_dry_run` is `false`.
+Manual pool reimport forces a refresh regardless of `last_polled_at` and still
+deduplicates overlapping fills.
 
 Long-running discovery import, pool reimport, and scoring runs have a unique
 operation run ID stored with their progress payload. A cancel request updates

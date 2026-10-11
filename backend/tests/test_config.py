@@ -328,3 +328,13 @@ def test_shared_burst_must_fit_the_reserve_and_the_heaviest_request() -> None:
             hyperliquid_info_shared_burst_weight=150,
             hyperliquid_info_execution_reserve_weight=60,
         )
+
+
+def test_pool_reimport_runs_an_hour_after_the_previous_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_live_env_overrides(monkeypatch)
+    settings = Settings(_env_file=None, **load_app_config())
+
+    assert settings.pool_fill_import_interval_seconds == 3600
+    assert settings.pool_fill_import_min_wallet_interval_seconds == 1800

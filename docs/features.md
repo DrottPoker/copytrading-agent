@@ -412,8 +412,10 @@ What it does:
   default. Already-polled wallets refresh incrementally.
 - Manual pool reimport uses `force=true` by default, so it refreshes the full
   enabled pool regardless of `last_polled_at`.
-- Worker pool maintenance runs every 30 minutes by default and uses the same
-  batch settings as manual reimport.
+- Worker pool maintenance runs 60 minutes after the previous run finished, by
+  default, and uses the same batch settings as manual reimport. Wallets polled
+  within `min_wallet_interval_seconds` (30 minutes) are skipped, so a worker
+  restart does not fetch a just-polled wallet again.
 - After maintenance worker pool reimport, wallet scoring runs only when new fills
   were persisted. Configured prune rules then run only after that scoring run
   succeeds.

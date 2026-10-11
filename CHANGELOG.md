@@ -6,6 +6,12 @@ used to live in the README.
 
 ## 2026-10-11
 
+### Hourly pool reimport
+
+- Pool reimport now starts 60 minutes after the previous run finished instead
+  of 30 (`pool_fill_import.interval_seconds: 3600`). Scoring and pruning follow
+  each reimport that stored new fills, so they also run hourly.
+
 ### Fill imports keep the newest fills
 
 - Hyperliquid returns the oldest 2,000 fills of a time range per request, and
