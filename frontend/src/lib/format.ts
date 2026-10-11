@@ -316,6 +316,18 @@ export function formatDuration(value: number | null | undefined) {
   return formatSeconds(seconds);
 }
 
+/** Elapsed milliseconds as a stopwatch, for example "0:42", "12:05", or "1:02:03". */
+export function formatClock(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return EMPTY;
+  }
+  const totalSeconds = Math.max(0, Math.floor(value / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = String(totalSeconds % 60).padStart(2, "0");
+  return hours > 0 ? `${hours}:${String(minutes).padStart(2, "0")}:${seconds}` : `${minutes}:${seconds}`;
+}
+
 /** Duration in seconds with two units, for example "4m 12s", "2h 14m", or "3d 4h". */
 export function formatSeconds(value: number | null | undefined) {
   if (value === null || value === undefined || !Number.isFinite(value)) {

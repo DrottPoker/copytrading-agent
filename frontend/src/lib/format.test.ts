@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   formatCompact,
   formatDateTime,
+  formatClock,
   formatDuration,
   formatMultiple,
   formatPercent,
@@ -95,6 +96,14 @@ describe("time formatting", () => {
     expect(formatDuration(2300)).toBe("2.3 s");
     expect(formatDuration(65_000)).toBe("1m 5s");
     expect(formatSeconds(3 * 86400 + 4 * 3600)).toBe("3d 4h");
+  });
+
+  it("formats elapsed time as a stopwatch", () => {
+    expect(formatClock(42_900)).toBe("0:42");
+    expect(formatClock(12 * 60_000 + 5_000)).toBe("12:05");
+    expect(formatClock(3_723_000)).toBe("1:02:03");
+    expect(formatClock(-5_000)).toBe("0:00");
+    expect(formatClock(null)).toBe("-");
   });
 });
 

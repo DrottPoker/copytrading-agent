@@ -84,10 +84,10 @@ Behavior:
   navigation from a menu button.
 - A status bar on every page shows the execution mode (PAPER, LIVE, or
   MONITOR), the Hyperliquid network, API, Postgres, and Redis health, realtime
-  wallet slots, and every running background job with its progress. It polls
-  `/health` and `/operations/status` every 10 seconds, every 3 seconds while a
-  job runs, and only reports the backend as unreachable after two failed polls
-  in a row.
+  wallet slots, and every running background job with its progress and how
+  long it has been running. It polls `/health` and `/operations/status` every
+  10 seconds, every 3 seconds while a job runs, and only reports the backend
+  as unreachable after two failed polls in a row.
 - Every page starts with a plain-language sentence about what it shows. Metric
   labels with a dotted underline explain themselves on hover.
 - Light and dark themes share one set of color tokens. The theme follows the
@@ -116,10 +116,14 @@ Behavior:
 - Consistent loading, empty, not-found, offline, and recoverable error states.
 - Discovery import, pool reimport, and wallet scoring jobs show stage text, a
   progress bar, the result of the last run, and Run or Cancel actions on the
-  Overview and System pages. Cancellation is cooperative and database-backed,
-  so jobs stop at a safe source, wallet, batch, or persistence checkpoint
-  instead of terminating in the middle of a database write. A canceled job is
-  shown as canceled, never as still stopping.
+  Overview and System pages. A running job shows a timer that counts up every
+  second from its start, and a finished, failed, or canceled job shows how long
+  its last run took. All timers on a page share one clock, so they show the
+  same second, and they only start in the browser, so a slow page never shows
+  a stale time. Cancellation is cooperative and database-backed, so jobs stop
+  at a safe source, wallet, batch, or persistence checkpoint instead of
+  terminating in the middle of a database write. A canceled job is shown as
+  canceled, never as still stopping.
 
 Pages:
 

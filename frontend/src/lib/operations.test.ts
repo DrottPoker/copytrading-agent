@@ -6,6 +6,7 @@ import {
   MANUAL_JOBS,
   operationIsStopping,
   operationProgress,
+  operationRunDurationMs,
   operationStatusLabel,
   optimisticStopping,
 } from "./operations";
@@ -45,6 +46,17 @@ describe("operation status", () => {
     expect(operationProgress(operation({ payload: { progressPercent: 42.4 } })).percent).toBe(42);
     expect(operationProgress(operation({ payload: { batchIndex: 3, batchSize: 12 } })).percent).toBe(25);
     expect(operationProgress(operation({ payload: {} })).percent).toBeNull();
+  });
+
+  it("reports how long a finished run took", () => {
+    expect(operationRunDurationMs(operation({ status: "running", durationMs: 5_000 }))).toBeNull();
+    expect(operationRunDurationMs(operation({ status: "succeeded", durationMs: 125_000 }))).toBe(125_000);
+    // Without a recorded duration the run lasted from start to completion.
+    expect(
+      operationRunDurationMs(operation({ status: "failed", completedAt: "2026-01-01T00:02:30Z" })),
+    ).toBe(150_000);
+    expect(operationRunDurationMs(operation({ status: "canceled" }))).toBeNull();
+    expect(operationRunDurationMs(undefined)).toBeNull();
   });
 
   it("summarizes the result of each manual job", () => {

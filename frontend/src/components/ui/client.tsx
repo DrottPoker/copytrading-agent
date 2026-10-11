@@ -10,12 +10,13 @@ import {
   useId,
   useRef,
   useState,
+  useSyncExternalStore,
   useTransition,
 } from "react";
 import type { ReactNode } from "react";
 
 import { cx } from "@/lib/cx";
-import { formatRelativeTime, formatTimestamp, shortAddress } from "@/lib/format";
+import { formatClock, formatRelativeTime, formatTimestamp, shortAddress } from "@/lib/format";
 
 import { buttonClass } from "./primitives";
 
@@ -45,6 +46,17 @@ export function TimeAgo({
   );
 }
 
+/** Time since a start, counting up every second like a stopwatch. */
+export function Stopwatch({ className, since }: { className?: string; since: string | number | Date }) {
+  // The browser clock is only read after hydration, so a slow page never shows a stale time.
+  const now = useSecondClock();
+  return (
+    <span className={cx("tabular-nums", className)} title={`Started ${formatTimestamp(since)}`}>
+      {now === null ? null : formatClock(now - new Date(since).getTime())}
+    </span>
+  );
+}
+
 export function useNow(intervalMs: number) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -52,6 +64,42 @@ export function useNow(intervalMs: number) {
     return () => window.clearInterval(intervalId);
   }, [intervalMs]);
   return now;
+}
+
+// One clock for every stopwatch on the page, so they all show the same second.
+const secondListeners = new Set<() => void>();
+let secondIntervalId: number | null = null;
+let currentSecondMs = 0;
+
+function subscribeToSeconds(listener: () => void) {
+  secondListeners.add(listener);
+  if (secondIntervalId === null) {
+    currentSecondMs = Date.now();
+    secondIntervalId = window.setInterval(() => {
+      currentSecondMs = Date.now();
+      secondListeners.forEach((notify) => notify());
+    }, 1000);
+  }
+  return () => {
+    secondListeners.delete(listener);
+    if (secondListeners.size === 0 && secondIntervalId !== null) {
+      window.clearInterval(secondIntervalId);
+      secondIntervalId = null;
+    }
+  };
+}
+
+function readSecondClock() {
+  if (secondIntervalId === null) {
+    // Without a running clock the stored time is old. Whole seconds keep repeated reads equal.
+    currentSecondMs = Math.floor(Date.now() / 1000) * 1000;
+  }
+  return currentSecondMs;
+}
+
+/** The current time, updated every second; null during server rendering and hydration. */
+function useSecondClock(): number | null {
+  return useSyncExternalStore(subscribeToSeconds, readSecondClock, () => null);
 }
 
 /** Shortened address with a copy button. */

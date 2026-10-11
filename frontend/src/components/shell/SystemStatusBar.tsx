@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { Stopwatch } from "@/components/ui/client";
 import { Spinner, StatusDot } from "@/components/ui/primitives";
 import { statusTone, type Tone } from "@/components/ui/tone";
 import { cx } from "@/lib/cx";
@@ -147,6 +148,7 @@ function RunningOperation({ operation }: { operation: OperationStatus }) {
       <Spinner className="text-info" />
       <span>{operation.label}</span>
       {progress.percent !== null ? <span className="tabular-nums text-fg-3">{progress.percent}%</span> : null}
+      {operation.startedAt ? <Stopwatch className="text-fg-3" since={operation.startedAt} /> : null}
     </Link>
   );
 }

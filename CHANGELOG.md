@@ -6,6 +6,13 @@ used to live in the README.
 
 ## 2026-10-11
 
+### Job timers
+
+- Running background jobs show a timer that counts up from their start, in the
+  jobs panel, the Discovery run panel, and the status bar. Finished, failed,
+  and canceled jobs show how long their last run took.
+- A job that has never run no longer shows "Finished -".
+
 ### Shared Hyperliquid request budget
 
 - Every process now measures its Hyperliquid info requests: weight per minute

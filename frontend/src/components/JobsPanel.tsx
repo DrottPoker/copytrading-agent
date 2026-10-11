@@ -3,11 +3,11 @@
 import { Play, Square } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { JobTimer } from "@/components/JobTimer";
 import { TimeAgo } from "@/components/ui/client";
 import { buttonClass, Meter, Panel, Spinner, StatusDot } from "@/components/ui/primitives";
 import { statusTone } from "@/components/ui/tone";
 import { frontendConfig } from "@/lib/config";
-import { formatDuration } from "@/lib/format";
 import { apiRequest, errorMessage } from "@/lib/http";
 import {
   MANUAL_JOBS,
@@ -150,6 +150,8 @@ function JobRow({
   const statusLabel = operationStatusLabel(operation);
   const tone = stopping ? "warning" : statusTone(operation?.status);
   const title = operation?.label ?? job.title;
+  // A job that never ran has no completion time to show.
+  const finishedAt = operation?.completedAt ?? operation?.updatedAt ?? null;
 
   return (
     <li className="px-3.5 py-2.5">
@@ -167,18 +169,18 @@ function JobRow({
                 </span>
               }
             />
+            <JobTimer operation={operation} />
           </div>
           <p className="mt-0.5 text-xs text-fg-3">
             {running
               ? [progress.stageLabel, progress.stageDetail].filter(Boolean).join(": ") || job.description
               : (summary ?? job.description)}
           </p>
-          {!running && operation ? (
+          {!running && finishedAt ? (
             <p className="mt-0.5 text-2xs text-fg-4">
-              {operation.status === "failed" ? "Failed " : "Finished "}
-              <TimeAgo value={operation.completedAt ?? operation.updatedAt} />
-              {operation.durationMs !== null ? ` in ${formatDuration(operation.durationMs)}` : ""}
-              {operation.lastSuccessAt && operation.status !== "succeeded" ? (
+              {operation?.status === "failed" ? "Failed " : "Finished "}
+              <TimeAgo value={finishedAt} />
+              {operation?.lastSuccessAt && operation.status !== "succeeded" ? (
                 <>
                   , last success <TimeAgo value={operation.lastSuccessAt} />
                 </>

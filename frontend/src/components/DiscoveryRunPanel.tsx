@@ -4,6 +4,7 @@ import { Play, Square } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { JobTimer } from "@/components/JobTimer";
 import { TimeAgo } from "@/components/ui/client";
 import { buttonClass, Meter, Panel, Spinner, StatusDot } from "@/components/ui/primitives";
 import { statusTone } from "@/components/ui/tone";
@@ -13,6 +14,7 @@ import {
   numericPayload,
   operationIsStopping,
   operationProgress,
+  operationRunDurationMs,
   operationStatusLabel,
 } from "@/lib/operations";
 import type { DiscoverySource } from "@/types/discovery";
@@ -103,6 +105,7 @@ export function DiscoveryRunPanel({
 
   const payload = operation?.payload ?? {};
   const progress = operationProgress(operation);
+  const runDurationMs = operationRunDurationMs(operation);
   const steps = [
     { label: "Fetched", value: count(payload.fetched) },
     { label: "New candidates", value: count(payload.inserted) },
@@ -128,11 +131,14 @@ export function DiscoveryRunPanel({
     <Panel
       title="Discovery run"
       meta={
-        <StatusDot
-          tone={stopping ? "warning" : statusTone(operation?.status)}
-          pulse={running && !stopping}
-          label={`${operationStatusLabel(operation)}${running && progress.percent !== null ? ` ${progress.percent}%` : ""}`}
-        />
+        <span className="inline-flex items-center gap-3">
+          <StatusDot
+            tone={stopping ? "warning" : statusTone(operation?.status)}
+            pulse={running && !stopping}
+            label={`${operationStatusLabel(operation)}${running && progress.percent !== null ? ` ${progress.percent}%` : ""}`}
+          />
+          {running ? <JobTimer operation={operation} /> : null}
+        </span>
       }
       actions={
         <>
@@ -183,7 +189,7 @@ export function DiscoveryRunPanel({
                   <>
                     Last run {operationStatusLabel(operation).toLowerCase()}{" "}
                     <TimeAgo value={operation.completedAt ?? operation.updatedAt} />
-                    {operation.durationMs !== null ? `, took ${formatDuration(operation.durationMs)}` : ""}.
+                    {runDurationMs !== null ? `, took ${formatDuration(runDurationMs)}` : ""}.
                   </>
                 )
               : "Discovery has not run yet. A run imports new wallets, filters them, imports their trade history, and admits the good ones."}

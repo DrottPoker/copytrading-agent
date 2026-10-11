@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { OperationStatus } from "@/types/operation";
@@ -71,6 +71,44 @@ describe("JobsPanel", () => {
       ),
     );
     await waitFor(() => expect(screen.getByRole("button", { name: "Cancel Discovery import" })).toBeDisabled());
+  });
+
+  it("counts up how long a running job has run and shows how long a finished one took", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-02T04:18:05Z"));
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+    try {
+      render(<JobsPanel initialItems={[runningDiscovery, canceledScoring]} />);
+
+      // Discovery started at 04:16:00, two minutes and five seconds ago.
+      expect(screen.getByText("2:05")).toHaveAttribute("title", expect.stringContaining("Started"));
+      act(() => {
+        vi.advanceTimersByTime(1000);
+      });
+      expect(screen.getByText("2:06")).toBeInTheDocument();
+      expect(screen.getByText(/took 1m/)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows no finish time or duration for a job that never ran", () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+    const neverRun: OperationStatus = {
+      ...canceledScoring,
+      completedAt: null,
+      durationMs: null,
+      payload: {},
+      startedAt: null,
+      status: "idle",
+      updatedAt: null,
+    };
+
+    render(<JobsPanel initialItems={[neverRun]} />);
+
+    expect(screen.getByText("Idle")).toBeInTheDocument();
+    expect(screen.queryByText(/Finished/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/took/)).not.toBeInTheDocument();
   });
 
   it("shows a canceled job as canceled, not as stopping", () => {

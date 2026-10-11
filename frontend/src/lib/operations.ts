@@ -71,6 +71,21 @@ export function operationStatusLabel(operation: OperationStatus | null | undefin
   }
 }
 
+/** How long a finished run took: the recorded duration, else start to completion. */
+export function operationRunDurationMs(operation: OperationStatus | null | undefined): number | null {
+  if (!operation || operation.status === "running") {
+    return null;
+  }
+  if (operation.durationMs !== null) {
+    return Math.max(0, operation.durationMs);
+  }
+  if (!operation.startedAt || !operation.completedAt) {
+    return null;
+  }
+  const duration = Date.parse(operation.completedAt) - Date.parse(operation.startedAt);
+  return Number.isFinite(duration) ? Math.max(0, duration) : null;
+}
+
 function clampPercent(value: number) {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
