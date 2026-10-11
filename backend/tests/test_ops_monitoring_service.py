@@ -240,7 +240,11 @@ def test_hyperliquid_budget_sums_the_api_and_live_workers() -> None:
     ]
 
     budget = build_hyperliquid_budget(
-        settings=Settings(_env_file=None, worker_run_in_api_process=False),
+        settings=Settings(
+            _env_file=None,
+            worker_run_in_api_process=False,
+            hyperliquid_info_shared_budget_enabled=False,
+        ),
         workers=workers,
         now=now,
     )
@@ -260,7 +264,7 @@ def test_rate_limited_requests_warn_in_ops_health() -> None:
             "trading",
             now=now,
             age_seconds=10,
-            usage=usage_payload(rateLimited60m=3),
+            usage=usage_payload(budgetMode="shared", rateLimited60m=3),
         ),
         now=now,
         stale_after_seconds=180,
@@ -290,3 +294,35 @@ def test_rate_limited_requests_warn_in_ops_health() -> None:
         "Hyperliquid rate limited 3 info requests in the last hour."
     ]
     assert status == "warning"
+
+
+def test_a_process_outside_the_shared_budget_warns() -> None:
+    now = datetime(2026, 10, 11, 12, 0, tzinfo=UTC)
+    workers = [
+        parse_worker_heartbeat(
+            heartbeat_with_usage(
+                role,
+                now=now,
+                age_seconds=10,
+                usage=usage_payload(budgetMode=mode, sharedFallbacks60m=fallbacks),
+            ),
+            now=now,
+            stale_after_seconds=180,
+        )
+        for role, mode, fallbacks in (("trading", "shared", 0), ("maintenance", "local", 1))
+    ]
+
+    budget = build_hyperliquid_budget(
+        settings=Settings(_env_file=None, worker_run_in_api_process=True, worker_role="all"),
+        workers=workers,
+        now=now,
+    )
+
+    assert budget.shared_budget_enabled is True
+    assert budget.shared_weight_per_minute == 1100
+    assert budget.processes[1].shared_fallbacks_60m == 1
+    assert budget.status == "warning"
+    assert hyperliquid_budget_notes(budget) == [
+        "The maintenance process cannot reach the shared Hyperliquid budget in Redis "
+        "and uses its own budget of 550 per minute."
+    ]

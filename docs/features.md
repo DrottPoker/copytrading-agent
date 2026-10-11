@@ -169,6 +169,10 @@ What it does:
   hour, how long requests waited for budget, how many requests Hyperliquid
   answered with 429 in the last hour, and the request types that cost the most
   weight. Any 429 response raises a warning and a note.
+- Shows whether each process draws from the shared Hyperliquid budget in Redis
+  and how often it could not reach Redis in the last hour. A process that uses
+  its own local budget while the shared budget is enabled raises a warning and
+  a note.
 - Shows recent long-running operation statuses for discovery, pool reimport,
   scoring, and pruning.
 - Shows each configured discovery source's last run, last success, wallets
@@ -802,9 +806,11 @@ Execution latency:
   leverage updates that match the last applied value from the past 10 minutes.
   A market missing from cached metadata reloads it once before rejecting.
 - A weight-based info rate limiter follows Hyperliquid's documented request
-  weights with a per-process budget of `hyperliquid_info_weight_per_minute`
-  (550). Copy execution requests go before background work such as recovery,
-  reconciliation, warm-up, and imports.
+  weights. The API process and both workers share one budget of 1,100 per
+  minute in Redis, so maintenance work can use what copy execution does not
+  need. Background work such as recovery, reconciliation, warm-up, and imports
+  must leave 60 for copy execution, which always goes first. Without Redis each
+  process falls back to its own 550 per minute.
 
 Purpose:
 

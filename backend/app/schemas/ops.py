@@ -122,6 +122,7 @@ class OpsHyperliquidProcessUsage(CamelModel):
     execution_wait_seconds_15m: float
     background_wait_seconds_15m: float
     rate_limited_60m: int
+    shared_fallbacks_60m: int = 0
     top_request_types_15m: list[OpsHyperliquidRequestType] = Field(default_factory=list)
 
 
@@ -130,6 +131,9 @@ class OpsHyperliquidBudget(CamelModel):
 
     status: CheckStatus
     ip_weight_limit_per_minute: int
+    shared_budget_enabled: bool
+    shared_weight_per_minute: int
+    execution_reserve_weight: int
     process_weight_per_minute: int
     total_weight_last_minute: int
     total_weight_per_minute_15m: float

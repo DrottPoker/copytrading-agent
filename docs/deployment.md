@@ -23,15 +23,15 @@ The VPS compose file does not publish backend, frontend, Postgres, or Redis
 ports directly. Only Caddy is exposed publicly.
 
 Hyperliquid limits info requests to a weight of 1200 per minute per public IP.
-Each process that calls the info API enforces its own budget,
-`hyperliquid_info_weight_per_minute` in `backend/config/app.json`, which
-defaults to 550. The trading and maintenance workers together stay below the IP
-limit, and the trading worker serves copy execution before its own background
-requests. Manual imports and wallet lookups started from the dashboard run in
-the backend process with the same per-process budget; when they overlap heavy
-maintenance work, Hyperliquid 429 responses are retried with backoff. Lower the
-budget when you run more processes behind the same IP, for example a second
-deployment on the same VPS.
+The backend and both workers share one budget through Redis,
+`hyperliquid_info_shared_weight_per_minute` in `backend/config/app.json`, which
+defaults to 1100. Copy execution always goes first, and background work leaves
+`hyperliquid_info_execution_reserve_weight` (60) for it. If Redis is
+unavailable, each process falls back to its own
+`hyperliquid_info_weight_per_minute` (550) until Redis answers again. The
+System page shows each process's weight per minute, which budget it uses, and
+any 429 responses. Lower both budgets when another deployment runs behind the
+same IP, since the budget only covers processes that share this Redis.
 
 Redis stores presentation events and is intentionally optional for backend and
 worker startup. When Redis is unavailable, `/health` and `/ready` report a

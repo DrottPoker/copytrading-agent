@@ -32,10 +32,15 @@ penalties, and window scores.
 `backend/config/app.json` owns non-secret runtime defaults such as worker mode,
 worker supervision, realtime execution inbox timing, Ops monitoring, backup
 status monitoring, wallet pool page limit, network, and shared infrastructure
-request settings. `hyperliquid_info_weight_per_minute` is the Hyperliquid info
-request weight budget per process. The default of 550 keeps the trading and
-maintenance workers together below Hyperliquid's 1200 per minute IP limit. Lower
-it when more processes share the same public IP.
+request settings. `hyperliquid_info_shared_weight_per_minute` (1100) is the
+Hyperliquid info request weight that all processes sharing this Redis may use
+together, below Hyperliquid's 1200 per minute IP limit, with
+`hyperliquid_info_shared_burst_weight` and
+`hyperliquid_info_execution_reserve_weight` shaping bursts and the share kept
+for copy execution. `hyperliquid_info_weight_per_minute` (550) is each
+process's own budget when Redis is unavailable or
+`hyperliquid_info_shared_budget_enabled` is false. Lower the budgets when more
+deployments share the same public IP.
 
 `backend/config/backup.env` owns the automated Postgres backup interval and
 retention. It is loaded directly by the Compose backup service.

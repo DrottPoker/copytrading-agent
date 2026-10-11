@@ -29,6 +29,9 @@ const maintenance: OpsHyperliquidProcessUsage = {
 const budget: OpsHyperliquidBudget = {
   status: "warning",
   ipWeightLimitPerMinute: 1200,
+  sharedBudgetEnabled: false,
+  sharedWeightPerMinute: 1100,
+  executionReserveWeight: 60,
   processWeightPerMinute: 550,
   totalWeightLastMinute: 580,
   totalWeightPerMinute15m: 560.2,
@@ -59,6 +62,28 @@ describe("HyperliquidBudgetPanel", () => {
     expect(screen.getByText("10m 10s")).toBeInTheDocument();
     expect(screen.getByText("execution 3s")).toBeInTheDocument();
     expect(screen.getByText("userFillsByTime 5,200, portfolio 1,400")).toBeInTheDocument();
+  });
+
+  it("explains the shared budget and flags a process that cannot reach Redis", () => {
+    render(
+      <HyperliquidBudgetPanel
+        budget={{
+          ...budget,
+          sharedBudgetEnabled: true,
+          processes: [
+            { ...maintenance, budgetMode: "shared", budgetWeightPerMinute: 1100 },
+            { ...maintenance, process: "trading", instanceId: "instance-b", sharedFallbacks60m: 2 },
+          ],
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByText(/All processes share 1,100 per minute, and background work leaves 60 for copy execution/),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Shared")).toBeInTheDocument();
+    expect(screen.getByText("Own, Redis unreachable")).toHaveClass("text-warning");
+    expect(screen.getByText("Redis unreachable 2 times")).toBeInTheDocument();
   });
 
   it("renders nothing without budget data from an older backend", () => {

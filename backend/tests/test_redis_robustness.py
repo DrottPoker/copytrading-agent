@@ -198,12 +198,26 @@ async def test_monitor_worker_closes_redis_after_services_stop(
         def add_signal_handler(self, *_args: object) -> None:
             return None
 
+    budget_events: list[str] = []
+
     async def run_services(**kwargs: object) -> None:
         assert kwargs["redis"] is redis
+        budget_events.append("services")
 
     async def close_redis() -> None:
         closed.append(True)
 
+    async def close_budget() -> None:
+        budget_events.append("closed")
+
+    monkeypatch.setattr(
+        monitor_worker,
+        "configure_shared_info_budget",
+        lambda configured: budget_events.append(
+            "configured" if configured is settings else "wrong settings"
+        ),
+    )
+    monkeypatch.setattr(monitor_worker, "close_shared_info_budget", close_budget)
     monkeypatch.setattr(monitor_worker, "get_settings", lambda: settings)
     monkeypatch.setattr(monitor_worker, "configure_logging", lambda *_args: None)
     monkeypatch.setattr(monitor_worker, "get_sessionmaker", lambda *_args: object())
@@ -215,6 +229,7 @@ async def test_monitor_worker_closes_redis_after_services_stop(
     await monitor_worker.run_worker()
 
     assert closed == [True]
+    assert budget_events == ["configured", "services", "closed"]
 
 
 @pytest.mark.asyncio
@@ -237,11 +252,23 @@ async def test_api_lifespan_closes_redis_after_embedded_worker_drains(
         assert drained == [True]
         closed.append(True)
 
+    budget_events: list[str] = []
+
+    async def close_budget() -> None:
+        assert drained == [True]
+        budget_events.append("closed")
+
     monkeypatch.setattr(
         main,
         "settings",
         SimpleNamespace(worker_run_in_api_process=True, redis_url="redis://redis.example:6379/0"),
     )
+    monkeypatch.setattr(
+        main,
+        "configure_shared_info_budget",
+        lambda _settings: budget_events.append("configured"),
+    )
+    monkeypatch.setattr(main, "close_shared_info_budget", close_budget)
     monkeypatch.setattr(main, "get_sessionmaker", lambda *_args: object())
     monkeypatch.setattr(main, "get_redis", lambda *_args: redis)
     monkeypatch.setattr(main, "run_monitor_services", run_services)
@@ -251,3 +278,4 @@ async def test_api_lifespan_closes_redis_after_embedded_worker_drains(
         await started.wait()
 
     assert closed == [True]
+    assert budget_events == ["configured", "closed"]

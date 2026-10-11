@@ -6,7 +6,7 @@ used to live in the README.
 
 ## 2026-10-11
 
-### Hyperliquid request measurement
+### Shared Hyperliquid request budget
 
 - Every process now measures its Hyperliquid info requests: weight per minute
   split into copy execution and background work, the heaviest minute, time
@@ -14,6 +14,16 @@ used to live in the README.
   types. Workers report it with their heartbeat and the System page shows all
   processes against the 1,200 per minute limit per IP address. A 429 response
   raises a warning.
+- Hyperliquid's limit is per IP address, so running more processes cannot make
+  imports faster. The trading worker and the maintenance worker each had a
+  fixed 550 per minute, even when the trading worker used little of its share.
+  The backend and both workers now draw from one budget of 1,100 per minute in
+  Redis, so maintenance work can use whatever copy execution and the dashboard
+  leave. Copy execution still goes first: background work must leave 60 in the
+  bucket, and a large fill page reserves its full weight before it is sent.
+- If Redis cannot be reached, each process falls back to its own 550 per
+  minute, as before, and tries Redis again after 30 seconds. The System page
+  warns when a process runs outside the shared budget.
 
 ### Faster discovery, reimport, and scoring
 

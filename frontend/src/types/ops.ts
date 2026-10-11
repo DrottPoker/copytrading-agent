@@ -111,12 +111,16 @@ export type OpsHyperliquidProcessUsage = {
   executionWaitSeconds15m: number;
   backgroundWaitSeconds15m: number;
   rateLimited60m: number;
+  sharedFallbacks60m?: number;
   topRequestTypes15m: OpsHyperliquidRequestType[];
 };
 
 export type OpsHyperliquidBudget = {
   status: OpsCheckStatus;
   ipWeightLimitPerMinute: number;
+  sharedBudgetEnabled?: boolean;
+  sharedWeightPerMinute?: number;
+  executionReserveWeight?: number;
   processWeightPerMinute: number;
   totalWeightLastMinute: number;
   totalWeightPerMinute15m: number;

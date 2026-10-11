@@ -251,21 +251,42 @@ work.
   names a market the cached metadata does not know yet reloads it once
   immediately. Leverage and margin mode are sent only when they differ from the
   last applied value or that value is older than 10 minutes.
-- Hyperliquid info requests pass a per-process, weight-based token bucket with
-  the documented info weights: 2 for `l2Book`, `allMids`,
+- Hyperliquid limits info requests to a weight of 1200 per minute per IP
+  address, so the API process and both workers draw from one weight-based token
+  bucket in Redis, `hyperliquid:info_budget:<network>`. A Lua script refills it
+  by Redis time and takes weight atomically, so every process sees the same
+  bucket. Requests use the documented info weights: 2 for `l2Book`, `allMids`,
   `clearinghouseState`, `orderStatus`, `spotClearinghouseState`, and
   `exchangeStatus`, 60 for `userRole`, 20 for other requests, and extra weight
-  for large list responses. Execution requests take the next free capacity, and
-  background requests wait while an execution request is waiting. The
-  per-process budget `hyperliquid_info_weight_per_minute` defaults to 550, so
-  the trading and maintenance workers together stay below Hyperliquid's 1200
-  per minute IP limit.
+  for large list responses.
+- The shared bucket refills `hyperliquid_info_shared_weight_per_minute` (1100)
+  and holds at most `hyperliquid_info_shared_burst_weight` (275), the same
+  total the two workers had as separate 550 budgets. Background work may only
+  take weight while `hyperliquid_info_execution_reserve_weight` (60) stays in
+  the bucket, so copy execution in any process can always use the last tokens,
+  and background work also yields to execution requests waiting in its own
+  process. The maintenance worker can therefore use whatever the trading worker
+  and the API leave, instead of a fixed half.
+- A list response's extra weight is only known afterwards, so a request
+  reserves the weight of a full 2,000-item response up front and returns the
+  unused part. A large fill page therefore never leaves the bucket below the
+  execution reserve.
+- When Redis cannot be reached, or does not answer within two seconds, a
+  process falls back to its own local bucket of
+  `hyperliquid_info_weight_per_minute` (550), the budget every process had
+  before, and tries Redis again after 30 seconds. The timeout is generous
+  because it also counts time the event loop spends on other work, which must
+  not read as a Redis failure. Set `hyperliquid_info_shared_budget_enabled` to
+  false to use the local buckets only.
 - Every process measures its own info requests per minute for the last hour:
   weight by priority and request type, request count, time spent waiting for
   budget, and 429 responses. Weight includes the extra weight a response
   reveals. Workers send the summary with each heartbeat, and `GET /ops/health`
   adds the API process and returns the total as `hyperliquidBudget`. Only
-  complete minutes are reported, so a running minute never reads low.
+  complete minutes are reported, so a running minute never reads low. Each
+  process also reports whether it draws from the shared bucket and how often it
+  fell back in the last hour; a process outside the shared bucket raises a
+  warning.
 - Every WebSocket sends a ping after 30 seconds of silence. When nothing, not
   even the pong, arrives within 10 seconds, the connection is treated as dead
   and the loop reconnects instead of waiting on a half-open socket.
@@ -478,8 +499,8 @@ created.
 
 ### Redis
 
-Redis is presentation runtime state only. It is not an execution queue or a
-trading source of truth.
+Redis holds presentation runtime state and the shared Hyperliquid request
+budget. It is not an execution queue or a trading source of truth.
 
 Redis event delivery is best effort and may be delayed or unavailable, so it
 cannot determine whether durable trading work is claimed or processed. Postgres
@@ -490,6 +511,8 @@ It is used for:
 - A bounded Redis Stream, `events:stream:v1`, for recent versioned events.
 - Server-Sent Events replay through the Redis stream id and `Last-Event-ID`.
 - Pub/sub compatibility channels for connected runtime consumers.
+- The shared Hyperliquid info request budget. Without Redis each process falls
+  back to its own local budget, so trading continues.
 
 Worker publication has a timeout and catches Redis failures. Presentation events
 can be delayed or omitted while Redis is unavailable, but committed fills,
@@ -525,8 +548,8 @@ The backend config files are grouped by operational area:
 
 - `app.json` owns non-secret runtime defaults such as worker mode, capability
   lease TTL, supervisor restart delay, shutdown drain window, realtime wakeup
-  queue size, inbox claim timeout, retry backoff, the per-process Hyperliquid
-  info weight budget, Ops and backup status monitoring, dashboard auth
+  queue size, inbox claim timeout, retry backoff, the shared and per-process
+  Hyperliquid info weight budgets, Ops and backup status monitoring, dashboard auth
   enablement, wallet pool page limit, network, and shared infrastructure
   settings.
 - `backup.env` owns the automated Postgres backup interval and retention.

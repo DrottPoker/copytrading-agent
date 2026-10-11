@@ -12,7 +12,11 @@ from app.core.logging import configure_logging
 from app.db.models import PaperPosition, TradingAccount, TradingPosition, WalletScore, WatchedWallet
 from app.db.session import get_sessionmaker
 from app.integrations.hyperliquid_client import HyperliquidClient
-from app.integrations.hyperliquid_info_budget import info_usage_snapshot
+from app.integrations.hyperliquid_info_budget import (
+    close_shared_info_budget,
+    configure_shared_info_budget,
+    info_usage_snapshot,
+)
 from app.integrations.hyperliquid_live_client import HyperliquidLiveTradingClient
 from app.integrations.hyperliquid_ws_client import (
     HyperliquidWebSocketError,
@@ -253,6 +257,7 @@ async def run_worker() -> None:
     )
     sessionmaker = get_sessionmaker(settings)
     redis = get_redis(settings.redis_url)
+    configure_shared_info_budget(settings)
     try:
         if sessionmaker is None:
             logger.error(
@@ -267,6 +272,7 @@ async def run_worker() -> None:
             settings=settings,
         )
     finally:
+        await close_shared_info_budget()
         await close_redis_clients()
         logger.info("monitor worker stopped")
 

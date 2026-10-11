@@ -18,6 +18,8 @@ from app.integrations.hyperliquid_info_budget import (
     InfoBudgetGrant,
     InfoUsageMeter,
     RequestPriority,
+    SharedInfoBudget,
+    SharedInfoBudgetUnavailableError,
 )
 
 
@@ -230,8 +232,9 @@ async def test_post_info_acquires_request_weight_with_client_priority(
     finally:
         await client.aclose()
 
-    assert budget.acquired == [(20, "execution", "userFills", 300)]
-    assert budget.settled == [(20, 22)]
+    # A full page would cost 100 extra, so that is reserved and 98 returned.
+    assert budget.acquired == [(120, "execution", "userFills", 300)]
+    assert budget.settled == [(120, 22)]
 
 
 @pytest.mark.asyncio
@@ -343,3 +346,150 @@ async def test_open_client_is_reused_until_closed() -> None:
     assert client._client is pooled
     await client.aclose()
     assert client._client is None
+
+
+class FakeSharedBudget:
+    """Stands in for the Redis bucket: grants takes until told Redis is down."""
+
+    weight_per_minute = 1100
+
+    def __init__(self) -> None:
+        self.available = True
+        self.takes: list[tuple[int, str]] = []
+        self.adjustments: list[int] = []
+        self.waits: list[float] = []
+
+    async def take(self, weight: int, *, priority: RequestPriority) -> float:
+        if not self.available:
+            raise SharedInfoBudgetUnavailableError("connection refused")
+        self.takes.append((weight, priority))
+        return self.waits.pop(0) if self.waits else 0.0
+
+    async def adjust(self, weight: int) -> None:
+        if not self.available:
+            raise SharedInfoBudgetUnavailableError("connection refused")
+        self.adjustments.append(weight)
+
+
+def budget_with_shared(shared: FakeSharedBudget) -> tuple[HyperliquidInfoBudget, FakeClock]:
+    clock = FakeClock()
+    budget = HyperliquidInfoBudget(
+        limiter=HyperliquidInfoRateLimiter(clock=clock, sleep=clock.sleep),
+        meter=InfoUsageMeter(clock=lambda: 600.0),
+        clock=clock,
+        sleep=clock.sleep,
+    )
+    budget.use_shared(shared)  # type: ignore[arg-type]
+    return budget, clock
+
+
+@pytest.mark.asyncio
+async def test_shared_budget_takes_from_redis_and_refunds_unused_weight() -> None:
+    shared = FakeSharedBudget()
+    shared.waits = [0.4, 0.0]
+    budget, clock = budget_with_shared(shared)
+
+    grant = await budget.acquire(
+        120,
+        priority="background",
+        request_type="userFillsByTime",
+        weight_per_minute=550,
+    )
+    await budget.settle(grant, used_weight=35)
+
+    assert grant.mode == "shared"
+    # The first take was refused, so the request waited and took again.
+    assert shared.takes == [(120, "background"), (120, "background")]
+    assert clock.now == pytest.approx(0.4)
+    assert shared.adjustments == [85]
+    assert budget.usage_snapshot(weight_per_minute=550)["budgetMode"] == "shared"
+    assert budget.usage_snapshot(weight_per_minute=550)["budgetWeightPerMinute"] == 1100
+
+
+@pytest.mark.asyncio
+async def test_unreachable_redis_falls_back_to_the_local_budget_until_retry() -> None:
+    shared = FakeSharedBudget()
+    shared.available = False
+    budget, clock = budget_with_shared(shared)
+
+    first = await budget.acquire(
+        2, priority="execution", request_type="l2Book", weight_per_minute=60
+    )
+    shared.available = True
+    during_fallback = await budget.acquire(
+        2,
+        priority="execution",
+        request_type="l2Book",
+        weight_per_minute=60,
+    )
+    snapshot = budget.usage_snapshot(weight_per_minute=550)
+    clock.now += 31
+    after_retry = await budget.acquire(
+        2,
+        priority="execution",
+        request_type="l2Book",
+        weight_per_minute=60,
+    )
+
+    assert (first.mode, during_fallback.mode, after_retry.mode) == ("local", "local", "shared")
+    assert snapshot["budgetMode"] == "local"
+    assert snapshot["budgetWeightPerMinute"] == 550
+    assert shared.takes == [(2, "execution")]
+
+
+@pytest.mark.asyncio
+async def test_failed_refund_switches_to_the_local_budget() -> None:
+    shared = FakeSharedBudget()
+    budget, _clock = budget_with_shared(shared)
+    grant = await budget.acquire(
+        120,
+        priority="background",
+        request_type="userFills",
+        weight_per_minute=550,
+    )
+    shared.available = False
+
+    await budget.settle(grant, used_weight=20)
+    shared.available = True
+    next_grant = await budget.acquire(
+        20,
+        priority="background",
+        request_type="portfolio",
+        weight_per_minute=550,
+    )
+
+    assert next_grant.mode == "local"
+
+
+@pytest.mark.asyncio
+async def test_shared_take_leaves_the_execution_reserve_to_copy_execution() -> None:
+    calls: list[tuple[str, int, int]] = []
+
+    class RecordingScriptRedis:
+        def register_script(self, _script: str) -> Any:
+            async def run(*, keys: list[str], args: list[Any]) -> int:
+                calls.append((args[0], args[1], args[2]))
+                return 0
+
+            return run
+
+    shared = SharedInfoBudget(
+        RecordingScriptRedis(),  # type: ignore[arg-type]
+        key="hyperliquid:info_budget:mainnet",
+        weight_per_minute=1100,
+        burst_weight=275,
+        execution_reserve_weight=60,
+    )
+
+    await shared.take(20, priority="execution")
+    await shared.take(120, priority="background")
+    await shared.take(500, priority="background")
+    await shared.adjust(-15)
+
+    # A take larger than the bucket is capped so it can still be granted.
+    assert calls == [
+        ("take", 20, 0),
+        ("take", 120, 60),
+        ("take", 275, 0),
+        ("adjust", -15, 0),
+    ]

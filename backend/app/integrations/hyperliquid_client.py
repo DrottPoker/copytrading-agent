@@ -58,6 +58,17 @@ def info_request_weight(payload: dict[str, Any]) -> int:
     return HEAVY_INFO_REQUEST_WEIGHTS.get(request_type, DEFAULT_INFO_REQUEST_WEIGHT)
 
 
+# Item-weighted responses return at most this many items per request.
+MAX_INFO_RESPONSE_ITEMS = 2000
+
+
+def info_response_max_extra_weight(payload: dict[str, Any]) -> int:
+    """Extra weight a full response would cost, reserved before the request is sent."""
+
+    items_per_unit = ITEM_WEIGHTED_INFO_REQUEST_TYPES.get(str(payload.get("type") or ""))
+    return 0 if items_per_unit is None else MAX_INFO_RESPONSE_ITEMS // items_per_unit
+
+
 def info_response_extra_weight(payload: dict[str, Any], result: Any) -> int:
     items_per_unit = ITEM_WEIGHTED_INFO_REQUEST_TYPES.get(str(payload.get("type") or ""))
     if items_per_unit is None or not isinstance(result, list):
@@ -100,10 +111,13 @@ class HyperliquidClient:
         last_response: httpx.Response | None = None
 
         weight = info_request_weight(payload)
+        # A large response must not push other processes' copy execution into a wait,
+        # so its worst-case weight is reserved up front and the unused part refunded.
+        reserved_weight = weight + info_response_max_extra_weight(payload)
         request_type = str(payload.get("type") or "unknown")
         for attempt in range(attempts):
             grant = await INFO_BUDGET.acquire(
-                weight,
+                reserved_weight,
                 priority=self.priority,
                 request_type=request_type,
                 weight_per_minute=self.settings.hyperliquid_info_weight_per_minute,

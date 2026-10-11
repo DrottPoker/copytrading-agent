@@ -21,6 +21,10 @@ from app.core.auth import DashboardAuthMiddleware
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.db.session import get_sessionmaker
+from app.integrations.hyperliquid_info_budget import (
+    close_shared_info_budget,
+    configure_shared_info_budget,
+)
 from app.integrations.redis_client import close_redis_clients, get_redis
 from app.services.job_lock_service import JobLockAlreadyHeldError
 from app.workers.monitor_worker import run_monitor_services
@@ -34,6 +38,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app_instance: FastAPI):
     stop_event: asyncio.Event | None = None
     background_task: asyncio.Task[None] | None = None
+    configure_shared_info_budget(settings)
 
     if settings.worker_run_in_api_process:
         sessionmaker = get_sessionmaker(settings)
@@ -65,6 +70,7 @@ async def lifespan(app_instance: FastAPI):
                     await asyncio.gather(background_task, return_exceptions=True)
                 logger.info("api background worker stopped")
         finally:
+            await close_shared_info_budget()
             await close_redis_clients()
 
 

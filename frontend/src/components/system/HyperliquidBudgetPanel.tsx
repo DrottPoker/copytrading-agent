@@ -17,6 +17,13 @@ function processLabel(usage: OpsHyperliquidProcessUsage) {
   return usage.process === "api" ? "API" : `${humanize(usage.process)} worker`;
 }
 
+function budgetDescription(budget: OpsHyperliquidBudget) {
+  if (budget.sharedBudgetEnabled) {
+    return `All processes share ${formatInteger(budget.sharedWeightPerMinute)} per minute, and background work leaves ${formatInteger(budget.executionReserveWeight)} for copy execution. A process that cannot reach Redis uses its own ${formatInteger(budget.processWeightPerMinute)} per minute.`;
+  }
+  return `Each process has its own ${formatInteger(budget.processWeightPerMinute)} per minute.`;
+}
+
 export function HyperliquidBudgetPanel({ budget }: { budget: OpsHyperliquidBudget | null | undefined }) {
   if (!budget) {
     return null;
@@ -27,6 +34,7 @@ export function HyperliquidBudgetPanel({ budget }: { budget: OpsHyperliquidBudge
     <Panel
       title="Hyperliquid requests"
       meta={`request weight per minute, Hyperliquid allows ${formatInteger(limit)} per IP address`}
+      description={budgetDescription(budget)}
     >
       <div className="grid gap-2 border-b border-line px-3.5 py-2.5 text-xs text-fg-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
         <div className="flex items-center gap-3">
@@ -64,46 +72,68 @@ export function HyperliquidBudgetPanel({ budget }: { budget: OpsHyperliquidBudge
             </thead>
             <tbody>
               {budget.processes.map((usage) => (
-                <tr key={`${usage.process}:${usage.instanceId ?? "local"}`}>
-                  <td>
-                    <StatusDot tone={usage.rateLimited60m > 0 ? "negative" : "positive"} label={processLabel(usage)} />
-                    <span className="sub">
-                      reported <TimeAgo value={usage.updatedAt} />
-                    </span>
-                  </td>
-                  <td className="num">
-                    {formatInteger(usage.budgetWeightPerMinute)}
-                    <span className="sub">{humanize(usage.budgetMode)}</span>
-                  </td>
-                  <td className="num">{formatInteger(usage.weightLastMinute)}</td>
-                  <td className="num">{formatNumber(usage.weightPerMinute15m, 0)}</td>
-                  <td className="num">{formatInteger(usage.peakWeightPerMinute60m)}</td>
-                  <td className="num text-fg-2">
-                    {formatNumber(usage.executionWeightPerMinute15m, 0)} / {formatNumber(usage.backgroundWeightPerMinute15m, 0)}
-                  </td>
-                  <td className="num text-fg-2">
-                    {formatSeconds(usage.executionWaitSeconds15m + usage.backgroundWaitSeconds15m)}
-                    {usage.executionWaitSeconds15m > 0 ? (
-                      <span className="sub text-warning">execution {formatSeconds(usage.executionWaitSeconds15m)}</span>
-                    ) : null}
-                  </td>
-                  <td className={cx("num", usage.rateLimited60m > 0 && "text-negative")}>
-                    {formatInteger(usage.rateLimited60m)}
-                  </td>
-                  <td className="wrap text-xs text-fg-2">
-                    {usage.topRequestTypes15m.length === 0
-                      ? "-"
-                      : usage.topRequestTypes15m
-                          .slice(0, 3)
-                          .map((item) => `${item.type} ${formatInteger(item.weight)}`)
-                          .join(", ")}
-                  </td>
-                </tr>
+                <ProcessRow
+                  key={`${usage.process}:${usage.instanceId ?? "local"}`}
+                  sharedBudgetEnabled={Boolean(budget.sharedBudgetEnabled)}
+                  usage={usage}
+                />
               ))}
             </tbody>
           </table>
         </div>
       )}
     </Panel>
+  );
+}
+
+function ProcessRow({ sharedBudgetEnabled, usage }: { sharedBudgetEnabled: boolean; usage: OpsHyperliquidProcessUsage }) {
+  const outsideSharedBudget = sharedBudgetEnabled && usage.budgetMode !== "shared";
+  const fallbacks = usage.sharedFallbacks60m ?? 0;
+  return (
+    <tr>
+      <td>
+        <StatusDot
+          tone={usage.rateLimited60m > 0 ? "negative" : outsideSharedBudget ? "warning" : "positive"}
+          label={processLabel(usage)}
+        />
+        <span className="sub">
+          reported <TimeAgo value={usage.updatedAt} />
+        </span>
+      </td>
+      <td className="num">
+        {formatInteger(usage.budgetWeightPerMinute)}
+        <span className={cx("sub", outsideSharedBudget && "text-warning")}>
+          {outsideSharedBudget ? "Own, Redis unreachable" : humanize(usage.budgetMode)}
+        </span>
+        {fallbacks > 0 ? (
+          <span className="sub text-warning">
+            Redis unreachable {formatInteger(fallbacks)} {fallbacks === 1 ? "time" : "times"}
+          </span>
+        ) : null}
+      </td>
+      <td className="num">{formatInteger(usage.weightLastMinute)}</td>
+      <td className="num">{formatNumber(usage.weightPerMinute15m, 0)}</td>
+      <td className="num">{formatInteger(usage.peakWeightPerMinute60m)}</td>
+      <td className="num text-fg-2">
+        {formatNumber(usage.executionWeightPerMinute15m, 0)} / {formatNumber(usage.backgroundWeightPerMinute15m, 0)}
+      </td>
+      <td className="num text-fg-2">
+        {formatSeconds(usage.executionWaitSeconds15m + usage.backgroundWaitSeconds15m)}
+        {usage.executionWaitSeconds15m > 0 ? (
+          <span className="sub text-warning">execution {formatSeconds(usage.executionWaitSeconds15m)}</span>
+        ) : null}
+      </td>
+      <td className={cx("num", usage.rateLimited60m > 0 && "text-negative")}>
+        {formatInteger(usage.rateLimited60m)}
+      </td>
+      <td className="wrap text-xs text-fg-2">
+        {usage.topRequestTypes15m.length === 0
+          ? "-"
+          : usage.topRequestTypes15m
+              .slice(0, 3)
+              .map((item) => `${item.type} ${formatInteger(item.weight)}`)
+              .join(", ")}
+      </td>
+    </tr>
   );
 }

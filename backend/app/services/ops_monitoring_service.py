@@ -508,6 +508,7 @@ def parse_hyperliquid_usage(
         execution_wait_seconds_15m=non_negative_float(value.get("executionWaitSeconds15m")),
         background_wait_seconds_15m=non_negative_float(value.get("backgroundWaitSeconds15m")),
         rate_limited_60m=non_negative_int(value.get("rateLimited60m")),
+        shared_fallbacks_60m=non_negative_int(value.get("sharedFallbacks60m")),
         top_request_types_15m=request_types,
     )
 
@@ -537,9 +538,16 @@ def build_hyperliquid_budget(
         if worker.hyperliquid_usage is not None and worker.status != "stale"
     )
     rate_limited = sum(process.rate_limited_60m for process in processes)
+    shared_enabled = settings.hyperliquid_info_shared_budget_enabled
+    outside_shared_budget = shared_enabled and any(
+        process.budget_mode != "shared" for process in processes
+    )
     return OpsHyperliquidBudget(
-        status="warning" if rate_limited > 0 else "ok",
+        status="warning" if rate_limited > 0 or outside_shared_budget else "ok",
         ip_weight_limit_per_minute=HYPERLIQUID_IP_WEIGHT_LIMIT_PER_MINUTE,
+        shared_budget_enabled=shared_enabled,
+        shared_weight_per_minute=settings.hyperliquid_info_shared_weight_per_minute,
+        execution_reserve_weight=settings.hyperliquid_info_execution_reserve_weight,
         process_weight_per_minute=settings.hyperliquid_info_weight_per_minute,
         total_weight_last_minute=sum(process.weight_last_minute for process in processes),
         total_weight_per_minute_15m=round(
@@ -551,9 +559,20 @@ def build_hyperliquid_budget(
 
 
 def hyperliquid_budget_notes(budget: OpsHyperliquidBudget) -> list[str]:
-    if budget.rate_limited_60m <= 0:
-        return []
-    return [f"Hyperliquid rate limited {budget.rate_limited_60m} info requests in the last hour."]
+    notes: list[str] = []
+    if budget.rate_limited_60m > 0:
+        notes.append(
+            f"Hyperliquid rate limited {budget.rate_limited_60m} info requests in the last hour."
+        )
+    if budget.shared_budget_enabled:
+        for process in budget.processes:
+            if process.budget_mode != "shared":
+                notes.append(
+                    f"The {process.process} process cannot reach the shared Hyperliquid budget "
+                    f"in Redis and uses its own budget of {process.budget_weight_per_minute} "
+                    "per minute."
+                )
+    return notes
 
 
 def parse_worker_loop_states(value: object) -> list[OpsWorkerLoopState]:

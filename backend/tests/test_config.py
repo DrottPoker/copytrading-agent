@@ -306,3 +306,25 @@ def test_allocation_budget_cannot_exceed_the_total_exposure_cap() -> None:
             trading_copy_max_total_allocation_pct=Decimal("4"),
             trading_copy_max_total_exposure_multiple=Decimal("3"),
         )
+
+
+def test_app_config_shares_the_hyperliquid_budget_between_processes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_live_env_overrides(monkeypatch)
+    settings = Settings(_env_file=None, **load_app_config())
+
+    assert settings.hyperliquid_info_shared_budget_enabled is True
+    assert settings.hyperliquid_info_shared_weight_per_minute == 1100
+    assert settings.hyperliquid_info_shared_burst_weight == 275
+    assert settings.hyperliquid_info_execution_reserve_weight == 60
+    assert settings.hyperliquid_info_weight_per_minute == 550
+
+
+def test_shared_burst_must_fit_the_reserve_and_the_heaviest_request() -> None:
+    with pytest.raises(ValueError, match="hyperliquid_info_shared_burst_weight"):
+        Settings(
+            _env_file=None,
+            hyperliquid_info_shared_burst_weight=150,
+            hyperliquid_info_execution_reserve_weight=60,
+        )

@@ -19,6 +19,8 @@ TRADING_CONFIG_PATH = CONFIG_DIR / "trading.json"
 PAPER_TRADING_CONFIG_PATH = CONFIG_DIR / "paper_trading.json"
 LIVE_TRADING_CONFIG_PATH = CONFIG_DIR / "live_trading.json"
 DASHBOARD_AUTH_MIN_PRODUCTION_PASSWORD_LENGTH = 8
+# The heaviest info request reserves 20 plus one unit per 20 rows of a 2,000-row page.
+HYPERLIQUID_MAX_RESERVED_REQUEST_WEIGHT = 120
 DISCOVERY_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("enabled",): "discovery_enabled",
     ("sources", "default"): "discovery_default_sources",
@@ -385,6 +387,10 @@ class Settings(BaseSettings):
     hyperliquid_info_retry_base_delay_seconds: float = Field(default=1.5, ge=0, le=60)
     hyperliquid_info_retry_max_delay_seconds: float = Field(default=20.0, ge=0, le=120)
     hyperliquid_info_weight_per_minute: int = Field(default=550, ge=0, le=1200)
+    hyperliquid_info_shared_budget_enabled: bool = True
+    hyperliquid_info_shared_weight_per_minute: int = Field(default=1100, ge=1, le=1200)
+    hyperliquid_info_shared_burst_weight: int = Field(default=275, ge=1, le=1200)
+    hyperliquid_info_execution_reserve_weight: int = Field(default=60, ge=0, le=1000)
 
     paper_trading_enabled: bool = True
     live_trading_enabled: bool = False
@@ -884,6 +890,17 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def guard_live_trading(self) -> Settings:
+        if (
+            self.hyperliquid_info_shared_burst_weight
+            < self.hyperliquid_info_execution_reserve_weight
+            + HYPERLIQUID_MAX_RESERVED_REQUEST_WEIGHT
+        ):
+            # Background work could otherwise never take the heaviest request.
+            raise ValueError(
+                "hyperliquid_info_shared_burst_weight must be at least "
+                "hyperliquid_info_execution_reserve_weight plus "
+                f"{HYPERLIQUID_MAX_RESERVED_REQUEST_WEIGHT}."
+            )
         if self.worker_heartbeat_stale_seconds <= self.worker_heartbeat_interval_seconds:
             raise ValueError(
                 "worker_heartbeat_stale_seconds must be greater than "
