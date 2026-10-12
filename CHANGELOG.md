@@ -6,18 +6,31 @@ used to live in the README.
 
 ## 2026-10-12
 
-### One source per coin in paper accounts
+### Shared coins in paper accounts
 
 - Paper copy let several source wallets hold the same coin in one paper
   account, even on opposite sides. Hyperliquid keeps one net position per
-  account and coin, so live copy already reserved each coin for one source,
-  and paper results could include trades live would never make.
-- Paper copy now applies the same rule: while one source holds a coin in a
-  paper account, entries from other sources on that coin are skipped with
-  `paper_market_reserved_by_other_source`. The coin is free again once the
-  owning source is flat. Exits are never blocked.
-- Paper positions that several sources already hold on one coin stay open and
-  follow their sources' exits, but no longer take adds.
+  account and coin, so paper results could include trades no real account can
+  hold.
+- Earlier today paper reserved each coin for one source, like live copy does.
+  That blocked good trades for as long as another source held the coin, which
+  can be weeks for BTC or ETH.
+- Paper now lets sources share a coin when it fits in one exchange position:
+  same side and cross margin. Each source keeps its own part of the position,
+  sized and closed by its own fills, so one source's exit never closes
+  another's part. Entries are skipped with
+  `paper_market_held_on_opposite_side` when another source holds the opposite
+  side, and with `paper_shared_market_requires_cross` when the coin is held in
+  isolated margin or the new entry would be isolated.
+- Hyperliquid has one leverage setting per account and coin. The source that
+  opened the coin keeps setting it, and joining sources use the owner's
+  leverage. In cross margin the setting only decides the margin locked, not
+  size, PnL, or liquidation.
+- Live copy still reserves each coin for one source. It will follow once the
+  paper results show the sharing is worth it, so paper deliberately differs
+  from live here until then.
+- Paper positions that several sources hold on opposite sides from before
+  today stay open and follow their sources' exits, but take no adds.
 
 ## 2026-10-11
 

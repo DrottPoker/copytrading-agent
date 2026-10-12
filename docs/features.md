@@ -1062,13 +1062,18 @@ What it does:
   closes cannot update the same source exposure concurrently.
 - Locks paper account rows before writing copied fills, so different source
   wallets cannot concurrently update the same paper account balance.
-- Gives each paper account and coin to one source wallet at a time, like live
-  copy. Hyperliquid keeps one net position per account and coin, so an entry
-  from a different source on that coin, on either side, is skipped with
-  `paper_market_reserved_by_other_source` until the owning source is flat.
-  Adds, reduces, and closes from the owning source continue. Positions that
-  several sources opened on one coin before this rule can still be reduced and
-  closed, but no longer added to.
+- Lets several source wallets share a coin in one paper account only when
+  Hyperliquid could hold it as one net position: every source on the same
+  side and in cross margin. Each source keeps its own paper position for the
+  coin, so its entries, exits, and PnL stay separate. An entry is skipped with
+  `paper_market_held_on_opposite_side` when another source holds the opposite
+  side, and with `paper_shared_market_requires_cross` when another source
+  holds the coin in isolated margin or the new entry would be isolated.
+- Uses one leverage per account and coin, like Hyperliquid. The source that
+  opened the coin follows its own source leverage; a joining source uses the
+  owner's leverage. In cross margin leverage only decides the margin locked.
+- Live copy still reserves each coin for one source, so this is a deliberate
+  paper-only difference until live supports shared positions.
 - Recovery can retry earlier exit skip rows caused by unavailable source state
   or unavailable execution price, so a close is not permanently blocked by a
   transient paper-copy data issue.

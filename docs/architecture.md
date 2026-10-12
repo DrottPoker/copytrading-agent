@@ -1320,10 +1320,19 @@ wallet. That serializes realtime fill processing, recovery reconciliation, and
 manual closes for the same source exposure.
 Paper account rows are locked before copied fills are written, so different
 source wallets cannot concurrently update the same paper account balance.
-Paper copy reserves each account and coin for one source wallet, like live
-copy: an entry is skipped with `paper_market_reserved_by_other_source` while
-another source has an open paper position in that coin, on either side. The
-account row lock serializes that check with the new position across sources.
+Paper copy lets source wallets share an account and coin only when the
+positions could net into one Hyperliquid position without conflict: all on the
+same side and all in cross margin. Each source keeps its own `paper_positions`
+row for the coin. An entry is skipped with
+`paper_market_held_on_opposite_side` or `paper_shared_market_requires_cross`
+otherwise. The earliest opened position owns the coin's single leverage
+setting: the owner's entries use its source leverage and joining sources use
+the owner's position leverage. In cross margin, liquidation uses maintenance
+margin from the market's maximum leverage, so the setting only changes locked
+margin. The account row lock serializes these checks with the new position
+across sources. Live copy still reserves one source per account and market,
+so this is a deliberate paper-only difference until live attribution supports
+shared positions.
 Successful paper fills also store a `raw_payload.tradeIntent` object from the
 shared trading core. That intent contains side, action, size, notional, limit
 price, reduce-only state, and deterministic client order id, so live execution

@@ -3211,13 +3211,30 @@ async def apply_open_part(
     )
     if precheck_reason is not None:
         return await skip(precheck_reason)
-    if await paper_market_reserved_by_other_source(
+    source_margin_mode = (
+        resolve_coin_margin_mode(source_account_state.margin_mode_by_coin, coin)
+        if source_account_state is not None
+        else None
+    )
+    margin_mode = position.margin_mode if position is not None else source_margin_mode or "cross"
+    other_source_positions = await load_other_source_paper_positions(
         session,
         account_key=account.key,
         source_wallet=allocation.source_wallet,
         coin=coin,
-    ):
-        return await skip("paper_market_reserved_by_other_source")
+    )
+    shared_market_reason = paper_shared_market_reason(
+        other_source_positions,
+        side=part.side,
+        margin_mode=margin_mode,
+    )
+    if shared_market_reason is not None:
+        return await skip(shared_market_reason)
+    leverage = paper_entry_leverage(
+        source_leverage=source_leverage,
+        position=position,
+        other_source_positions=other_source_positions,
+    )
     risk_reason = await paper_entry_risk_reason(
         session,
         account=account,
@@ -3236,7 +3253,7 @@ async def apply_open_part(
         allocation_pct=allocation.allocation_pct,
         account_equity_usd=account.equity_usd,
         source_equity_usd=source_perp_equity,
-        source_leverage=source_leverage,
+        source_leverage=leverage,
         market_prices=market_prices,
         source_exposure_usd=await open_notional_for_source(
             session,
@@ -3266,7 +3283,7 @@ async def apply_open_part(
         paper_size = book_fill.filled_size
         price = book_fill.average_price
     notional_usd = paper_size * price
-    margin_usd = margin_from_notional(notional_usd, source_leverage)
+    margin_usd = margin_from_notional(notional_usd, leverage)
     min_order_adjustment = (
         PaperMinOrderAdjustment(
             original_notional_usd=decision.sizing.desired_notional_usd,
@@ -3291,7 +3308,7 @@ async def apply_open_part(
         size=paper_size,
         notional_usd=notional_usd,
         margin_usd=margin_usd,
-        leverage=source_leverage,
+        leverage=leverage,
         limit_price=price,
         source_price=execution_context.source_price,
         observed_price=execution_context.observed_price,
@@ -3313,14 +3330,9 @@ async def apply_open_part(
             size=paper_size,
             entry_price=price,
             notional_usd=notional_usd,
-            leverage=source_leverage,
+            leverage=leverage,
             margin_usd=margin_usd,
-            margin_mode=(
-                resolve_coin_margin_mode(source_account_state.margin_mode_by_coin, coin)
-                if source_account_state is not None
-                else None
-            )
-            or "cross",
+            margin_mode=margin_mode,
             fee_usd=fee,
             opened_at=filled_at,
         )
@@ -3341,7 +3353,7 @@ async def apply_open_part(
         position.leverage = effective_leverage(
             notional_usd=position.notional_usd,
             margin_usd=position.margin_usd,
-            fallback=source_leverage,
+            fallback=leverage,
         )
         position.fee_usd += fee
 
@@ -3356,7 +3368,7 @@ async def apply_open_part(
             price=price,
             size=paper_size,
             notional_usd=notional_usd,
-            leverage=source_leverage,
+            leverage=leverage,
             margin_usd=margin_usd,
             fee_usd=fee,
             realized_pnl_usd=ZERO,
@@ -3855,25 +3867,64 @@ async def load_paper_position(
     )
 
 
-async def paper_market_reserved_by_other_source(
+async def load_other_source_paper_positions(
     session: AsyncSession,
     *,
     account_key: str,
     source_wallet: str,
     coin: str,
-) -> bool:
-    """Hyperliquid keeps one net position per account and coin, so one source owns it."""
-    existing_position_id = await session.scalar(
-        select(PaperPosition.id)
+) -> list[PaperPosition]:
+    """Other sources' open positions in one account and coin, the market owner first."""
+    result = await session.scalars(
+        select(PaperPosition)
         .where(
             PaperPosition.account_key == account_key,
             PaperPosition.coin == coin,
             PaperPosition.source_wallet != source_wallet,
             PaperPosition.size > POSITION_EPSILON,
         )
-        .limit(1)
+        .order_by(PaperPosition.opened_at.asc(), PaperPosition.id.asc())
     )
-    return existing_position_id is not None
+    return list(result.all())
+
+
+def paper_shared_market_reason(
+    other_source_positions: Sequence[PaperPosition],
+    *,
+    side: str,
+    margin_mode: str,
+) -> str | None:
+    """Hyperliquid nets one position per account and coin.
+
+    Sources can share it on the same side in cross margin, where the leverage
+    setting does not change size, PnL, or liquidation. An opposite side would
+    net against the other source, and isolated margin ties liquidation to one
+    leverage setting.
+    """
+    if not other_source_positions:
+        return None
+    if any(item.side != side for item in other_source_positions):
+        return "paper_market_held_on_opposite_side"
+    if margin_mode == "isolated" or any(
+        item.margin_mode == "isolated" for item in other_source_positions
+    ):
+        return "paper_shared_market_requires_cross"
+    return None
+
+
+def paper_entry_leverage(
+    *,
+    source_leverage: Decimal,
+    position: PaperPosition | None,
+    other_source_positions: Sequence[PaperPosition],
+) -> Decimal:
+    """The source that opened the market sets the account's one leverage for that coin."""
+    if not other_source_positions:
+        return source_leverage
+    owner = other_source_positions[0]
+    if position is not None and position.opened_at <= owner.opened_at:
+        return source_leverage
+    return safe_leverage(owner.leverage)
 
 
 async def lock_paper_source_mutation(

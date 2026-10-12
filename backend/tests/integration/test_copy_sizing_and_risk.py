@@ -21,6 +21,7 @@ from app.db.models import (
 )
 from app.services.copy_signal_service import (
     ExecutionMarketPrices,
+    SourceAccountState,
     SourceFillPart,
 )
 from app.services.live_trading_service import (
@@ -39,6 +40,7 @@ pytestmark = pytest.mark.integration
 ACCOUNT_KEY = "live_sizing"
 SOURCE = "0xsizing-source"
 OTHER_SOURCE = "0xsizing-other"
+THIRD_SOURCE = "0xsizing-third"
 
 
 def live_account() -> TradingAccount:
@@ -351,7 +353,7 @@ async def test_paper_copy_rounds_the_opening_and_then_tracks_the_target(
 
 
 @pytest.mark.asyncio
-async def test_paper_copy_gives_each_account_coin_to_one_source(
+async def test_paper_sources_share_a_coin_only_on_one_side_in_cross_margin(
     integration_sessionmaker: async_sessionmaker[AsyncSession],
 ) -> None:
     settings = Settings(paper_copy_slippage_bps=Decimal("0"))
@@ -367,6 +369,8 @@ async def test_paper_copy_gives_each_account_coin_to_one_source(
         fill_id: str,
         coin: str,
         side: str = "long",
+        leverage: str = "3",
+        margin_mode: str = "cross",
     ) -> None:
         account = await session.get(PaperTradingAccount, PAPER_ACCOUNT_KEY)
         assert account is not None
@@ -377,48 +381,64 @@ async def test_paper_copy_gives_each_account_coin_to_one_source(
             fill=paper_fill(fill_id=fill_id, coin=coin),
             part=paper_part(start_position="0", size="10", side=side),
             source_perp_equity=Decimal("1000000"),
-            source_leverages={coin: Decimal("3")},
+            source_leverages={coin: Decimal(leverage)},
             market_prices=prices,
             settings=settings,
+            source_account_state=SourceAccountState(
+                dex="",
+                perp_equity=Decimal("1000000"),
+                leverage_by_coin={coin: Decimal(leverage)},
+                positions_by_coin={},
+                margin_mode_by_coin={coin: margin_mode},
+            ),
         )
         await session.flush()
-
-    async def open_markets(session: AsyncSession) -> set[tuple[str, str]]:
-        positions = await session.scalars(
-            select(PaperPosition).where(PaperPosition.account_key == PAPER_ACCOUNT_KEY)
-        )
-        return {(item.source_wallet, item.coin) for item in positions.all()}
 
     async with integration_sessionmaker() as session:
-        session.add_all([watched(SOURCE), watched(OTHER_SOURCE), paper_account()])
+        session.add_all(
+            [watched(SOURCE), watched(OTHER_SOURCE), watched(THIRD_SOURCE), paper_account()]
+        )
         await session.flush()
 
-        await copy(session, source_wallet=SOURCE, fill_id="first-hype", coin="HYPE")
-        # Hyperliquid nets one position per account and coin, whatever the side.
-        await copy(session, source_wallet=OTHER_SOURCE, fill_id="other-long", coin="HYPE")
+        await copy(session, source_wallet=SOURCE, fill_id="owner-hype", coin="HYPE")
+        # Same side in cross: the joining source uses the owner's leverage setting.
         await copy(
             session,
             source_wallet=OTHER_SOURCE,
-            fill_id="other-short",
+            fill_id="joining-hype",
+            coin="HYPE",
+            leverage="5",
+        )
+        await copy(
+            session,
+            source_wallet=THIRD_SOURCE,
+            fill_id="third-short",
             coin="HYPE",
             side="short",
         )
-        await copy(session, source_wallet=OTHER_SOURCE, fill_id="other-eth", coin="ETH")
-        markets_while_reserved = await open_markets(session)
-
-        # Once the owning source is flat, the coin is free for another source.
-        owner = await session.scalar(
-            select(PaperPosition).where(
-                PaperPosition.source_wallet == SOURCE,
-                PaperPosition.coin == "HYPE",
-            )
+        await copy(
+            session,
+            source_wallet=THIRD_SOURCE,
+            fill_id="third-isolated",
+            coin="HYPE",
+            margin_mode="isolated",
         )
-        assert owner is not None
-        await session.delete(owner)
-        await session.flush()
-        await copy(session, source_wallet=OTHER_SOURCE, fill_id="other-hype-later", coin="HYPE")
-        markets_after_release = await open_markets(session)
+        # An isolated position keeps its coin to itself.
+        await copy(
+            session,
+            source_wallet=SOURCE,
+            fill_id="owner-eth",
+            coin="ETH",
+            leverage="2",
+            margin_mode="isolated",
+        )
+        await copy(session, source_wallet=OTHER_SOURCE, fill_id="other-eth", coin="ETH")
 
+        positions = (
+            await session.scalars(
+                select(PaperPosition).where(PaperPosition.account_key == PAPER_ACCOUNT_KEY)
+            )
+        ).all()
         skips = (
             await session.scalars(
                 select(PaperCopyFill).where(
@@ -428,9 +448,16 @@ async def test_paper_copy_gives_each_account_coin_to_one_source(
             )
         ).all()
 
-    assert markets_while_reserved == {(SOURCE, "HYPE"), (OTHER_SOURCE, "ETH")}
-    assert markets_after_release == {(OTHER_SOURCE, "HYPE"), (OTHER_SOURCE, "ETH")}
+    assert {
+        (item.source_wallet, item.coin): (item.side, item.leverage, item.margin_mode)
+        for item in positions
+    } == {
+        (SOURCE, "HYPE"): ("long", Decimal("3"), "cross"),
+        (OTHER_SOURCE, "HYPE"): ("long", Decimal("3"), "cross"),
+        (SOURCE, "ETH"): ("long", Decimal("2"), "isolated"),
+    }
     assert {item.source_fill_id: item.skipped_reason for item in skips} == {
-        "other-long": "paper_market_reserved_by_other_source",
-        "other-short": "paper_market_reserved_by_other_source",
+        "third-short": "paper_market_held_on_opposite_side",
+        "third-isolated": "paper_shared_market_requires_cross",
+        "other-eth": "paper_shared_market_requires_cross",
     }

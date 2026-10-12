@@ -131,9 +131,10 @@ An entry is skipped when:
   the source opened before we started following it;
 - we hold the opposite side in that market;
 - another source already holds a copied position in that coin on the same
-  account. Hyperliquid keeps one net position and one margin setting per
-  account and coin, so each coin belongs to one source until that source is
-  flat, on paper and live alike;
+  account and the two cannot share it. Hyperliquid keeps one net position and
+  one leverage and margin setting per account and coin. Live gives each coin
+  to one source until that source is flat. Paper lets sources share a coin on
+  the same side in cross margin, see Paper Parity;
 - the source's allocation is inactive, for example a retained source that has
   dropped out of the top ten.
 
@@ -214,12 +215,20 @@ and add the parts of reality that paper would otherwise skip:
 A strategy that only works on paper because paper ignores one of these is not
 a strategy we want live.
 
+One difference is deliberate. Reserving a coin for one source can block every
+other source from BTC or ETH for weeks, so paper tests sharing a coin before
+live gets it. Sources share only on the same side and in cross margin, where
+the positions add up to one exchange position and the single leverage setting
+does not change size, PnL, or liquidation. The source that opened the coin
+sets the leverage. An opposite side or isolated margin still blocks the entry.
+Live keeps one source per coin until the paper results justify the change.
+
 ## What the Limits Do Not Cover
 
-- **Correlated sources.** Only one source can hold a given coin per account,
-  but ten sources that go long ten coins that move together count as ten
-  separate allocations. The total exposure cap bounds the sum, but there is no
-  limit on correlated coins across sources.
+- **Correlated sources.** Ten sources that go long coins that move together,
+  or on paper the same coin, count as ten separate allocations. The total
+  exposure cap bounds the sum, but there is no per-coin or correlation limit
+  across sources.
 - **Gaps.** Limits act on the next check. A price gap or an exchange outage can
   move an account past a limit before it trips.
 - **Leverage.** The copy uses the source's leverage setting. Exposure caps

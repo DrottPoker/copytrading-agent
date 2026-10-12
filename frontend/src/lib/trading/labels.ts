@@ -11,7 +11,10 @@ const REASON_LABELS: Record<string, string> = {
   live_exit_market_owned_by_other_source: "exit ignored: position owned by another source wallet",
   live_market_reserved_by_other_source: "entry blocked: market owned by another source wallet",
   live_source_attribution_ambiguous: "ownership could not be proven from live fill history",
+  paper_market_held_on_opposite_side: "entry blocked: another source wallet holds the opposite side",
   paper_market_reserved_by_other_source: "entry blocked: market owned by another source wallet",
+  paper_shared_market_requires_cross:
+    "entry blocked: sources can only share a market in cross margin",
 };
 
 /** Lower case explanation of a backend reason code, used inside sentences and cells. */

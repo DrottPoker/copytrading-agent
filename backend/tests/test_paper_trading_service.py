@@ -29,8 +29,10 @@ from app.services.paper_trading_service import (
     live_open_copy_source_select,
     monitored_hours,
     open_copy_source_select,
+    paper_entry_leverage,
     paper_monitor_status,
     paper_position_read,
+    paper_shared_market_reason,
     paper_source_status,
     paper_wallet_performance_reads,
     pnl_per_monitored_hour,
@@ -239,6 +241,79 @@ def test_paper_position_read_exposes_position_pnl_and_fill_counts() -> None:
     assert read["add_fill_count"] == 4
     assert read["close_fill_count"] == 1
     assert read["entry_execution_delay_ms"] == 150
+
+
+def shared_market_position(
+    *,
+    source_wallet: str,
+    opened_minutes: int,
+    side: str = "long",
+    leverage: str = "3",
+    margin_mode: str = "cross",
+) -> PaperPosition:
+    return PaperPosition(
+        account_key="paper_test",
+        source_wallet=source_wallet,
+        coin="BTC",
+        side=side,
+        size=Decimal("1"),
+        entry_price=Decimal("100"),
+        notional_usd=Decimal("100"),
+        leverage=Decimal(leverage),
+        margin_usd=Decimal("100") / Decimal(leverage),
+        margin_mode=margin_mode,
+        opened_at=datetime(2026, 1, 1, tzinfo=UTC) + timedelta(minutes=opened_minutes),
+    )
+
+
+def test_shared_market_allows_same_side_cross_entries() -> None:
+    others = [shared_market_position(source_wallet="0xowner", opened_minutes=0)]
+
+    assert paper_shared_market_reason([], side="short", margin_mode="isolated") is None
+    assert paper_shared_market_reason(others, side="long", margin_mode="cross") is None
+    assert (
+        paper_shared_market_reason(others, side="short", margin_mode="cross")
+        == "paper_market_held_on_opposite_side"
+    )
+    assert (
+        paper_shared_market_reason(others, side="long", margin_mode="isolated")
+        == "paper_shared_market_requires_cross"
+    )
+    isolated_owner = [
+        shared_market_position(source_wallet="0xowner", opened_minutes=0, margin_mode="isolated")
+    ]
+    assert (
+        paper_shared_market_reason(isolated_owner, side="long", margin_mode="cross")
+        == "paper_shared_market_requires_cross"
+    )
+
+
+def test_shared_market_leverage_follows_the_source_that_opened_it() -> None:
+    owner = shared_market_position(source_wallet="0xowner", opened_minutes=0, leverage="3")
+    joined = shared_market_position(source_wallet="0xjoined", opened_minutes=5, leverage="3")
+
+    assert paper_entry_leverage(
+        source_leverage=Decimal("5"),
+        position=None,
+        other_source_positions=[],
+    ) == Decimal("5")
+    # A joining source, new or adding, uses the owner's setting.
+    assert paper_entry_leverage(
+        source_leverage=Decimal("5"),
+        position=None,
+        other_source_positions=[owner],
+    ) == Decimal("3")
+    assert paper_entry_leverage(
+        source_leverage=Decimal("5"),
+        position=joined,
+        other_source_positions=[owner],
+    ) == Decimal("3")
+    # The owner keeps following its own source.
+    assert paper_entry_leverage(
+        source_leverage=Decimal("10"),
+        position=owner,
+        other_source_positions=[joined],
+    ) == Decimal("10")
 
 
 def test_source_fill_age_limit_allows_fresh_entries() -> None:
