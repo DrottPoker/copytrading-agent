@@ -3211,6 +3211,13 @@ async def apply_open_part(
     )
     if precheck_reason is not None:
         return await skip(precheck_reason)
+    if await paper_market_reserved_by_other_source(
+        session,
+        account_key=account.key,
+        source_wallet=allocation.source_wallet,
+        coin=coin,
+    ):
+        return await skip("paper_market_reserved_by_other_source")
     risk_reason = await paper_entry_risk_reason(
         session,
         account=account,
@@ -3846,6 +3853,27 @@ async def load_paper_position(
         )
         .with_for_update()
     )
+
+
+async def paper_market_reserved_by_other_source(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    source_wallet: str,
+    coin: str,
+) -> bool:
+    """Hyperliquid keeps one net position per account and coin, so one source owns it."""
+    existing_position_id = await session.scalar(
+        select(PaperPosition.id)
+        .where(
+            PaperPosition.account_key == account_key,
+            PaperPosition.coin == coin,
+            PaperPosition.source_wallet != source_wallet,
+            PaperPosition.size > POSITION_EPSILON,
+        )
+        .limit(1)
+    )
+    return existing_position_id is not None
 
 
 async def lock_paper_source_mutation(

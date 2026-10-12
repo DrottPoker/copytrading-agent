@@ -1320,6 +1320,10 @@ wallet. That serializes realtime fill processing, recovery reconciliation, and
 manual closes for the same source exposure.
 Paper account rows are locked before copied fills are written, so different
 source wallets cannot concurrently update the same paper account balance.
+Paper copy reserves each account and coin for one source wallet, like live
+copy: an entry is skipped with `paper_market_reserved_by_other_source` while
+another source has an open paper position in that coin, on either side. The
+account row lock serializes that check with the new position across sources.
 Successful paper fills also store a `raw_payload.tradeIntent` object from the
 shared trading core. That intent contains side, action, size, notional, limit
 price, reduce-only state, and deterministic client order id, so live execution

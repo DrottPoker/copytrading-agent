@@ -4,6 +4,21 @@ Notable changes, newest first. Dates are UTC. The historical development phases
 at the end describe how the system was built and keep the detailed notes that
 used to live in the README.
 
+## 2026-10-12
+
+### One source per coin in paper accounts
+
+- Paper copy let several source wallets hold the same coin in one paper
+  account, even on opposite sides. Hyperliquid keeps one net position per
+  account and coin, so live copy already reserved each coin for one source,
+  and paper results could include trades live would never make.
+- Paper copy now applies the same rule: while one source holds a coin in a
+  paper account, entries from other sources on that coin are skipped with
+  `paper_market_reserved_by_other_source`. The coin is free again once the
+  owning source is flat. Exits are never blocked.
+- Paper positions that several sources already hold on one coin stay open and
+  follow their sources' exits, but no longer take adds.
+
 ## 2026-10-11
 
 ### Hourly pool reimport

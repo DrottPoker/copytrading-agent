@@ -243,19 +243,49 @@ async def test_exposure_counts_positions_and_unfilled_entry_orders(
     assert excluding_pending.account_usd == Decimal("300")
 
 
-def paper_fill(*, fill_id: str) -> dict:
+PAPER_ACCOUNT_KEY = "paper_sizing"
+
+
+def paper_account() -> PaperTradingAccount:
+    return PaperTradingAccount(
+        key=PAPER_ACCOUNT_KEY,
+        label="Paper sizing",
+        starting_balance_usd=Decimal("1000"),
+        cash_balance_usd=Decimal("1000"),
+        equity_usd=Decimal("1000"),
+        realized_pnl_usd=Decimal("0"),
+        fee_usd=Decimal("0"),
+        enabled=True,
+    )
+
+
+def paper_allocation(source_wallet: str = SOURCE) -> PaperSourceAllocation:
+    return PaperSourceAllocation(
+        source_wallet=source_wallet,
+        source_label="Sizing source",
+        rank=1,
+        pool_rank=1,
+        score=Decimal("90"),
+        allocation_pct=Decimal("0.2"),
+        active=True,
+        has_realtime_slot=True,
+        status_reason="copy_candidate",
+    )
+
+
+def paper_fill(*, fill_id: str, coin: str = "HYPE") -> dict:
     return {
         "externalFillId": fill_id,
-        "coin": "HYPE",
+        "coin": coin,
         "price": "100",
         "timestampMs": int(datetime.now(UTC).timestamp() * 1000),
     }
 
 
-def paper_part(*, start_position: str, size: str) -> SourceFillPart:
+def paper_part(*, start_position: str, size: str, side: str = "long") -> SourceFillPart:
     return SourceFillPart(
         action="open",
-        side="long",
+        side=side,
         source_size=Decimal(size),
         source_notional_usd=Decimal(size) * Decimal("100"),
         sequence_index=0,
@@ -268,21 +298,11 @@ async def test_paper_copy_rounds_the_opening_and_then_tracks_the_target(
     integration_sessionmaker: async_sessionmaker[AsyncSession],
 ) -> None:
     settings = Settings(paper_copy_slippage_bps=Decimal("0"))
-    allocation = PaperSourceAllocation(
-        source_wallet=SOURCE,
-        source_label="Sizing source",
-        rank=1,
-        pool_rank=1,
-        score=Decimal("90"),
-        allocation_pct=Decimal("0.2"),
-        active=True,
-        has_realtime_slot=True,
-        status_reason="copy_candidate",
-    )
+    allocation = paper_allocation()
     prices = ExecutionMarketPrices(prices={"HYPE": Decimal("100")}, sources={"HYPE": "test"})
 
     async def copy(session: AsyncSession, *, fill_id: str, start: str, size: str) -> None:
-        account = await session.get(PaperTradingAccount, "paper_sizing")
+        account = await session.get(PaperTradingAccount, PAPER_ACCOUNT_KEY)
         assert account is not None
         await apply_open_part(
             session,
@@ -298,21 +318,7 @@ async def test_paper_copy_rounds_the_opening_and_then_tracks_the_target(
         await session.flush()
 
     async with integration_sessionmaker() as session:
-        session.add_all(
-            [
-                watched(SOURCE),
-                PaperTradingAccount(
-                    key="paper_sizing",
-                    label="Paper sizing",
-                    starting_balance_usd=Decimal("1000"),
-                    cash_balance_usd=Decimal("1000"),
-                    equity_usd=Decimal("1000"),
-                    realized_pnl_usd=Decimal("0"),
-                    fee_usd=Decimal("0"),
-                    enabled=True,
-                ),
-            ]
-        )
+        session.add_all([watched(SOURCE), paper_account()])
         await session.flush()
 
         # Copy ratio 200 / 1,000,000: one source coin is $0.02 of target at price 100.
@@ -323,13 +329,13 @@ async def test_paper_copy_rounds_the_opening_and_then_tracks_the_target(
         await copy(session, fill_id="crossing-add", start="210", size="550")
 
         held = await session.scalar(
-            select(PaperPosition).where(PaperPosition.account_key == "paper_sizing")
+            select(PaperPosition).where(PaperPosition.account_key == PAPER_ACCOUNT_KEY)
         )
         fills = list(
             (
                 await session.scalars(
                     select(PaperCopyFill)
-                    .where(PaperCopyFill.account_key == "paper_sizing")
+                    .where(PaperCopyFill.account_key == PAPER_ACCOUNT_KEY)
                     .order_by(PaperCopyFill.source_fill_id)
                 )
             ).all()
@@ -342,3 +348,89 @@ async def test_paper_copy_rounds_the_opening_and_then_tracks_the_target(
     assert by_fill["open"].notional_usd == Decimal("10")
     assert by_fill["small-add"].skipped_reason == "target_position_reached"
     assert by_fill["crossing-add"].notional_usd == Decimal("10")
+
+
+@pytest.mark.asyncio
+async def test_paper_copy_gives_each_account_coin_to_one_source(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    settings = Settings(paper_copy_slippage_bps=Decimal("0"))
+    prices = ExecutionMarketPrices(
+        prices={"HYPE": Decimal("100"), "ETH": Decimal("100")},
+        sources={"HYPE": "test", "ETH": "test"},
+    )
+
+    async def copy(
+        session: AsyncSession,
+        *,
+        source_wallet: str,
+        fill_id: str,
+        coin: str,
+        side: str = "long",
+    ) -> None:
+        account = await session.get(PaperTradingAccount, PAPER_ACCOUNT_KEY)
+        assert account is not None
+        await apply_open_part(
+            session,
+            account=account,
+            allocation=paper_allocation(source_wallet),
+            fill=paper_fill(fill_id=fill_id, coin=coin),
+            part=paper_part(start_position="0", size="10", side=side),
+            source_perp_equity=Decimal("1000000"),
+            source_leverages={coin: Decimal("3")},
+            market_prices=prices,
+            settings=settings,
+        )
+        await session.flush()
+
+    async def open_markets(session: AsyncSession) -> set[tuple[str, str]]:
+        positions = await session.scalars(
+            select(PaperPosition).where(PaperPosition.account_key == PAPER_ACCOUNT_KEY)
+        )
+        return {(item.source_wallet, item.coin) for item in positions.all()}
+
+    async with integration_sessionmaker() as session:
+        session.add_all([watched(SOURCE), watched(OTHER_SOURCE), paper_account()])
+        await session.flush()
+
+        await copy(session, source_wallet=SOURCE, fill_id="first-hype", coin="HYPE")
+        # Hyperliquid nets one position per account and coin, whatever the side.
+        await copy(session, source_wallet=OTHER_SOURCE, fill_id="other-long", coin="HYPE")
+        await copy(
+            session,
+            source_wallet=OTHER_SOURCE,
+            fill_id="other-short",
+            coin="HYPE",
+            side="short",
+        )
+        await copy(session, source_wallet=OTHER_SOURCE, fill_id="other-eth", coin="ETH")
+        markets_while_reserved = await open_markets(session)
+
+        # Once the owning source is flat, the coin is free for another source.
+        owner = await session.scalar(
+            select(PaperPosition).where(
+                PaperPosition.source_wallet == SOURCE,
+                PaperPosition.coin == "HYPE",
+            )
+        )
+        assert owner is not None
+        await session.delete(owner)
+        await session.flush()
+        await copy(session, source_wallet=OTHER_SOURCE, fill_id="other-hype-later", coin="HYPE")
+        markets_after_release = await open_markets(session)
+
+        skips = (
+            await session.scalars(
+                select(PaperCopyFill).where(
+                    PaperCopyFill.account_key == PAPER_ACCOUNT_KEY,
+                    PaperCopyFill.action == "skip",
+                )
+            )
+        ).all()
+
+    assert markets_while_reserved == {(SOURCE, "HYPE"), (OTHER_SOURCE, "ETH")}
+    assert markets_after_release == {(OTHER_SOURCE, "HYPE"), (OTHER_SOURCE, "ETH")}
+    assert {item.source_fill_id: item.skipped_reason for item in skips} == {
+        "other-long": "paper_market_reserved_by_other_source",
+        "other-short": "paper_market_reserved_by_other_source",
+    }

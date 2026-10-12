@@ -1062,6 +1062,13 @@ What it does:
   closes cannot update the same source exposure concurrently.
 - Locks paper account rows before writing copied fills, so different source
   wallets cannot concurrently update the same paper account balance.
+- Gives each paper account and coin to one source wallet at a time, like live
+  copy. Hyperliquid keeps one net position per account and coin, so an entry
+  from a different source on that coin, on either side, is skipped with
+  `paper_market_reserved_by_other_source` until the owning source is flat.
+  Adds, reduces, and closes from the owning source continue. Positions that
+  several sources opened on one coin before this rule can still be reduced and
+  closed, but no longer added to.
 - Recovery can retry earlier exit skip rows caused by unavailable source state
   or unavailable execution price, so a close is not permanently blocked by a
   transient paper-copy data issue.

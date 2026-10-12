@@ -130,6 +130,10 @@ An entry is skipped when:
 - the fill adds to a source position that we never copied, for example one
   the source opened before we started following it;
 - we hold the opposite side in that market;
+- another source already holds a copied position in that coin on the same
+  account. Hyperliquid keeps one net position and one margin setting per
+  account and coin, so each coin belongs to one source until that source is
+  flat, on paper and live alike;
 - the source's allocation is inactive, for example a retained source that has
   dropped out of the top ten.
 
@@ -212,9 +216,10 @@ a strategy we want live.
 
 ## What the Limits Do Not Cover
 
-- **Correlated sources.** Ten sources that all go long the same coin count as
-  ten separate allocations. The total exposure cap bounds the sum, but there
-  is no per-coin limit across sources.
+- **Correlated sources.** Only one source can hold a given coin per account,
+  but ten sources that go long ten coins that move together count as ten
+  separate allocations. The total exposure cap bounds the sum, but there is no
+  limit on correlated coins across sources.
 - **Gaps.** Limits act on the next check. A price gap or an exchange outage can
   move an account past a limit before it trips.
 - **Leverage.** The copy uses the source's leverage setting. Exposure caps
