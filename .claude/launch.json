@@ -1,0 +1,25 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "backend",
+      "runtimeExecutable": "D:/software-projects/copytrading-agent/.venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "C:/Users/drott/AppData/Local/Temp/claude/D--software-projects-copytrading-agent/c05868b0-e8c4-484f-897d-d6c226a39f0b/scratchpad/backtest-run/run_service.py",
+        "backend"
+      ],
+      "port": 8000
+    },
+    {
+      "name": "dashboard",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "frontend",
+        "run",
+        "dev"
+      ],
+      "port": 3000
+    }
+  ]
+}
