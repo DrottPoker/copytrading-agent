@@ -5,29 +5,75 @@ import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerE
 
 import { Segmented } from "@/components/ui/client";
 import { cx } from "@/lib/cx";
-import { formatDateTime, formatInteger, formatSignedUsd, formatUsd } from "@/lib/format";
-import type { PerformancePoint } from "@/lib/trading/performance";
+import { formatDateTime, formatInteger, formatPercent, formatSignedUsd, formatUsd } from "@/lib/format";
+import type { EquityPoint, PerformancePoint } from "@/lib/trading/performance";
 
-type ChartMode = "cumulative" | "trade";
-type ChartRange = 25 | 50 | 100 | "all";
+type ChartMode = "pnl" | "drawdown" | "cumulative" | "trade";
+type TimeRange = "1d" | "7d" | "30d" | "all";
+type TradeRange = 25 | 50 | 100 | "all";
 
 const HEIGHT = 240;
 const PADDING = { bottom: 28, left: 66, right: 12, top: 12 };
+const DAY_MS = 24 * 60 * 60 * 1000;
+const TIME_RANGE_MS: Record<TimeRange, number> = { "1d": DAY_MS, "7d": 7 * DAY_MS, "30d": 30 * DAY_MS, all: Infinity };
 
-/** Cumulative or per trade net PnL of closed trades, inspectable with pointer and arrow keys. */
-export function PerformanceChart({ points }: { points: PerformancePoint[] }) {
-  const [mode, setMode] = useState<ChartMode>("cumulative");
-  const [range, setRange] = useState<ChartRange>("all");
+type Sample = { id: string; label: string; detail: string; timestamp: number; value: number };
+
+/**
+ * Account performance, inspectable with pointer and arrow keys. With an equity
+ * series it shows marked-to-market PnL and drawdown over time; closed trades are
+ * always available as a per trade view.
+ */
+export function PerformanceChart({ equity, trades }: { equity: EquityPoint[] | null; trades: PerformancePoint[] }) {
+  const hasEquity = equity !== null;
+  const [mode, setMode] = useState<ChartMode>(hasEquity ? "pnl" : "cumulative");
+  const [timeRange, setTimeRange] = useState<TimeRange>("all");
+  const [tradeRange, setTradeRange] = useState<TradeRange>("all");
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const [width, setWidth] = useState(800);
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const gradientId = useId().replaceAll(":", "");
-  const visible = useMemo(() => (range === "all" ? points : points.slice(-range)), [points, range]);
+  const resolvedMode: ChartMode = hasEquity
+    ? mode === "cumulative"
+      ? "pnl"
+      : mode
+    : mode === "pnl" || mode === "drawdown"
+      ? "cumulative"
+      : mode;
+  const timeBased = resolvedMode === "pnl" || resolvedMode === "drawdown";
+
+  const samples = useMemo<Sample[]>(() => {
+    if (timeBased) {
+      const points = equity ?? [];
+      const end = points.length > 0 ? points[points.length - 1].timestamp : 0;
+      const visible = points.filter((point) => point.timestamp >= end - TIME_RANGE_MS[timeRange]);
+      return visible.map((point) => ({
+        detail:
+          resolvedMode === "pnl"
+            ? `equity ${formatUsd(point.equityUsd)}${point.isLive ? ", live mark" : ""}`
+            : `${formatPercent(-point.drawdownPct, { decimals: 2 })} from the peak`,
+        id: point.at,
+        label: formatDateTime(point.at),
+        timestamp: point.timestamp,
+        value: resolvedMode === "pnl" ? point.pnlUsd : -point.drawdownUsd,
+      }));
+    }
+    const visible = tradeRange === "all" ? trades : trades.slice(-tradeRange);
+    // The cumulative curve of a shorter range starts from the value before the range.
+    const offset = visible.length === trades.length ? 0 : trades[trades.length - visible.length - 1].value;
+    return visible.map((point) => ({
+      detail: `trade ${formatSignedUsd(point.tradeValue)}`,
+      id: point.id,
+      label: `${point.coin}, closed ${formatDateTime(point.closedAt)}`,
+      timestamp: point.timestamp,
+      value: resolvedMode === "cumulative" ? point.value - offset : point.tradeValue,
+    }));
+  }, [equity, resolvedMode, timeBased, timeRange, tradeRange, trades]);
 
   useEffect(() => {
     setActiveIndex(null);
-  }, [mode, range, points]);
+  }, [samples]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -49,35 +95,107 @@ export function PerformanceChart({ points }: { points: PerformancePoint[] }) {
     return () => observer.disconnect();
   }, []);
 
-  if (points.length === 0) {
+  const modeOptions: Array<{ label: string; value: ChartMode }> = hasEquity
+    ? [
+        { label: "PnL", value: "pnl" },
+        { label: "Drawdown", value: "drawdown" },
+        { label: "Per trade", value: "trade" },
+      ]
+    : [
+        { label: "Cumulative", value: "cumulative" },
+        { label: "Per trade", value: "trade" },
+      ];
+  const controls = (
+    <div className="flex flex-wrap items-center gap-2">
+      <Segmented<ChartMode> label="Chart mode" value={resolvedMode} onChange={setMode} options={modeOptions} />
+      {timeBased ? (
+        <Segmented<TimeRange>
+          label="Time range"
+          value={timeRange}
+          onChange={setTimeRange}
+          options={[
+            { label: "1D", value: "1d" },
+            { label: "7D", value: "7d" },
+            { label: "30D", value: "30d" },
+            { label: "All", value: "all" },
+          ]}
+        />
+      ) : (
+        <Segmented<TradeRange>
+          label="Trade range"
+          value={tradeRange}
+          onChange={setTradeRange}
+          options={[
+            { label: "25", value: 25 },
+            { label: "50", value: 50 },
+            { label: "100", value: 100 },
+            { label: "All", value: "all" },
+          ]}
+        />
+      )}
+    </div>
+  );
+
+  if (samples.length === 0) {
     return (
-      <div className="flex h-[240px] items-center justify-center rounded-md border border-dashed border-line px-4 text-center text-sm text-fg-3">
-        The curve appears after the account closes its first trade.
+      <div>
+        <div className="flex justify-end">{controls}</div>
+        <div className="mt-2 flex h-[240px] items-center justify-center rounded-md border border-dashed border-line px-4 text-center text-sm text-fg-3">
+          {timeBased
+            ? "The equity curve appears after the first equity snapshot of the account."
+            : "The curve appears after the account closes its first trade."}
+        </div>
       </div>
     );
   }
 
-  // The cumulative curve of a shorter range starts from the value before the range.
-  const offset = range === "all" || visible.length === points.length ? 0 : points[points.length - visible.length - 1].value;
-  const values = visible.map((point) => (mode === "cumulative" ? point.value - offset : point.tradeValue));
+  const values = samples.map((sample) => sample.value);
   const minValue = Math.min(0, ...values);
   const maxValue = Math.max(0, ...values);
   const span = maxValue - minValue || 1;
   const plotWidth = Math.max(width - PADDING.left - PADDING.right, 10);
   const plotHeight = HEIGHT - PADDING.top - PADDING.bottom;
-  const xFor = (index: number) =>
-    visible.length === 1 ? PADDING.left + plotWidth / 2 : PADDING.left + (index / (visible.length - 1)) * plotWidth;
+  const firstTime = samples[0].timestamp;
+  const timeSpan = samples[samples.length - 1].timestamp - firstTime;
+  const xFor = (index: number) => {
+    if (samples.length === 1) {
+      return PADDING.left + plotWidth / 2;
+    }
+    const ratio =
+      timeBased && timeSpan > 0 ? (samples[index].timestamp - firstTime) / timeSpan : index / (samples.length - 1);
+    return PADDING.left + ratio * plotWidth;
+  };
   const yFor = (value: number) => PADDING.top + ((maxValue - value) / span) * plotHeight;
   const zeroY = yFor(0);
   const line = values.map((value, index) => `${index === 0 ? "M" : "L"}${xFor(index).toFixed(1)} ${yFor(value).toFixed(1)}`).join(" ");
   const area = `${line} L${xFor(values.length - 1).toFixed(1)} ${zeroY.toFixed(1)} L${xFor(0).toFixed(1)} ${zeroY.toFixed(1)} Z`;
   const ticks = niceTicks(minValue, maxValue);
-  const resolved = activeIndex ?? visible.length - 1;
-  const activePoint = visible[resolved];
+  const resolved = activeIndex ?? samples.length - 1;
+  const activeSample = samples[resolved];
   const activeValue = values[resolved];
   const endPositive = values[values.length - 1] >= 0;
-  const stroke = mode === "cumulative" ? (endPositive ? "var(--positive)" : "var(--negative)") : "var(--fg-3)";
-  const barWidth = Math.max(2, Math.min(12, (plotWidth / visible.length) * 0.6));
+  const stroke =
+    resolvedMode === "trade"
+      ? "var(--fg-3)"
+      : resolvedMode === "drawdown" || !endPositive
+        ? "var(--negative)"
+        : "var(--positive)";
+  const barWidth = Math.max(2, Math.min(12, (plotWidth / samples.length) * 0.6));
+  const caption =
+    resolvedMode === "pnl"
+      ? "Equity PnL, marked to market"
+      : resolvedMode === "drawdown"
+        ? "Drawdown from the equity peak"
+        : resolvedMode === "cumulative"
+          ? "Cumulative net PnL of closed trades"
+          : "Net PnL of the trade";
+  const rangeCaption = timeBased
+    ? timeRange === "all"
+      ? ""
+      : `, last ${timeRange.toUpperCase()}`
+    : tradeRange === "all"
+      ? ""
+      : `, last ${tradeRange} trades`;
 
   const selectFromClientX = (clientX: number) => {
     const bounds = svgRef.current?.getBoundingClientRect();
@@ -85,8 +203,13 @@ export function PerformanceChart({ points }: { points: PerformancePoint[] }) {
       return;
     }
     const x = ((clientX - bounds.left) / Math.max(bounds.width, 1)) * width;
-    const ratio = Math.max(0, Math.min(1, (x - PADDING.left) / plotWidth));
-    setActiveIndex(Math.round(ratio * Math.max(visible.length - 1, 0)));
+    let nearest = 0;
+    for (let index = 1; index < samples.length; index += 1) {
+      if (Math.abs(xFor(index) - x) < Math.abs(xFor(nearest) - x)) {
+        nearest = index;
+      }
+    }
+    setActiveIndex(nearest);
   };
 
   const handleKeyDown = (event: ReactKeyboardEvent<SVGSVGElement>) => {
@@ -95,7 +218,7 @@ export function PerformanceChart({ points }: { points: PerformancePoint[] }) {
     }
     event.preventDefault();
     const step = event.key === "ArrowRight" ? 1 : -1;
-    setActiveIndex((current) => Math.max(0, Math.min(visible.length - 1, (current ?? visible.length - 1) + step)));
+    setActiveIndex((current) => Math.max(0, Math.min(samples.length - 1, (current ?? samples.length - 1) + step)));
   };
 
   return (
@@ -103,8 +226,8 @@ export function PerformanceChart({ points }: { points: PerformancePoint[] }) {
       <div className="flex flex-wrap items-end justify-between gap-2">
         <div className="min-w-0">
           <p className="text-xs text-fg-3">
-            {mode === "cumulative" ? "Cumulative net PnL" : "Net PnL of the trade"}
-            {range === "all" ? "" : `, last ${range} trades`}
+            {caption}
+            {rangeCaption}
           </p>
           <p
             className={cx(
@@ -115,38 +238,20 @@ export function PerformanceChart({ points }: { points: PerformancePoint[] }) {
             {formatSignedUsd(activeValue)}
           </p>
           <p className="text-xs text-fg-3">
-            {activePoint.coin}, closed {formatDateTime(activePoint.closedAt)}, trade{" "}
-            {formatSignedUsd(activePoint.tradeValue)}
+            {activeSample.label}, {activeSample.detail}
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Segmented<ChartMode>
-            label="Chart mode"
-            value={mode}
-            onChange={setMode}
-            options={[
-              { label: "Cumulative", value: "cumulative" },
-              { label: "Per trade", value: "trade" },
-            ]}
-          />
-          <Segmented<ChartRange>
-            label="Trade range"
-            value={range}
-            onChange={setRange}
-            options={[
-              { label: "25", value: 25 },
-              { label: "50", value: 50 },
-              { label: "100", value: 100 },
-              { label: "All", value: "all" },
-            ]}
-          />
-        </div>
+        {controls}
       </div>
 
       <div ref={containerRef} className="mt-2">
         <svg
           ref={svgRef}
-          aria-label={`Chart of ${formatInteger(visible.length)} closed trades. Use the arrow keys to inspect trades.`}
+          aria-label={
+            timeBased
+              ? `Chart of ${formatInteger(samples.length)} equity samples. Use the arrow keys to inspect them.`
+              : `Chart of ${formatInteger(samples.length)} closed trades. Use the arrow keys to inspect trades.`
+          }
           className="block h-[240px] w-full touch-none outline-none focus-visible:ring-2 focus-visible:ring-info/40"
           onKeyDown={handleKeyDown}
           onPointerLeave={() => setActiveIndex(null)}
@@ -184,15 +289,10 @@ export function PerformanceChart({ points }: { points: PerformancePoint[] }) {
             </g>
           ))}
           <line stroke="var(--chart-axis)" strokeOpacity="0.6" x1={PADDING.left} x2={width - PADDING.right} y1={zeroY} y2={zeroY} />
-          {mode === "cumulative" ? (
-            <>
-              <path d={area} fill={`url(#${gradientId})`} />
-              <path d={line} fill="none" stroke={stroke} strokeLinejoin="round" strokeWidth="1.75" />
-            </>
-          ) : (
+          {resolvedMode === "trade" ? (
             values.map((value, index) => (
               <rect
-                key={visible[index].id}
+                key={samples[index].id}
                 fill={value >= 0 ? "var(--positive)" : "var(--negative)"}
                 height={Math.max(Math.abs(zeroY - yFor(value)), 1)}
                 opacity={index === resolved ? 1 : 0.55}
@@ -202,6 +302,11 @@ export function PerformanceChart({ points }: { points: PerformancePoint[] }) {
                 y={Math.min(yFor(value), zeroY)}
               />
             ))
+          ) : (
+            <>
+              <path d={area} fill={`url(#${gradientId})`} />
+              <path d={line} fill="none" stroke={stroke} strokeLinejoin="round" strokeWidth="1.75" />
+            </>
           )}
           <line
             stroke="var(--fg-3)"
@@ -213,10 +318,10 @@ export function PerformanceChart({ points }: { points: PerformancePoint[] }) {
           />
           <circle cx={xFor(resolved)} cy={yFor(activeValue)} fill="var(--surface)" r="3.5" stroke={stroke} strokeWidth="2" />
           <text fill="var(--chart-axis)" fontSize="12" x={PADDING.left} y={HEIGHT - 8}>
-            {formatDateTime(visible[0].closedAt)}
+            {formatDateTime(samples[0].timestamp)}
           </text>
           <text fill="var(--chart-axis)" fontSize="12" textAnchor="end" x={width - PADDING.right} y={HEIGHT - 8}>
-            {formatDateTime(visible[visible.length - 1].closedAt)}
+            {formatDateTime(samples[samples.length - 1].timestamp)}
           </text>
         </svg>
       </div>

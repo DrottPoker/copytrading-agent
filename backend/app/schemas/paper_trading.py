@@ -155,6 +155,9 @@ class RealtimeMonitoringRead(CamelModel):
 
 
 class PaperWalletPerformanceRead(CamelModel):
+    """Copy results of one source in one paper account since the account's last reset."""
+
+    account_key: str
     source_wallet: str
     source_label: str | None = None
     rank: int | None = None
@@ -163,27 +166,31 @@ class PaperWalletPerformanceRead(CamelModel):
     allocation_pct: Decimal | None = None
     active: bool
     monitor_status: str = "history"
-    account_count: int
     open_position_count: int
     copied_fill_count: int
     skipped_fill_count: int
+    closed_trade_count: int = 0
     realized_pnl_usd: Decimal
+    fee_usd: Decimal
+    funding_usd: Decimal = Decimal("0")
+    net_realized_pnl_usd: Decimal
     unrealized_pnl_usd: Decimal
     total_pnl_usd: Decimal
     monitored_seconds: int = 0
     monitored_hours: Decimal = Decimal("0")
-    realized_pnl_per_monitored_hour_usd: Decimal | None = None
+    net_realized_pnl_per_monitored_hour_usd: Decimal | None = None
     total_pnl_per_monitored_hour_usd: Decimal | None = None
     first_monitored_at: datetime | None = None
     current_monitoring_started_at: datetime | None = None
     last_monitored_at: datetime | None = None
-    fee_usd: Decimal
     open_notional_usd: Decimal
     open_margin_usd: Decimal
     last_fill_at: datetime | None = None
 
 
 class PaperClosedTradeRead(CamelModel):
+    """One round trip: from the opening fill to the fill that left the position flat."""
+
     id: UUID
     account_key: str
     source_wallet: str
@@ -192,14 +199,19 @@ class PaperClosedTradeRead(CamelModel):
     coin: str
     close_type: str
     side: str | None
+    entry_price: Decimal | None = None
     exit_price: Decimal | None
     size: Decimal | None
+    entry_notional_usd: Decimal | None = None
     notional_usd: Decimal | None
     leverage: Decimal | None
     margin_usd: Decimal | None
     fee_usd: Decimal
+    funding_usd: Decimal = Decimal("0")
     realized_pnl_usd: Decimal
     net_pnl_usd: Decimal
+    open_fill_count: int = 0
+    close_fill_count: int = 0
     is_source_liquidation: bool = False
     is_paper_liquidation: bool = False
     opened_at: datetime | None = None
@@ -214,8 +226,46 @@ class PaperTradingSummaryResponse(CamelModel):
     allocations: list[PaperCopyAllocationRead]
     positions: list[PaperPositionRead]
     wallet_performance: list[PaperWalletPerformanceRead]
-    closed_trades: list[PaperClosedTradeRead]
     recent_fills: list[PaperCopyFillRead]
     realtime_monitoring: RealtimeMonitoringRead
     updated_at: datetime
     market_data_status: str
+
+
+class PaperEquityPointRead(CamelModel):
+    recorded_at: datetime
+    equity_usd: Decimal
+
+
+class PaperTradeStatsRead(CamelModel):
+    trade_count: int
+    win_count: int
+    loss_count: int
+    gross_profit_usd: Decimal
+    gross_loss_usd: Decimal
+    net_pnl_usd: Decimal
+    best_trade_usd: Decimal
+    worst_trade_usd: Decimal
+    longest_win_streak: int
+    longest_loss_streak: int
+    current_streak_count: int
+    current_streak_kind: Literal["win", "loss"] | None = None
+
+
+class PaperAccountPerformanceResponse(CamelModel):
+    """Equity history and round trip statistics of one paper account since its last reset."""
+
+    account_key: str
+    starting_balance_usd: Decimal
+    stats_started_at: datetime
+    snapshot_interval_seconds: int
+    equity_points: list[PaperEquityPointRead]
+    equity_snapshot_count: int
+    peak_equity_usd: Decimal | None = None
+    max_drawdown_usd: Decimal
+    max_drawdown_pct: Decimal | None = None
+    max_drawdown_peak_at: datetime | None = None
+    max_drawdown_trough_at: datetime | None = None
+    trade_stats: PaperTradeStatsRead
+    closed_trades: list[PaperClosedTradeRead]
+    updated_at: datetime

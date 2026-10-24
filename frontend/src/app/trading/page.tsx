@@ -13,7 +13,7 @@ export default async function TradingPage({
 }) {
   const params = await searchParams;
   const [summary, tradingAccounts] = await Promise.all([
-    getPaperTradingSummary({ closedTradeLimit: 250, includeMarketPrices: false, recentFillLimit: 250 }),
+    getPaperTradingSummary({ includeMarketPrices: false, recentFillLimit: 250 }),
     getTradingAccounts(),
   ]);
   return (

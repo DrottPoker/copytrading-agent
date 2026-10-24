@@ -33,6 +33,7 @@ export function HistoryPanel({
   accountKey,
   accountType,
   cashFlowsVersion,
+  closedTradeTotal,
   closedTrades,
   decisions,
   executions,
@@ -41,6 +42,8 @@ export function HistoryPanel({
   accountKey: string;
   accountType: "paper" | "live";
   cashFlowsVersion: string | null;
+  /** All closed trades of the account when only the newest ones are loaded. */
+  closedTradeTotal?: number;
   closedTrades: ClosedTradeRow[];
   decisions: DecisionItem[];
   executions: ExecutionRow[];
@@ -48,7 +51,7 @@ export function HistoryPanel({
 }) {
   const [tab, setTab] = useState<HistoryTab>("trades");
   const tabs: Array<TabItem<HistoryTab>> = [
-    { count: closedTrades.length, id: "trades", label: "Closed trades" },
+    { count: closedTradeTotal ?? closedTrades.length, id: "trades", label: "Closed trades" },
     { count: executions.length, id: "executions", label: "Executions" },
     ...(accountType === "live" ? [{ count: decisions.length, id: "decisions" as const, label: "Copy decisions" }] : []),
     { count: sourceHistory.length, id: "sources", label: "Source history" },
@@ -63,10 +66,10 @@ export function HistoryPanel({
       <div className="border-b border-line px-3.5">
         <Tabs label="Account history" items={tabs} value={activeTab} onChange={setTab} />
       </div>
-      {activeTab === "trades" ? <ClosedTradesTable trades={closedTrades} showFunding={accountType === "live"} /> : null}
+      {activeTab === "trades" ? <ClosedTradesTable total={closedTradeTotal} trades={closedTrades} /> : null}
       {activeTab === "executions" ? <ExecutionsTable rows={executions} /> : null}
       {activeTab === "decisions" ? <DecisionsTable decisions={decisions} /> : null}
-      {activeTab === "sources" ? <SourceHistoryTable rows={sourceHistory} /> : null}
+      {activeTab === "sources" ? <SourceHistoryTable accountType={accountType} rows={sourceHistory} /> : null}
       {activeTab === "transactions" ? (
         <AccountTransactions accountKey={accountKey} cashFlowsVersion={cashFlowsVersion} />
       ) : null}
@@ -112,7 +115,21 @@ function SourceCell({ href, label, title }: { href: string | null; label: string
   );
 }
 
-function ClosedTradesTable({ showFunding, trades }: { showFunding: boolean; trades: ClosedTradeRow[] }) {
+function ClosedTradesTable({ total, trades }: { total?: number; trades: ClosedTradeRow[] }) {
+  return (
+    <>
+      {total !== undefined && total > trades.length ? (
+        <p className="border-b border-line px-3.5 py-2 text-xs text-fg-3">
+          Showing the newest {formatInteger(trades.length)} of {formatInteger(total)} closed trades. The statistics above
+          cover all of them.
+        </p>
+      ) : null}
+      <ClosedTradeRows trades={trades} />
+    </>
+  );
+}
+
+function ClosedTradeRows({ trades }: { trades: ClosedTradeRow[] }) {
   return (
     <Paged
       rows={trades}
@@ -122,12 +139,20 @@ function ClosedTradesTable({ showFunding, trades }: { showFunding: boolean; trad
           <th>Closed</th>
           <th>Market</th>
           <th>Source wallet</th>
-          <th className="num">Size</th>
-          {showFunding ? <th className="num">Entry</th> : null}
-          <th className="num">Exit</th>
+          <th className="num" title="Size closed over the whole position, including partial closes">
+            Size
+          </th>
+          <th className="num" title="Average entry price of the opening fills and adds">
+            Entry
+          </th>
+          <th className="num" title="Average exit price of the partial closes and the final close">
+            Exit
+          </th>
           <th className="num">Value</th>
-          <th className="num">Fees</th>
-          {showFunding ? <th className="num">Funding</th> : null}
+          <th className="num" title="Fees of every opening, adding, and closing fill">
+            Fees
+          </th>
+          <th className="num">Funding</th>
           <th className="num" title="Realized PnL minus fees, plus funding">
             Net PnL
           </th>
@@ -154,17 +179,15 @@ function ClosedTradesTable({ showFunding, trades }: { showFunding: boolean; trad
             <SourceCell href={trade.sourceHref} label={trade.sourceLabel} title={trade.sourceWallet} />
           </td>
           <td className="num">{formatSize(trade.size)}</td>
-          {showFunding ? <td className="num">{formatPrice(trade.entryPrice)}</td> : null}
+          <td className="num">{formatPrice(trade.entryPrice)}</td>
           <td className="num">{formatPrice(trade.exitPrice)}</td>
           <td className="num">
             <Usd value={trade.notionalUsd} />
           </td>
           <td className="num text-fg-2">{formatUsd(trade.feeUsd)}</td>
-          {showFunding ? (
-            <td className="num">
-              <Pnl value={trade.fundingUsd} />
-            </td>
-          ) : null}
+          <td className="num">
+            <Pnl value={trade.fundingUsd} />
+          </td>
           <td className="num font-medium">
             <Pnl value={trade.netPnlUsd} />
             <span className="sub">gross {formatSignedUsd(trade.realizedPnlUsd)}</span>
@@ -308,7 +331,8 @@ function DecisionsTable({ decisions }: { decisions: DecisionItem[] }) {
   );
 }
 
-function SourceHistoryTable({ rows }: { rows: SourceHistoryRow[] }) {
+function SourceHistoryTable({ accountType, rows }: { accountType: "paper" | "live"; rows: SourceHistoryRow[] }) {
+  const net = accountType === "paper";
   return (
     <Paged
       rows={rows}
@@ -317,7 +341,16 @@ function SourceHistoryTable({ rows }: { rows: SourceHistoryRow[] }) {
         <tr>
           <th>Wallet</th>
           <th>Status</th>
-          <th className="num">Realized</th>
+          <th
+            className="num"
+            title={
+              net
+                ? "Realized PnL of this account since its last reset, after fees and funding"
+                : "Realized PnL before fees"
+            }
+          >
+            {net ? "Realized, net" : "Realized"}
+          </th>
           <th className="num">Unrealized</th>
           <th className="num">Total</th>
           <th className="num">Per hour</th>
@@ -344,7 +377,13 @@ function SourceHistoryTable({ rows }: { rows: SourceHistoryRow[] }) {
             />
           </td>
           <td className="num">
-            <Pnl value={row.realizedPnlUsd} />
+            <Pnl value={row.netRealizedPnlUsd ?? row.realizedPnlUsd} />
+            {row.netRealizedPnlUsd !== null ? (
+              <span className="sub">
+                gross {formatSignedUsd(row.realizedPnlUsd)}, fees {formatUsd(row.feeUsd)}
+                {row.fundingUsd ? `, funding ${formatSignedUsd(row.fundingUsd)}` : ""}
+              </span>
+            ) : null}
           </td>
           <td className="num">
             <Pnl value={row.unrealizedPnlUsd} />

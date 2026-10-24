@@ -841,6 +841,7 @@ Purpose:
 Endpoint:
 
 - `GET /paper-trading`
+- `GET /paper-trading/accounts/{account_key}/performance`
 - `POST /paper-trading/accounts`
 - `POST /paper-trading/accounts/{account_key}/start`
 - `POST /paper-trading/accounts/{account_key}/stop`
@@ -849,12 +850,17 @@ Endpoint:
 - `POST /paper-trading/positions/{position_id}/close`
 - `POST /paper-trading/sources/{source_wallet}/close`
 
-Query parameters:
+Query parameters of `GET /paper-trading`:
 
-- `recent_fill_limit`, default 100, max 1000
-- `closed_trade_limit`, default 100, max 1000
+- `recent_fill_limit`, default 100, max 1000, applied per paper account
 - `include_market_prices`, default true
 - `refresh_allocations`, default false
+
+Query parameters of the performance endpoint:
+
+- `closed_trade_limit`, default 200, max 1000: how many of the newest round
+  trips are listed. The statistics always cover every round trip since the
+  last balance reset.
 
 Dashboard page:
 
@@ -1024,15 +1030,31 @@ What it does:
 - Computes live mark price, current notional, unrealized PnL, and ROE for open
   paper positions in the paper summary API when Hyperliquid market data is
   available.
-- Aggregates paper PnL by source wallet so the dashboard can show which copied
-  wallets made or lost money across accounts.
-- Sorts wallet PnL history by realized PnL descending, with total PnL and pool
-  rank as tie-breakers.
-- Returns a closed trade history built from paper `close` and `flip_close`
-  executions, separate from the raw recent fill and skip log. Closed trade rows
-  include duration when the original paper position open time is available and
-  a liquidation flag when the original source close fill had a Hyperliquid
-  liquidation marker.
+- Aggregates paper PnL per account and source wallet, counting only fills and
+  funding after the account's last balance reset
+  (`paper_trading_accounts.balance_reset_at`). Each row has gross realized
+  PnL, fees, funding, and net realized PnL, so the rows of an account add up to
+  its net realized PnL. The realtime feed is shared by every paper account, so
+  a followed source and its follow time appear in each of them.
+- Sorts wallet PnL history by net realized PnL descending, with total PnL and
+  pool rank as tie-breakers.
+- Returns per-account performance from
+  `GET /paper-trading/accounts/{account_key}/performance`: the
+  marked-to-market equity curve from `paper_account_equity_snapshots`, the
+  largest equity drawdown in those snapshots, the stored peak equity, and
+  closed trade statistics. Long curves are reduced to about 600 points that
+  keep the low and high of every bucket, so drops stay visible; the drawdown
+  is measured on every snapshot. The dashboard refreshes it every 30 seconds
+  and after account actions.
+- Builds paper closed trades as round trips, like live: one row per position
+  lifecycle from its `open` or `flip_open` fill, through adds and partial
+  `reduce` fills, to the `close`, `flip_close`, or `liquidation` fill that
+  leaves it flat. A round trip's net PnL is its realized PnL minus the fees of
+  every fill plus the funding paid while it was open, and its entry and exit
+  prices are size-weighted averages. Open positions and their partial closes
+  count toward the account's realized PnL but not toward closed trades until
+  the position is flat. Rows carry a liquidation flag when the source's closing
+  fill had a Hyperliquid liquidation marker.
 - Supports manual paper-position closes from the dashboard. Manual closes price
   from the current simulated market price, apply configured adverse slippage and
   fee, update the paper account, delete the open paper position, and record a
@@ -1111,7 +1133,8 @@ What it does:
   and live account with its state, equity, and total PnL. The page keeps the
   last selected account in browser storage, accepts `?account=<key>` from links,
   and falls back to the first account. It polls the paper summary API and the
-  generic trading account API every four seconds while the tab is visible.
+  generic trading account API every four seconds while the tab is visible, and
+  the performance API of the selected paper account every 30 seconds.
   Paper and live rows are never mixed: the selected account owns every figure,
   table, and history list on the page.
 - Headline figures use the same PnL semantics for paper and live: net realized
@@ -1119,17 +1142,27 @@ What it does:
   unrealized PnL. The strip shows equity, total PnL with return, net realized
   PnL with fees and funding, unrealized PnL, gross exposure and its share of
   equity, margin in use, win rate, and profit factor for paper accounts or the
-  exchange sync state with a reconcile button for live accounts. Paper return
+  exchange sync state with a reconcile button for live accounts. Paper win
+  rate and profit factor cover every round trip since the last balance reset. Paper return
   is measured on the starting balance; live return is the time-weighted return
   from the first verified baseline.
 - Notices under the account header explain why an account does not take new
   entries: an exit-only loss limit, an incomplete, failed, or stale exchange
   snapshot, live trading turned off on the server, or missing market prices.
-- The performance panel draws the cumulative or per trade net PnL of the loaded
-  closed trades and can inspect the last 25, 50, 100, or all trades with a
-  pointer or the arrow keys. It shows closed net PnL, gross profit and loss,
-  profit factor, expectancy, maximum drawdown, average win and loss, payoff
-  ratio, best and worst trade, the current streak, and the recovery factor.
+- The performance panel of a paper account draws marked-to-market PnL or the
+  drawdown from the equity peak over the last day, 7 days, 30 days, or all
+  snapshots since the last reset, ending at the current live mark, and the net
+  PnL per round trip for the last 25, 50, 100, or all listed trades. It shows
+  closed net PnL, gross profit and loss, profit factor, expectancy, maximum
+  and current equity drawdown in dollars and percent, the recovery factor
+  (total PnL including open positions divided by the maximum drawdown),
+  average win and loss, payoff ratio, best and worst trade, and the current
+  streak. Snapshots are kept for 35 days, so the curve of an older account
+  starts 35 days back.
+- The performance panel of a live account draws the cumulative or per trade
+  net PnL of the loaded closed trades. Its maximum drawdown and recovery
+  factor come from the cumulative closed trade PnL. Every chart can be
+  inspected with a pointer or the arrow keys.
 - The risk panel shows long and short notional, gross exposure, exposure of
   equity, margin in use, average leverage, open PnL, and the largest markets.
   Account details, the paper copy rules, and the live safety limits are in a
@@ -1150,13 +1183,19 @@ What it does:
   state, the source state with a one-sentence explanation, allocation used out
   of the source's share, open positions, realized PnL with open PnL, realized
   PnL per followed hour, total followed time, copied and skipped fills, and the
-  last activity. Paper sources have a Close all action that closes that
-  source's positions in every paper account. When more than one paper account
-  exists, realized PnL and fill counts combine all paper accounts, and the
-  table says so.
+  last activity. Paper source PnL is net of fees and funding and counts only
+  the selected account since its last balance reset; live source PnL is gross
+  realized PnL. Paper sources have a Close all action that closes that
+  source's positions in every paper account.
 - The history panel has tabs for closed trades, executions, live copy
   decisions, source history, and live deposits and withdrawals. Lists show 25
-  rows per page.
+  rows per page. Closed trades show size, average entry and exit price, value,
+  the fees of every fill, funding, and net PnL with gross PnL below. When a
+  paper account has more round trips than are listed, the tab counts all of
+  them and the table says how many it shows.
+- Paper source history shows net realized PnL with gross PnL, fees, and
+  funding below, for the selected account since its last balance reset. Live
+  source history shows gross realized PnL.
 - Executions show every copied fill and every skipped source trade with the
   result, price, value, fee, realized PnL, and the reason in plain words, such
   as an adverse price drift or a raise to the minimum order. Live executions
@@ -1215,13 +1254,16 @@ What it does:
   disabled or closed.
 - The account menu can reset a paper balance, reconcile a live account, and
   delete or archive the account. Reset restores the starting balance and clears
-  account-level realized PnL and fees without deleting open paper positions,
-  copied fills, or closed trade history. Paper account deletion removes local
+  account-level realized PnL and fees without deleting copied fills. It
+  requires a stopped account without open positions, records the reset time,
+  and starts the account's statistics, source PnL, and closed trades from
+  there. Fills before the reset stay stored but no longer count. Paper account deletion removes local
   positions, fills, allocations, and account history. Live accounts are
   archived with their history retained, only after they are disabled, and
   archiving does not close exchange positions.
 - The summary API attaches wallet labels to paper allocation, position,
-  wallet-history, closed-trade, and recent-fill rows. The UI shows the label
+  wallet-history, and recent-fill rows, and the performance API to closed
+  trades. The UI shows the label
   when available and falls back to the short address, with the full address on
   hover.
 - Source rows show a realtime feed state and a source state. The feed state is
@@ -1246,8 +1288,9 @@ What it does:
   drawdown, a stopped paper account, a cooldown, or a missing score.
 - Copy sources sort by allocation-used percentage descending, followed by used
   USD, realized PnL, source state, pool rank, and wallet address for
-  deterministic ties. Source history sorts by realized PnL descending, followed
-  by total PnL, pool rank, and wallet address.
+  deterministic ties. Source history sorts by realized PnL descending, net of
+  fees and funding when known, followed by total PnL, pool rank, and wallet
+  address.
 - The copy sources header derives its trading, live feed, connecting, offline,
   and waiting-for-slot counts from the same source rows the table shows.
   Historical monitoring duration and exchange-only display positions do not

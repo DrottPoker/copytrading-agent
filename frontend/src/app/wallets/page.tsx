@@ -23,7 +23,7 @@ export default async function WalletsPage({
     getWallets(),
     getWallets({ archived: true }),
     getDatabaseStats(),
-    getPaperTradingSummary({ closedTradeLimit: 1, includeMarketPrices: false, recentFillLimit: 1 }),
+    getPaperTradingSummary({ includeMarketPrices: false, recentFillLimit: 1 }),
   ]);
   const followedLive = [
     ...summary.realtimeMonitoring.desiredWallets,

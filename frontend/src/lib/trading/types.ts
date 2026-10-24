@@ -115,7 +115,6 @@ export type SourceState =
   | "waiting_for_slot";
 
 export type CopySourceRow = {
-  accountCount: number;
   allocationPct: number | null;
   allocationUsd: number;
   canOpenNewPositions: boolean;
@@ -133,6 +132,7 @@ export type CopySourceRow = {
   poolRank: number | null;
   rank: number | null;
   realizedPnlPerHourUsd: number | null;
+  /** Paper: net of fees and funding since the account's last reset. Live: gross realized PnL. */
   realizedPnlUsd: number;
   remainingAllocationUsd: number;
   score: string | null;
@@ -175,6 +175,5 @@ export type AccountView = {
   notices: AccountNotice[];
   positions: PositionRow[];
   sources: CopySourceRow[];
-  sourcesCombineAccounts: boolean;
   summary: AccountSummary;
 };

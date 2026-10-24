@@ -8,6 +8,7 @@ from app.api.dependencies import db_session
 from app.core.config import Settings, get_settings
 from app.integrations.hyperliquid_client import HyperliquidClient
 from app.schemas.paper_trading import (
+    PaperAccountPerformanceResponse,
     PaperTradingAccountCreateRequest,
     PaperTradingSummaryResponse,
 )
@@ -15,6 +16,7 @@ from app.services.paper_trading_service import (
     PaperAccountControlError,
     PaperAccountCreateError,
     PaperAccountDeleteError,
+    PaperAccountPerformanceNotFoundError,
     PaperAccountResetError,
     PaperPositionCloseError,
     close_paper_account_positions_manually,
@@ -22,6 +24,7 @@ from app.services.paper_trading_service import (
     close_paper_source_positions_manually,
     create_paper_trading_account,
     delete_paper_trading_account,
+    get_paper_account_performance,
     get_paper_trading_summary,
     reset_paper_trading_account_balance,
     set_paper_trading_account_enabled,
@@ -35,7 +38,6 @@ async def get_paper_trading_route(
     session: Annotated[AsyncSession, Depends(db_session)],
     settings: Annotated[Settings, Depends(get_settings)],
     recent_fill_limit: Annotated[int, Query(ge=1, le=1000)] = 100,
-    closed_trade_limit: Annotated[int, Query(ge=1, le=1000)] = 100,
     include_market_prices: Annotated[bool, Query()] = True,
     refresh_allocations: Annotated[bool, Query()] = False,
 ) -> PaperTradingSummaryResponse:
@@ -43,10 +45,30 @@ async def get_paper_trading_route(
         session,
         settings=settings,
         recent_fill_limit=recent_fill_limit,
-        closed_trade_limit=closed_trade_limit,
         include_market_prices=include_market_prices,
         refresh_allocations=refresh_allocations,
     )
+
+
+@router.get(
+    "/accounts/{account_key}/performance",
+    response_model=PaperAccountPerformanceResponse,
+)
+async def get_paper_account_performance_route(
+    account_key: str,
+    session: Annotated[AsyncSession, Depends(db_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    closed_trade_limit: Annotated[int, Query(ge=1, le=1000)] = 200,
+) -> PaperAccountPerformanceResponse:
+    try:
+        return await get_paper_account_performance(
+            session,
+            account_key=account_key,
+            settings=settings,
+            closed_trade_limit=closed_trade_limit,
+        )
+    except PaperAccountPerformanceNotFoundError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 @router.post("/accounts", response_model=PaperTradingSummaryResponse)

@@ -42,13 +42,11 @@ const STATE_TONES: Record<SourceState, Tone> = {
 export function SourcesPanel({
   accountType,
   closingSource,
-  combineAccounts,
   onCloseSource,
   sources,
 }: {
   accountType: "paper" | "live";
   closingSource: string | null;
-  combineAccounts: boolean;
   onCloseSource: (source: CopySourceRow) => void;
   sources: CopySourceRow[];
 }) {
@@ -68,8 +66,8 @@ export function SourcesPanel({
       title="Copy sources"
       meta={sources.length > 0 ? meta : undefined}
       description={
-        combineAccounts
-          ? "Wallets this account copies. Realized PnL and fill counts combine all paper accounts."
+        accountType === "paper"
+          ? "Wallets this account copies, most allocation in use first. PnL and fills count this account since its last balance reset."
           : "Wallets this account copies, most allocation in use first."
       }
     >
@@ -92,10 +90,24 @@ export function SourcesPanel({
                 <th>State</th>
                 <th title="Margin in use out of the share of the account this source may use">Allocation used</th>
                 <th className="num">Open</th>
-                <th className="num" title="Realized copy PnL, with the open PnL of current positions below">
+                <th
+                  className="num"
+                  title={
+                    accountType === "paper"
+                      ? "Realized copy PnL after fees and funding, with the open PnL of current positions below"
+                      : "Realized copy PnL before fees, with the open PnL of current positions below"
+                  }
+                >
                   PnL
                 </th>
-                <th className="num" title="Realized PnL per hour the source has been followed">
+                <th
+                  className="num"
+                  title={
+                    accountType === "paper"
+                      ? "Realized PnL after fees and funding per hour the source has been followed"
+                      : "Realized PnL per hour the source has been followed"
+                  }
+                >
                   Per hour
                 </th>
                 <th className="num" title="Total time the source has been followed in realtime">

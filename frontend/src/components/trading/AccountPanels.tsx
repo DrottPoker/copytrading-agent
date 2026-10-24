@@ -15,7 +15,7 @@ import {
   formatUsd,
 } from "@/lib/format";
 import { formatCapitalMode } from "@/lib/trading/labels";
-import type { PerformanceAnalytics, PerformancePoint } from "@/lib/trading/performance";
+import type { EquityPoint, PerformanceAnalytics, PerformancePoint } from "@/lib/trading/performance";
 import type { AccountOption, AccountView } from "@/lib/trading/types";
 import type { PaperTradingPolicy } from "@/types/paper";
 import type { LiveRiskLimits } from "@/types/trading";
@@ -24,13 +24,26 @@ import { PerformanceChart } from "./PerformanceChart";
 
 export function PerformancePanel({
   analytics,
+  equity,
+  error,
+  meta,
   points,
 }: {
   analytics: PerformanceAnalytics;
+  equity: EquityPoint[] | null;
+  error?: string | null;
+  meta: ReactNode;
   points: PerformancePoint[];
 }) {
-  const stats: Array<{ label: string; title?: string; value: ReactNode }> = [
-    { label: "Closed net", value: <Pnl value={analytics.netPnlUsd} /> },
+  const equityBasis = analytics.drawdownBasis === "equity";
+  const closedNet: StatItem = {
+    label: "Closed net",
+    title: equityBasis
+      ? "Net PnL of completed round trips after all their fees and funding. Open positions and their partial closes are not included."
+      : undefined,
+    value: <Pnl value={analytics.netPnlUsd} />,
+  };
+  const tradeStats: StatItem[] = [
     { label: "Gross profit", value: <Pnl value={analytics.grossProfitUsd} /> },
     { label: "Gross loss", value: <Pnl value={-analytics.grossLossUsd} /> },
     {
@@ -38,12 +51,8 @@ export function PerformancePanel({
       title: "Gross profit divided by gross loss",
       value: formatMultiple(analytics.profitFactor),
     },
-    { label: "Expectancy", title: "Average net PnL per closed trade", value: <Pnl value={analytics.expectancyUsd} /> },
-    {
-      label: "Max drawdown",
-      title: "Largest fall of the cumulative closed PnL from a peak",
-      value: <Pnl value={-analytics.maxDrawdownUsd} />,
-    },
+  ];
+  const tradeShapeStats: StatItem[] = [
     { label: "Average win", value: <Pnl value={analytics.averageWinUsd} /> },
     { label: "Average loss", value: <Pnl value={analytics.averageLossUsd} /> },
     { label: "Payoff ratio", title: "Average win divided by average loss", value: formatMultiple(analytics.payoffRatio) },
@@ -67,20 +76,54 @@ export function PerformancePanel({
           </span>
         ),
     },
-    {
-      label: "Recovery factor",
-      title: "Net closed PnL divided by the max drawdown",
-      value: formatMultiple(analytics.recoveryFactor),
-    },
   ];
+  // Paper drawdown comes from equity; the expectancy is already in the stat strip under the profit factor.
+  const stats: StatItem[] = equityBasis
+    ? [
+        closedNet,
+        ...tradeStats,
+        {
+          label: "Max drawdown",
+          title: "Largest fall of marked-to-market equity from a peak, in equity snapshots and the live mark",
+          value: <DrawdownValue pct={analytics.maxDrawdownPct} usd={analytics.maxDrawdownUsd} />,
+        },
+        {
+          label: "Current drawdown",
+          title: "Current equity below the highest equity since the last reset",
+          value: <DrawdownValue pct={analytics.currentDrawdownPct} usd={analytics.currentDrawdownUsd ?? 0} />,
+        },
+        ...tradeShapeStats,
+        {
+          label: "Recovery factor",
+          title: "Total PnL, including open positions, divided by the max drawdown",
+          value: formatMultiple(analytics.recoveryFactor),
+        },
+      ]
+    : [
+        closedNet,
+        ...tradeStats,
+        { label: "Expectancy", title: "Average net PnL per closed trade", value: <Pnl value={analytics.expectancyUsd} /> },
+        {
+          label: "Max drawdown",
+          title: "Largest fall of the cumulative closed PnL from a peak",
+          value: <Pnl value={-analytics.maxDrawdownUsd} />,
+        },
+        ...tradeShapeStats,
+        {
+          label: "Recovery factor",
+          title: "Net closed PnL divided by the max drawdown",
+          value: formatMultiple(analytics.recoveryFactor),
+        },
+      ];
 
   return (
-    <Panel
-      title="Performance"
-      meta={`${formatInteger(analytics.tradeCount)} closed trades loaded`}
-      bodyClassName="p-3.5"
-    >
-      <PerformanceChart points={points} />
+    <Panel title="Performance" meta={meta} bodyClassName="p-3.5">
+      {error ? (
+        <p className="mb-2 text-xs text-warning" role="status">
+          {error}
+        </p>
+      ) : null}
+      <PerformanceChart equity={equity} trades={points} />
       <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 border-t border-line pt-3 sm:grid-cols-3 lg:grid-cols-6">
         {stats.map((stat) => (
           <div key={stat.label} className="min-w-0">
@@ -92,6 +135,20 @@ export function PerformancePanel({
         ))}
       </dl>
     </Panel>
+  );
+}
+
+type StatItem = { label: string; title?: string; value: ReactNode };
+
+/** Dollar drawdown with its share of the peak on a second line, so narrow columns do not cut it. */
+function DrawdownValue({ pct, usd }: { pct: number | null; usd: number }) {
+  return (
+    <>
+      <Pnl value={-usd} />
+      <span className="block text-2xs font-normal text-fg-3">
+        {pct !== null && usd > 0 ? formatPercent(-pct, { decimals: 1 }) : "at the peak"}
+      </span>
+    </>
   );
 }
 

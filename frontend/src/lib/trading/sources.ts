@@ -88,9 +88,6 @@ export function buildSourceMetadata(
   for (const fill of summary.recentFills) {
     addLabel(fill.sourceWallet, fill.sourceLabel);
   }
-  for (const trade of summary.closedTrades) {
-    addLabel(trade.sourceWallet, trade.sourceLabel);
-  }
   for (const source of tradingAccounts?.sourceMetadata ?? []) {
     const item = ensure(source.sourceWallet);
     addLabel(source.sourceWallet, source.sourceLabel);
@@ -187,10 +184,12 @@ export const MONITOR_STATUS_LABELS: Record<SourceMonitorStatus, string> = {
   waiting: "No slot",
 };
 
-/** Paper copy sources for one account. PnL comes from all-time copy history of every paper account. */
+/** Paper copy sources for one account, with PnL net of fees and funding since the account's last reset. */
 export function buildPaperSourceRows(summary: PaperTradingSummaryResponse, accountKey: string): CopySourceRow[] {
   const performanceBySource = new Map(
-    summary.walletPerformance.map((wallet) => [wallet.sourceWallet.toLowerCase(), wallet]),
+    summary.walletPerformance
+      .filter((wallet) => wallet.accountKey === accountKey)
+      .map((wallet) => [wallet.sourceWallet.toLowerCase(), wallet]),
   );
   const allocationsBySource = groupBy(
     summary.allocations.filter((allocation) => allocation.accountKey === accountKey),
@@ -203,10 +202,6 @@ export function buildPaperSourceRows(summary: PaperTradingSummaryResponse, accou
   const fillsBySource = groupBy(
     summary.recentFills.filter((fill) => fill.accountKey === accountKey),
     (fill) => fill.sourceWallet.toLowerCase(),
-  );
-  const tradesBySource = groupBy(
-    summary.closedTrades.filter((trade) => trade.accountKey === accountKey),
-    (trade) => trade.sourceWallet.toLowerCase(),
   );
 
   const sources = new Set([...allocationsBySource.keys(), ...positionsBySource.keys()]);
@@ -230,15 +225,14 @@ export function buildPaperSourceRows(summary: PaperTradingSummaryResponse, accou
       });
       const allocationUsd = sumNumbers(allocations.map((allocation) => allocation.allocationUsd));
       const openMarginUsd = sumNumbers(allocations.map((allocation) => allocation.openMarginUsd));
-      const realizedPnlUsd = decimal(performance?.realizedPnlUsd);
+      const realizedPnlUsd = decimal(performance?.netRealizedPnlUsd);
       const unrealizedPnlUsd = sumNumbers(positions.map((position) => position.unrealizedPnlUsd));
       const monitoredSeconds = performance?.monitoredSeconds ?? 0;
       return {
-        accountCount: performance?.accountCount ?? 1,
         allocationPct: firstNumber(allocations.map((allocation) => allocation.allocationPct)),
         allocationUsd,
         canOpenNewPositions,
-        closedTradeCount: tradesBySource.get(source)?.length ?? 0,
+        closedTradeCount: performance?.closedTradeCount ?? 0,
         copiedFillCount: performance?.copiedFillCount ?? fills.filter((fill) => fill.action !== "skip").length,
         firstMonitoredAt: performance?.firstMonitoredAt ?? null,
         hasRealtimeSlot,
@@ -425,7 +419,6 @@ export function buildLiveSourceRows({
               ? "live_no_enabled_accounts"
               : resolveSourceStatusReason(allocations);
       return {
-        accountCount: 1,
         allocationPct: allocationPct > 0 ? allocationPct : null,
         allocationUsd,
         canOpenNewPositions,
@@ -553,43 +546,52 @@ export function compareCopySourcesByAllocationUsed(
 export type SourceHistoryRow = {
   copiedFillCount: number;
   feeUsd: number;
+  fundingUsd: number | null;
   lastFillAt: string | null;
   monitorStatus: "monitored" | "history";
   monitoredSeconds: number;
   openMarginUsd: number;
   openPositionCount: number;
   poolRank: number | null;
-  realizedPnlPerHourUsd: number | null;
+  /** Gross realized PnL before fees and funding. */
   realizedPnlUsd: number;
+  /** Realized PnL after fees and funding; null when the fees per source are not known (live). */
+  netRealizedPnlUsd: number | null;
+  /** Per followed hour, from the net realized PnL when known and the gross one otherwise. */
+  realizedPnlPerHourUsd: number | null;
   score: string | null;
   skippedFillCount: number;
   sourceLabel: string | null;
   sourceWallet: string;
+  /** Net realized PnL when known, else gross realized PnL, plus open PnL. */
   totalPnlUsd: number;
   unrealizedPnlUsd: number;
 };
 
-/** Every source that ever produced paper copy activity, best realized PnL first. */
-export function buildPaperSourceHistory(wallets: PaperWalletPerformance[]): SourceHistoryRow[] {
+/** Every source with paper copy activity for one account since its last reset, best net PnL first. */
+export function buildPaperSourceHistory(wallets: PaperWalletPerformance[], accountKey: string): SourceHistoryRow[] {
   return wallets
     .filter(
       (wallet) =>
-        wallet.openPositionCount > 0 ||
+        wallet.accountKey === accountKey &&
+        (wallet.openPositionCount > 0 ||
         wallet.copiedFillCount > 0 ||
         wallet.skippedFillCount > 0 ||
         wallet.monitoredSeconds > 0 ||
-        decimal(wallet.totalPnlUsd) !== 0,
+        decimal(wallet.totalPnlUsd) !== 0),
     )
     .map((wallet) => ({
       copiedFillCount: wallet.copiedFillCount,
       feeUsd: decimal(wallet.feeUsd),
+      fundingUsd: decimal(wallet.fundingUsd),
       lastFillAt: wallet.lastFillAt,
       monitorStatus: wallet.monitorStatus,
       monitoredSeconds: wallet.monitoredSeconds,
       openMarginUsd: decimal(wallet.openMarginUsd),
       openPositionCount: wallet.openPositionCount,
+      netRealizedPnlUsd: decimal(wallet.netRealizedPnlUsd),
       poolRank: wallet.poolRank,
-      realizedPnlPerHourUsd: toNullableNumber(wallet.realizedPnlPerMonitoredHourUsd),
+      realizedPnlPerHourUsd: toNullableNumber(wallet.netRealizedPnlPerMonitoredHourUsd),
       realizedPnlUsd: decimal(wallet.realizedPnlUsd),
       score: wallet.score,
       skippedFillCount: wallet.skippedFillCount,
@@ -648,6 +650,7 @@ export function buildLiveSourceHistory({
       return {
         copiedFillCount: item?.liveFillCount ?? sourceFills.length,
         feeUsd: sumNumbers(sourceFills.map((fill) => fill.feeUsd)),
+        fundingUsd: null,
         lastFillAt: latestDate([
           ...sourceFills.map((fill) => fill.filledAt),
           ...sourceOrders.map((order) => order.updatedAt ?? order.createdAt),
@@ -657,6 +660,7 @@ export function buildLiveSourceHistory({
           : ("history" as const),
         monitoredSeconds,
         openMarginUsd: sumNumbers(sourcePositions.map((position) => position.marginUsd)),
+        netRealizedPnlUsd: null,
         openPositionCount: sourcePositions.length,
         poolRank: item?.poolRank ?? null,
         realizedPnlPerHourUsd: pnlPerMonitoredHour(realizedPnlUsd, monitoredSeconds),
@@ -676,12 +680,15 @@ export function buildLiveSourceHistory({
     .sort(compareWalletHistoryByPnl);
 }
 
-export function compareWalletHistoryByPnl(
-  left: Pick<SourceHistoryRow, "poolRank" | "realizedPnlUsd" | "sourceWallet" | "totalPnlUsd">,
-  right: Pick<SourceHistoryRow, "poolRank" | "realizedPnlUsd" | "sourceWallet" | "totalPnlUsd">,
-) {
+type HistorySortFields = Pick<
+  SourceHistoryRow,
+  "netRealizedPnlUsd" | "poolRank" | "realizedPnlUsd" | "sourceWallet" | "totalPnlUsd"
+>;
+
+/** Best realized PnL first, net of fees and funding when known. */
+export function compareWalletHistoryByPnl(left: HistorySortFields, right: HistorySortFields) {
   return (
-    right.realizedPnlUsd - left.realizedPnlUsd ||
+    (right.netRealizedPnlUsd ?? right.realizedPnlUsd) - (left.netRealizedPnlUsd ?? left.realizedPnlUsd) ||
     right.totalPnlUsd - left.totalPnlUsd ||
     (left.poolRank ?? 9999) - (right.poolRank ?? 9999) ||
     left.sourceWallet.localeCompare(right.sourceWallet)

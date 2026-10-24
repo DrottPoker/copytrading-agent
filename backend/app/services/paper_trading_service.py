@@ -7,7 +7,7 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import and_, delete, func, literal, or_, select, text, tuple_, update
+from sqlalchemy import and_, delete, func, literal, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,6 +31,7 @@ from app.db.models import (
 )
 from app.integrations.hyperliquid_client import HyperliquidClient
 from app.schemas.paper_trading import (
+    PaperAccountPerformanceResponse,
     PaperTradingPolicyRead,
     PaperTradingSummaryResponse,
 )
@@ -101,6 +102,12 @@ from app.services.paper_execution_simulator import (
     parse_order_book,
     position_pnl,
     simulate_ioc_fill,
+)
+from app.services.paper_performance_service import (
+    build_paper_account_performance,
+    load_paper_round_trips,
+    load_paper_source_performance_rows,
+    paper_stats_since,
 )
 from app.services.paper_risk_service import (
     apply_account_fee,
@@ -233,6 +240,14 @@ class PaperAccountDeleteNotFoundError(PaperAccountDeleteError):
     status_code = 404
 
 
+class PaperAccountPerformanceNotFoundError(Exception):
+    status_code = 404
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
+
+
 @dataclass(frozen=True)
 class PaperSourceAllocation:
     source_wallet: str
@@ -272,7 +287,6 @@ async def get_paper_trading_summary(
     *,
     settings: Settings | None = None,
     recent_fill_limit: int = 100,
-    closed_trade_limit: int = 100,
     client: HyperliquidClient | None = None,
     include_market_prices: bool = True,
     refresh_allocations: bool = False,
@@ -325,43 +339,25 @@ async def get_paper_trading_summary(
             PaperPosition.coin.asc(),
         )
     )
-    fills_result = await session.execute(
-        select(PaperCopyFill)
-        .order_by(PaperCopyFill.filled_at.desc(), PaperCopyFill.created_at.desc())
-        .limit(recent_fill_limit)
-    )
-    closed_trades_result = await session.execute(
-        select(PaperCopyFill)
-        .where(PaperCopyFill.action.in_(("close", "flip_close", "liquidation")))
-        .order_by(PaperCopyFill.filled_at.desc(), PaperCopyFill.created_at.desc())
-        .limit(closed_trade_limit)
-    )
-    fill_performance_result = await session.execute(
-        select(
-            PaperCopyFill.source_wallet,
-            func.count(PaperCopyFill.id)
-            .filter(PaperCopyFill.action != "skip")
-            .label("copied_fill_count"),
-            func.count(PaperCopyFill.id)
-            .filter(PaperCopyFill.action == "skip")
-            .label("skipped_fill_count"),
-            func.coalesce(func.sum(PaperCopyFill.realized_pnl_usd), ZERO).label("realized_pnl_usd"),
-            func.coalesce(func.sum(PaperCopyFill.fee_usd), ZERO).label("fee_usd"),
-            func.max(PaperCopyFill.filled_at).label("last_fill_at"),
-        ).group_by(PaperCopyFill.source_wallet)
-    )
     accounts = list(accounts_result.scalars().all())
     allocations = list(allocations_result.scalars().all())
     positions = list(positions_result.scalars().all())
-    recent_fills = list(fills_result.scalars().all())
-    closed_trades = list(closed_trades_result.scalars().all())
-    fill_performance_rows = list(fill_performance_result.mappings().all())
+    # The limit applies per account, so a busy account cannot crowd out another one.
+    recent_fills: list[PaperCopyFill] = []
+    for account in accounts:
+        fills_result = await session.scalars(
+            select(PaperCopyFill)
+            .where(PaperCopyFill.account_key == account.key)
+            .order_by(PaperCopyFill.filled_at.desc(), PaperCopyFill.created_at.desc())
+            .limit(recent_fill_limit)
+        )
+        recent_fills.extend(fills_result.all())
+    source_performance_rows = await load_paper_source_performance_rows(session)
     summary_source_wallets = [
         *(allocation.source_wallet for allocation in allocations),
         *(position.source_wallet for position in positions),
         *(fill.source_wallet for fill in recent_fills),
-        *(fill.source_wallet for fill in closed_trades),
-        *(row["source_wallet"] for row in fill_performance_rows if row["source_wallet"]),
+        *(row["source_wallet"] for row in source_performance_rows),
         *(allocation.source_wallet for allocation in source_allocations.values()),
     ]
     source_labels = await load_paper_source_labels(session, source_wallets=summary_source_wallets)
@@ -376,15 +372,6 @@ async def get_paper_trading_summary(
             allocations=allocations,
             source_labels=source_labels,
         )
-    liquidation_source_fill_ids = await load_liquidation_source_fill_ids(
-        session,
-        fills=closed_trades,
-    )
-    opened_at_by_closed_fill_id = await load_closed_trade_open_times(
-        session,
-        fills=closed_trades,
-    )
-
     market_prices: dict[str, Decimal] = {}
     if include_market_prices and client is None:
         async with HyperliquidClient(resolved_settings) as hyperliquid_client:
@@ -428,19 +415,14 @@ async def get_paper_trading_summary(
         ),
         positions=position_rows,
         wallet_performance=paper_wallet_performance_reads(
+            account_keys=[account.key for account in accounts],
             allocations=allocations,
             positions=position_rows,
-            fill_performance_rows=fill_performance_rows,
+            source_performance_rows=source_performance_rows,
             source_allocations=source_allocations,
             source_labels=source_labels,
             monitoring_stats=monitoring_stats,
             realtime_monitoring=realtime_monitoring,
-        ),
-        closed_trades=paper_closed_trade_reads(
-            closed_trades,
-            source_labels=source_labels,
-            liquidation_source_fill_ids=liquidation_source_fill_ids,
-            opened_at_by_closed_fill_id=opened_at_by_closed_fill_id,
         ),
         recent_fills=paper_copy_fill_reads(recent_fills, source_labels=source_labels),
         realtime_monitoring=realtime_monitoring_read(realtime_monitoring),
@@ -451,6 +433,39 @@ async def get_paper_trading_summary(
                 1 for position in position_rows if position["mark_price"] is not None
             ),
         ),
+    )
+
+
+async def get_paper_account_performance(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    settings: Settings,
+    closed_trade_limit: int = 200,
+) -> PaperAccountPerformanceResponse:
+    """Equity curve, drawdown, and round trip statistics of one account since its reset."""
+
+    account = await session.get(PaperTradingAccount, account_key)
+    if account is None:
+        raise PaperAccountPerformanceNotFoundError("Paper account was not found.")
+    round_trips = await load_paper_round_trips(
+        session,
+        account_key=account.key,
+        since=paper_stats_since(account),
+    )
+    source_labels = await load_paper_source_labels(
+        session,
+        source_wallets=[trade.source_wallet for trade in round_trips[:closed_trade_limit]],
+    )
+    return PaperAccountPerformanceResponse.model_validate(
+        await build_paper_account_performance(
+            session,
+            account=account,
+            settings=settings,
+            round_trips=round_trips,
+            source_labels=source_labels,
+            closed_trade_limit=closed_trade_limit,
+        )
     )
 
 
@@ -1094,111 +1109,125 @@ def paper_allocation_status_reason(
 
 def paper_wallet_performance_reads(
     *,
+    account_keys: Sequence[str],
     allocations: list[PaperCopyAllocation],
     positions: list[dict[str, Any]],
-    fill_performance_rows: Sequence[Mapping[Any, Any]],
+    source_performance_rows: Sequence[Mapping[str, Any]],
     source_allocations: dict[str, PaperSourceAllocation],
     source_labels: dict[str, str],
     monitoring_stats: dict[str, WalletMonitoringSummary],
     realtime_monitoring: RealtimeSubscriptionSnapshot,
 ) -> list[dict[str, Any]]:
-    sources = {
-        allocation.source_wallet.lower() for allocation in allocations if allocation.source_wallet
-    }
-    sources.update(
-        str(position["source_wallet"]).lower()
-        for position in positions
-        if position["source_wallet"]
-    )
-    sources.update(
-        str(row["source_wallet"]).lower() for row in fill_performance_rows if row["source_wallet"]
-    )
-    sources.update(monitoring_stats.keys())
+    """One row per paper account and source, with PnL since the account's last reset.
 
-    allocations_by_source: dict[str, list[PaperCopyAllocation]] = {}
+    Net realized PnL is gross realized PnL minus fees plus funding, so the rows of
+    an account add up to its net realized PnL. The realtime feed and its follow
+    time are shared by every paper account.
+    """
+
+    allocations_by_key: dict[tuple[str, str], list[PaperCopyAllocation]] = {}
     for allocation in allocations:
-        allocations_by_source.setdefault(allocation.source_wallet.lower(), []).append(allocation)
-    positions_by_source: dict[str, list[dict[str, Any]]] = {}
+        allocations_by_key.setdefault(
+            (allocation.account_key, allocation.source_wallet.lower()), []
+        ).append(allocation)
+    positions_by_key: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for position in positions:
-        positions_by_source.setdefault(str(position["source_wallet"]).lower(), []).append(position)
-    fills_by_source = {
-        str(row["source_wallet"]).lower(): row
-        for row in fill_performance_rows
+        positions_by_key.setdefault(
+            (str(position["account_key"]), str(position["source_wallet"]).lower()), []
+        ).append(position)
+    performance_by_key = {
+        (str(row["account_key"]), str(row["source_wallet"]).lower()): row
+        for row in source_performance_rows
         if row["source_wallet"]
     }
 
     rows: list[dict[str, Any]] = []
-    for source in sources:
-        allocation_rows = allocations_by_source.get(source, [])
-        source_positions = positions_by_source.get(source, [])
-        fill_row = fills_by_source.get(source, {})
-        source_allocation = source_allocations.get(source)
-        unrealized_pnl = sum_decimal(
-            position["unrealized_pnl_usd"] for position in source_positions
-        )
-        realized_pnl = decimal_or_zero(fill_row.get("realized_pnl_usd"))
-        total_pnl = realized_pnl + unrealized_pnl
-        monitoring = monitoring_stats.get(source)
-        monitored_seconds = monitoring.monitored_seconds if monitoring is not None else 0
-        allocation_pct = first_decimal(allocation.allocation_pct for allocation in allocation_rows)
-        rows.append(
-            {
-                "source_wallet": source,
-                "source_label": source_labels.get(source),
-                "rank": min((allocation.rank for allocation in allocation_rows), default=None),
-                "pool_rank": (
-                    source_allocation.pool_rank
-                    if source_allocation is not None
-                    else min((allocation.rank for allocation in allocation_rows), default=None)
-                ),
-                "score": first_decimal(allocation.score for allocation in allocation_rows),
-                "allocation_pct": allocation_pct,
-                "active": any(allocation.active for allocation in allocation_rows),
-                "monitor_status": (
-                    "monitored" if source in realtime_monitoring.monitored_wallets else "history"
-                ),
-                "account_count": len({allocation.account_key for allocation in allocation_rows}),
-                "open_position_count": len(source_positions),
-                "copied_fill_count": int(fill_row.get("copied_fill_count") or 0),
-                "skipped_fill_count": int(fill_row.get("skipped_fill_count") or 0),
-                "realized_pnl_usd": realized_pnl,
-                "unrealized_pnl_usd": unrealized_pnl,
-                "total_pnl_usd": total_pnl,
-                "monitored_seconds": monitored_seconds,
-                "monitored_hours": monitored_hours(monitored_seconds),
-                "realized_pnl_per_monitored_hour_usd": pnl_per_monitored_hour(
-                    realized_pnl,
-                    monitored_seconds,
-                ),
-                "total_pnl_per_monitored_hour_usd": pnl_per_monitored_hour(
-                    total_pnl,
-                    monitored_seconds,
-                ),
-                "first_monitored_at": (
-                    monitoring.first_monitored_at if monitoring is not None else None
-                ),
-                "current_monitoring_started_at": (
-                    monitoring.current_monitoring_started_at if monitoring is not None else None
-                ),
-                "last_monitored_at": (
-                    monitoring.last_monitored_at if monitoring is not None else None
-                ),
-                "fee_usd": decimal_or_zero(fill_row.get("fee_usd")),
-                "open_notional_usd": sum_decimal(
-                    position["current_notional_usd"] or position["notional_usd"]
-                    for position in source_positions
-                ),
-                "open_margin_usd": sum_decimal(
-                    position["margin_usd"] for position in source_positions
-                ),
-                "last_fill_at": fill_row.get("last_fill_at"),
-            }
-        )
+    for account_key in account_keys:
+        sources = set(monitoring_stats.keys())
+        for keys in (allocations_by_key, positions_by_key, performance_by_key):
+            sources.update(source for key, source in keys if key == account_key)
+        for source in sources:
+            key = (account_key, source)
+            allocation_rows = allocations_by_key.get(key, [])
+            source_positions = positions_by_key.get(key, [])
+            performance = performance_by_key.get(key, {})
+            source_allocation = source_allocations.get(source)
+            realized_pnl = decimal_or_zero(performance.get("realized_pnl_usd"))
+            fee_usd = decimal_or_zero(performance.get("fee_usd"))
+            funding_usd = decimal_or_zero(performance.get("funding_usd"))
+            net_realized_pnl = realized_pnl - fee_usd + funding_usd
+            unrealized_pnl = sum_decimal(
+                position["unrealized_pnl_usd"] for position in source_positions
+            )
+            total_pnl = net_realized_pnl + unrealized_pnl
+            monitoring = monitoring_stats.get(source)
+            monitored_seconds = monitoring.monitored_seconds if monitoring is not None else 0
+            rows.append(
+                {
+                    "account_key": account_key,
+                    "source_wallet": source,
+                    "source_label": source_labels.get(source),
+                    "rank": min((allocation.rank for allocation in allocation_rows), default=None),
+                    "pool_rank": (
+                        source_allocation.pool_rank
+                        if source_allocation is not None
+                        else min((allocation.rank for allocation in allocation_rows), default=None)
+                    ),
+                    "score": first_decimal(allocation.score for allocation in allocation_rows),
+                    "allocation_pct": first_decimal(
+                        allocation.allocation_pct for allocation in allocation_rows
+                    ),
+                    "active": any(allocation.active for allocation in allocation_rows),
+                    "monitor_status": (
+                        "monitored"
+                        if source in realtime_monitoring.monitored_wallets
+                        else "history"
+                    ),
+                    "open_position_count": len(source_positions),
+                    "copied_fill_count": int(performance.get("copied_fill_count") or 0),
+                    "skipped_fill_count": int(performance.get("skipped_fill_count") or 0),
+                    "closed_trade_count": int(performance.get("closed_trade_count") or 0),
+                    "realized_pnl_usd": realized_pnl,
+                    "fee_usd": fee_usd,
+                    "funding_usd": funding_usd,
+                    "net_realized_pnl_usd": net_realized_pnl,
+                    "unrealized_pnl_usd": unrealized_pnl,
+                    "total_pnl_usd": total_pnl,
+                    "monitored_seconds": monitored_seconds,
+                    "monitored_hours": monitored_hours(monitored_seconds),
+                    "net_realized_pnl_per_monitored_hour_usd": pnl_per_monitored_hour(
+                        net_realized_pnl,
+                        monitored_seconds,
+                    ),
+                    "total_pnl_per_monitored_hour_usd": pnl_per_monitored_hour(
+                        total_pnl,
+                        monitored_seconds,
+                    ),
+                    "first_monitored_at": (
+                        monitoring.first_monitored_at if monitoring is not None else None
+                    ),
+                    "current_monitoring_started_at": (
+                        monitoring.current_monitoring_started_at if monitoring is not None else None
+                    ),
+                    "last_monitored_at": (
+                        monitoring.last_monitored_at if monitoring is not None else None
+                    ),
+                    "open_notional_usd": sum_decimal(
+                        position["current_notional_usd"] or position["notional_usd"]
+                        for position in source_positions
+                    ),
+                    "open_margin_usd": sum_decimal(
+                        position["margin_usd"] for position in source_positions
+                    ),
+                    "last_fill_at": performance.get("last_fill_at"),
+                }
+            )
     return sorted(
         rows,
         key=lambda row: (
+            row["account_key"],
             -row["total_pnl_usd"],
-            -row["realized_pnl_usd"],
+            -row["net_realized_pnl_usd"],
             row["pool_rank"] or 9999,
             row["source_wallet"],
         ),
@@ -1224,135 +1253,6 @@ def pnl_per_monitored_hour(
         Decimal("0.0001"),
         rounding=ROUND_HALF_UP,
     )
-
-
-def paper_closed_trade_reads(
-    fills: list[PaperCopyFill],
-    *,
-    source_labels: dict[str, str],
-    liquidation_source_fill_ids: set[tuple[str, str]],
-    opened_at_by_closed_fill_id: dict[UUID, datetime],
-) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for fill in fills:
-        opened_at = paper_fill_opened_at(fill) or opened_at_by_closed_fill_id.get(fill.id)
-        stored_duration_ms = paper_fill_duration_ms(fill)
-        duration_ms = (
-            stored_duration_ms
-            if stored_duration_ms is not None
-            else duration_between_ms(opened_at, fill.filled_at)
-        )
-        rows.append(
-            {
-                "id": fill.id,
-                "account_key": fill.account_key,
-                "source_wallet": fill.source_wallet,
-                "source_label": source_labels.get(fill.source_wallet.lower()),
-                "source_fill_id": fill.source_fill_id,
-                "coin": fill.coin,
-                "close_type": fill.action,
-                "side": fill.side,
-                "exit_price": fill.price,
-                "size": fill.size,
-                "notional_usd": fill.notional_usd,
-                "leverage": fill.leverage,
-                "margin_usd": fill.margin_usd,
-                "fee_usd": fill.fee_usd,
-                "realized_pnl_usd": fill.realized_pnl_usd,
-                "net_pnl_usd": fill.realized_pnl_usd - fill.fee_usd,
-                "is_source_liquidation": (
-                    fill.source_wallet.lower(),
-                    fill.source_fill_id,
-                )
-                in liquidation_source_fill_ids,
-                "is_paper_liquidation": fill.action == "liquidation",
-                "opened_at": opened_at,
-                "closed_at": fill.filled_at,
-                "duration_ms": duration_ms,
-                "created_at": fill.created_at,
-            }
-        )
-    return rows
-
-
-async def load_closed_trade_open_times(
-    session: AsyncSession,
-    *,
-    fills: list[PaperCopyFill],
-) -> dict[UUID, datetime]:
-    close_fills = [fill for fill in fills if fill.side]
-    if not close_fills:
-        return {}
-
-    position_keys = {
-        (fill.account_key, fill.source_wallet, fill.coin, fill.side)
-        for fill in close_fills
-        if fill.side
-    }
-    latest_close_at = max(fill.filled_at for fill in close_fills)
-    result = await session.execute(
-        select(
-            PaperCopyFill.account_key,
-            PaperCopyFill.source_wallet,
-            PaperCopyFill.coin,
-            PaperCopyFill.side,
-            PaperCopyFill.filled_at,
-        )
-        .where(
-            PaperCopyFill.action.in_(("open", "flip_open")),
-            tuple_(
-                PaperCopyFill.account_key,
-                PaperCopyFill.source_wallet,
-                PaperCopyFill.coin,
-                PaperCopyFill.side,
-            ).in_(position_keys),
-            PaperCopyFill.filled_at <= latest_close_at,
-        )
-        .order_by(PaperCopyFill.filled_at.asc(), PaperCopyFill.created_at.asc())
-    )
-    open_times_by_key: dict[tuple[str, str, str, str], list[datetime]] = {}
-    for row in result.mappings().all():
-        key = (
-            str(row["account_key"]),
-            str(row["source_wallet"]),
-            str(row["coin"]),
-            str(row["side"]),
-        )
-        open_times_by_key.setdefault(key, []).append(row["filled_at"])
-
-    opened_at_by_closed_fill_id: dict[UUID, datetime] = {}
-    for fill in close_fills:
-        if not fill.side:
-            continue
-        key = (fill.account_key, fill.source_wallet, fill.coin, fill.side)
-        candidates = [
-            opened_at for opened_at in open_times_by_key.get(key, []) if opened_at <= fill.filled_at
-        ]
-        if candidates:
-            opened_at_by_closed_fill_id[fill.id] = candidates[-1]
-    return opened_at_by_closed_fill_id
-
-
-async def load_liquidation_source_fill_ids(
-    session: AsyncSession,
-    *,
-    fills: list[PaperCopyFill],
-) -> set[tuple[str, str]]:
-    pairs = {
-        (fill.source_wallet.lower(), fill.source_fill_id)
-        for fill in fills
-        if fill.source_wallet and fill.source_fill_id
-    }
-    if not pairs:
-        return set()
-
-    result = await session.execute(
-        select(WalletFill.wallet_address, WalletFill.external_fill_id).where(
-            tuple_(WalletFill.wallet_address, WalletFill.external_fill_id).in_(pairs),
-            WalletFill.raw_json.has_key("liquidation"),
-        )
-    )
-    return {(str(row.wallet_address).lower(), str(row.external_fill_id)) for row in result.all()}
 
 
 def paper_copy_fill_reads(
@@ -2823,6 +2723,7 @@ async def reset_paper_trading_account_balance(
     account.fee_usd = ZERO
     account.funding_usd = ZERO
     account.peak_equity_usd = None
+    account.balance_reset_at = datetime.now(UTC)
     clear_paper_account_exit_only(account)
     # Loss limits restart from the new balance.
     await session.execute(
@@ -4136,36 +4037,6 @@ def min_order_adjustment_payload(
         "adjustedNotionalUsd": str(adjustment.adjusted_notional_usd),
         "minOrderNotionalUsd": str(adjustment.min_order_notional_usd),
     }
-
-
-def paper_fill_opened_at(fill: PaperCopyFill) -> datetime | None:
-    value = paper_payload_value(fill, "openedAt")
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(str(value))
-    except ValueError:
-        return None
-
-
-def paper_fill_duration_ms(fill: PaperCopyFill) -> int | None:
-    value = paper_payload_value(fill, "durationMs")
-    if value is None:
-        return None
-    parsed = int_or_none(value)
-    if parsed is None:
-        return None
-    return max(0, parsed)
-
-
-def paper_payload_value(fill: PaperCopyFill, key: str) -> Any:
-    payload = fill.raw_payload
-    if not isinstance(payload, dict):
-        return None
-    paper_payload = payload.get("paper")
-    if not isinstance(paper_payload, dict):
-        return None
-    return paper_payload.get(key)
 
 
 def duration_between_ms(opened_at: datetime | None, closed_at: datetime | None) -> int | None:

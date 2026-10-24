@@ -503,16 +503,18 @@ write the same `request_id` to the frontend container log. The dashboard shows
 that identifier with failed mutations. Use it to correlate a browser error
 with the upstream backend response without logging credentials or request bodies.
 
-The Alembic head for this update is `b7c3e5a9d1f2`. The chain includes the
+The Alembic head for this update is `c5e7a9b1d3f6`. The chain includes the
 funding-payment ledger, external account cash-flow ledger, cash-flow-adjusted
 performance snapshots, append-only live order attempts, and unified durable
 `live_copy_work` queue. It also adds transactional wallet fill revisions,
 partial scoring indexes, the ordered source-trade stream index, the equity
 scoring and wallet archive schema (`c4e8a2f6b1d3`), the paper market
 simulation and paper risk state (`d7f1b3c5e9a2`), the paper account peak equity
-(`e8a2c4f6d1b3`), and the maintenance request caches (`b7c3e5a9d1f2`), which
+(`e8a2c4f6d1b3`), the maintenance request caches (`b7c3e5a9d1f2`), which
 add the cached account mode to `watched_wallets` and the
-`discovery_subaccount_checks` table. The equity scoring migration marks every
+`discovery_subaccount_checks` table, and the paper balance reset time
+(`c5e7a9b1d3f6`), which is filled from the latest balance reset in
+`audit_logs`. The equity scoring migration marks every
 materialized source trade set for one rebuild, so the first scoring run after
 it takes longer than usual. The paper and cache migrations only add columns and
 small tables; existing paper positions get cross margin mode and zero funding,
@@ -524,7 +526,7 @@ does not replay the full historical fill table. The scoring migrations rebuild
 revision metadata and create indexes over the existing fill table, so they can
 take time on a multi-million-row deployment.
 
-The `current` command must show `b7c3e5a9d1f2` before the backend or workers
+The `current` command must show `c5e7a9b1d3f6` before the backend or workers
 are restarted.
 
 Fill imports before October 11, 2026 read a busy wallet's history oldest

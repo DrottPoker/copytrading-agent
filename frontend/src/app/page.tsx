@@ -41,7 +41,7 @@ export default async function OverviewPage() {
     getOpsHealth(),
     getWallets(),
     getAnalytics(),
-    getPaperTradingSummary({ closedTradeLimit: 1, recentFillLimit: 1 }),
+    getPaperTradingSummary({ recentFillLimit: 1 }),
     getTradingAccounts(),
     getLiveEvents(14),
     getOperationStatuses(),

@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { allocation, paperSummary } from "@/test/tradingFixtures";
+import { allocation, paperSummary, walletPerformance } from "@/test/tradingFixtures";
 
 import {
   buildLiveSourceHistory,
+  buildPaperSourceHistory,
   buildPaperSourceRows,
   collectLiveCopySourceWallets,
   compareCopySourcesByAllocationUsed,
@@ -54,11 +55,43 @@ describe("copy source performance", () => {
 
   it("sorts source history by realized PnL descending", () => {
     const wallets = [
-      { poolRank: 1, realizedPnlUsd: 7.17, sourceWallet: "0xlow", totalPnlUsd: 5 },
-      { poolRank: 10, realizedPnlUsd: 0.79, sourceWallet: "0xhigh", totalPnlUsd: 6 },
+      { netRealizedPnlUsd: null, poolRank: 1, realizedPnlUsd: 7.17, sourceWallet: "0xlow", totalPnlUsd: 5 },
+      { netRealizedPnlUsd: null, poolRank: 10, realizedPnlUsd: 0.79, sourceWallet: "0xhigh", totalPnlUsd: 6 },
     ];
 
     expect(wallets.sort(compareWalletHistoryByPnl).map((wallet) => wallet.sourceWallet)).toEqual(["0xlow", "0xhigh"]);
+  });
+
+  it("sorts source history by net PnL when fees are known", () => {
+    const wallets = [
+      { netRealizedPnlUsd: -2, poolRank: 1, realizedPnlUsd: 9, sourceWallet: "0xfeeheavy", totalPnlUsd: -2 },
+      { netRealizedPnlUsd: 3, poolRank: 2, realizedPnlUsd: 4, sourceWallet: "0xcheap", totalPnlUsd: 3 },
+    ];
+
+    expect(wallets.sort(compareWalletHistoryByPnl).map((wallet) => wallet.sourceWallet)).toEqual([
+      "0xcheap",
+      "0xfeeheavy",
+    ]);
+  });
+
+  it("builds paper source history for one account with net PnL", () => {
+    const rows = buildPaperSourceHistory(
+      [
+        walletPerformance({ accountKey: "paper-a", sourceWallet: "0xa" }),
+        walletPerformance({ accountKey: "paper-b", netRealizedPnlUsd: "99", sourceWallet: "0xa" }),
+      ],
+      "paper-a",
+    );
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      feeUsd: 1,
+      fundingUsd: -0.5,
+      netRealizedPnlUsd: 8.5,
+      realizedPnlPerHourUsd: 8.5,
+      realizedPnlUsd: 10,
+      sourceWallet: "0xa",
+    });
   });
 
   it("uses all-time live source metadata for source history", () => {
@@ -89,7 +122,13 @@ describe("copy source performance", () => {
     });
 
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ copiedFillCount: 10, realizedPnlUsd: 39.3, sourceWallet: "0xhistorical", totalPnlUsd: 39.3 });
+    expect(rows[0]).toMatchObject({
+      copiedFillCount: 10,
+      netRealizedPnlUsd: null,
+      realizedPnlUsd: 39.3,
+      sourceWallet: "0xhistorical",
+      totalPnlUsd: 39.3,
+    });
     expect(rows[0].realizedPnlPerHourUsd).toBeCloseTo(39.3 / 240, 10);
   });
 });
@@ -109,6 +148,24 @@ describe("paper source rows", () => {
     expect(rows.map((row) => row.sourceWallet)).toEqual(["0xa"]);
     expect(rows[0]).toMatchObject({ allocationUsd: 200, monitorStatus: "monitored", sourceState: "waiting_for_trades", usedPct: 0.25 });
     expect(rows[0].sourceStateDetail).toContain("Waiting for the wallet to open a trade");
+  });
+
+  it("takes net PnL and counts from the selected account only", () => {
+    const summary = paperSummary({
+      allocations: [
+        allocation({ accountKey: "paper-a", sourceWallet: "0xa" }),
+        allocation({ accountKey: "paper-b", sourceWallet: "0xa" }),
+      ],
+      walletPerformance: [
+        walletPerformance({ accountKey: "paper-a", closedTradeCount: 3, sourceWallet: "0xa" }),
+        walletPerformance({ accountKey: "paper-b", closedTradeCount: 9, netRealizedPnlUsd: "90", sourceWallet: "0xa" }),
+      ],
+    });
+
+    const [row] = buildPaperSourceRows(summary, "paper-a");
+
+    expect(row).toMatchObject({ closedTradeCount: 3, copiedFillCount: 4, realizedPnlUsd: 8.5 });
+    expect(row.realizedPnlPerHourUsd).toBeCloseTo(8.5, 10);
   });
 });
 

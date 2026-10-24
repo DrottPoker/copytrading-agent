@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { liveAccount, livePosition, paperAccount, paperSummary, tradingAccounts } from "@/test/tradingFixtures";
+import {
+  liveAccount,
+  livePosition,
+  paperAccount,
+  paperClosedTrade,
+  paperPerformance,
+  paperSummary,
+  tradingAccounts,
+} from "@/test/tradingFixtures";
 
 import {
   buildAccountOptions,
@@ -104,6 +112,21 @@ describe("account options and views", () => {
 
     expect(view.positions).toHaveLength(1);
     expect(view.notices[0].title).toBe("Live trading is turned off on the server");
+  });
+
+  it("takes paper round trips from the performance of the same account only", () => {
+    const summary = paperSummary({ accounts: [paperAccount()] });
+    const option = buildAccountOptions(summary, tradingAccounts())[0];
+    const performance = paperPerformance({
+      closedTrades: [paperClosedTrade({ entryPrice: "100", fundingUsd: "-0.1", netPnlUsd: "9.5" })],
+    });
+
+    const view = buildAccountView(summary, tradingAccounts(), option, performance);
+    const otherView = buildAccountView(summary, tradingAccounts(), option, { ...performance, accountKey: "other" });
+
+    expect(view.closedTrades).toHaveLength(1);
+    expect(view.closedTrades[0]).toMatchObject({ entryPrice: "100", fundingUsd: -0.1, netPnlUsd: 9.5 });
+    expect(otherView.closedTrades).toEqual([]);
   });
 
   it("keeps open positions oldest first with a deterministic tie break", () => {

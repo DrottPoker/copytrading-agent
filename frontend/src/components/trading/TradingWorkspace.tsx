@@ -18,7 +18,15 @@ import {
   StatusDot,
 } from "@/components/ui/primitives";
 import { cx } from "@/lib/cx";
-import { formatInteger, formatMultiple, formatPercent, formatSignedUsd, formatUsd, pluralize } from "@/lib/format";
+import {
+  formatDateTime,
+  formatInteger,
+  formatMultiple,
+  formatPercent,
+  formatSignedUsd,
+  formatUsd,
+  pluralize,
+} from "@/lib/format";
 import { apiRequest, errorMessage } from "@/lib/http";
 import {
   accountSummaryFor,
@@ -27,7 +35,12 @@ import {
   latestUpdatedAt,
 } from "@/lib/trading/accounts";
 import { buildLiveCopyDecisionActivities } from "@/lib/trading/live";
-import { buildPerformanceTimeline, calculatePerformance } from "@/lib/trading/performance";
+import {
+  buildEquitySeries,
+  buildPerformanceTimeline,
+  calculatePaperPerformance,
+  calculatePerformance,
+} from "@/lib/trading/performance";
 import {
   buildLiveSourceHistory,
   buildPaperSourceHistory,
@@ -36,7 +49,7 @@ import {
   sumNumbers,
 } from "@/lib/trading/sources";
 import type { AccountOption, AccountSummary, CopySourceRow, PositionRow } from "@/lib/trading/types";
-import type { PaperTradingSummaryResponse } from "@/types/paper";
+import type { PaperAccountPerformanceResponse, PaperTradingSummaryResponse } from "@/types/paper";
 import type { TradingAccount, TradingAccountsResponse } from "@/types/trading";
 
 import { AccountDetailsPanel, PerformancePanel, RiskPanel } from "./AccountPanels";
@@ -52,7 +65,10 @@ import { PositionsPanel } from "./PositionsPanel";
 import { SourcesPanel } from "./SourcesPanel";
 
 const REFRESH_MS = 4000;
+// Equity snapshots arrive every few minutes, so performance refreshes less often than the summary.
+const PERFORMANCE_REFRESH_MS = 30000;
 const SUMMARY_LIMIT = 250;
+const CLOSED_TRADE_LIMIT = 200;
 const SELECTED_ACCOUNT_KEY = "copyagent.accounts.selectedAccountKey";
 
 type AccountAction = "start" | "stop" | "disable" | "close-all-and-stop" | "delete" | "reset" | "reconcile";
@@ -71,6 +87,8 @@ export function TradingWorkspace({
   const confirm = useConfirm();
   const [summary, setSummary] = useState(initialSummary);
   const [tradingAccounts, setTradingAccounts] = useState(initialTradingAccounts);
+  const [paperPerformance, setPaperPerformance] = useState<PaperAccountPerformanceResponse | null>(null);
+  const [performanceError, setPerformanceError] = useState<string | null>(null);
   const [connection, setConnection] = useState<"live" | "refreshing" | "offline">("live");
   const [lastRefreshAt, setLastRefreshAt] = useState<Date | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(initialAccountKey);
@@ -88,6 +106,11 @@ export function TradingWorkspace({
     () => options.find((option) => option.key === selectedKey) ?? options[0] ?? null,
     [options, selectedKey],
   );
+  const selectedPaperKey = selected?.accountType === "paper" ? selected.key : null;
+  const selectedPaperKeyRef = useRef(selectedPaperKey);
+  useEffect(() => {
+    selectedPaperKeyRef.current = selectedPaperKey;
+  }, [selectedPaperKey]);
 
   // Restore the last selected account and an unfinished create form after the first render.
   useEffect(() => {
@@ -154,6 +177,43 @@ export function TradingWorkspace({
     return () => window.clearInterval(intervalId);
   }, [refresh]);
 
+  /** Loads equity history and round trips of the selected paper account; answers for another account are dropped. */
+  const refreshPerformance = useCallback(async () => {
+    const key = selectedPaperKeyRef.current;
+    if (!key) {
+      return;
+    }
+    try {
+      const payload = await apiRequest<PaperAccountPerformanceResponse>(
+        `/paper-trading/accounts/${encodeURIComponent(key)}/performance`,
+        { fallback: "Performance could not be loaded", params: { closed_trade_limit: CLOSED_TRADE_LIMIT } },
+      );
+      if (selectedPaperKeyRef.current === key) {
+        setPaperPerformance(payload);
+        setPerformanceError(null);
+      }
+    } catch (error) {
+      if (selectedPaperKeyRef.current === key) {
+        setPerformanceError(errorMessage(error, "Performance could not be loaded."));
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!selectedPaperKey) {
+      return;
+    }
+    selectedPaperKeyRef.current = selectedPaperKey;
+    setPerformanceError(null);
+    void refreshPerformance();
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void refreshPerformance();
+      }
+    }, PERFORMANCE_REFRESH_MS);
+    return () => window.clearInterval(intervalId);
+  }, [refreshPerformance, selectedPaperKey]);
+
   /** Runs a mutation, applies a returned paper summary directly, and refreshes everything else. */
   const mutate = useCallback(
     async (path: string, method: "POST" | "DELETE", fallback: string, returnsPaperSummary: boolean) => {
@@ -162,9 +222,9 @@ export function TradingWorkspace({
         setSummary(payload);
         setLastRefreshAt(new Date());
       }
-      await refresh();
+      await Promise.all([refresh(), refreshPerformance()]);
     },
-    [refresh],
+    [refresh, refreshPerformance],
   );
 
   const runAccountAction = useCallback(
@@ -350,12 +410,29 @@ export function TradingWorkspace({
     }
   }, [creating, draft, refresh, selectAccount, summary.accounts]);
 
+  const performance = paperPerformance?.accountKey === selectedPaperKey ? paperPerformance : null;
   const view = useMemo(
-    () => (selected ? buildAccountView(summary, tradingAccounts, selected) : null),
-    [selected, summary, tradingAccounts],
+    () => (selected ? buildAccountView(summary, tradingAccounts, selected, performance) : null),
+    [performance, selected, summary, tradingAccounts],
   );
   const timeline = useMemo(() => buildPerformanceTimeline(view?.closedTrades ?? []), [view]);
-  const analytics = useMemo(() => calculatePerformance(timeline), [timeline]);
+  const equitySeries = useMemo(
+    () =>
+      performance && view
+        ? buildEquitySeries(performance, { at: summary.updatedAt, equityUsd: view.summary.equityUsd })
+        : null,
+    [performance, summary.updatedAt, view],
+  );
+  const analytics = useMemo(
+    () =>
+      performance && view
+        ? calculatePaperPerformance(performance, {
+            currentEquityUsd: view.summary.equityUsd,
+            totalPnlUsd: view.summary.totalPnlUsd,
+          })
+        : calculatePerformance(timeline),
+    [performance, timeline, view],
+  );
   const decisions = useMemo(
     () =>
       selected?.accountType === "live"
@@ -371,7 +448,7 @@ export function TradingWorkspace({
       return [];
     }
     if (selected.accountType === "paper") {
-      return buildPaperSourceHistory(summary.walletPerformance);
+      return buildPaperSourceHistory(summary.walletPerformance, selected.key);
     }
     return buildLiveSourceHistory({
       fills: tradingAccounts.recentFills.filter((fill) => fill.accountKey === selected.key),
@@ -554,7 +631,7 @@ export function TradingWorkspace({
             ) : (
               <Stat
                 label="Profit factor"
-                hint="Gross profit divided by gross loss of the loaded closed trades"
+                hint="Gross profit divided by gross loss of the closed trades since the last reset"
                 value={formatMultiple(analytics.profitFactor)}
                 sub={`${formatSignedUsd(analytics.expectancyUsd)} per trade`}
               />
@@ -562,7 +639,21 @@ export function TradingWorkspace({
           </StatStrip>
 
           <div className="grid gap-4 xl:grid-cols-[minmax(0,1.65fr)_minmax(20rem,1fr)]">
-            <PerformancePanel analytics={analytics} points={timeline} />
+            <PerformancePanel
+              analytics={analytics}
+              equity={selected.accountType === "paper" ? (equitySeries ?? []) : null}
+              error={selected.accountType === "paper" ? performanceError : null}
+              meta={
+                selected.accountType === "paper"
+                  ? performance
+                    ? `${pluralize(analytics.tradeCount, "closed trade")} since ${formatDateTime(performance.statsStartedAt)}`
+                    : performanceError
+                      ? "Not loaded"
+                      : "Loading"
+                  : `${formatInteger(analytics.tradeCount)} closed trades loaded`
+              }
+              points={timeline}
+            />
             <RiskPanel view={view} />
           </div>
 
@@ -571,7 +662,6 @@ export function TradingWorkspace({
           <SourcesPanel
             accountType={view.accountType}
             closingSource={closingSource}
-            combineAccounts={view.sourcesCombineAccounts}
             onCloseSource={(source) => void closeSource(source)}
             sources={view.sources}
           />
@@ -580,6 +670,7 @@ export function TradingWorkspace({
             accountKey={view.accountKey}
             accountType={view.accountType}
             cashFlowsVersion={view.cashFlowsVersion}
+            closedTradeTotal={performance?.tradeStats.tradeCount}
             closedTrades={view.closedTrades}
             decisions={decisions}
             executions={view.executions}

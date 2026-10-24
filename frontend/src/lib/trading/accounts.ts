@@ -8,6 +8,7 @@ import {
   toNumber,
 } from "@/lib/format";
 import type {
+  PaperAccountPerformanceResponse,
   PaperClosedTrade,
   PaperCopyFill,
   PaperPosition,
@@ -176,17 +177,27 @@ export function accountSummaryFor(option: AccountOption, tradingAccounts: Tradin
     : liveAccountSummary(option.live, tradingAccounts.positions, tradingAccounts);
 }
 
+/** `paperPerformance` holds the round trips of a paper account; it is ignored for other accounts. */
 export function buildAccountView(
   summary: PaperTradingSummaryResponse,
   tradingAccounts: TradingAccountsResponse,
   option: AccountOption,
+  paperPerformance: PaperAccountPerformanceResponse | null = null,
 ): AccountView {
   return option.accountType === "paper"
-    ? buildPaperAccountView(summary, option.paper)
+    ? buildPaperAccountView(
+        summary,
+        option.paper,
+        paperPerformance?.accountKey === option.key ? paperPerformance : null,
+      )
     : buildLiveAccountView(summary, tradingAccounts, option.live);
 }
 
-function buildPaperAccountView(summary: PaperTradingSummaryResponse, account: PaperTradingAccount): AccountView {
+function buildPaperAccountView(
+  summary: PaperTradingSummaryResponse,
+  account: PaperTradingAccount,
+  performance: PaperAccountPerformanceResponse | null,
+): AccountView {
   const positions = summary.positions.filter((position) => position.accountKey === account.key);
   const notices: AccountNotice[] = [];
   if (account.exitOnlyAt) {
@@ -203,14 +214,12 @@ function buildPaperAccountView(summary: PaperTradingSummaryResponse, account: Pa
       tone: "warning",
     });
   }
-  const paperAccounts = summary.accounts.length;
   return {
     accountKey: account.key,
     accountType: "paper",
     capitalBalances: [],
     cashFlowsVersion: null,
-    closedTrades: summary.closedTrades
-      .filter((trade) => trade.accountKey === account.key)
+    closedTrades: (performance?.closedTrades ?? [])
       .map(paperClosedTradeRow)
       .sort((left, right) => dateMs(right.closedAt) - dateMs(left.closedAt)),
     executions: summary.recentFills
@@ -221,7 +230,6 @@ function buildPaperAccountView(summary: PaperTradingSummaryResponse, account: Pa
     notices,
     positions: positions.map(paperPositionRow).sort(compareRowsOldestFirst),
     sources: buildPaperSourceRows(summary, account.key),
-    sourcesCombineAccounts: paperAccounts > 1,
     summary: paperAccountSummary(account),
   };
 }
@@ -274,7 +282,6 @@ function buildLiveAccountView(
       summary,
       tradingAccounts,
     }),
-    sourcesCombineAccounts: false,
     summary: liveAccountSummary(account, tradingAccounts.positions, tradingAccounts),
   };
 }
@@ -350,14 +357,14 @@ function paperClosedTradeRow(trade: PaperClosedTrade): ClosedTradeRow {
     closedAt: trade.closedAt,
     coin: trade.coin,
     durationMs: trade.durationMs,
-    entryPrice: null,
+    entryPrice: trade.entryPrice,
     exitPrice: trade.exitPrice,
     feeUsd: decimal(trade.feeUsd),
     flags: [
       ...(trade.isSourceLiquidation ? [{ label: "Source liquidated", tone: "negative" as const }] : []),
       ...(trade.isPaperLiquidation ? [{ label: "Paper liquidation", tone: "negative" as const }] : []),
     ],
-    fundingUsd: null,
+    fundingUsd: decimal(trade.fundingUsd),
     id: trade.id,
     netPnlUsd: decimal(trade.netPnlUsd),
     notionalUsd: toNumber(trade.notionalUsd),

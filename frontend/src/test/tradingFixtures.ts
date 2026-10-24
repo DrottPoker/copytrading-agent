@@ -1,4 +1,11 @@
-import type { PaperCopyAllocation, PaperTradingAccount, PaperTradingSummaryResponse } from "@/types/paper";
+import type {
+  PaperAccountPerformanceResponse,
+  PaperClosedTrade,
+  PaperCopyAllocation,
+  PaperTradingAccount,
+  PaperTradingSummaryResponse,
+  PaperWalletPerformance,
+} from "@/types/paper";
 import type {
   LiveCopyDecision,
   TradingAccount,
@@ -221,7 +228,6 @@ export function paperSummary(overrides: Partial<PaperTradingSummaryResponse> = {
     allocations: [],
     positions: [],
     walletPerformance: [],
-    closedTrades: [],
     recentFills: [],
     realtimeMonitoring: {
       status: "connected",
@@ -233,6 +239,114 @@ export function paperSummary(overrides: Partial<PaperTradingSummaryResponse> = {
     },
     updatedAt: "2026-01-02T00:00:00Z",
     marketDataStatus: "live",
+    ...overrides,
+  };
+}
+
+export function walletPerformance(overrides: Partial<PaperWalletPerformance> = {}): PaperWalletPerformance {
+  return {
+    accountKey: "paper-test",
+    sourceWallet: "0xsource",
+    sourceLabel: null,
+    rank: 1,
+    poolRank: 1,
+    score: "75",
+    allocationPct: "0.2",
+    active: true,
+    monitorStatus: "monitored",
+    openPositionCount: 0,
+    copiedFillCount: 4,
+    skippedFillCount: 1,
+    closedTradeCount: 2,
+    realizedPnlUsd: "10",
+    feeUsd: "1",
+    fundingUsd: "-0.5",
+    netRealizedPnlUsd: "8.5",
+    unrealizedPnlUsd: "0",
+    totalPnlUsd: "8.5",
+    monitoredSeconds: 3600,
+    monitoredHours: "1",
+    netRealizedPnlPerMonitoredHourUsd: "8.5",
+    totalPnlPerMonitoredHourUsd: "8.5",
+    firstMonitoredAt: "2026-01-01T00:00:00Z",
+    currentMonitoringStartedAt: "2026-01-01T00:00:00Z",
+    lastMonitoredAt: "2026-01-01T01:00:00Z",
+    openNotionalUsd: "0",
+    openMarginUsd: "0",
+    lastFillAt: "2026-01-01T00:30:00Z",
+    ...overrides,
+  };
+}
+
+export function paperClosedTrade(overrides: Partial<PaperClosedTrade> = {}): PaperClosedTrade {
+  return {
+    id: "round-trip-1",
+    accountKey: "paper-test",
+    sourceWallet: "0xsource",
+    sourceLabel: "Source",
+    sourceFillId: "fill-1",
+    coin: "BTC",
+    closeType: "close",
+    side: "long",
+    entryPrice: "100",
+    exitPrice: "105",
+    size: "2",
+    entryNotionalUsd: "200",
+    notionalUsd: "210",
+    leverage: "5",
+    marginUsd: "42",
+    feeUsd: "0.4",
+    fundingUsd: "-0.1",
+    realizedPnlUsd: "10",
+    netPnlUsd: "9.5",
+    openFillCount: 2,
+    closeFillCount: 2,
+    isSourceLiquidation: false,
+    isPaperLiquidation: false,
+    openedAt: "2026-01-01T00:00:00Z",
+    closedAt: "2026-01-01T02:00:00Z",
+    durationMs: 2 * 60 * 60 * 1000,
+    createdAt: "2026-01-01T02:00:00Z",
+    ...overrides,
+  };
+}
+
+export function paperPerformance(
+  overrides: Partial<PaperAccountPerformanceResponse> = {},
+): PaperAccountPerformanceResponse {
+  return {
+    accountKey: "paper-test",
+    startingBalanceUsd: "1000",
+    statsStartedAt: "2026-01-01T00:00:00Z",
+    snapshotIntervalSeconds: 300,
+    equityPoints: [
+      { recordedAt: "2026-01-01T00:00:00Z", equityUsd: "1000" },
+      { recordedAt: "2026-01-01T00:05:00Z", equityUsd: "1050" },
+      { recordedAt: "2026-01-01T00:10:00Z", equityUsd: "1000" },
+      { recordedAt: "2026-01-01T00:15:00Z", equityUsd: "1080" },
+    ],
+    equitySnapshotCount: 4,
+    peakEquityUsd: "1080",
+    maxDrawdownUsd: "50",
+    maxDrawdownPct: "0.047619",
+    maxDrawdownPeakAt: "2026-01-01T00:05:00Z",
+    maxDrawdownTroughAt: "2026-01-01T00:10:00Z",
+    tradeStats: {
+      tradeCount: 5,
+      winCount: 3,
+      lossCount: 2,
+      grossProfitUsd: "30",
+      grossLossUsd: "10",
+      netPnlUsd: "20",
+      bestTradeUsd: "15",
+      worstTradeUsd: "-6",
+      longestWinStreak: 2,
+      longestLossStreak: 1,
+      currentStreakCount: 1,
+      currentStreakKind: "win",
+    },
+    closedTrades: [paperClosedTrade()],
+    updatedAt: "2026-01-01T00:16:00Z",
     ...overrides,
   };
 }

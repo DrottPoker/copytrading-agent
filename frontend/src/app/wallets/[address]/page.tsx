@@ -75,7 +75,7 @@ export default async function WalletDetailPage({ params }: { params: Promise<{ a
     getWalletSourceTrades(wallet.address),
     getWalletCopyTrades(wallet.address),
     getWalletScoreDetail(wallet.address),
-    getPaperTradingSummary({ closedTradeLimit: 1, includeMarketPrices: false, recentFillLimit: 1 }),
+    getPaperTradingSummary({ includeMarketPrices: false, recentFillLimit: 1 }),
   ]);
   const followedLive = new Set(
     [...summary.realtimeMonitoring.desiredWallets, ...summary.realtimeMonitoring.monitoredWallets].map((item) =>

@@ -347,7 +347,6 @@ export async function getOperationStatuses(): Promise<OperationStatusListRespons
 }
 
 type PaperTradingSummaryOptions = {
-  closedTradeLimit?: number;
   includeMarketPrices?: boolean;
   recentFillLimit?: number;
   refreshAllocations?: boolean;
@@ -358,9 +357,6 @@ export async function getPaperTradingSummary(
 ): Promise<PaperTradingSummaryResponse> {
   try {
     const url = new URL(`${getApiBaseUrl()}/paper-trading`);
-    if (options.closedTradeLimit) {
-      url.searchParams.set("closed_trade_limit", String(options.closedTradeLimit));
-    }
     if (options.recentFillLimit) {
       url.searchParams.set("recent_fill_limit", String(options.recentFillLimit));
     }
@@ -443,7 +439,6 @@ function emptyPaperTradingSummary(): PaperTradingSummaryResponse {
     allocations: [],
     positions: [],
     walletPerformance: [],
-    closedTrades: [],
     recentFills: [],
     realtimeMonitoring: {
       status: "disconnected",

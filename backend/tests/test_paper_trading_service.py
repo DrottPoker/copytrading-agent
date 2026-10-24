@@ -24,6 +24,7 @@ from app.services.copy_signal_service import (
 )
 from app.services.paper_trading_service import (
     CopyAllocationCache,
+    WalletMonitoringSummary,
     apply_wallet_monitoring_snapshot,
     copy_allocations,
     live_open_copy_source_select,
@@ -164,7 +165,7 @@ def test_paper_monitor_status_uses_acknowledged_subscription_truth() -> None:
     )
 
 
-def test_wallet_performance_sorts_by_total_pnl_before_realized_pnl() -> None:
+def test_wallet_performance_is_net_per_account_and_sorted_by_total_pnl() -> None:
     snapshot = RealtimeSubscriptionSnapshot(
         status="connected",
         desired_wallets=(),
@@ -175,9 +176,11 @@ def test_wallet_performance_sorts_by_total_pnl_before_realized_pnl() -> None:
     )
 
     rows = paper_wallet_performance_reads(
+        account_keys=["paper_a", "paper_b"],
         allocations=[],
         positions=[
             {
+                "account_key": "paper_a",
                 "source_wallet": "0xhighrealized",
                 "unrealized_pnl_usd": Decimal("-9"),
                 "current_notional_usd": Decimal("10"),
@@ -185,24 +188,53 @@ def test_wallet_performance_sorts_by_total_pnl_before_realized_pnl() -> None:
                 "margin_usd": Decimal("2"),
             }
         ],
-        fill_performance_rows=[
+        source_performance_rows=[
             {
+                "account_key": "paper_a",
                 "source_wallet": "0xhighrealized",
                 "realized_pnl_usd": Decimal("10"),
+                "fee_usd": Decimal("1"),
+                "funding_usd": Decimal("-0.5"),
             },
             {
+                "account_key": "paper_a",
                 "source_wallet": "0xhightotal",
                 "realized_pnl_usd": Decimal("2"),
+                "fee_usd": Decimal("0.5"),
+                "funding_usd": Decimal("0"),
+            },
+            {
+                "account_key": "paper_b",
+                "source_wallet": "0xhightotal",
+                "realized_pnl_usd": Decimal("0.2"),
+                "fee_usd": Decimal("0.05"),
+                "funding_usd": Decimal("0"),
             },
         ],
         source_allocations={},
         source_labels={},
-        monitoring_stats={},
+        monitoring_stats={
+            "0xfollowed": WalletMonitoringSummary(
+                first_monitored_at=None,
+                current_monitoring_started_at=None,
+                last_monitored_at=None,
+                monitored_seconds=3600,
+            )
+        },
         realtime_monitoring=snapshot,
     )
 
-    assert [row["source_wallet"] for row in rows] == [
+    by_key = {(row["account_key"], row["source_wallet"]): row for row in rows}
+    high_realized = by_key[("paper_a", "0xhighrealized")]
+    assert high_realized["net_realized_pnl_usd"] == Decimal("8.5")
+    assert high_realized["total_pnl_usd"] == Decimal("-0.5")
+    assert by_key[("paper_b", "0xhightotal")]["net_realized_pnl_usd"] == Decimal("0.15")
+    # The shared realtime feed lists a followed source in every paper account.
+    assert by_key[("paper_b", "0xfollowed")]["monitored_seconds"] == 3600
+    assert ("paper_b", "0xhighrealized") not in by_key
+    assert [row["source_wallet"] for row in rows if row["account_key"] == "paper_a"] == [
         "0xhightotal",
+        "0xfollowed",
         "0xhighrealized",
     ]
 

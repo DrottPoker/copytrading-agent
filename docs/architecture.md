@@ -1155,13 +1155,16 @@ sequenceDiagram
   opt include_market_prices=true
     API->>HL: current market prices for open paper positions
   end
-  API->>API: compute unrealized PnL and source-wallet PnL
-  API-->>UI: accounts, allocations, positions, wallet PnL, closed trades, recent fills
+  API->>API: compute unrealized PnL and per-account source-wallet PnL
+  API-->>UI: accounts, allocations, positions, wallet PnL, recent fills per account
+  UI->>API: GET /paper-trading/accounts/{account_key}/performance
+  API->>DB: equity snapshots and round trips since the last reset
+  API-->>UI: equity curve, drawdown, trade statistics, newest round trips
   UI->>API: POST /paper-trading/accounts
   API->>DB: create disabled dashboard-managed paper account
   API-->>UI: refreshed paper trading summary
   UI->>API: POST /paper-trading/accounts/{account_key}/reset
-  API->>DB: reset account balance counters only
+  API->>DB: reset account balance counters and record the reset time
   API-->>UI: refreshed paper trading summary
   UI->>API: POST /paper-trading/accounts/{account_key}/stop
   API->>DB: disable new entries and adds for that account
@@ -1507,6 +1510,9 @@ and `paper_risk_service.py` applies them to stored paper state.
   and kept for 35 days. The highest snapshot equity since the last reset is
   also stored as `paper_trading_accounts.peak_equity_usd`, so the drawdown
   limit measures from the peak like live even after old snapshots are pruned.
+  The same snapshots draw the dashboard's equity curve and drawdown. A reset
+  deletes them and stores `paper_trading_accounts.balance_reset_at`, from
+  which paper statistics, source PnL, and closed trades are counted.
   A breach of the 24 hour, 7 day, or drawdown limit sets
   `exit_only_at` and `exit_only_reason` on the account and writes an audit log
   row. An exit-only paper account still reduces and closes positions but takes
@@ -1886,13 +1892,25 @@ sources overwriting each other on the same coin. Different coins in the same
 account can independently follow different source margin modes. Matching exits
 and adds from the reserved source continue to execute.
 
-The paper summary exposes closed trade history separately from raw recent fills.
-Closed trade rows are derived from paper `close` and `flip_close` executions,
-so dashboard trade history is not a skip or fill activity log. The summary also
-matches closed paper fills back to original source fills and marks rows whose
-source close fill was a Hyperliquid liquidation.
-Recent fills remain available in the summary as the diagnostic fill and skip
-activity log, and the Trading page renders them in the Executions tab.
+Paper performance lives in `paper_performance_service.py` and is served per
+account by `GET /paper-trading/accounts/{account_key}/performance`, apart from
+the four-second summary, because it changes only with new snapshots and
+closes. Closed trades are round trips built in one SQL pass: a running count
+of `open` and `flip_open` fills per source, coin, and side numbers each
+position lifecycle, and the fills of a lifecycle are summed once it has a
+`close`, `flip_close`, or `liquidation` fill. Funding comes from
+`paper_funding_payments` of the same source, coin, and side while the round
+trip was open. Statistics cover every round trip since the account's
+`balance_reset_at`; only the newest are listed. The response also carries the
+equity snapshots, reduced to about 600 points that keep each bucket's low and
+high, and the largest drawdown measured on all snapshots. The dashboard adds
+the current live mark to the curve and compares it with the stored peak, so a
+drawdown deeper than every snapshot is reported too. Rows whose source close
+fill was a Hyperliquid liquidation are marked.
+Recent fills remain in the summary as the diagnostic fill and skip activity
+log, limited per account, and the Trading page renders them in the Executions
+tab. Source-wallet PnL in the summary is grouped per account and source and
+counts fills and funding after the account's last balance reset.
 
 Discovery candidate source metrics use explicit unit-bearing database columns:
 `source_account_value_usd`, `source_pnl_usd`, and `source_roi_pct`.

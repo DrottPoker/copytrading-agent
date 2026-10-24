@@ -4,6 +4,37 @@ Notable changes, newest first. Dates are UTC. The historical development phases
 at the end describe how the system was built and keep the detailed notes that
 used to live in the README.
 
+## 2026-10-24
+
+### Paper statistics from equity and round trips
+
+- The paper performance panel drew the cumulative PnL of closing fills only.
+  Partial closes were missing, each row paid only its closing fee, and the
+  maximum drawdown ignored open positions, so the panel looked better than the
+  account.
+- Paper closed trades are now round trips, like live: one row per position
+  from its opening fill through adds and partial closes to the fill that
+  leaves it flat, with the fees of every fill and the funding paid while it
+  was open. Win rate, profit factor, and the other trade figures cover every
+  round trip since the last balance reset, not only the loaded rows.
+- The chart shows marked-to-market PnL and the drawdown from the equity peak,
+  from the 5 minute equity snapshots plus the live mark. Maximum and current
+  drawdown and the recovery factor use equity, so losses in open positions
+  count.
+- Closed trades and recent fills were loaded with one limit shared by all
+  paper accounts, so a busy account could hide another account's older trades.
+  Recent fills are now limited per account, and closed trades come from the
+  new per-account endpoint
+  `GET /paper-trading/accounts/{account_key}/performance`.
+- Source PnL in Copy sources and Source history was gross realized PnL summed
+  over every paper account and every fill since the account was created. It is
+  now per account, net of fees and funding, and counts only activity after the
+  last balance reset, which is stored as
+  `paper_trading_accounts.balance_reset_at` (migration `c5e7a9b1d3f6`,
+  backfilled from the audit log).
+- `GET /paper-trading` no longer returns `closedTrades` and no longer accepts
+  `closed_trade_limit`.
+
 ## 2026-10-12
 
 ### Shared coins in paper accounts
