@@ -503,7 +503,7 @@ async def load_execution_market_prices(
         mids = {}
 
     for coin in missing_coins:
-        price = resolve_coin_decimal(mids, coin)
+        price = resolve_market_price(mids, coin, dex="")
         if price is not None and price > ZERO:
             market_prices[coin] = price
             price_sources[coin] = "http_mid"
@@ -520,7 +520,7 @@ async def load_execution_market_prices(
         for coin in missing_coins:
             if coin in market_prices or dex_from_coin(coin) != dex:
                 continue
-            price = resolve_coin_decimal(dex_prices, coin)
+            price = resolve_market_price(dex_prices, coin, dex=dex)
             if price is not None and price > ZERO:
                 market_prices[coin] = price
                 price_sources[coin] = "http_mid"
@@ -756,6 +756,23 @@ def resolve_coin_decimal(values_by_coin: dict[str, Any], coin: str) -> Decimal |
             if value is not None:
                 return value
     return None
+
+
+def resolve_market_price(
+    prices_by_coin: dict[str, Any],
+    coin: str,
+    *,
+    dex: str,
+) -> Decimal | None:
+    """Price of a coin from the mids of one perp dex, never from another dex.
+
+    Builder dex coins such as ``xyz:BTC`` share their symbol with main dex
+    markets, so a price payload only answers for coins of its own dex.
+    """
+
+    if dex_from_coin(coin).casefold() != dex.strip().casefold():
+        return None
+    return resolve_coin_decimal(prices_by_coin, coin)
 
 
 def resolve_coin_margin_mode(
@@ -1055,7 +1072,7 @@ async def load_mark_prices(
     if price_cache is not None:
         await price_cache.update_mids(mids)
     for coin in missing_coins:
-        price = resolve_coin_decimal(mids, coin)
+        price = resolve_market_price(mids, coin, dex="")
         if price is not None and price > ZERO:
             market_prices[coin] = price
 
@@ -1071,7 +1088,7 @@ async def load_mark_prices(
         for coin in missing_coins:
             if coin in market_prices or dex_from_coin(coin) != dex:
                 continue
-            price = resolve_coin_decimal(dex_prices, coin)
+            price = resolve_market_price(dex_prices, coin, dex=dex)
             if price is not None and price > ZERO:
                 market_prices[coin] = price
     return market_prices

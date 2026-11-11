@@ -72,7 +72,6 @@ from app.services.copy_signal_service import (
     part_requires_source_equity,
     plan_source_fill,
     raw_json_from_fill,
-    resolve_coin_decimal,
     resolve_coin_margin_mode,
     resolve_source_current_position,
     side_from_fill_direction,
@@ -395,7 +394,7 @@ async def get_paper_trading_summary(
     position_rows = [
         paper_position_read(
             position,
-            mark_price=resolve_coin_decimal(market_prices, position.coin),
+            mark_price=market_prices.get(position.coin),
             price_updated_at=updated_at if position.coin in market_prices else None,
             source_label=source_labels.get(position.source_wallet.lower()),
             fill_counts=position_fill_counts.get(position.id, (0, 0)),
@@ -511,7 +510,7 @@ async def close_paper_position_manually(
         client=client,
         positions=[position_snapshot],
     )
-    mark_price = resolve_coin_decimal(market_prices, position_snapshot.coin)
+    mark_price = market_prices.get(position_snapshot.coin)
     if mark_price is None or mark_price <= ZERO:
         raise PaperPositionCloseUnavailableError("Execution price is unavailable.")
 
