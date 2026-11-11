@@ -278,36 +278,41 @@ class HyperliquidLiveTradingClient:
             # Sizing already meets the minimum; this only corrects lot rounding.
             adjust_to_min_order=True,
         )
-        if self.settings.live_trading_order_expires_after_ms > 0 and hasattr(
-            exchange, "set_expires_after"
-        ):
-            exchange.set_expires_after(
+        set_expires_after = getattr(exchange, "set_expires_after", None)
+        if self.settings.live_trading_order_expires_after_ms > 0 and callable(set_expires_after):
+            set_expires_after(
                 int(time.time() * 1000) + self.settings.live_trading_order_expires_after_ms
             )
         leverage_update: dict[str, Any] | None = None
-        if not intent.reduce_only:
-            leverage_update = self._ensure_leverage(
-                account,
-                exchange,
-                coin=order_coin,
-                leverage=validated_live_entry_leverage(intent.leverage),
-                margin_mode=intent.margin_mode,
-            )
-        cloid = self._build_cloid(intent.client_order_id)
         try:
-            response = exchange.order(
-                order_coin,
-                intent.is_buy,
-                float(wire_values.size),
-                float(wire_values.limit_price),
-                {"limit": {"tif": "Ioc"}},
-                reduce_only=intent.reduce_only,
-                cloid=cloid,
-            )
-        except KeyError as exc:
-            raise HyperliquidLiveOrderRejectedError(
-                live_order_market_unavailable_message(intent.coin)
-            ) from exc
+            if not intent.reduce_only:
+                leverage_update = self._ensure_leverage(
+                    account,
+                    exchange,
+                    coin=order_coin,
+                    leverage=validated_live_entry_leverage(intent.leverage),
+                    margin_mode=intent.margin_mode,
+                )
+            cloid = self._build_cloid(intent.client_order_id)
+            try:
+                response = exchange.order(
+                    order_coin,
+                    intent.is_buy,
+                    float(wire_values.size),
+                    float(wire_values.limit_price),
+                    {"limit": {"tif": "Ioc"}},
+                    reduce_only=intent.reduce_only,
+                    cloid=cloid,
+                )
+            except KeyError as exc:
+                raise HyperliquidLiveOrderRejectedError(
+                    live_order_market_unavailable_message(intent.coin)
+                ) from exc
+        finally:
+            # The SDK signs every later action on this shared exchange with the stored
+            # expiry, so a stale one would reject later leverage updates and cancels.
+            if callable(set_expires_after):
+                set_expires_after(None)
         if not isinstance(response, dict):
             raise HyperliquidLiveOrderRejectedError(
                 "Hyperliquid order returned an invalid response."

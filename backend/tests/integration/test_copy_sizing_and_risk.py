@@ -30,6 +30,7 @@ from app.services.live_trading_service import (
     live_source_net_loss_usd,
     load_live_copy_exposure,
     restart_breached_live_loss_limits,
+    thin_live_account_performance_snapshots,
 )
 from app.services.paper_trading_service import (
     PaperSourceAllocation,
@@ -253,6 +254,70 @@ async def test_starting_a_live_account_inside_its_limits_keeps_the_loss_windows(
 
     assert restart is None
     assert account.loss_limits_reset_at is None
+
+
+@pytest.mark.asyncio
+async def test_old_performance_snapshots_are_thinned_without_losing_the_peak(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    now = datetime(2026, 6, 20, 12, 0, tzinfo=UTC)
+    started = datetime(2026, 6, 1, 0, 0, tzinfo=UTC)
+    old_hour = datetime(2026, 6, 2, 10, 0, tzinfo=UTC)
+    recent_hour = now - timedelta(days=2)
+    async with integration_sessionmaker() as session:
+        session.add(live_account())
+        await session.flush()
+        session.add_all(
+            [
+                snapshot(index="1.0", recorded_at=started, started_at=started),
+                # An old hour: its peak and its last snapshot survive.
+                snapshot(index="1.10", recorded_at=old_hour, started_at=started),
+                snapshot(
+                    index="1.30",
+                    recorded_at=old_hour + timedelta(minutes=10),
+                    started_at=started,
+                ),
+                snapshot(
+                    index="1.20",
+                    recorded_at=old_hour + timedelta(minutes=20),
+                    started_at=started,
+                ),
+                snapshot(
+                    index="1.15",
+                    recorded_at=old_hour + timedelta(minutes=50),
+                    started_at=started,
+                ),
+                # Inside the loss limit windows nothing is removed.
+                snapshot(index="1.05", recorded_at=recent_hour, started_at=started),
+                snapshot(
+                    index="1.04",
+                    recorded_at=recent_hour + timedelta(minutes=1),
+                    started_at=started,
+                ),
+                snapshot(
+                    index="1.03",
+                    recorded_at=recent_hour + timedelta(minutes=2),
+                    started_at=started,
+                ),
+            ]
+        )
+        await session.flush()
+        before = await live_account_loss_state(session, account_key=ACCOUNT_KEY, now=now)
+
+        await thin_live_account_performance_snapshots(session, account_key=ACCOUNT_KEY, now=now)
+        await thin_live_account_performance_snapshots(session, account_key=ACCOUNT_KEY, now=now)
+
+        remaining = (
+            await session.scalars(
+                select(TradingAccountPerformanceSnapshot.performance_index)
+                .where(TradingAccountPerformanceSnapshot.account_key == ACCOUNT_KEY)
+                .order_by(TradingAccountPerformanceSnapshot.recorded_at.asc())
+            )
+        ).all()
+        after = await live_account_loss_state(session, account_key=ACCOUNT_KEY, now=now)
+
+    assert [str(index) for index in remaining] == ["1.0", "1.30", "1.15", "1.05", "1.04", "1.03"]
+    assert after == before
 
 
 @pytest.mark.asyncio

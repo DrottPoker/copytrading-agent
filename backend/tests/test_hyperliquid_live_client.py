@@ -979,3 +979,64 @@ async def test_margin_setting_sync_is_remembered_for_the_next_entry() -> None:
     await client.submit_order(account=account, intent=live_test_intent())
 
     assert exchange.events == ["update_leverage", "order"]
+
+
+class ExpiryTrackingExchange(FakeExchange):
+    """Records the expiry each action would be signed with, like the SDK exchange."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.expires_after: int | None = None
+        self.signed_with_expiry: list[tuple[str, bool]] = []
+
+    def set_expires_after(self, expires_after: int | None) -> None:
+        self.expires_after = expires_after
+
+    def update_leverage(self, leverage: int, coin: str, is_cross: bool = True) -> dict[str, object]:
+        self.signed_with_expiry.append(("update_leverage", self.expires_after is not None))
+        return super().update_leverage(leverage, coin, is_cross)
+
+    def order(self, *args: object, **kwargs: object) -> dict[str, object]:
+        self.signed_with_expiry.append(("order", self.expires_after is not None))
+        return super().order(*args, **kwargs)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_order_expiry_does_not_leak_into_later_exchange_actions() -> None:
+    exchange = ExpiryTrackingExchange()
+    client = cached_live_client(CountingExchangeFactory(exchange))
+    account = live_test_account(status="enabled")
+
+    await client.submit_order(account=account, intent=live_test_intent())
+    expiry_after_order = exchange.expires_after
+    await client.update_margin_setting(
+        account=account,
+        coin="BTC",
+        leverage=Decimal("7"),
+        margin_mode="cross",
+    )
+
+    assert expiry_after_order is None
+    assert exchange.signed_with_expiry == [
+        ("update_leverage", True),
+        ("order", True),
+        ("update_leverage", False),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_order_expiry_is_cleared_when_the_order_is_rejected() -> None:
+    class RejectingExchange(ExpiryTrackingExchange):
+        def order(self, *args: object, **kwargs: object) -> dict[str, object]:
+            raise KeyError("BTC")
+
+    exchange = RejectingExchange()
+    client = cached_live_client(CountingExchangeFactory(exchange))
+
+    with pytest.raises(HyperliquidLiveOrderRejectedError):
+        await client.submit_order(
+            account=live_test_account(status="enabled"),
+            intent=live_test_intent(),
+        )
+
+    assert exchange.expires_after is None

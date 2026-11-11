@@ -817,6 +817,11 @@ async def test_partial_reconciliation_preserves_enabled_lifecycle_and_protects_e
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(live_trading_service, "prune_live_reconciliation_runs", return_none)
+    monkeypatch.setattr(
+        live_trading_service,
+        "thin_live_account_performance_snapshots",
+        return_none,
+    )
 
     result = await run_live_trading_account_reconciliation(  # type: ignore[arg-type]
         session,
@@ -999,6 +1004,11 @@ async def test_failed_reconciliation_blocks_entries_without_changing_enabled_lif
         return None
 
     monkeypatch.setattr(live_trading_service, "prune_live_reconciliation_runs", return_none)
+    monkeypatch.setattr(
+        live_trading_service,
+        "thin_live_account_performance_snapshots",
+        return_none,
+    )
 
     await mark_live_reconciliation_run_failed(  # type: ignore[arg-type]
         session,

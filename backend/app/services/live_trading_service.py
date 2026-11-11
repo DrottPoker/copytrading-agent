@@ -7,7 +7,7 @@ from hashlib import blake2s
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete, exists, func, or_, select
+from sqlalchemy import delete, exists, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -119,6 +119,9 @@ MAX_LIVE_CASH_FLOW_RECONCILIATION_PAGES = 10
 LIVE_CASH_FLOW_BACKFILL_VERSION = 1
 LIVE_PERFORMANCE_BACKFILL_VERSION = 2
 LIVE_RECONCILIATION_RUN_RETENTION_DAYS = 30
+# Performance snapshots keep every reconciliation for the loss limit windows and
+# are thinned to the hour after that.
+LIVE_PERFORMANCE_SNAPSHOT_FULL_RESOLUTION_DAYS = 8
 LIVE_ACCOUNT_KEY_MAX_LENGTH = 64
 LIVE_CAPITAL_MODE_UNIFIED = "unified"
 LIVE_CAPITAL_MODE_STANDARD_PER_DEX = "standard_per_dex"
@@ -3664,6 +3667,7 @@ async def run_live_trading_account_reconciliation(
         run.removed_positions = position_result.removed_positions
         run.error = None
         await prune_live_reconciliation_runs(session, account_key=account.key)
+        await thin_live_account_performance_snapshots(session, account_key=account.key)
         await session.commit()
     except LiveTradingServiceError as exc:
         await mark_live_reconciliation_run_failed(
@@ -4177,6 +4181,52 @@ async def prune_live_reconciliation_runs(
             TradingReconciliationRun.account_key == account_key,
             TradingReconciliationRun.started_at < cutoff,
         )
+    )
+
+
+async def thin_live_account_performance_snapshots(
+    session: AsyncSession,
+    *,
+    account_key: str,
+    now: datetime | None = None,
+) -> None:
+    """Thin snapshots older than the loss limit windows to two per hour.
+
+    A snapshot is recorded at every reconciliation. The rolling 24 hour and
+    7 day limits need that resolution only inside their windows. Older hours
+    keep their last snapshot and the one with the highest index, so the index
+    history and the drawdown peak stay exact. Baselines are always kept.
+    """
+
+    cutoff = (now or datetime.now(UTC)) - timedelta(
+        days=LIVE_PERFORMANCE_SNAPSHOT_FULL_RESOLUTION_DAYS
+    )
+    await session.execute(
+        text(
+            """
+            delete from trading_account_performance_snapshots as snapshot
+            using (
+              select
+                id,
+                row_number() over (
+                  partition by date_trunc('hour', recorded_at)
+                  order by recorded_at desc
+                ) as recency_rank,
+                row_number() over (
+                  partition by date_trunc('hour', recorded_at)
+                  order by performance_index desc, recorded_at desc
+                ) as peak_rank
+              from trading_account_performance_snapshots
+              where account_key = :account_key
+                and recorded_at < :cutoff
+                and is_baseline is false
+            ) as ranked
+            where snapshot.id = ranked.id
+              and ranked.recency_rank > 1
+              and ranked.peak_rank > 1
+            """
+        ),
+        {"account_key": account_key, "cutoff": cutoff},
     )
 
 
