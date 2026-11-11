@@ -17,4 +17,7 @@ uvicorn==0.54.0
 websockets==17.2
 # Security floors for transitive dependencies flagged by pip-audit.
 anyio>=4.15.1
+certifi>=2026.10.18
+filelock>=4.2.1
+msgpack>=1.2.3
 urllib3>=2.8.0
