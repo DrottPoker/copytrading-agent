@@ -43,6 +43,7 @@ from app.schemas.trading import (
     TradingPositionRead,
     TradingSourceMetadataRead,
 )
+from app.services.hyperliquid_account_mode import normalize_user_abstraction
 from app.services.live_copy_decision_service import (
     LiveCopyDecisionExecutionDiagnostics,
     live_copy_decision_identity,
@@ -74,7 +75,6 @@ from app.services.live_trading_service import (
     live_unified_equity_usd,
     load_live_account,
     load_live_closed_trades,
-    normalize_user_abstraction,
     reconcile_live_trading_account,
     start_live_trading_account,
     stop_live_trading_account,

@@ -18,10 +18,11 @@ from typing import Any, TypeGuard
 from app.core.config import Settings
 from app.db.models import WalletFill
 from app.integrations.hyperliquid_client import HyperliquidClient
-from app.services.copy_execution_cache import SourceAccountStateCache
-from app.services.live_trading_service import (
+from app.services.copy_execution_cache import SourceAccountModeCache, SourceAccountStateCache
+from app.services.hyperliquid_account_mode import (
     live_spot_usdc_available,
     live_spot_usdc_total,
+    normalize_user_abstraction,
     user_abstraction_is_unified,
 )
 from app.services.market_price_cache import MarketPriceCache
@@ -87,8 +88,23 @@ class ExecutionMarketPrices:
 SourceStateCache = SourceAccountStateCache[SourceAccountState]
 
 
-# Per-batch unified equity lookups, shared by concurrent per-dex state loads.
-UnifiedEquityCache = dict[str, "asyncio.Task[Decimal | None]"]
+@dataclass(frozen=True)
+class SourceCollateral:
+    """Where a source's equity is read from, and that equity for unified accounts."""
+
+    mode_known: bool
+    unified: bool = False
+    # Marked-to-market spot USDC of a unified account; None when it could not be read.
+    unified_equity: Decimal | None = None
+
+
+# Per-batch collateral lookups, shared by concurrent per-dex state loads.
+UnifiedEquityCache = dict[str, "asyncio.Task[SourceCollateral]"]
+# The account mode lookup is heavy and the mode rarely changes.
+SOURCE_ACCOUNT_MODE_MAX_AGE_SECONDS = 900.0
+SOURCE_ACCOUNT_MODE_CACHE = SourceAccountModeCache(
+    max_age_seconds=SOURCE_ACCOUNT_MODE_MAX_AGE_SECONDS
+)
 
 
 def source_fill_from_wallet_fill(fill: WalletFill) -> dict[str, Any]:
@@ -267,17 +283,32 @@ async def load_source_account_state(
     dex: str,
     unified_equity_cache: UnifiedEquityCache | None = None,
 ) -> SourceAccountState:
-    try:
-        clearinghouse_state = await client.clearinghouse_state(
-            user=source_wallet,
-            dex=dex or None,
-        )
-    except Exception as exc:
+    """Read a source's positions, margin settings, and the equity copies are sized on.
+
+    A standard account's equity is its perp account value on this dex. A
+    unified or portfolio margin account keeps every balance in spot, where the
+    USDC total is marked to market; its perp account value is only a fragment,
+    so sizing on it would inflate every copy. When the mode or the spot balance
+    cannot be read, the state carries a skip reason and entries wait.
+    """
+
+    clearinghouse_result, collateral = await asyncio.gather(
+        client.clearinghouse_state(user=source_wallet, dex=dex or None),
+        load_source_collateral_cached(
+            client=client,
+            source_wallet=source_wallet,
+            cache=unified_equity_cache,
+        ),
+        return_exceptions=True,
+    )
+    if isinstance(clearinghouse_result, BaseException):
+        if not isinstance(clearinghouse_result, Exception):
+            raise clearinghouse_result
         logger.warning(
             "paper copy source account fetch failed wallet=%s dex=%s error=%s",
             source_wallet,
             dex or "default",
-            exc,
+            clearinghouse_result,
         )
         return SourceAccountState(
             dex=dex,
@@ -286,97 +317,97 @@ async def load_source_account_state(
             positions_by_coin={},
             skip_reason="source_account_state_fetch_failed",
         )
+    if isinstance(collateral, BaseException):
+        if not isinstance(collateral, Exception):
+            raise collateral
+        logger.warning(
+            "paper copy source collateral lookup failed wallet=%s error=%s",
+            source_wallet,
+            collateral,
+        )
+        collateral = SourceCollateral(mode_known=False)
+    clearinghouse_state = clearinghouse_result
 
     leverage_by_coin = parse_source_leverages(clearinghouse_state)
     margin_mode_by_coin = parse_source_margin_modes(clearinghouse_state)
     positions_by_coin = parse_source_current_positions(clearinghouse_state)
-    margin_summary_raw = clearinghouse_state.get("marginSummary")
-    if not isinstance(margin_summary_raw, dict):
+
+    def state(perp_equity: Decimal, skip_reason: str | None = None) -> SourceAccountState:
         return SourceAccountState(
             dex=dex,
-            perp_equity=ZERO,
+            perp_equity=perp_equity,
             leverage_by_coin=leverage_by_coin,
             positions_by_coin=positions_by_coin,
             margin_mode_by_coin=margin_mode_by_coin,
-            skip_reason="source_account_margin_summary_missing",
+            skip_reason=skip_reason,
         )
+
+    margin_summary_raw = clearinghouse_state.get("marginSummary")
+    if not isinstance(margin_summary_raw, dict):
+        return state(ZERO, "source_account_margin_summary_missing")
+    if not collateral.mode_known:
+        return state(ZERO, "source_account_mode_unavailable")
+    if collateral.unified:
+        if collateral.unified_equity is None:
+            return state(ZERO, "source_unified_equity_unavailable")
+        if collateral.unified_equity <= ZERO:
+            return state(ZERO, "source_perp_equity_zero")
+        return state(collateral.unified_equity)
 
     perp_equity = decimal_or_none(margin_summary_raw.get("accountValue"))
     if perp_equity is None:
-        return SourceAccountState(
-            dex=dex,
-            perp_equity=ZERO,
-            leverage_by_coin=leverage_by_coin,
-            positions_by_coin=positions_by_coin,
-            margin_mode_by_coin=margin_mode_by_coin,
-            skip_reason="source_perp_equity_missing",
-        )
+        return state(ZERO, "source_perp_equity_missing")
     if perp_equity <= ZERO:
-        unified_equity = await load_source_unified_equity_cached(
-            client=client,
-            source_wallet=source_wallet,
-            cache=unified_equity_cache,
-        )
-        if unified_equity is not None and unified_equity > ZERO:
-            return SourceAccountState(
-                dex=dex,
-                perp_equity=unified_equity,
-                leverage_by_coin=leverage_by_coin,
-                positions_by_coin=positions_by_coin,
-                margin_mode_by_coin=margin_mode_by_coin,
-            )
-        return SourceAccountState(
-            dex=dex,
-            perp_equity=ZERO,
-            leverage_by_coin=leverage_by_coin,
-            positions_by_coin=positions_by_coin,
-            margin_mode_by_coin=margin_mode_by_coin,
-            skip_reason="source_perp_equity_zero",
-        )
-
-    return SourceAccountState(
-        dex=dex,
-        perp_equity=perp_equity,
-        leverage_by_coin=leverage_by_coin,
-        positions_by_coin=positions_by_coin,
-        margin_mode_by_coin=margin_mode_by_coin,
-    )
+        return state(ZERO, "source_perp_equity_zero")
+    return state(perp_equity)
 
 
-async def load_source_unified_equity_cached(
+async def load_source_collateral_cached(
     *,
     client: HyperliquidClient,
     source_wallet: str,
     cache: UnifiedEquityCache | None,
-) -> Decimal | None:
+) -> SourceCollateral:
     if cache is None:
-        return await load_source_unified_equity(client=client, source_wallet=source_wallet)
+        return await load_source_collateral(client=client, source_wallet=source_wallet)
     key = source_wallet.lower()
     task = cache.get(key)
     if task is None:
         task = asyncio.create_task(
-            load_source_unified_equity(client=client, source_wallet=source_wallet)
+            load_source_collateral(client=client, source_wallet=source_wallet)
         )
         cache[key] = task
     return await task
 
 
-async def load_source_unified_equity(
+async def load_source_collateral(
     *,
     client: HyperliquidClient,
     source_wallet: str,
-) -> Decimal | None:
-    try:
-        user_abstraction = await client.user_abstraction(user=source_wallet)
-    except Exception as exc:
-        logger.warning(
-            "paper copy source abstraction fetch failed wallet=%s error=%s",
-            source_wallet,
-            exc,
-        )
-        return None
-    if not user_abstraction_is_unified(user_abstraction):
-        return None
+    mode_cache: SourceAccountModeCache | None = None,
+) -> SourceCollateral:
+    resolved_mode_cache = SOURCE_ACCOUNT_MODE_CACHE if mode_cache is None else mode_cache
+    unified = resolved_mode_cache.get(source_wallet)
+    if unified is None:
+        try:
+            user_abstraction = await client.user_abstraction(user=source_wallet)
+        except Exception as exc:
+            logger.warning(
+                "paper copy source abstraction fetch failed wallet=%s error=%s",
+                source_wallet,
+                exc,
+            )
+            return SourceCollateral(mode_known=False)
+        if normalize_user_abstraction(user_abstraction) is None:
+            logger.warning(
+                "paper copy source abstraction was empty wallet=%s",
+                source_wallet,
+            )
+            return SourceCollateral(mode_known=False)
+        unified = user_abstraction_is_unified(user_abstraction)
+        resolved_mode_cache.store(source_wallet, unified=unified)
+    if not unified:
+        return SourceCollateral(mode_known=True, unified=False)
     try:
         spot_state = await client.spot_clearinghouse_state(user=source_wallet)
     except Exception as exc:
@@ -385,12 +416,10 @@ async def load_source_unified_equity(
             source_wallet,
             exc,
         )
-        return None
+        return SourceCollateral(mode_known=True, unified=True)
     total = live_spot_usdc_total(spot_state)
-    if total > ZERO:
-        return total
-    available = live_spot_usdc_available(spot_state)
-    return available if available > ZERO else None
+    equity = total if total > ZERO else live_spot_usdc_available(spot_state)
+    return SourceCollateral(mode_known=True, unified=True, unified_equity=equity)
 
 
 def parse_source_leverages(payload: dict[str, Any]) -> dict[str, Decimal]:

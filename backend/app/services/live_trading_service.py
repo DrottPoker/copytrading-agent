@@ -41,6 +41,12 @@ from app.services.copy_risk_rules import (
     account_loss_breach,
     performance_loss_pct,
 )
+from app.services.hyperliquid_account_mode import (
+    live_spot_usdc_available,
+    live_spot_usdc_total,
+    normalize_user_abstraction,
+    user_abstraction_is_standard,
+)
 from app.services.job_lock_service import (
     JobLockAlreadyHeldError,
     job_lock,
@@ -134,21 +140,6 @@ LIVE_ENTRY_RETRY_EXPIRED_AFTER_ATTEMPT_ERROR = (
     "Live entry retry window expired after an earlier exchange submission attempt."
 )
 EVM_ADDRESS_PATTERN = re.compile(r"^0x[a-f0-9]{40}$")
-UNIFIED_USER_ABSTRACTION_KEYS = {
-    "portfolio",
-    "portfolioaccount",
-    "portfoliomargin",
-    "unified",
-    "unifiedaccount",
-}
-STANDARD_USER_ABSTRACTION_KEYS = {
-    "classic",
-    "default",
-    "disabled",
-    "none",
-    "standard",
-    "standardaccount",
-}
 
 
 class LiveTradingServiceError(Exception):
@@ -430,47 +421,6 @@ def live_cash_flow_backfill_version(account: TradingAccount) -> int:
         return int(cash_flow_tracking.get("historicalBackfillVersion") or 0)
     except TypeError, ValueError:
         return 0
-
-
-def normalize_user_abstraction(value: Any) -> str | None:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        normalized = value.strip()
-        return normalized or None
-    if isinstance(value, dict):
-        for key in (
-            "accountAbstraction",
-            "abstraction",
-            "mode",
-            "type",
-            "userAbstraction",
-            "value",
-        ):
-            nested = normalize_user_abstraction(value.get(key))
-            if nested is not None:
-                return nested
-        return None
-    normalized = str(value).strip()
-    return normalized or None
-
-
-def user_abstraction_key(value: Any) -> str | None:
-    normalized = normalize_user_abstraction(value)
-    if normalized is None:
-        return None
-    key = re.sub(r"[^a-z0-9]", "", normalized.lower())
-    return key or None
-
-
-def user_abstraction_is_unified(value: Any) -> bool:
-    key = user_abstraction_key(value)
-    return key in UNIFIED_USER_ABSTRACTION_KEYS if key is not None else False
-
-
-def user_abstraction_is_standard(value: Any) -> bool:
-    key = user_abstraction_key(value)
-    return key in STANDARD_USER_ABSTRACTION_KEYS if key is not None else False
 
 
 def live_perp_equity_usd(account: TradingAccount, *, dex: str | None = None) -> Decimal:
@@ -3234,10 +3184,12 @@ def is_retryable_live_copy_skip(order: TradingOrder) -> bool:
         "skip:live_source_leverage_missing",
         "skip:live_source_margin_mode_missing",
         "skip:source_account_margin_summary_missing",
+        "skip:source_account_mode_unavailable",
         "skip:source_account_state_fetch_failed",
         "skip:source_account_state_missing",
         "skip:source_perp_equity_missing",
         "skip:source_perp_equity_zero",
+        "skip:source_unified_equity_unavailable",
     }
 
 
@@ -6409,49 +6361,6 @@ def live_perp_state_summary(
         "time": payload.get("time"),
         "withdrawable": str(state_withdrawable),
     }
-
-
-def live_spot_usdc_total(spot_state: dict[str, Any]) -> Decimal:
-    balances = spot_state.get("balances")
-    if not isinstance(balances, list):
-        return ZERO
-    total = ZERO
-    for item in balances:
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("coin") or "").upper() == "USDC":
-            total += decimal_or_none(item.get("total")) or ZERO
-    return total
-
-
-def live_spot_usdc_available(spot_state: dict[str, Any]) -> Decimal:
-    values = spot_state.get("tokenToAvailableAfterMaintenance")
-    if isinstance(values, list):
-        total = ZERO
-        matched_usdc = False
-        for item in values:
-            if not isinstance(item, (list, tuple)) or len(item) < 2:
-                continue
-            token_id = decimal_or_none(item[0])
-            if token_id == ZERO:
-                matched_usdc = True
-                total += decimal_or_none(item[1]) or ZERO
-        if matched_usdc:
-            return total
-
-    balances = spot_state.get("balances")
-    if not isinstance(balances, list):
-        return ZERO
-    total = ZERO
-    for item in balances:
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("coin") or "").upper() != "USDC":
-            continue
-        balance_total = decimal_or_none(item.get("total")) or ZERO
-        hold = decimal_or_none(item.get("hold")) or ZERO
-        total += max(balance_total - hold, ZERO)
-    return total
 
 
 def parse_live_fill(fill: dict[str, Any], *, account_key: str) -> dict[str, Any] | None:

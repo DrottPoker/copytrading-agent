@@ -116,6 +116,37 @@ class SourceAccountStateCache[T]:
         return due
 
 
+class SourceAccountModeCache:
+    """Whether each source holds its collateral in a unified account.
+
+    The mode decides where the source's equity is read from. It rarely
+    changes and the lookup is expensive, so it is refreshed only after the
+    maximum age. A failed lookup is never stored.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_age_seconds: float,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.max_age_seconds = max_age_seconds
+        self._clock = clock
+        self._entries: dict[str, tuple[bool, float]] = {}
+
+    def get(self, source_wallet: str) -> bool | None:
+        entry = self._entries.get(source_wallet.lower())
+        if entry is None or self._clock() - entry[1] > self.max_age_seconds:
+            return None
+        return entry[0]
+
+    def store(self, source_wallet: str, *, unified: bool) -> None:
+        self._entries[source_wallet.lower()] = (unified, self._clock())
+
+    def clear(self) -> None:
+        self._entries.clear()
+
+
 class LiveCopyLaneSyncTracker:
     """Remembers lane synchronizations so unchanged inputs skip the database work.
 

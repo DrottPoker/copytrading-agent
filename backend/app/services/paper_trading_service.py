@@ -151,8 +151,10 @@ RETRIABLE_EXIT_SKIP_REASONS = frozenset(
         "source_account_state_missing",
         "source_account_state_fetch_failed",
         "source_account_margin_summary_missing",
+        "source_account_mode_unavailable",
         "source_perp_equity_missing",
         "source_perp_equity_zero",
+        "source_unified_equity_unavailable",
         "execution_price_unavailable",
         # Live retries an IOC exit the book could not fill, so paper retries it too.
         "paper_ioc_unfilled",

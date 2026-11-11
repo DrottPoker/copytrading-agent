@@ -6,7 +6,7 @@ from typing import Any
 
 from app.integrations.hyperliquid_client import HyperliquidClient
 from app.schemas.wallet import normalize_wallet_address
-from app.services.live_trading_service import live_spot_usdc_total
+from app.services.hyperliquid_account_mode import live_spot_usdc_total
 from app.services.wallet_current_state_service import (
     WalletPerpClearinghouseState,
     load_wallet_account_value_summary,

@@ -16,7 +16,7 @@ from app.schemas.wallet_stats import (
     WalletPerpPositionStats,
     WalletSpotBalanceStats,
 )
-from app.services.live_trading_service import (
+from app.services.hyperliquid_account_mode import (
     live_spot_usdc_available,
     live_spot_usdc_total,
     normalize_user_abstraction,

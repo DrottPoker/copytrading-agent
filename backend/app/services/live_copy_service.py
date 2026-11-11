@@ -191,10 +191,12 @@ LIVE_COPY_RETRYABLE_SKIP_REASONS = frozenset(
         "live_source_attribution_ambiguous",
         "live_source_margin_mode_missing",
         "source_account_margin_summary_missing",
+        "source_account_mode_unavailable",
         "source_account_state_fetch_failed",
         "source_account_state_missing",
         "source_perp_equity_missing",
         "source_perp_equity_zero",
+        "source_unified_equity_unavailable",
     }
 )
 LIVE_COPY_ENTRY_ACTIONS = frozenset({"open", "add", "flip_open"})
