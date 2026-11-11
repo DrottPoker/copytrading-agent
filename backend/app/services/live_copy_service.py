@@ -64,9 +64,11 @@ from app.services.copy_signal_service import (
     plan_source_fill,
     resolve_coin_decimal,
     resolve_coin_margin_mode,
+    resolve_source_current_position,
     sorted_source_fills,
     source_fill_age_exceeds_entry_limit,
     source_fill_from_wallet_fill,
+    source_state_available_for_reconciliation,
 )
 from app.services.live_copy_state_service import (
     LIVE_COPY_ORIGIN_PERIODIC_RECOVERY,
@@ -103,15 +105,22 @@ from app.services.live_trading_service import (
     LiveCopyEntryLifecycleDeferred,
     LiveOrderSubmitError,
     LiveReconciliationError,
+    LiveTradingServiceError,
+    build_live_close_position_intent,
+    decimal_or_none,
     ensure_live_entry_intent_is_fresh,
     is_retryable_live_order_submit_failure,
     live_copy_allocation_equity,
+    live_position_mark_price,
     live_reconciliation_is_fresh,
     live_reconciliation_status,
     live_source_net_loss_usd,
     live_tradable_equity_usd,
+    load_live_account,
+    load_live_close_mids,
     load_live_copy_exposure,
     load_live_source_position,
+    merge_raw_payload,
     reconcile_live_trading_account,
     submit_live_trade_intent,
     sync_live_position_margin_setting,
@@ -145,6 +154,7 @@ from app.services.trading_core import (
     trade_intent_payload,
     trade_is_buy,
 )
+from app.services.trading_safety_service import record_risk_event
 
 logger = logging.getLogger(__name__)
 ZERO = Decimal("0")
@@ -158,6 +168,11 @@ PENDING_CLOSE_ORDER_STATUSES = {
     "filled",
 }
 LIVE_CLOSE_AGGREGATED_SKIP_REASON = "live_close_aggregated_into_later_order"
+# The source must hold no position on the copied side for this long before the
+# copy is closed without a source close fill, so a close on its way is not raced.
+LIVE_SOURCE_FLAT_CLOSE_GRACE_SECONDS = 60
+LIVE_SOURCE_FLAT_MARKER = "sourceFlat"
+LIVE_SOURCE_FLAT_CLOSE_ACCOUNT_STATUSES = frozenset({"enabled", "exit_only"})
 LIVE_COPY_TERMINAL_SKIP_ERRORS = frozenset(
     {
         "skip:live_account_exit_only",
@@ -2098,12 +2113,26 @@ async def process_live_copy_recovery(
         # Margin-mode and leverage synchronization manages existing copied
         # positions only.  Commit source-state changes before its network I/O.
         await session.commit()
+        source_states = await load_live_source_states_for_open_positions(
+            session,
+            source_wallet=wallet,
+            info_client=client,
+        )
         await sync_live_source_margin_settings(
             session,
             source_wallet=wallet,
             settings=resolved_settings,
             info_client=client,
             trading_client=live_client,
+            source_states=source_states,
+        )
+        await close_live_positions_without_source(
+            session,
+            source_wallet=wallet,
+            settings=resolved_settings,
+            info_client=client,
+            trading_client=live_client,
+            source_states=source_states,
         )
         for account in wallet_accounts:
             source_state = await ensure_live_copy_source_state(
@@ -2136,25 +2165,32 @@ async def process_live_copy_recovery(
     return PaperCopyBatchResult(processed_fills=enqueued)
 
 
-async def sync_live_source_margin_settings(
+async def load_open_live_source_positions(
     session: AsyncSession,
     *,
     source_wallet: str,
-    settings: Settings,
-    info_client: HyperliquidClient,
-    trading_client: HyperliquidLiveTradingClient,
-) -> int:
+) -> list[TradingPosition]:
     position_result = await session.scalars(
-        select(TradingPosition).where(
+        select(TradingPosition)
+        .where(
             TradingPosition.account_type == "live",
             TradingPosition.source_wallet == source_wallet,
             TradingPosition.size > POSITION_EPSILON,
         )
+        .execution_options(populate_existing=True)
     )
-    positions = list(position_result.all())
-    if not positions:
-        return 0
+    return list(position_result.all())
 
+
+async def load_live_source_states_for_open_positions(
+    session: AsyncSession,
+    *,
+    source_wallet: str,
+    info_client: HyperliquidClient,
+) -> dict[str, SourceAccountState]:
+    """Source account state per perp dex where a copied live position is open."""
+
+    positions = await load_open_live_source_positions(session, source_wallet=source_wallet)
     # The source account lookup below can wait on the network.  Do not keep
     # the position read transaction open while it runs.
     await session.commit()
@@ -2168,6 +2204,28 @@ async def sync_live_source_margin_settings(
             dex=dex,
             unified_equity_cache=unified_equity_cache,
         )
+    return source_states
+
+
+async def sync_live_source_margin_settings(
+    session: AsyncSession,
+    *,
+    source_wallet: str,
+    settings: Settings,
+    info_client: HyperliquidClient,
+    trading_client: HyperliquidLiveTradingClient,
+    source_states: dict[str, SourceAccountState] | None = None,
+) -> int:
+    if source_states is None:
+        source_states = await load_live_source_states_for_open_positions(
+            session,
+            source_wallet=source_wallet,
+            info_client=info_client,
+        )
+    positions = await load_open_live_source_positions(session, source_wallet=source_wallet)
+    if not positions:
+        return 0
+    await session.commit()
 
     updated = 0
     for position in positions:
@@ -2214,6 +2272,158 @@ async def sync_live_source_margin_settings(
             continue
         updated += int(changed)
     return updated
+
+
+def live_source_flat_observed_at(position: TradingPosition) -> datetime | None:
+    payload = position.raw_payload if isinstance(position.raw_payload, dict) else {}
+    marker = payload.get(LIVE_SOURCE_FLAT_MARKER)
+    if not isinstance(marker, dict):
+        return None
+    try:
+        observed_at = datetime.fromisoformat(str(marker.get("observedAt")))
+    except ValueError:
+        return None
+    return live_copy_datetime_utc(observed_at)
+
+
+async def close_live_positions_without_source(
+    session: AsyncSession,
+    *,
+    source_wallet: str,
+    settings: Settings,
+    info_client: HyperliquidClient,
+    trading_client: HyperliquidLiveTradingClient,
+    source_states: dict[str, SourceAccountState] | None = None,
+    now: datetime | None = None,
+) -> int:
+    """Close copied live positions that the source no longer holds.
+
+    The copy normally leaves with the source's close fills. When such a fill
+    never reaches the copy path, the position would stay open with nobody to
+    follow. The source's own account state is the proof: once it has held no
+    position on the copied side for the grace period and no close is in
+    flight, the copy is closed with a reduce-only order. Unknown source state
+    never closes anything. Returns the number of close orders submitted.
+    """
+
+    if source_states is None:
+        source_states = await load_live_source_states_for_open_positions(
+            session,
+            source_wallet=source_wallet,
+            info_client=info_client,
+        )
+    resolved_now = now or datetime.now(UTC)
+    due_positions: list[TradingPosition] = []
+    for position in await load_open_live_source_positions(session, source_wallet=source_wallet):
+        source_state = source_states.get(dex_from_coin(position.coin))
+        if not source_state_available_for_reconciliation(source_state):
+            continue
+        source_position = resolve_source_current_position(
+            source_state.positions_by_coin,
+            position.coin,
+        )
+        observed_at = live_source_flat_observed_at(position)
+        if source_position is not None and source_position.side == position.side:
+            if observed_at is not None:
+                position.raw_payload = merge_raw_payload(
+                    position.raw_payload,
+                    {LIVE_SOURCE_FLAT_MARKER: None},
+                )
+            continue
+        if observed_at is None:
+            position.raw_payload = merge_raw_payload(
+                position.raw_payload,
+                {LIVE_SOURCE_FLAT_MARKER: {"observedAt": resolved_now.isoformat()}},
+            )
+            continue
+        if (resolved_now - observed_at).total_seconds() >= LIVE_SOURCE_FLAT_CLOSE_GRACE_SECONDS:
+            due_positions.append(position)
+    await session.commit()
+    if not due_positions:
+        return 0
+
+    mids = await load_live_close_mids(info_client, positions=due_positions)
+    submitted = 0
+    for position in due_positions:
+        account = await load_live_account(session, account_key=position.account_key)
+        if (
+            account.archived_at is not None
+            or account.status not in LIVE_SOURCE_FLAT_CLOSE_ACCOUNT_STATUSES
+        ):
+            await session.commit()
+            continue
+        pending_close_size = await live_pending_close_size_for_position(
+            session,
+            account_key=account.key,
+            source_wallet=source_wallet,
+            coin=position.coin,
+            since=position.last_reconciled_at,
+        )
+        mid_price = decimal_or_none(mids.get(position.coin)) or live_position_mark_price(position)
+        if pending_close_size > POSITION_EPSILON or mid_price is None or mid_price <= ZERO:
+            await session.commit()
+            continue
+
+        intent = build_live_close_position_intent(
+            account=account,
+            position=position,
+            mid_price=mid_price,
+            settings=settings,
+            source_fill_prefix="source-flat",
+            price_source="source_flat_reconciliation",
+        )
+        marker = dict((position.raw_payload or {}).get(LIVE_SOURCE_FLAT_MARKER) or {})
+        if "closeRequestedAt" not in marker:
+            # One event per abandoned position, not one per retried close order.
+            marker["closeRequestedAt"] = resolved_now.isoformat()
+            position.raw_payload = merge_raw_payload(
+                position.raw_payload,
+                {LIVE_SOURCE_FLAT_MARKER: marker},
+            )
+            record_risk_event(
+                session,
+                event_type="live_source_flat_close",
+                severity="warning",
+                message="Closing a copied live position because the source no longer holds it.",
+                payload={
+                    "accountKey": account.key,
+                    "sourceWallet": source_wallet,
+                    "coin": position.coin,
+                    "side": position.side,
+                    "size": str(position.size),
+                    "sourceFlatObservedAt": marker.get("observedAt"),
+                },
+            )
+        logger.warning(
+            "closing live position without source account=%s source=%s coin=%s side=%s size=%s",
+            account.key,
+            source_wallet,
+            position.coin,
+            position.side,
+            position.size,
+        )
+        await session.commit()
+        try:
+            result = await submit_live_trade_intent(
+                session,
+                account=account,
+                intent=intent,
+                settings=settings,
+                client=trading_client,
+            )
+        except LiveTradingServiceError as exc:
+            await session.rollback()
+            logger.warning(
+                "live source-flat close deferred account=%s source=%s coin=%s error=%s",
+                account.key,
+                source_wallet,
+                position.coin,
+                str(exc) or exc.__class__.__name__,
+            )
+            continue
+        await session.commit()
+        submitted += int(result.submitted)
+    return submitted
 
 
 async def refresh_stale_live_copy_accounts(

@@ -1,10 +1,27 @@
 """Canonical ordering for source fills across realtime and recovery paths."""
 
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, Literal
 
 ZERO = Decimal("0")
-SOURCE_CLOSE_DIRECTIONS = frozenset({"Close Long", "Close Short", "Long > Short", "Short > Long"})
+# Hyperliquid reports a forced exit with its own direction instead of a close.
+SOURCE_LIQUIDATION_CLOSE_SIDES: dict[str, Literal["long", "short"]] = {
+    "Liquidated Cross Long": "long",
+    "Liquidated Isolated Long": "long",
+    "Liquidated Cross Short": "short",
+    "Liquidated Isolated Short": "short",
+}
+SOURCE_AUTO_DELEVERAGING_DIRECTION = "Auto-Deleveraging"
+SOURCE_CLOSE_DIRECTIONS = frozenset(
+    {
+        "Close Long",
+        "Close Short",
+        "Long > Short",
+        "Short > Long",
+        *SOURCE_LIQUIDATION_CLOSE_SIDES,
+        SOURCE_AUTO_DELEVERAGING_DIRECTION,
+    }
+)
 
 
 def source_fill_order_key(
@@ -40,6 +57,28 @@ def source_fill_order_components(fill: dict[str, Any]) -> tuple[int, Decimal, De
         position_rank,
         numeric_fill_id if source_fill_id.isdigit() else None,
     )
+
+
+def forced_close_side(
+    direction: str,
+    start_position: Decimal | None,
+) -> Literal["long", "short"] | None:
+    """Side that a liquidation or auto-deleveraging fill closes, or None.
+
+    A liquidation names its side. Auto-deleveraging does not, so the side comes
+    from the position the source held before the fill.
+    """
+
+    liquidated_side = SOURCE_LIQUIDATION_CLOSE_SIDES.get(direction)
+    if liquidated_side is not None:
+        return liquidated_side
+    if direction != SOURCE_AUTO_DELEVERAGING_DIRECTION or start_position is None:
+        return None
+    if start_position > ZERO:
+        return "long"
+    if start_position < ZERO:
+        return "short"
+    return None
 
 
 def source_fill_id_numeric_value(source_fill_id: str) -> Decimal | None:

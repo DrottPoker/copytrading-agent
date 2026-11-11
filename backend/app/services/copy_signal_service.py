@@ -25,7 +25,7 @@ from app.services.live_trading_service import (
     user_abstraction_is_unified,
 )
 from app.services.market_price_cache import MarketPriceCache
-from app.services.source_fill_ordering import source_fill_order_key
+from app.services.source_fill_ordering import forced_close_side, source_fill_order_key
 from app.services.trading_core import MarginMode, TradeSide, safe_leverage
 from app.services.wallet_current_state_service import object_or_empty
 
@@ -647,6 +647,16 @@ def plan_source_fill(fill: dict[str, Any]) -> list[SourceFillPart]:
             source_size=source_size,
             source_notional=source_notional,
             start_position=start_position,
+        )
+    forced_side = forced_close_side(direction, start_position)
+    if forced_side is not None:
+        # A liquidated or auto-deleveraged source left the position; follow it out.
+        return close_parts(
+            side=forced_side,
+            source_size=source_size,
+            source_notional=source_notional,
+            start_position=start_position,
+            action="close",
         )
     return []
 

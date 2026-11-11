@@ -6612,6 +6612,13 @@ def infer_position_side(fill: dict[str, Any]) -> str | None:
     if "short" in direction:
         return "short"
     fill_side = str(fill.get("side") or "").casefold()
+    if fill_is_auto_deleveraging(fill):
+        # Auto-deleveraging closes the position, so a buy closes a short.
+        if fill_side in {"b", "buy"}:
+            return "short"
+        if fill_side in {"a", "sell"}:
+            return "long"
+        return None
     if fill_side in {"b", "buy"}:
         return "long"
     if fill_side in {"a", "sell"}:
@@ -6621,9 +6628,13 @@ def infer_position_side(fill: dict[str, Any]) -> str | None:
 
 def infer_fill_action(fill: dict[str, Any]) -> str:
     direction = str(fill.get("dir") or "").casefold()
-    if "close" in direction:
+    if "close" in direction or "liquidated" in direction or fill_is_auto_deleveraging(fill):
         return "close"
     return "open"
+
+
+def fill_is_auto_deleveraging(fill: dict[str, Any]) -> bool:
+    return str(fill.get("dir") or "").strip().casefold() == "auto-deleveraging"
 
 
 def map_exchange_order_status(status: str | None) -> str | None:
