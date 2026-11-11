@@ -113,6 +113,7 @@ from app.services.paper_risk_service import (
     apply_account_realized_result,
     clear_paper_account_exit_only,
     paper_entry_risk_reason,
+    restart_breached_paper_loss_limits,
 )
 from app.services.realtime_subscription_state_service import (
     RealtimeSubscriptionSnapshot,
@@ -2722,6 +2723,7 @@ async def reset_paper_trading_account_balance(
     account.fee_usd = ZERO
     account.funding_usd = ZERO
     account.peak_equity_usd = None
+    account.loss_limits_reset_at = None
     account.balance_reset_at = datetime.now(UTC)
     clear_paper_account_exit_only(account)
     # Loss limits restart from the new balance.
@@ -2756,6 +2758,7 @@ async def set_paper_trading_account_enabled(
     account_key: str,
     enabled: bool,
     settings: Settings,
+    now: datetime | None = None,
 ) -> PaperTradingAccount:
     await sync_paper_trading_accounts(session, settings=settings)
     account = await session.scalar(
@@ -2768,6 +2771,12 @@ async def set_paper_trading_account_enabled(
     if enabled:
         # Starting the account again lifts a tripped loss limit, as for live accounts.
         clear_paper_account_exit_only(account)
+        await restart_breached_paper_loss_limits(
+            session,
+            account=account,
+            settings=settings,
+            now=now or datetime.now(UTC),
+        )
     await sync_paper_trading_account_mirrors(
         session,
         accounts=[account],

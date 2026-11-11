@@ -196,6 +196,9 @@ async def test_start_captures_source_baselines_before_enabling_entries(
         lifecycle_calls.append(("sync", set(kwargs["eligible_source_wallets"]), account.status))
         return 0
 
+    async def no_loss_history(*_args: object, **_kwargs: object) -> None:
+        return None
+
     async def activate_sources(*_args: object, **kwargs: object) -> list[object]:
         lifecycle_calls.append(("activate", set(kwargs["source_wallets"]), account.status))
         assert kwargs["entry_eligible_source_wallets"] == {"0xsource"}
@@ -228,6 +231,7 @@ async def test_start_captures_source_baselines_before_enabling_entries(
         "live_account_has_incomplete_close_operation",
         no_incomplete_close,
     )
+    monkeypatch.setattr(live_trading_service, "live_account_loss_state", no_loss_history)
     monkeypatch.setattr(
         live_trading_service,
         "load_active_live_copy_source_wallets",

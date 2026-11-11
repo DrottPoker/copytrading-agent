@@ -914,6 +914,12 @@ async def start_live_trading_account(
                     eligible_source_wallets=active_source_wallets,
                 )
                 start_epoch = datetime.now(UTC)
+                loss_limits_restart = await restart_breached_live_loss_limits(
+                    session,
+                    account=account,
+                    settings=settings,
+                    now=start_epoch,
+                )
                 await activate_live_copy_account_sources(
                     session,
                     account_key=account.key,
@@ -935,6 +941,7 @@ async def start_live_trading_account(
                         "accountKey": account.key,
                         "reconciliationRunId": str(result.run_id) if result.run_id else None,
                         "lifecycleVersion": account.lifecycle_version,
+                        "lossLimitsRestart": loss_limits_restart,
                     },
                 )
                 await session.flush()
@@ -944,6 +951,41 @@ async def start_live_trading_account(
             "Live execution or close-all is already running for this account.",
             status_code=409,
         ) from exc
+
+
+async def restart_breached_live_loss_limits(
+    session: AsyncSession,
+    *,
+    account: TradingAccount,
+    settings: Settings,
+    now: datetime,
+) -> dict[str, str] | None:
+    """Restart the loss limits when an operator starts a breached account.
+
+    A breach leaves the account exit-only until someone starts it again. That
+    start is the review, so the limits measure from it; otherwise the same old
+    loss would stop the account at its first new entry. An account inside its
+    limits keeps its windows. Returns the breach that was acknowledged.
+    """
+
+    breach = account_loss_breach(
+        await live_account_loss_state(
+            session,
+            account_key=account.key,
+            now=now,
+            since=account.loss_limits_reset_at,
+        ),
+        settings=settings,
+    )
+    if breach is None:
+        return None
+    account.loss_limits_reset_at = now
+    return {
+        "rule": breach.rule,
+        "observed": str(breach.observed),
+        "limit": str(breach.limit),
+        "restartedAt": now.isoformat(),
+    }
 
 
 async def stop_live_trading_account(
@@ -3044,7 +3086,12 @@ async def validate_live_entry_risk_guardrails(
             trip_account=signer_block.trip_account,
         )
     breach = account_loss_breach(
-        await live_account_loss_state(session, account_key=account.key, now=now),
+        await live_account_loss_state(
+            session,
+            account_key=account.key,
+            now=now,
+            since=account.loss_limits_reset_at,
+        ),
         settings=settings,
     )
     if breach is not None:
@@ -3075,17 +3122,23 @@ async def live_account_loss_state(
     *,
     account_key: str,
     now: datetime,
+    since: datetime | None = None,
 ) -> AccountLossState | None:
     """Rolling losses and drawdown from the time-weighted performance index.
 
     The index excludes deposits and withdrawals, so cash flows never look like
     trading losses. Windows that start before tracking use the baseline snapshot.
+    With `since`, the account's loss limit restart, only snapshots from then on
+    count, so losses an operator already reviewed cannot trip the limits again.
     """
 
     snapshot = TradingAccountPerformanceSnapshot
+    in_scope = [snapshot.account_key == account_key]
+    if since is not None:
+        in_scope.append(snapshot.recorded_at >= since)
     latest = await session.scalar(
         select(snapshot.performance_index)
-        .where(snapshot.account_key == account_key)
+        .where(*in_scope)
         .order_by(snapshot.recorded_at.desc())
         .limit(1)
     )
@@ -3093,18 +3146,16 @@ async def live_account_loss_state(
         return None
     baseline = await session.scalar(
         select(snapshot.performance_index)
-        .where(snapshot.account_key == account_key)
+        .where(*in_scope)
         .order_by(snapshot.recorded_at.asc())
         .limit(1)
     )
-    peak = await session.scalar(
-        select(func.max(snapshot.performance_index)).where(snapshot.account_key == account_key)
-    )
+    peak = await session.scalar(select(func.max(snapshot.performance_index)).where(*in_scope))
 
     async def index_at(moment: datetime) -> Decimal:
         value = await session.scalar(
             select(snapshot.performance_index)
-            .where(snapshot.account_key == account_key, snapshot.recorded_at <= moment)
+            .where(*in_scope, snapshot.recorded_at <= moment)
             .order_by(snapshot.recorded_at.desc())
             .limit(1)
         )

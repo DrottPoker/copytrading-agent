@@ -261,7 +261,7 @@ export function TradingWorkspace({
         start: isPaper
           ? undefined
           : {
-              body: "The account starts sending real orders for new copy trades as soon as reconciliation is complete.",
+              body: "The account starts sending real orders for new copy trades as soon as reconciliation is complete. If a loss limit stopped this account, starting it measures the loss limits from now.",
               confirmLabel: "Start live trading",
               title: `Start live trading in ${option.label}?`,
               tone: "danger",

@@ -29,6 +29,7 @@ from app.services.live_trading_service import (
     live_account_loss_state,
     live_source_net_loss_usd,
     load_live_copy_exposure,
+    restart_breached_live_loss_limits,
 )
 from app.services.paper_trading_service import (
     PaperSourceAllocation,
@@ -138,6 +139,120 @@ async def test_loss_state_uses_the_rolling_performance_index(
     assert state.daily_loss_pct == Decimal("1") - Decimal("0.99") / Decimal("1.2")
     assert state.weekly_loss_pct == Decimal("0.01")
     assert state.drawdown_pct == Decimal("1") - Decimal("0.99") / Decimal("1.2")
+
+
+@pytest.mark.asyncio
+async def test_loss_state_measures_from_the_loss_limit_restart(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    now = datetime.now(UTC)
+    started = now - timedelta(days=8)
+    restarted = now - timedelta(hours=2)
+    async with integration_sessionmaker() as session:
+        session.add(live_account())
+        await session.flush()
+        session.add_all(
+            [
+                snapshot(index="1.0", recorded_at=started, started_at=started),
+                snapshot(index="1.2", recorded_at=now - timedelta(days=3), started_at=started),
+                snapshot(index="0.8", recorded_at=now - timedelta(hours=3), started_at=started),
+                snapshot(index="0.8", recorded_at=now - timedelta(hours=1), started_at=started),
+                snapshot(index="0.76", recorded_at=now, started_at=started),
+            ]
+        )
+        await session.flush()
+
+        whole_history = await live_account_loss_state(session, account_key=ACCOUNT_KEY, now=now)
+        since_restart = await live_account_loss_state(
+            session,
+            account_key=ACCOUNT_KEY,
+            now=now,
+            since=restarted,
+        )
+        before_first_snapshot = await live_account_loss_state(
+            session,
+            account_key=ACCOUNT_KEY,
+            now=now,
+            since=now + timedelta(seconds=1),
+        )
+
+    assert whole_history is not None
+    assert whole_history.drawdown_pct == Decimal("1") - Decimal("0.76") / Decimal("1.2")
+    assert since_restart is not None
+    # Only the 5% lost after the restart counts in every window.
+    assert since_restart.daily_loss_pct == Decimal("0.05")
+    assert since_restart.weekly_loss_pct == Decimal("0.05")
+    assert since_restart.drawdown_pct == Decimal("0.05")
+    assert before_first_snapshot is None
+
+
+@pytest.mark.asyncio
+async def test_starting_a_breached_live_account_restarts_its_loss_limits(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    now = datetime.now(UTC)
+    started = now - timedelta(days=8)
+    settings = Settings()
+    async with integration_sessionmaker() as session:
+        account = live_account()
+        session.add(account)
+        await session.flush()
+        session.add_all(
+            [
+                snapshot(index="1.0", recorded_at=started, started_at=started),
+                snapshot(index="0.7", recorded_at=now - timedelta(minutes=1), started_at=started),
+            ]
+        )
+        await session.flush()
+
+        restart = await restart_breached_live_loss_limits(
+            session,
+            account=account,
+            settings=settings,
+            now=now,
+        )
+        repeat = await restart_breached_live_loss_limits(
+            session,
+            account=account,
+            settings=settings,
+            now=now + timedelta(minutes=1),
+        )
+
+    assert restart is not None
+    # The 30% loss breaches every window; the rolling 24 hour limit is checked first.
+    assert restart["rule"] == "max_daily_loss"
+    assert account.loss_limits_reset_at == now
+    # Nothing has been lost since the restart, so a second start changes nothing.
+    assert repeat is None
+
+
+@pytest.mark.asyncio
+async def test_starting_a_live_account_inside_its_limits_keeps_the_loss_windows(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    now = datetime.now(UTC)
+    started = now - timedelta(days=8)
+    async with integration_sessionmaker() as session:
+        account = live_account()
+        session.add(account)
+        await session.flush()
+        session.add_all(
+            [
+                snapshot(index="1.0", recorded_at=started, started_at=started),
+                snapshot(index="0.97", recorded_at=now - timedelta(minutes=1), started_at=started),
+            ]
+        )
+        await session.flush()
+
+        restart = await restart_breached_live_loss_limits(
+            session,
+            account=account,
+            settings=Settings(),
+            now=now,
+        )
+
+    assert restart is None
+    assert account.loss_limits_reset_at is None
 
 
 @pytest.mark.asyncio

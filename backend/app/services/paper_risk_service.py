@@ -31,6 +31,7 @@ from app.db.models import (
 )
 from app.integrations.hyperliquid_client import HyperliquidClient
 from app.services.copy_risk_rules import (
+    AccountLossBreach,
     AccountLossState,
     account_loss_breach,
     performance_loss_pct,
@@ -87,6 +88,52 @@ def clear_paper_account_exit_only(account: PaperTradingAccount) -> None:
     account.exit_only_reason = None
 
 
+async def restart_breached_paper_loss_limits(
+    session: AsyncSession,
+    *,
+    account: PaperTradingAccount,
+    settings: Settings,
+    now: datetime,
+) -> AccountLossBreach | None:
+    """Restart the loss limits when a breached paper account is started again.
+
+    Mirrors live: the start is the review of the breach, so the limits measure
+    from it instead of stopping the account again at its first new entry. An
+    account inside its limits keeps its windows and its peak.
+    """
+
+    if not settings.paper_copy_loss_limits_enabled:
+        return None
+    breach = account_loss_breach(
+        await paper_account_loss_state(
+            session,
+            account_key=account.key,
+            now=now,
+            peak_equity_usd=account.peak_equity_usd,
+            since=account.loss_limits_reset_at,
+        ),
+        settings=settings,
+    )
+    if breach is None:
+        return None
+    account.loss_limits_reset_at = now
+    # The drawdown peak restarts with the limits; the next snapshot sets it.
+    account.peak_equity_usd = None
+    session.add(
+        AuditLog(
+            actor="dashboard",
+            action="paper_account.loss_limits_restarted",
+            payload={
+                "accountKey": account.key,
+                "rule": breach.rule,
+                "observed": str(breach.observed),
+                "limit": str(breach.limit),
+            },
+        )
+    )
+    return breach
+
+
 def trip_paper_account_exit_only(
     session: AsyncSession,
     account: PaperTradingAccount,
@@ -120,38 +167,35 @@ async def paper_account_loss_state(
     account_key: str,
     now: datetime,
     peak_equity_usd: Decimal | None = None,
+    since: datetime | None = None,
 ) -> AccountLossState | None:
     """Rolling losses and drawdown from marked-to-market paper equity snapshots.
 
     Paper accounts have no deposits or withdrawals, so equity itself is the
     performance index. The drawdown peak is the account's stored peak, because
     snapshots older than the retention are pruned while live keeps its whole
-    history. A balance reset clears the snapshots and the peak.
+    history. A balance reset clears the snapshots and the peak. With `since`,
+    the account's loss limit restart, only snapshots from then on count.
     """
 
     snapshot = PaperAccountEquitySnapshot
+    in_scope = [snapshot.account_key == account_key]
+    if since is not None:
+        in_scope.append(snapshot.recorded_at >= since)
     latest = await session.scalar(
-        select(snapshot.equity_usd)
-        .where(snapshot.account_key == account_key)
-        .order_by(snapshot.recorded_at.desc())
-        .limit(1)
+        select(snapshot.equity_usd).where(*in_scope).order_by(snapshot.recorded_at.desc()).limit(1)
     )
     if latest is None:
         return None
     baseline = await session.scalar(
-        select(snapshot.equity_usd)
-        .where(snapshot.account_key == account_key)
-        .order_by(snapshot.recorded_at.asc())
-        .limit(1)
+        select(snapshot.equity_usd).where(*in_scope).order_by(snapshot.recorded_at.asc()).limit(1)
     )
-    peak = await session.scalar(
-        select(func.max(snapshot.equity_usd)).where(snapshot.account_key == account_key)
-    )
+    peak = await session.scalar(select(func.max(snapshot.equity_usd)).where(*in_scope))
 
     async def equity_at(moment: datetime) -> Decimal:
         value = await session.scalar(
             select(snapshot.equity_usd)
-            .where(snapshot.account_key == account_key, snapshot.recorded_at <= moment)
+            .where(*in_scope, snapshot.recorded_at <= moment)
             .order_by(snapshot.recorded_at.desc())
             .limit(1)
         )
@@ -230,6 +274,7 @@ async def paper_entry_risk_reason(
             account_key=account.key,
             now=resolved_now,
             peak_equity_usd=account.peak_equity_usd,
+            since=account.loss_limits_reset_at,
         ),
         settings=settings,
     )

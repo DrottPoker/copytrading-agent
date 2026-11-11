@@ -876,6 +876,8 @@ class TradingAccount(Base, TimestampMixin, UpdatedAtMixin):
     )
     status_reason: Mapped[str | None] = mapped_column(Text)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Loss limits measure from here once a breached account is started again.
+    loss_limits_reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     config_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
 
@@ -1647,8 +1649,11 @@ class PaperTradingAccount(Base, TimestampMixin, UpdatedAtMixin):
     # Set when a loss limit trips, like a live account going exit-only.
     exit_only_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     exit_only_reason: Mapped[str | None] = mapped_column(Text)
-    # Highest marked equity since the last reset; snapshots are pruned, the peak is not.
+    # Highest marked equity since the last balance reset or loss limit restart;
+    # snapshots are pruned, the peak is not.
     peak_equity_usd: Mapped[Decimal | None] = mapped_column(Numeric)
+    # Loss limits measure from here once a breached account is started again.
+    loss_limits_reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # A reset keeps the fills, so account statistics count only fills after it.
     balance_reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     config_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)

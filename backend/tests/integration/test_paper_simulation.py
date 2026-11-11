@@ -203,11 +203,77 @@ async def test_a_breached_loss_limit_trips_the_paper_account_until_it_is_restart
             account_key=ACCOUNT,
             enabled=True,
             settings=config,
+            now=NOW,
+        )
+        # The reviewed loss must not stop the account again at its next entry.
+        after_restart = await paper_entry_risk_reason(
+            session,
+            account=restarted,
+            source_wallet=SOURCE,
+            mark_prices={},
+            settings=config,
+            now=NOW + timedelta(minutes=1),
+        )
+        session.add_all(
+            [
+                PaperAccountEquitySnapshot(
+                    account_key=ACCOUNT,
+                    equity_usd=Decimal("850"),
+                    recorded_at=NOW + timedelta(minutes=5),
+                ),
+                PaperAccountEquitySnapshot(
+                    account_key=ACCOUNT,
+                    equity_usd=Decimal("760"),
+                    recorded_at=NOW + timedelta(minutes=10),
+                ),
+            ]
+        )
+        await session.flush()
+        # A new loss after the restart is measured from the restart and trips again.
+        new_loss = await paper_entry_risk_reason(
+            session,
+            account=restarted,
+            source_wallet=SOURCE,
+            mark_prices={},
+            settings=config,
+            now=NOW + timedelta(minutes=11),
         )
 
     assert reason == "paper_max_daily_loss"
     assert repeat == "paper_account_exit_only"
-    assert restarted.exit_only_at is None
+    assert restarted.loss_limits_reset_at == NOW
+    assert after_restart is None
+    assert new_loss == "paper_max_daily_loss"
+
+
+@pytest.mark.asyncio
+async def test_starting_a_paper_account_inside_its_limits_keeps_the_loss_windows(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    config = settings()
+    async with integration_sessionmaker() as session:
+        await seed(
+            session,
+            PaperAccountEquitySnapshot(
+                account_key=ACCOUNT,
+                equity_usd=Decimal("1000"),
+                recorded_at=NOW - timedelta(hours=30),
+            ),
+            PaperAccountEquitySnapshot(
+                account_key=ACCOUNT,
+                equity_usd=Decimal("950"),
+                recorded_at=NOW - timedelta(minutes=5),
+            ),
+        )
+        restarted = await set_paper_trading_account_enabled(
+            session,
+            account_key=ACCOUNT,
+            enabled=True,
+            settings=config,
+            now=NOW,
+        )
+
+    assert restarted.loss_limits_reset_at is None
 
 
 @pytest.mark.asyncio
