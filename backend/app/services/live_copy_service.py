@@ -96,18 +96,20 @@ from app.services.live_copy_state_service import (
     synchronize_live_copy_source_activity,
 )
 from app.services.live_copy_work_service import enqueue_live_copy_work_for_wallet_fills
+from app.services.live_exchange_parsing import decimal_or_none, merge_raw_payload
 from app.services.live_execution_state import trade_intent_from_order
 from app.services.live_order_reject_policy import live_copy_retry_delay_seconds
-from app.services.live_trading_service import (
+from app.services.live_trading_constants import (
     LIVE_EXCHANGE_SOURCE,
     LIVE_MANUAL_TEST_SOURCE,
     POSITION_EPSILON,
+)
+from app.services.live_trading_service import (
     LiveCopyEntryLifecycleDeferred,
     LiveOrderSubmitError,
     LiveReconciliationError,
     LiveTradingServiceError,
     build_live_close_position_intent,
-    decimal_or_none,
     ensure_live_entry_intent_is_fresh,
     is_retryable_live_order_submit_failure,
     live_copy_allocation_equity,
@@ -120,7 +122,6 @@ from app.services.live_trading_service import (
     load_live_close_mids,
     load_live_copy_exposure,
     load_live_source_position,
-    merge_raw_payload,
     reconcile_live_trading_account,
     submit_live_trade_intent,
     sync_live_position_margin_setting,

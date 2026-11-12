@@ -49,8 +49,9 @@ from app.services.live_copy_decision_service import (
     live_copy_decision_identity,
     load_live_copy_decision_execution_diagnostics,
 )
+from app.services.live_exchange_parsing import decimal_or_none
+from app.services.live_trading_constants import LIVE_EXCHANGE_SOURCE
 from app.services.live_trading_service import (
-    LIVE_EXCHANGE_SOURCE,
     LiveTradingServiceError,
     account_last_reconciliation,
     account_last_reconciliation_attempt,
@@ -58,7 +59,6 @@ from app.services.live_trading_service import (
     close_all_live_account_positions,
     close_live_account_position,
     create_live_trading_account,
-    decimal_or_none,
     delete_live_trading_account,
     disable_live_trading_account,
     live_capital_mode,

@@ -19,12 +19,8 @@ from app.services.live_copy_service import (
     LIVE_SOURCE_FLAT_MARKER,
     close_live_positions_without_source,
 )
-from app.services.live_trading_service import (
-    LiveOrderLifecycleResult,
-    LiveOrderSubmitError,
-    infer_fill_action,
-    infer_position_side,
-)
+from app.services.live_exchange_parsing import infer_fill_action, infer_position_side
+from app.services.live_trading_service import LiveOrderLifecycleResult, LiveOrderSubmitError
 from app.services.source_fill_ordering import forced_close_side, source_fill_order_key
 
 NOW = datetime(2026, 3, 1, 12, 0, tzinfo=UTC)

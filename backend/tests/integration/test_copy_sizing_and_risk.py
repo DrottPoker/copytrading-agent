@@ -24,8 +24,8 @@ from app.services.copy_signal_service import (
     SourceAccountState,
     SourceFillPart,
 )
+from app.services.live_trading_constants import LIVE_EXCHANGE_SOURCE
 from app.services.live_trading_service import (
-    LIVE_EXCHANGE_SOURCE,
     live_account_loss_state,
     live_source_net_loss_usd,
     load_live_copy_exposure,

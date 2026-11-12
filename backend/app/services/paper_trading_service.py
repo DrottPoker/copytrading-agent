@@ -90,10 +90,7 @@ from app.services.live_copy_state_service import (
     live_copy_unresolved_exit_predicate,
     live_copy_unresolved_order_predicate,
 )
-from app.services.live_trading_service import (
-    LIVE_EXCHANGE_SOURCE,
-    LIVE_MANUAL_TEST_SOURCE,
-)
+from app.services.live_trading_constants import LIVE_EXCHANGE_SOURCE, LIVE_MANUAL_TEST_SOURCE
 from app.services.market_price_cache import MarketPriceCache
 from app.services.paper_execution_simulator import (
     IocFill,

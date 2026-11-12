@@ -57,8 +57,8 @@ from app.services.live_copy_work_service import (
     load_claimed_live_copy_wallet_fill,
     retry_live_copy_work,
 )
+from app.services.live_trading_constants import LIVE_EXCHANGE_SOURCE
 from app.services.live_trading_service import (
-    LIVE_EXCHANGE_SOURCE,
     LiveReconciliationError,
     LiveReconciliationResult,
     LiveTradingServiceError,

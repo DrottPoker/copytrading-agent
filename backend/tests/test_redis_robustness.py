@@ -261,7 +261,11 @@ async def test_api_lifespan_closes_redis_after_embedded_worker_drains(
     monkeypatch.setattr(
         main,
         "settings",
-        SimpleNamespace(worker_run_in_api_process=True, redis_url="redis://redis.example:6379/0"),
+        SimpleNamespace(
+            worker_run_in_api_process=True,
+            redis_url="redis://redis.example:6379/0",
+            dashboard_served_over_plain_http=False,
+        ),
     )
     monkeypatch.setattr(
         main,

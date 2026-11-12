@@ -18,8 +18,8 @@ from app.db.models import (
 )
 from app.integrations.hyperliquid_live_client import LiveOrderResult
 from app.services.live_execution_state import build_dispatch_client_order_id
+from app.services.live_trading_constants import LIVE_EXCHANGE_SOURCE
 from app.services.live_trading_service import (
-    LIVE_EXCHANGE_SOURCE,
     LiveOrderSubmitError,
     LivePerpState,
     build_testnet_live_trade_intent,
