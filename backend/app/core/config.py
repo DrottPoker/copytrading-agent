@@ -19,6 +19,7 @@ TRADING_CONFIG_PATH = CONFIG_DIR / "trading.json"
 PAPER_TRADING_CONFIG_PATH = CONFIG_DIR / "paper_trading.json"
 LIVE_TRADING_CONFIG_PATH = CONFIG_DIR / "live_trading.json"
 DASHBOARD_AUTH_MIN_PRODUCTION_PASSWORD_LENGTH = 8
+ZERO_DECIMAL = Decimal("0")
 # The heaviest info request reserves 20 plus one unit per 20 rows of a 2,000-row page.
 HYPERLIQUID_MAX_RESERVED_REQUEST_WEIGHT = 120
 DISCOVERY_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
@@ -338,6 +339,7 @@ LIVE_TRADING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("risk", "max_daily_loss_pct"): "live_trading_max_daily_loss_pct",
     ("risk", "max_weekly_loss_pct"): "live_trading_max_weekly_loss_pct",
     ("risk", "max_drawdown_pct"): "live_trading_max_drawdown_pct",
+    ("risk", "hard_stop_drawdown_pct"): "live_trading_hard_stop_drawdown_pct",
     ("risk", "max_source_loss_pct"): "live_trading_max_source_loss_pct",
     ("risk", "max_orders_per_minute"): "live_trading_max_orders_per_minute",
     ("risk", "reduce_only_when_stopped"): "live_trading_reduce_only_when_stopped",
@@ -417,6 +419,8 @@ class Settings(BaseSettings):
     live_trading_max_daily_loss_pct: Decimal = Field(default=Decimal("0.10"), ge=0, le=1)
     live_trading_max_weekly_loss_pct: Decimal = Field(default=Decimal("0.20"), ge=0, le=1)
     live_trading_max_drawdown_pct: Decimal = Field(default=Decimal("0.25"), ge=0, le=1)
+    # Drawdown from the peak that closes every position and stops the account; 0 is off.
+    live_trading_hard_stop_drawdown_pct: Decimal = Field(default=Decimal("0"), ge=0, le=1)
     live_trading_max_source_loss_pct: Decimal = Field(default=Decimal("0.05"), ge=0, le=1)
     live_trading_max_orders_per_minute: int = Field(default=50, ge=0, le=10000)
     live_trading_reduce_only_when_stopped: bool = True
@@ -1035,6 +1039,16 @@ class Settings(BaseSettings):
                 "scoring_copyability_execution_full_score_fills_per_trade_at_or_below "
                 "must be less than "
                 "scoring_copyability_execution_zero_score_fills_per_trade_at_or_above."
+            )
+        if (
+            ZERO_DECIMAL
+            < self.live_trading_hard_stop_drawdown_pct
+            < self.live_trading_max_drawdown_pct
+        ):
+            # The hard stop is the last line; it must not fire before entries stop.
+            raise ValueError(
+                "live_trading_hard_stop_drawdown_pct must be at least "
+                "live_trading_max_drawdown_pct, or 0 to disable it."
             )
         if self.live_trading_limit_slippage_bps > self.live_trading_max_slippage_bps:
             raise ValueError(

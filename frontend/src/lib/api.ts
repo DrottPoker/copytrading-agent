@@ -400,6 +400,7 @@ function emptyTradingAccounts(): TradingAccountsResponse {
       maxDailyLossPct: "0",
       maxWeeklyLossPct: "0",
       maxDrawdownPct: "0",
+      hardStopDrawdownPct: "0",
       maxSourceLossPct: "0",
       maxOrdersPerMinute: 0,
       reconciliationMaxSnapshotAgeSeconds: 0,

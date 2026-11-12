@@ -391,6 +391,14 @@ function RulesList({
               { label: "Daily loss limit", value: formatPercent(riskLimits.maxDailyLossPct) },
               { label: "Weekly loss limit", value: formatPercent(riskLimits.maxWeeklyLossPct) },
               { label: "Drawdown limit", value: formatPercent(riskLimits.maxDrawdownPct) },
+              {
+                hint: "Closes every position and stops the account at this drawdown from the peak",
+                label: "Hard stop drawdown",
+                value:
+                  Number(riskLimits.hardStopDrawdownPct) > 0
+                    ? formatPercent(riskLimits.hardStopDrawdownPct)
+                    : "Off",
+              },
               { label: "Loss limit per source", value: formatPercent(riskLimits.maxSourceLossPct) },
               { label: "Order rate limit", value: `${formatInteger(riskLimits.maxOrdersPerMinute)} per minute` },
               {

@@ -70,6 +70,21 @@ def account_loss_breach(
     return None
 
 
+HARD_STOP_RULE = "hard_stop_drawdown"
+
+
+def hard_stop_breached(state: AccountLossState | None, *, settings: Settings) -> bool:
+    """Drawdown from the peak reached the level that closes every position.
+
+    The loss limits only stop new entries and leave open positions to the
+    sources' own exits. The hard stop is the last line behind them. It is off
+    while the setting is 0.
+    """
+
+    limit = settings.live_trading_hard_stop_drawdown_pct
+    return state is not None and limit > ZERO and state.drawdown_pct >= limit
+
+
 def performance_loss_pct(current_index: Decimal, reference_index: Decimal) -> Decimal:
     if reference_index <= ZERO:
         return ZERO

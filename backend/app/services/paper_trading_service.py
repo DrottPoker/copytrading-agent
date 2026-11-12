@@ -52,6 +52,7 @@ from app.services.copy_decision import (
     entry_precheck,
 )
 from app.services.copy_execution_cache import AllocationSnapshotCache
+from app.services.copy_risk_rules import HARD_STOP_RULE, hard_stop_breached
 from app.services.copy_signal_service import (
     ExecutionContext,
     ExecutionMarketPrices,
@@ -112,8 +113,10 @@ from app.services.paper_risk_service import (
     apply_account_fee,
     apply_account_realized_result,
     clear_paper_account_exit_only,
+    paper_account_loss_state,
     paper_entry_risk_reason,
     restart_breached_paper_loss_limits,
+    trip_paper_account_exit_only,
 )
 from app.services.realtime_subscription_state_service import (
     RealtimeSubscriptionSnapshot,
@@ -706,6 +709,92 @@ async def close_paper_account_positions_manually(
         )
         total = combine_batch_results(total, close_result)
     return total
+
+
+async def run_paper_hard_stops(
+    sessionmaker: Any,
+    *,
+    client: HyperliquidClient,
+    settings: Settings,
+    now: datetime | None = None,
+) -> int:
+    """Close every position of paper accounts past the hard stop and stop them.
+
+    Mirrors the live hard stop on the paper equity snapshots. A close that
+    fails, for example without a price, is retried on the next pass because
+    the account still holds positions. Returns the number of accounts acted on.
+    """
+
+    if (
+        settings.live_trading_hard_stop_drawdown_pct <= ZERO
+        or not settings.paper_copy_loss_limits_enabled
+    ):
+        return 0
+    resolved_now = now or datetime.now(UTC)
+    breached: list[str] = []
+    async with sessionmaker() as session:
+        account_keys = sorted(
+            (await session.scalars(select(PaperPosition.account_key).distinct())).all()
+        )
+        for account_key in account_keys:
+            account = await session.scalar(
+                select(PaperTradingAccount)
+                .where(PaperTradingAccount.key == account_key)
+                .with_for_update()
+            )
+            if account is None:
+                continue
+            loss_state = await paper_account_loss_state(
+                session,
+                account_key=account.key,
+                now=resolved_now,
+                peak_equity_usd=account.peak_equity_usd,
+                since=account.loss_limits_reset_at,
+            )
+            if not hard_stop_breached(loss_state, settings=settings) or loss_state is None:
+                continue
+            if account.exit_only_reason != HARD_STOP_RULE:
+                trip_paper_account_exit_only(
+                    session,
+                    account,
+                    rule=HARD_STOP_RULE,
+                    observed=loss_state.drawdown_pct,
+                    limit=settings.live_trading_hard_stop_drawdown_pct,
+                    now=resolved_now,
+                )
+                logger.warning(
+                    "paper hard stop reached account=%s drawdown=%s",
+                    account.key,
+                    loss_state.drawdown_pct,
+                )
+            if account.enabled:
+                account.enabled = False
+                await sync_paper_trading_account_mirrors(
+                    session,
+                    accounts=[account],
+                    network=settings.hyperliquid_network,
+                )
+            breached.append(account.key)
+        await session.commit()
+
+    for account_key in breached:
+        async with sessionmaker() as session:
+            try:
+                await close_paper_account_positions_manually(
+                    session,
+                    account_key=account_key,
+                    settings=settings,
+                    client=client,
+                )
+                await session.commit()
+            except PaperPositionCloseError as exc:
+                await session.rollback()
+                logger.warning(
+                    "paper hard stop close deferred account=%s error=%s",
+                    account_key,
+                    exc.detail,
+                )
+    return len(breached)
 
 
 async def load_paper_allocation_for_position(

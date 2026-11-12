@@ -61,6 +61,8 @@ from app.services.live_trading_service import (
     LIVE_EXCHANGE_SOURCE,
     LiveReconciliationError,
     LiveReconciliationResult,
+    LiveTradingServiceError,
+    enforce_live_hard_stop,
     reconcile_live_trading_account,
     recover_live_order_dispatches,
     resume_live_close_all_operations,
@@ -80,6 +82,7 @@ from app.services.paper_trading_service import (
     process_paper_copy_recovery,
     record_wallet_monitoring_snapshot,
     refresh_paper_copy_allocations,
+    run_paper_hard_stops,
     store_copy_allocations,
 )
 from app.services.pool_fill_import_service import import_due_pool_wallet_fills
@@ -1596,6 +1599,12 @@ async def run_live_trading_reconciliation_once(
                             )
                         await session.commit()
                         results.append(result)
+                        await run_live_hard_stop(
+                            session,
+                            redis=redis,
+                            account=account,
+                            settings=settings,
+                        )
                     except LiveReconciliationError as exc:
                         await session.rollback()
                         if exc.status_code == 409:
@@ -1671,6 +1680,49 @@ async def run_live_trading_reconciliation_once(
             },
         )
     return results
+
+
+async def run_live_hard_stop(
+    session: Any,
+    *,
+    redis: Any,
+    account: TradingAccount,
+    settings: Any,
+) -> None:
+    """Apply the hard stop to a freshly reconciled account; never fail the loop."""
+
+    try:
+        result = await enforce_live_hard_stop(session, account=account, settings=settings)
+    except LiveTradingServiceError as exc:
+        await session.rollback()
+        logger.warning(
+            "live hard stop deferred account=%s error=%s",
+            account.key,
+            str(exc) or exc.__class__.__name__,
+        )
+        return
+    if result is None:
+        return
+    logger.warning(
+        "live hard stop closing account=%s operation=%s submitted=%s remaining_failures=%s",
+        account.key,
+        result.operation_status,
+        result.submitted_orders,
+        result.failed_orders,
+    )
+    await publish_event(
+        redis,
+        event_type="live_hard_stop",
+        channel="events:system",
+        message=f"Hard stop drawdown reached on {account.key}; closing every position.",
+        payload={
+            "accountKey": account.key,
+            "operationStatus": result.operation_status,
+            "submittedOrders": result.submitted_orders,
+            "failedOrders": result.failed_orders,
+        },
+        severity="error",
+    )
 
 
 async def run_wallet_prune_once(
@@ -2351,6 +2403,7 @@ async def run_paper_risk_loop(
                     result.funding_payments,
                     result.snapshots,
                 )
+            await run_paper_hard_stops(sessionmaker, client=client, settings=settings)
             await sleep_until_stop(stop_event, settings.paper_copy_risk_check_seconds)
 
 

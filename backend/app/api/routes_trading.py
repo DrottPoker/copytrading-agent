@@ -106,6 +106,7 @@ def live_risk_limits_read(settings: Settings) -> LiveRiskLimitsRead:
         max_daily_loss_pct=settings.live_trading_max_daily_loss_pct,
         max_weekly_loss_pct=settings.live_trading_max_weekly_loss_pct,
         max_drawdown_pct=settings.live_trading_max_drawdown_pct,
+        hard_stop_drawdown_pct=settings.live_trading_hard_stop_drawdown_pct,
         max_source_loss_pct=settings.live_trading_max_source_loss_pct,
         max_orders_per_minute=settings.live_trading_max_orders_per_minute,
         reconciliation_max_snapshot_age_seconds=(

@@ -36,6 +36,7 @@ from app.services.paper_trading_service import (
     apply_paper_fill_part,
     close_paper_position_manually,
     reset_paper_trading_account_balance,
+    run_paper_hard_stops,
     set_paper_trading_account_enabled,
 )
 
@@ -628,3 +629,92 @@ async def test_a_manual_close_locks_the_account_and_realizes_the_result(
     assert remaining == 0
     assert paper_account is not None
     assert paper_account.realized_pnl_usd > Decimal("0")
+
+
+def drawdown_snapshots(*, latest: str) -> list[PaperAccountEquitySnapshot]:
+    return [
+        PaperAccountEquitySnapshot(
+            account_key=ACCOUNT,
+            equity_usd=Decimal("1000"),
+            recorded_at=NOW - timedelta(hours=30),
+        ),
+        PaperAccountEquitySnapshot(
+            account_key=ACCOUNT,
+            equity_usd=Decimal(latest),
+            recorded_at=NOW - timedelta(minutes=5),
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_hard_stop_closes_every_position_and_stops_the_paper_account(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    config = settings(live_trading_hard_stop_drawdown_pct=Decimal("0.35"))
+    async with integration_sessionmaker() as session:
+        await seed(session, position(margin_mode="cross"), *drawdown_snapshots(latest="640"))
+
+    acted = await run_paper_hard_stops(
+        integration_sessionmaker,
+        client=MidsClient(),  # type: ignore[arg-type]
+        settings=config,
+        now=NOW,
+    )
+    repeat = await run_paper_hard_stops(
+        integration_sessionmaker,
+        client=MidsClient(),  # type: ignore[arg-type]
+        settings=config,
+        now=NOW,
+    )
+
+    async with integration_sessionmaker() as session:
+        paper_account = await session.get(PaperTradingAccount, ACCOUNT)
+        remaining = await session.scalar(select(func.count()).select_from(PaperPosition))
+
+    assert acted == 1
+    # Nothing is left to close, so the next pass does nothing.
+    assert repeat == 0
+    assert remaining == 0
+    assert paper_account is not None
+    assert paper_account.enabled is False
+    assert paper_account.exit_only_reason == "hard_stop_drawdown"
+
+
+@pytest.mark.parametrize(
+    ("hard_stop", "latest_equity"),
+    [
+        # Off by default.
+        ("0", "640"),
+        # A 30% drawdown is past the entry limit but short of the 35% hard stop.
+        ("0.35", "700"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_the_hard_stop_leaves_positions_alone_until_it_is_reached(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+    hard_stop: str,
+    latest_equity: str,
+) -> None:
+    config = settings(live_trading_hard_stop_drawdown_pct=Decimal(hard_stop))
+    async with integration_sessionmaker() as session:
+        await seed(
+            session,
+            position(margin_mode="cross"),
+            *drawdown_snapshots(latest=latest_equity),
+        )
+
+    acted = await run_paper_hard_stops(
+        integration_sessionmaker,
+        client=MidsClient(),  # type: ignore[arg-type]
+        settings=config,
+        now=NOW,
+    )
+
+    async with integration_sessionmaker() as session:
+        paper_account = await session.get(PaperTradingAccount, ACCOUNT)
+        remaining = await session.scalar(select(func.count()).select_from(PaperPosition))
+
+    assert acted == 0
+    assert remaining == 1
+    assert paper_account is not None
+    assert paper_account.enabled is True

@@ -188,6 +188,7 @@ export function tradingAccounts(overrides: Partial<TradingAccountsResponse> = {}
       maxDailyLossPct: "0.05",
       maxWeeklyLossPct: "0.1",
       maxDrawdownPct: "0.2",
+      hardStopDrawdownPct: "0",
       maxSourceLossPct: "0.1",
       maxOrdersPerMinute: 30,
       reconciliationMaxSnapshotAgeSeconds: 120,

@@ -37,8 +37,10 @@ from app.integrations.hyperliquid_live_client import (
     LiveOrderResult,
 )
 from app.services.copy_risk_rules import (
+    HARD_STOP_RULE,
     AccountLossState,
     account_loss_breach,
+    hard_stop_breached,
     performance_loss_pct,
 )
 from app.services.hyperliquid_account_mode import (
@@ -873,6 +875,14 @@ async def start_live_trading_account(
                     settings=settings,
                     now=start_epoch,
                 )
+                if isinstance(account.config_payload, dict) and account.config_payload.get(
+                    LIVE_HARD_STOP_MARKER
+                ):
+                    # A later hard stop is a new event.
+                    account.config_payload = merge_raw_payload(
+                        account.config_payload,
+                        {LIVE_HARD_STOP_MARKER: None},
+                    )
                 await activate_live_copy_account_sources(
                     session,
                     account_key=account.key,
@@ -1401,6 +1411,87 @@ async def run_live_close_all_operation(
     finally:
         if client_created:
             await client.__aexit__(None, None, None)
+
+
+LIVE_HARD_STOP_MARKER = "hardStop"
+LIVE_HARD_STOP_ACCOUNT_STATUSES = frozenset({"enabled", "exit_only"})
+
+
+async def enforce_live_hard_stop(
+    session: AsyncSession,
+    *,
+    account: TradingAccount,
+    settings: Settings,
+    info_client: HyperliquidClient | None = None,
+    trading_client: HyperliquidLiveTradingClient | None = None,
+    now: datetime | None = None,
+) -> LiveCloseAllResult | None:
+    """Close every position and stop the account once drawdown reaches the hard stop.
+
+    Runs after each reconciliation, so it acts on the equity the exchange just
+    reported. The close-all operation it starts is durable and resumed by the
+    reconciliation loop until the account is flat. Returns None when the hard
+    stop is off, not reached, or already being carried out.
+    """
+
+    if (
+        settings.live_trading_hard_stop_drawdown_pct <= ZERO
+        or account.account_type != "live"
+        or account.status not in LIVE_HARD_STOP_ACCOUNT_STATUSES
+    ):
+        return None
+    resolved_now = now or datetime.now(UTC)
+    loss_state = await live_account_loss_state(
+        session,
+        account_key=account.key,
+        now=resolved_now,
+        since=account.loss_limits_reset_at,
+    )
+    if not hard_stop_breached(loss_state, settings=settings) or loss_state is None:
+        return None
+    positions = await load_live_exchange_positions(session, account_key=account.key)
+    if not positions or await live_account_has_incomplete_close_operation(
+        session,
+        account_key=account.key,
+    ):
+        await session.commit()
+        return None
+
+    existing_payload = account.config_payload if isinstance(account.config_payload, dict) else {}
+    if not isinstance(existing_payload.get(LIVE_HARD_STOP_MARKER), dict):
+        # One event per hard stop, not one per retried close-all.
+        payload = {
+            "accountKey": account.key,
+            "rule": HARD_STOP_RULE,
+            "observed": str(loss_state.drawdown_pct),
+            "limit": str(settings.live_trading_hard_stop_drawdown_pct),
+            "openPositions": len(positions),
+        }
+        account.config_payload = merge_raw_payload(
+            account.config_payload,
+            {LIVE_HARD_STOP_MARKER: {**payload, "trippedAt": resolved_now.isoformat()}},
+        )
+        record_risk_event(
+            session,
+            event_type="live_hard_stop",
+            severity="critical",
+            message="Hard stop drawdown reached; closing every position and stopping the account.",
+            payload=payload,
+        )
+        record_audit_log(
+            session,
+            actor="risk_engine",
+            action="live_account.hard_stop",
+            payload=payload,
+        )
+    await session.commit()
+    return await close_all_live_account_positions(
+        session,
+        account=account,
+        settings=settings,
+        info_client=info_client,
+        trading_client=trading_client,
+    )
 
 
 async def get_or_create_live_close_all_operation(

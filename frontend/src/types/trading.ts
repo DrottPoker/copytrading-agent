@@ -204,6 +204,7 @@ export type LiveRiskLimits = {
   maxDailyLossPct: string;
   maxWeeklyLossPct: string;
   maxDrawdownPct: string;
+  hardStopDrawdownPct: string;
   maxSourceLossPct: string;
   maxOrdersPerMinute: number;
   reconciliationMaxSnapshotAgeSeconds: number;
