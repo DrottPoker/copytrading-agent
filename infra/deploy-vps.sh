@@ -25,6 +25,15 @@ fail() {
 [ -f "$COMPOSE_FILE" ] || fail "Run this script from the repository root or set COMPOSE_FILE."
 [ -f .env ] || fail "The .env file is missing. Use the first install steps in docs/deployment.md."
 
+dashboard_domain="$(sed -n 's/^DASHBOARD_DOMAIN=//p' .env | tail -n 1)"
+case "$dashboard_domain" in
+  :* | http://*)
+    echo "Warning: DASHBOARD_DOMAIN=$dashboard_domain serves the dashboard over plain HTTP." >&2
+    echo "The dashboard password is sent unencrypted. Use a DNS name for automatic HTTPS" >&2
+    echo "before live trading; see docs/deployment.md." >&2
+    ;;
+esac
+
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
   git status --short --untracked-files=no >&2
   fail "Tracked files have local changes. Save them before updating; never reset them away."

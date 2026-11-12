@@ -39,6 +39,13 @@ async def lifespan(app_instance: FastAPI):
     stop_event: asyncio.Event | None = None
     background_task: asyncio.Task[None] | None = None
     configure_shared_info_budget(settings)
+    if settings.dashboard_served_over_plain_http:
+        logger.warning(
+            "DASHBOARD_DOMAIN=%s serves the dashboard over plain HTTP, so the dashboard "
+            "password is sent unencrypted. Set DASHBOARD_DOMAIN to a DNS name for "
+            "automatic HTTPS before live trading.",
+            settings.dashboard_domain,
+        )
 
     if settings.worker_run_in_api_process:
         sessionmaker = get_sessionmaker(settings)

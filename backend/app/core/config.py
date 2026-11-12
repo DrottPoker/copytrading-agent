@@ -875,6 +875,8 @@ class Settings(BaseSettings):
     dashboard_auth_enabled: bool = True
     dashboard_auth_username: str = "admin"
     dashboard_auth_password: str = Field(default="change-me", repr=False)
+    # The Caddy site address from .env; only read to warn about plain HTTP.
+    dashboard_domain: str | None = None
 
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
 
@@ -1113,6 +1115,20 @@ class Settings(BaseSettings):
         if self.app_env == "production":
             return None
         return r"^https?://(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$"
+
+    @property
+    def dashboard_served_over_plain_http(self) -> bool:
+        """A production dashboard whose Caddy address gets no certificate.
+
+        Caddy serves a bare port such as ``:80`` or an ``http://`` address
+        without TLS, so the dashboard password crosses the network in clear
+        text. A DNS name gets automatic HTTPS.
+        """
+
+        domain = (self.dashboard_domain or "").strip().casefold()
+        return self.app_env == "production" and (
+            domain.startswith(":") or domain.startswith("http://")
+        )
 
     @property
     def system_mode(self) -> str:

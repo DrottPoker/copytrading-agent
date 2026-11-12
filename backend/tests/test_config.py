@@ -338,3 +338,31 @@ def test_pool_reimport_runs_an_hour_after_the_previous_run(
 
     assert settings.pool_fill_import_interval_seconds == 3600
     assert settings.pool_fill_import_min_wallet_interval_seconds == 1800
+
+
+@pytest.mark.parametrize(
+    ("app_env", "domain", "expected"),
+    [
+        ("production", ":80", True),
+        ("production", " :8080 ", True),
+        ("production", "http://dashboard.example.com", True),
+        ("production", "dashboard.example.com", False),
+        ("production", "https://dashboard.example.com", False),
+        # Unknown outside Compose, and local development is always plain HTTP.
+        ("production", None, False),
+        ("development", ":80", False),
+    ],
+)
+def test_plain_http_dashboard_is_detected_in_production(
+    app_env: str,
+    domain: str | None,
+    expected: bool,
+) -> None:
+    settings = Settings(
+        _env_file=None,
+        app_env=app_env,
+        dashboard_auth_password="a-long-private-password",
+        dashboard_domain=domain,
+    )
+
+    assert settings.dashboard_served_over_plain_http is expected
