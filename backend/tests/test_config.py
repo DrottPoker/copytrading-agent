@@ -354,15 +354,16 @@ def test_pool_reimport_runs_an_hour_after_the_previous_run(
     ],
 )
 def test_plain_http_dashboard_is_detected_in_production(
+    monkeypatch: pytest.MonkeyPatch,
     app_env: str,
     domain: str | None,
     expected: bool,
 ) -> None:
-    settings = Settings(
-        _env_file=None,
-        app_env=app_env,
-        dashboard_auth_password="a-long-private-password",
-        dashboard_domain=domain,
-    )
+    # Environment variables win over arguments, so set what the test depends on there.
+    monkeypatch.setenv("APP_ENV", app_env)
+    monkeypatch.setenv("DASHBOARD_AUTH_ENABLED", "true")
+    monkeypatch.setenv("DASHBOARD_AUTH_PASSWORD", "a-long-private-password")
+    monkeypatch.delenv("DASHBOARD_DOMAIN", raising=False)
+    settings = Settings(_env_file=None, dashboard_domain=domain)
 
     assert settings.dashboard_served_over_plain_http is expected

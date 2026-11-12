@@ -2,6 +2,8 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
+import pytest
+
 from app.core.config import Settings
 from app.services.job_lock_service import job_lock_renewal_interval_seconds
 from app.services.ops_monitoring_service import (
@@ -15,6 +17,19 @@ from app.services.worker_heartbeat_service import (
     build_worker_heartbeat_value,
     worker_heartbeat_key,
 )
+
+
+@pytest.fixture
+def single_process_settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
+    """Settings for the API process that also runs every worker loop.
+
+    Environment variables win over arguments, and CI sets the worker mode, so
+    the mode this test depends on is set in the environment.
+    """
+
+    monkeypatch.setenv("WORKER_RUN_IN_API_PROCESS", "true")
+    monkeypatch.setenv("WORKER_ROLE", "all")
+    return Settings(_env_file=None)
 
 
 def test_disabled_backup_status_is_neutral() -> None:
@@ -257,7 +272,9 @@ def test_hyperliquid_budget_sums_the_api_and_live_workers() -> None:
     assert hyperliquid_budget_notes(budget) == []
 
 
-def test_rate_limited_requests_warn_in_ops_health() -> None:
+def test_rate_limited_requests_warn_in_ops_health(
+    single_process_settings: Settings,
+) -> None:
     now = datetime(2026, 10, 11, 12, 0, tzinfo=UTC)
     worker = parse_worker_heartbeat(
         heartbeat_with_usage(
@@ -271,7 +288,7 @@ def test_rate_limited_requests_warn_in_ops_health() -> None:
     )
 
     budget = build_hyperliquid_budget(
-        settings=Settings(_env_file=None, worker_run_in_api_process=True, worker_role="all"),
+        settings=single_process_settings,
         workers=[worker],
         now=now,
     )
@@ -296,7 +313,9 @@ def test_rate_limited_requests_warn_in_ops_health() -> None:
     assert status == "warning"
 
 
-def test_a_process_outside_the_shared_budget_warns() -> None:
+def test_a_process_outside_the_shared_budget_warns(
+    single_process_settings: Settings,
+) -> None:
     now = datetime(2026, 10, 11, 12, 0, tzinfo=UTC)
     workers = [
         parse_worker_heartbeat(
@@ -313,7 +332,7 @@ def test_a_process_outside_the_shared_budget_warns() -> None:
     ]
 
     budget = build_hyperliquid_budget(
-        settings=Settings(_env_file=None, worker_run_in_api_process=True, worker_role="all"),
+        settings=single_process_settings,
         workers=workers,
         now=now,
     )
