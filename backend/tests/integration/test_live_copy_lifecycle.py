@@ -17,7 +17,7 @@ from app.db.models import (
     WalletScore,
     WatchedWallet,
 )
-from app.services import live_copy_service, live_trading_service
+from app.services import live_copy_service
 from app.services.copy_signal_service import (
     ExecutionMarketPrices,
     SourceAccountState,
@@ -50,16 +50,15 @@ from app.services.live_copy_state_service import (
     synchronize_live_copy_account_source_activity,
     synchronize_live_copy_source_activity,
 )
-from app.services.live_trading_service import (
-    LiveCopyEntryLifecycleDeferred,
-    submit_live_trade_intent,
-)
+from app.services.live_order_submission import submit_live_trade_intent
+from app.services.live_trading_errors import LiveCopyEntryLifecycleDeferred
 from app.services.paper_trading_service import (
     PaperCopyBatchResult,
     PaperSourceAllocation,
     refresh_paper_copy_allocations,
 )
 from app.services.trading_core import build_copy_trade_intent
+from tests.fakes.live_modules import patch_live
 
 pytestmark = pytest.mark.integration
 
@@ -2108,11 +2107,7 @@ async def test_concurrent_retained_reclassification_creates_no_order_and_finishe
         async def allow_risk_guardrails(*_args: object, **_kwargs: object) -> None:
             return None
 
-        monkeypatch.setattr(
-            live_trading_service,
-            "validate_live_entry_risk_guardrails",
-            allow_risk_guardrails,
-        )
+        patch_live(monkeypatch, "validate_live_entry_risk_guardrails", allow_risk_guardrails)
 
         class NoSubmitClient:
             def validate_account_order(self, **_kwargs: object) -> None:

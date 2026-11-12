@@ -19,7 +19,7 @@ from app.services.live_copy_state_service import (
     LiveCopyProcessingDeferred,
 )
 from app.services.live_copy_work_service import ClaimedLiveCopyWork
-from app.services.live_trading_service import LiveReconciliationError
+from app.services.live_trading_errors import LiveReconciliationError
 from app.services.paper_trading_service import (
     PaperCopyBatchResult,
 )

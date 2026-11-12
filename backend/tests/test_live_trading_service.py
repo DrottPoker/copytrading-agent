@@ -20,8 +20,14 @@ from app.db.models import (
     TradingPosition,
 )
 from app.integrations.hyperliquid_live_client import LiveOrderResult
-from app.services import live_fill_reconciliation, live_trading_service
+from app.services import (
+    live_fill_reconciliation,
+    live_order_submission,
+    live_reconciliation_service,
+    live_trading_service,
+)
 from app.services.live_account_state import live_perp_equity_usd, live_tradable_equity_usd
+from app.services.live_close_service import close_all_live_account_positions
 from app.services.live_closed_trades import (
     attach_live_funding_to_closed_trades,
     live_closed_trades_from_fills,
@@ -47,6 +53,11 @@ from app.services.live_fill_reconciliation import (
     apply_order_status_response,
     infer_live_exchange_fill_source_attributions,
 )
+from app.services.live_order_submission import (
+    apply_live_order_result,
+    is_retryable_live_order_submit_failure,
+    reset_live_order_for_retry,
+)
 from app.services.live_performance_service import (
     backfill_live_account_performance_history,
     cash_flow_adjusted_period_return,
@@ -60,20 +71,17 @@ from app.services.live_position_reconciliation import (
     live_position_unrealized_pnl_pct,
     sync_live_source_positions_from_exchange_positions,
 )
+from app.services.live_reconciliation_service import update_live_account_from_state
 from app.services.live_trading_service import (
-    apply_live_order_result,
     build_testnet_live_trade_intent,
-    close_all_live_account_positions,
     create_live_trading_account,
-    is_retryable_live_order_submit_failure,
     live_account_key_for_route,
     manual_live_close_recovery_status,
-    reset_live_order_for_retry,
     resolve_live_account_wallet_address,
-    update_live_account_from_state,
     validate_live_account_can_start,
     validate_live_trading_configuration,
 )
+from tests.fakes.live_modules import patch_live
 
 
 def test_apply_order_status_response_maps_filled_order() -> None:
@@ -140,11 +148,7 @@ async def test_reconciliation_keeps_unrecognized_exchange_status_unresolved(
     async def fake_load_dispatch(*_args: object, **_kwargs: object) -> TradingOrderDispatch:
         return dispatch
 
-    monkeypatch.setattr(
-        live_fill_reconciliation,
-        "load_live_order_dispatch",
-        fake_load_dispatch,
-    )
+    patch_live(monkeypatch, "load_live_order_dispatch", fake_load_dispatch)
 
     result = await live_fill_reconciliation.reconcile_live_order_statuses(
         Session(),  # type: ignore[arg-type]
@@ -280,7 +284,7 @@ async def test_live_fill_reconciliation_start_time_uses_forced_lookback() -> Non
 
     now = datetime(2026, 6, 28, 12, 0, tzinfo=UTC)
 
-    start_time_ms = await live_trading_service.live_fill_reconciliation_start_time_ms(
+    start_time_ms = await live_fill_reconciliation.live_fill_reconciliation_start_time_ms(
         UnexpectedSessionRead(),
         account_key="live_test",
         settings=Settings(),
@@ -473,7 +477,7 @@ async def test_live_account_recent_order_count_ignores_unsubmitted_skip_rows() -
 
     session = CaptureSession()
 
-    count = await live_trading_service.live_account_recent_order_count(
+    count = await live_order_submission.live_account_recent_order_count(
         session,
         account_key="live_test",
         now=datetime(2026, 1, 1, tzinfo=UTC),
@@ -964,25 +968,17 @@ async def test_margin_setting_sync_unchanged_settings_skip_execution_lock_and_ex
         events.append("account_load")
         return account
 
-    monkeypatch.setattr(live_trading_service, "job_lock", fake_job_lock)
-    monkeypatch.setattr(
-        live_trading_service,
-        "load_live_account",
-        fake_load_live_account,
-    )
-    monkeypatch.setattr(
-        live_trading_service,
-        "load_live_account_for_update",
-        unexpected_account_load,
-    )
-    monkeypatch.setattr(
-        live_trading_service,
+    patch_live(monkeypatch, "job_lock", fake_job_lock)
+    patch_live(monkeypatch, "load_live_account", fake_load_live_account)
+    patch_live(monkeypatch, "load_live_account_for_update", unexpected_account_load)
+    patch_live(
+        monkeypatch,
         "validate_live_account_identity",
         lambda *_args, **_kwargs: events.append("account_validated"),
     )
 
     session = FakeSession()
-    changed = await live_trading_service.sync_live_position_margin_setting(
+    changed = await live_order_submission.sync_live_position_margin_setting(
         session,
         account_key="live_test",
         source_wallet="0xsource",
@@ -1035,19 +1031,11 @@ async def test_margin_setting_sync_missing_preflight_position_commits_before_ret
     def unexpected_job_lock(*_args, **_kwargs):
         raise AssertionError("Missing positions must not acquire the execution lock.")
 
-    monkeypatch.setattr(live_trading_service, "job_lock", unexpected_job_lock)
-    monkeypatch.setattr(
-        live_trading_service,
-        "load_live_account",
-        fake_load_live_account,
-    )
-    monkeypatch.setattr(
-        live_trading_service,
-        "validate_live_account_identity",
-        lambda *_args, **_kwargs: None,
-    )
+    patch_live(monkeypatch, "job_lock", unexpected_job_lock)
+    patch_live(monkeypatch, "load_live_account", fake_load_live_account)
+    patch_live(monkeypatch, "validate_live_account_identity", lambda *_args, **_kwargs: None)
 
-    changed = await live_trading_service.sync_live_position_margin_setting(
+    changed = await live_order_submission.sync_live_position_margin_setting(
         FakeSession(),
         account_key="live_test",
         source_wallet="0xsource",
@@ -1106,24 +1094,12 @@ async def test_margin_setting_sync_changed_settings_acquire_execution_lock_and_u
     async def fake_load_live_account_for_update(*_args, **_kwargs):
         return account
 
-    monkeypatch.setattr(live_trading_service, "job_lock", fake_job_lock)
-    monkeypatch.setattr(
-        live_trading_service,
-        "load_live_account",
-        fake_load_live_account_for_update,
-    )
-    monkeypatch.setattr(
-        live_trading_service,
-        "load_live_account_for_update",
-        fake_load_live_account_for_update,
-    )
-    monkeypatch.setattr(
-        live_trading_service,
-        "validate_live_account_identity",
-        lambda *_args, **_kwargs: None,
-    )
+    patch_live(monkeypatch, "job_lock", fake_job_lock)
+    patch_live(monkeypatch, "load_live_account", fake_load_live_account_for_update)
+    patch_live(monkeypatch, "load_live_account_for_update", fake_load_live_account_for_update)
+    patch_live(monkeypatch, "validate_live_account_identity", lambda *_args, **_kwargs: None)
 
-    changed = await live_trading_service.sync_live_position_margin_setting(
+    changed = await live_order_submission.sync_live_position_margin_setting(
         FakeSession(),
         account_key="live_test",
         source_wallet="0xsource",
@@ -1193,25 +1169,13 @@ async def test_margin_setting_sync_revalidates_settings_after_execution_lock(
     async def fake_load_live_account_for_update(*_args, **_kwargs):
         return account
 
-    monkeypatch.setattr(live_trading_service, "job_lock", fake_job_lock)
-    monkeypatch.setattr(
-        live_trading_service,
-        "load_live_account",
-        fake_load_live_account_for_update,
-    )
-    monkeypatch.setattr(
-        live_trading_service,
-        "load_live_account_for_update",
-        fake_load_live_account_for_update,
-    )
-    monkeypatch.setattr(
-        live_trading_service,
-        "validate_live_account_identity",
-        lambda *_args, **_kwargs: None,
-    )
+    patch_live(monkeypatch, "job_lock", fake_job_lock)
+    patch_live(monkeypatch, "load_live_account", fake_load_live_account_for_update)
+    patch_live(monkeypatch, "load_live_account_for_update", fake_load_live_account_for_update)
+    patch_live(monkeypatch, "validate_live_account_identity", lambda *_args, **_kwargs: None)
 
     session = FakeSession()
-    changed = await live_trading_service.sync_live_position_margin_setting(
+    changed = await live_order_submission.sync_live_position_margin_setting(
         session,
         account_key="live_test",
         source_wallet="0xsource",
@@ -1461,7 +1425,7 @@ async def test_close_all_keeps_account_exit_only_when_positions_remain(monkeypat
         return 1
 
     async def fake_reconcile_live_trading_account(*_args: object, **_kwargs: object) -> object:
-        return live_trading_service.LiveReconciliationResult(
+        return live_reconciliation_service.LiveReconciliationResult(
             account_key=account.key,
             user_address="0x" + "1" * 40,
             status="complete",
@@ -1480,61 +1444,25 @@ async def test_close_all_keeps_account_exit_only_when_positions_remain(monkeypat
             submitted=True,
         )
 
-    monkeypatch.setattr(
-        live_trading_service,
-        "reconcile_live_trading_account",
-        fake_reconcile_live_trading_account,
-    )
-    monkeypatch.setattr(
-        live_trading_service,
-        "load_live_exchange_positions",
-        fake_load_live_exchange_positions,
-    )
-    monkeypatch.setattr(live_trading_service, "load_live_close_mids", fake_load_live_close_mids)
-    monkeypatch.setattr(
-        live_trading_service,
-        "submit_live_trade_intent",
-        fake_submit_live_trade_intent,
-    )
-    monkeypatch.setattr(live_trading_service, "job_lock", fake_job_lock)
+    patch_live(monkeypatch, "reconcile_live_trading_account", fake_reconcile_live_trading_account)
+    patch_live(monkeypatch, "load_live_exchange_positions", fake_load_live_exchange_positions)
+    patch_live(monkeypatch, "load_live_close_mids", fake_load_live_close_mids)
+    patch_live(monkeypatch, "submit_live_trade_intent", fake_submit_live_trade_intent)
+    patch_live(monkeypatch, "job_lock", fake_job_lock)
 
     async def fake_load_live_account_for_update(*_args: object, **_kwargs: object) -> object:
         return account
 
-    monkeypatch.setattr(
-        live_trading_service,
-        "load_live_account_for_update",
-        fake_load_live_account_for_update,
-    )
+    patch_live(monkeypatch, "load_live_account_for_update", fake_load_live_account_for_update)
 
     async def fake_cancel_unsent_live_entries(*_args: object, **_kwargs: object) -> int:
         return 0
 
-    monkeypatch.setattr(
-        live_trading_service,
-        "cancel_unsent_live_entries",
-        fake_cancel_unsent_live_entries,
-    )
-    monkeypatch.setattr(
-        live_trading_service,
-        "get_or_create_live_close_all_operation",
-        fake_get_operation,
-    )
-    monkeypatch.setattr(
-        live_trading_service,
-        "get_or_create_live_close_all_item",
-        fake_get_item,
-    )
-    monkeypatch.setattr(
-        live_trading_service,
-        "refresh_live_close_all_items",
-        fake_refresh_items,
-    )
-    monkeypatch.setattr(
-        live_trading_service,
-        "live_close_all_incomplete_item_count",
-        fake_incomplete_count,
-    )
+    patch_live(monkeypatch, "cancel_unsent_live_entries", fake_cancel_unsent_live_entries)
+    patch_live(monkeypatch, "get_or_create_live_close_all_operation", fake_get_operation)
+    patch_live(monkeypatch, "get_or_create_live_close_all_item", fake_get_item)
+    patch_live(monkeypatch, "refresh_live_close_all_items", fake_refresh_items)
+    patch_live(monkeypatch, "live_close_all_incomplete_item_count", fake_incomplete_count)
 
     class FlushSession:
         async def commit(self) -> None:
@@ -1776,8 +1704,8 @@ async def test_create_live_trading_account_returns_existing_wallet_route(monkeyp
         assert kwargs["include_config_wallet_fallback"] is True
         return existing
 
-    monkeypatch.setattr(
-        live_trading_service,
+    patch_live(
+        monkeypatch,
         "find_existing_live_account_for_route",
         fake_find_existing_live_account_for_route,
     )
@@ -1940,7 +1868,7 @@ async def test_cash_flow_reconciliation_backfills_all_time_before_incremental_sy
         async def scalar(self, _statement: object) -> datetime | None:
             raise AssertionError("The ledger must not constrain the first historical backfill.")
 
-    start_time_ms = await live_trading_service.live_cash_flow_reconciliation_start_time_ms(
+    start_time_ms = await live_fill_reconciliation.live_cash_flow_reconciliation_start_time_ms(
         UnexpectedSession(),  # type: ignore[arg-type]
         account=account,
         settings=Settings(),
@@ -1964,7 +1892,7 @@ async def test_cash_flow_reconciliation_becomes_incremental_after_complete_backf
         fee_usd=Decimal("0"),
         config_payload={"existing": "value"},
     )
-    live_trading_service.mark_live_cash_flow_backfill_complete(
+    live_fill_reconciliation.mark_live_cash_flow_backfill_complete(
         account,
         reconciled_at=reconciled_at,
     )
@@ -1973,7 +1901,7 @@ async def test_cash_flow_reconciliation_becomes_incremental_after_complete_backf
         async def scalar(self, _statement: object) -> datetime:
             return latest_cash_flow_at
 
-    start_time_ms = await live_trading_service.live_cash_flow_reconciliation_start_time_ms(
+    start_time_ms = await live_fill_reconciliation.live_cash_flow_reconciliation_start_time_ms(
         CashFlowSession(),  # type: ignore[arg-type]
         account=account,
         settings=Settings(),

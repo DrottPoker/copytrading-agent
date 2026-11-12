@@ -7,13 +7,13 @@ import pytest
 
 from app.core.config import Settings
 from app.db.models import AuditLog, RiskEvent, TradingAccount
-from app.services import live_trading_service
 from app.services.copy_risk_rules import AccountLossState, hard_stop_breached
-from app.services.live_trading_service import (
+from app.services.live_close_service import (
     LIVE_HARD_STOP_MARKER,
     LiveCloseAllResult,
     enforce_live_hard_stop,
 )
+from tests.fakes.live_modules import patch_live
 
 
 def loss_state(drawdown: str) -> AccountLossState:
@@ -90,22 +90,12 @@ class HardStopHarness:
         self.positions = positions
         self.close_in_progress = close_in_progress
         self.close_all_calls = 0
-        monkeypatch.setattr(live_trading_service, "live_account_loss_state", self.loss_state)
-        monkeypatch.setattr(
-            live_trading_service,
-            "load_live_exchange_positions",
-            self.exchange_positions,
+        patch_live(monkeypatch, "live_account_loss_state", self.loss_state)
+        patch_live(monkeypatch, "load_live_exchange_positions", self.exchange_positions)
+        patch_live(
+            monkeypatch, "live_account_has_incomplete_close_operation", self.incomplete_close
         )
-        monkeypatch.setattr(
-            live_trading_service,
-            "live_account_has_incomplete_close_operation",
-            self.incomplete_close,
-        )
-        monkeypatch.setattr(
-            live_trading_service,
-            "close_all_live_account_positions",
-            self.close_all,
-        )
+        patch_live(monkeypatch, "close_all_live_account_positions", self.close_all)
 
     async def loss_state(self, *_args: Any, **_kwargs: Any) -> AccountLossState | None:
         return loss_state(self.drawdown) if self.drawdown is not None else None

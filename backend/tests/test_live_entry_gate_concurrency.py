@@ -8,15 +8,14 @@ import pytest
 
 from app.core.config import Settings
 from app.db.models import TradingAccount
-from app.services import live_performance_service, live_trading_service
+from app.services.live_reconciliation_service import LiveReconciliationResult
+from app.services.live_trading_errors import LiveAccountDeleteError, LiveTradingServiceError
 from app.services.live_trading_service import (
-    LiveAccountDeleteError,
-    LiveReconciliationResult,
-    LiveTradingServiceError,
     delete_live_trading_account,
     start_live_trading_account,
     stop_live_trading_account,
 )
+from tests.fakes.live_modules import patch_live
 
 
 class StartSession:
@@ -83,22 +82,10 @@ async def test_start_does_not_overwrite_newer_lifecycle_command(
             status="complete",
         )
 
-    monkeypatch.setattr(
-        live_trading_service,
-        "validate_live_trading_configuration",
-        lambda *_: None,
-    )
-    monkeypatch.setattr(live_trading_service, "job_lock", fake_job_lock)
-    monkeypatch.setattr(
-        live_trading_service,
-        "load_live_account_for_update",
-        fake_load_account,
-    )
-    monkeypatch.setattr(
-        live_trading_service,
-        "run_live_trading_account_reconciliation",
-        fake_reconciliation,
-    )
+    patch_live(monkeypatch, "validate_live_trading_configuration", lambda *_: None)
+    patch_live(monkeypatch, "job_lock", fake_job_lock)
+    patch_live(monkeypatch, "load_live_account_for_update", fake_load_account)
+    patch_live(monkeypatch, "run_live_trading_account_reconciliation", fake_reconciliation)
 
     with pytest.raises(LiveTradingServiceError, match="lifecycle changed"):
         await start_live_trading_account(
@@ -135,18 +122,10 @@ async def test_stop_on_disabled_account_advances_lifecycle_fence(
     async def fake_source_sync(*_args: object, **_kwargs: object) -> int:
         return 0
 
-    monkeypatch.setattr(live_trading_service, "job_lock", fake_job_lock)
-    monkeypatch.setattr(
-        live_trading_service,
-        "load_live_account_for_update",
-        fake_load_account,
-    )
-    monkeypatch.setattr(live_trading_service, "cancel_unsent_live_entries", fake_cancel)
-    monkeypatch.setattr(
-        live_trading_service,
-        "synchronize_live_copy_account_source_activity",
-        fake_source_sync,
-    )
+    patch_live(monkeypatch, "job_lock", fake_job_lock)
+    patch_live(monkeypatch, "load_live_account_for_update", fake_load_account)
+    patch_live(monkeypatch, "cancel_unsent_live_entries", fake_cancel)
+    patch_live(monkeypatch, "synchronize_live_copy_account_source_activity", fake_source_sync)
 
     stopped = await stop_live_trading_account(
         session,  # type: ignore[arg-type]
@@ -205,53 +184,17 @@ async def test_start_captures_source_baselines_before_enabling_entries(
         activation_epochs.append(kwargs["now"])
         return []
 
-    monkeypatch.setattr(
-        live_trading_service,
-        "validate_live_trading_configuration",
-        lambda *_: None,
-    )
-    monkeypatch.setattr(
-        live_trading_service,
-        "validate_live_account_can_start",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(live_trading_service, "job_lock", fake_job_lock)
-    monkeypatch.setattr(
-        live_trading_service,
-        "load_live_account_for_update",
-        fake_load_account,
-    )
-    monkeypatch.setattr(
-        live_trading_service,
-        "run_live_trading_account_reconciliation",
-        fake_reconciliation,
-    )
-    monkeypatch.setattr(
-        live_trading_service,
-        "live_account_has_incomplete_close_operation",
-        no_incomplete_close,
-    )
-    monkeypatch.setattr(live_performance_service, "live_account_loss_state", no_loss_history)
-    monkeypatch.setattr(
-        live_trading_service,
-        "load_active_live_copy_source_wallets",
-        active_sources,
-    )
-    monkeypatch.setattr(
-        live_trading_service,
-        "load_owned_live_copy_source_wallets",
-        owned_sources,
-    )
-    monkeypatch.setattr(
-        live_trading_service,
-        "synchronize_live_copy_account_source_activity",
-        sync_sources,
-    )
-    monkeypatch.setattr(
-        live_trading_service,
-        "activate_live_copy_account_sources",
-        activate_sources,
-    )
+    patch_live(monkeypatch, "validate_live_trading_configuration", lambda *_: None)
+    patch_live(monkeypatch, "validate_live_account_can_start", lambda *_args, **_kwargs: None)
+    patch_live(monkeypatch, "job_lock", fake_job_lock)
+    patch_live(monkeypatch, "load_live_account_for_update", fake_load_account)
+    patch_live(monkeypatch, "run_live_trading_account_reconciliation", fake_reconciliation)
+    patch_live(monkeypatch, "live_account_has_incomplete_close_operation", no_incomplete_close)
+    patch_live(monkeypatch, "live_account_loss_state", no_loss_history)
+    patch_live(monkeypatch, "load_active_live_copy_source_wallets", active_sources)
+    patch_live(monkeypatch, "load_owned_live_copy_source_wallets", owned_sources)
+    patch_live(monkeypatch, "synchronize_live_copy_account_source_activity", sync_sources)
+    patch_live(monkeypatch, "activate_live_copy_account_sources", activate_sources)
 
     started = await start_live_trading_account(
         session,  # type: ignore[arg-type]
@@ -305,17 +248,9 @@ async def test_archive_reconciles_before_trusting_flat_state(
             open_positions=1,
         )
 
-    monkeypatch.setattr(live_trading_service, "job_lock", fake_job_lock)
-    monkeypatch.setattr(
-        live_trading_service,
-        "load_live_account_for_update",
-        fake_load_account,
-    )
-    monkeypatch.setattr(
-        live_trading_service,
-        "run_live_trading_account_reconciliation",
-        fake_reconciliation,
-    )
+    patch_live(monkeypatch, "job_lock", fake_job_lock)
+    patch_live(monkeypatch, "load_live_account_for_update", fake_load_account)
+    patch_live(monkeypatch, "run_live_trading_account_reconciliation", fake_reconciliation)
 
     with pytest.raises(LiveAccountDeleteError, match="Disable the live account"):
         await delete_live_trading_account(

@@ -14,7 +14,7 @@ from app.db.models import (
     TradingOrder,
     TradingPosition,
 )
-from app.services import live_copy_service, live_trading_service
+from app.services import live_copy_service, live_order_submission
 from app.services.copy_decision import (
     CloseDecision,
     CopyPosition,
@@ -46,7 +46,7 @@ from app.services.live_copy_service import (
     submit_live_copy_intent,
 )
 from app.services.live_copy_state_service import LiveCopyPartClaim, LiveCopyProcessingDeferred
-from app.services.live_trading_service import LiveOrderSubmitError, LiveReconciliationError
+from app.services.live_trading_errors import LiveOrderSubmitError, LiveReconciliationError
 from app.services.paper_trading_service import (
     CopyAllocationCache,
     PaperCopyBatchResult,
@@ -3906,7 +3906,7 @@ def patch_target_sizing_inputs(
 
     async def exposure(*_args, **_kwargs):
         notional = position.size * Decimal("100") if position is not None else Decimal("0")
-        return live_trading_service.LiveCopyExposure(source_usd=notional, account_usd=notional)
+        return live_order_submission.LiveCopyExposure(source_usd=notional, account_usd=notional)
 
     async def source_loss(*_args, **_kwargs):
         return source_loss_usd

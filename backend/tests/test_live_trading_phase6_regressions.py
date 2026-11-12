@@ -20,32 +20,36 @@ from app.db.models import (
     TradingReconciliationRun,
     WalletFill,
 )
-from app.services import live_trading_service
+from app.services import live_trading_constants
+from app.services.live_close_service import (
+    LiveCloseAllResult,
+    complete_live_close_all_operation,
+    resume_live_close_all_operations,
+)
 from app.services.live_exchange_fetch import (
     LiveFillFetchResult,
     LiveFundingFetchResult,
     LivePerpSnapshot,
 )
 from app.services.live_fill_reconciliation import LiveOrderReconciliationResult
-from app.services.live_position_reconciliation import LivePositionReconciliationResult
-from app.services.live_trading_service import (
-    LiveCloseAllResult,
-    LiveCopyEntryLifecycleDeferred,
+from app.services.live_order_submission import (
     LiveOrderLifecycleResult,
-    LiveOrderSubmitError,
-    LiveReconciliationResult,
-    close_live_account_position,
-    complete_live_close_all_operation,
     live_copy_capacity_order_reservation,
-    mark_live_reconciliation_run_failed,
-    resume_live_close_all_operations,
-    run_live_trading_account_reconciliation,
     validate_live_copy_entry_capacity_gate,
     validate_live_copy_entry_lifecycle_gate,
     validate_live_entry_risk_guardrails,
 )
+from app.services.live_position_reconciliation import LivePositionReconciliationResult
+from app.services.live_reconciliation_service import (
+    LiveReconciliationResult,
+    mark_live_reconciliation_run_failed,
+    run_live_trading_account_reconciliation,
+)
+from app.services.live_trading_errors import LiveCopyEntryLifecycleDeferred, LiveOrderSubmitError
+from app.services.live_trading_service import close_live_account_position
 from app.services.trading_core import TradeIntent
 from app.services.trading_safety_service import apply_live_account_status
+from tests.fakes.live_modules import patch_live
 
 
 class FakeScalarRows:
@@ -122,7 +126,7 @@ def live_position(*, coin: str) -> TradingPosition:
         id=uuid4(),
         account_key="live_test",
         account_type="live",
-        source_wallet=live_trading_service.LIVE_EXCHANGE_SOURCE,
+        source_wallet=live_trading_constants.LIVE_EXCHANGE_SOURCE,
         coin=coin,
         side="long",
         size=Decimal("1"),
@@ -284,7 +288,7 @@ async def test_final_gate_allows_planned_open_to_dispatch_as_owned_add() -> None
     plan_state = planned_live_copy_state(activated_at=activated_at, action="open")
     source_position = attributed_live_position(source_wallet="0xsource")
     exchange_position = attributed_live_position(
-        source_wallet=live_trading_service.LIVE_EXCHANGE_SOURCE
+        source_wallet=live_trading_constants.LIVE_EXCHANGE_SOURCE
     )
     session = FakeSession(
         scalar_values=[
@@ -321,7 +325,7 @@ async def test_final_gate_allows_retained_same_market_add() -> None:
     plan_state.source_order_position = Decimal("1")
     source_position = attributed_live_position(source_wallet="0xsource")
     exchange_position = attributed_live_position(
-        source_wallet=live_trading_service.LIVE_EXCHANGE_SOURCE
+        source_wallet=live_trading_constants.LIVE_EXCHANGE_SOURCE
     )
     session = FakeSession(
         scalar_values=[
@@ -364,7 +368,7 @@ async def test_final_gate_blocks_retained_flip_open_without_order() -> None:
     plan_state.source_order_position = Decimal("-1")
     source_position = attributed_live_position(source_wallet="0xsource")
     exchange_position = attributed_live_position(
-        source_wallet=live_trading_service.LIVE_EXCHANGE_SOURCE
+        source_wallet=live_trading_constants.LIVE_EXCHANGE_SOURCE
     )
     wallet_fill = source_wallet_fill(activated_at=activated_at, start_position="1")
     wallet_fill.side = "sell"
@@ -436,7 +440,7 @@ async def test_final_gate_terminalizes_unattributed_same_side_exchange_exposure(
     source_state = live_copy_source_state(activated_at=activated_at)
     plan_state = planned_live_copy_state(activated_at=activated_at)
     exchange_position = attributed_live_position(
-        source_wallet=live_trading_service.LIVE_EXCHANGE_SOURCE
+        source_wallet=live_trading_constants.LIVE_EXCHANGE_SOURCE
     )
     session = FakeSession(
         scalar_values=[
@@ -638,18 +642,18 @@ async def test_manual_close_from_disabled_keeps_exit_only_with_another_position(
             submitted=True,
         )
 
-    monkeypatch.setattr(live_trading_service, "load_live_position", fake_load_position)
-    monkeypatch.setattr(live_trading_service, "get_live_position", fake_get_position)
-    monkeypatch.setattr(live_trading_service, "load_live_account", fake_load_account)
-    monkeypatch.setattr(live_trading_service, "stop_live_trading_account", fake_stop_account)
-    monkeypatch.setattr(live_trading_service, "reconcile_live_trading_account", fake_reconcile)
-    monkeypatch.setattr(live_trading_service, "load_live_close_mids", fake_load_mids)
-    monkeypatch.setattr(
-        live_trading_service,
+    patch_live(monkeypatch, "load_live_position", fake_load_position)
+    patch_live(monkeypatch, "get_live_position", fake_get_position)
+    patch_live(monkeypatch, "load_live_account", fake_load_account)
+    patch_live(monkeypatch, "stop_live_trading_account", fake_stop_account)
+    patch_live(monkeypatch, "reconcile_live_trading_account", fake_reconcile)
+    patch_live(monkeypatch, "load_live_close_mids", fake_load_mids)
+    patch_live(
+        monkeypatch,
         "build_live_close_position_intent",
         lambda **_kwargs: live_intent(reduce_only=True),
     )
-    monkeypatch.setattr(live_trading_service, "submit_live_trade_intent", fake_submit)
+    patch_live(monkeypatch, "submit_live_trade_intent", fake_submit)
 
     result = await close_live_account_position(  # type: ignore[arg-type]
         session,
@@ -761,69 +765,29 @@ async def test_partial_reconciliation_preserves_enabled_lifecycle_and_protects_e
     async def return_empty_ids(*_args: Any, **_kwargs: Any) -> tuple[Any, ...]:
         return ()
 
-    monkeypatch.setattr(
-        live_trading_service,
-        "reconcile_live_order_statuses",
-        return_order_result,
-    )
-    monkeypatch.setattr(
-        live_trading_service,
-        "live_fill_reconciliation_start_time_ms",
-        return_zero,
-    )
-    monkeypatch.setattr(
-        live_trading_service,
-        "live_funding_reconciliation_start_time_ms",
-        return_zero,
-    )
-    monkeypatch.setattr(live_trading_service, "fetch_live_fills_by_time", return_fill_result)
-    monkeypatch.setattr(
-        live_trading_service,
-        "fetch_live_funding_by_time",
-        return_funding_result,
-    )
-    monkeypatch.setattr(live_trading_service, "reconcile_live_fills", return_zero)
-    monkeypatch.setattr(
-        live_trading_service,
-        "reconcile_live_funding_payments",
-        return_zero,
-    )
-    monkeypatch.setattr(
-        live_trading_service,
-        "update_live_orders_from_reconciled_fills",
-        return_zero,
-    )
-    monkeypatch.setattr(
-        live_trading_service,
-        "recompute_live_account_fill_totals",
-        return_none,
-    )
-    monkeypatch.setattr(live_trading_service, "fetch_live_perp_states", return_perp_snapshot)
-    monkeypatch.setattr(live_trading_service, "fetch_live_spot_state", return_empty_state)
-    monkeypatch.setattr(live_trading_service, "fetch_live_user_abstraction", return_empty_state)
-    monkeypatch.setattr(live_trading_service, "reconcile_live_positions", return_position_result)
-    monkeypatch.setattr(live_trading_service, "still_unresolved_live_order_ids", return_empty_ids)
-    monkeypatch.setattr(
-        live_trading_service,
+    patch_live(monkeypatch, "reconcile_live_order_statuses", return_order_result)
+    patch_live(monkeypatch, "live_fill_reconciliation_start_time_ms", return_zero)
+    patch_live(monkeypatch, "live_funding_reconciliation_start_time_ms", return_zero)
+    patch_live(monkeypatch, "fetch_live_fills_by_time", return_fill_result)
+    patch_live(monkeypatch, "fetch_live_funding_by_time", return_funding_result)
+    patch_live(monkeypatch, "reconcile_live_fills", return_zero)
+    patch_live(monkeypatch, "reconcile_live_funding_payments", return_zero)
+    patch_live(monkeypatch, "update_live_orders_from_reconciled_fills", return_zero)
+    patch_live(monkeypatch, "recompute_live_account_fill_totals", return_none)
+    patch_live(monkeypatch, "fetch_live_perp_states", return_perp_snapshot)
+    patch_live(monkeypatch, "fetch_live_spot_state", return_empty_state)
+    patch_live(monkeypatch, "fetch_live_user_abstraction", return_empty_state)
+    patch_live(monkeypatch, "reconcile_live_positions", return_position_result)
+    patch_live(monkeypatch, "still_unresolved_live_order_ids", return_empty_ids)
+    patch_live(
+        monkeypatch,
         "reconciliation_component_errors",
         lambda **_kwargs: {"fills": "Fill history is incomplete."},
     )
-    monkeypatch.setattr(
-        live_trading_service,
-        "reconciliation_components_payload",
-        lambda **_kwargs: {},
-    )
-    monkeypatch.setattr(
-        live_trading_service,
-        "update_live_account_from_state",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(live_trading_service, "prune_live_reconciliation_runs", return_none)
-    monkeypatch.setattr(
-        live_trading_service,
-        "thin_live_account_performance_snapshots",
-        return_none,
-    )
+    patch_live(monkeypatch, "reconciliation_components_payload", lambda **_kwargs: {})
+    patch_live(monkeypatch, "update_live_account_from_state", lambda *_args, **_kwargs: None)
+    patch_live(monkeypatch, "prune_live_reconciliation_runs", return_none)
+    patch_live(monkeypatch, "thin_live_account_performance_snapshots", return_none)
 
     result = await run_live_trading_account_reconciliation(  # type: ignore[arg-type]
         session,
@@ -912,8 +876,8 @@ async def test_failed_close_all_operation_is_selected_for_recovery(
             status="disabled",
         )
 
-    monkeypatch.setattr(live_trading_service, "load_live_account", fake_load_account)
-    monkeypatch.setattr(live_trading_service, "close_all_live_account_positions", fake_close_all)
+    patch_live(monkeypatch, "load_live_account", fake_load_account)
+    patch_live(monkeypatch, "close_all_live_account_positions", fake_close_all)
 
     results = await resume_live_close_all_operations(  # type: ignore[arg-type]
         session,
@@ -1005,12 +969,8 @@ async def test_failed_reconciliation_blocks_entries_without_changing_enabled_lif
     async def return_none(*_args: Any, **_kwargs: Any) -> None:
         return None
 
-    monkeypatch.setattr(live_trading_service, "prune_live_reconciliation_runs", return_none)
-    monkeypatch.setattr(
-        live_trading_service,
-        "thin_live_account_performance_snapshots",
-        return_none,
-    )
+    patch_live(monkeypatch, "prune_live_reconciliation_runs", return_none)
+    patch_live(monkeypatch, "thin_live_account_performance_snapshots", return_none)
 
     await mark_live_reconciliation_run_failed(  # type: ignore[arg-type]
         session,

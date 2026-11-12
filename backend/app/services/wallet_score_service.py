@@ -23,7 +23,7 @@ from app.schemas.score import (
 from app.schemas.wallet import normalize_wallet_address
 from app.services.hyperliquid_account_mode import normalize_user_abstraction
 from app.services.job_lock_service import job_lock
-from app.services.live_trading_service import live_copy_allocation_equity
+from app.services.live_order_submission import live_copy_allocation_equity
 from app.services.operation_status_service import (
     OperationCanceledError,
     mark_operation_canceled,

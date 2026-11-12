@@ -24,13 +24,13 @@ from app.services.copy_signal_service import (
     SourceAccountState,
     SourceFillPart,
 )
+from app.services.live_order_submission import live_source_net_loss_usd, load_live_copy_exposure
 from app.services.live_performance_service import (
     live_account_loss_state,
     restart_breached_live_loss_limits,
     thin_live_account_performance_snapshots,
 )
 from app.services.live_trading_constants import LIVE_EXCHANGE_SOURCE
-from app.services.live_trading_service import live_source_net_loss_usd, load_live_copy_exposure
 from app.services.paper_trading_service import (
     PaperSourceAllocation,
     apply_open_part,

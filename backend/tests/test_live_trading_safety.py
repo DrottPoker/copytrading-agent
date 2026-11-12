@@ -16,17 +16,16 @@ from app.integrations.hyperliquid_live_client import (
     HyperliquidLiveTradingClient,
     HyperliquidLiveTradingConfigurationError,
 )
-from app.services import live_trading_service
 from app.services.copy_risk_rules import AccountLossState, performance_loss_pct
 from app.services.live_account_state import live_reconciliation_is_fresh
-from app.services.live_trading_service import (
-    LiveOrderSubmitError,
-    LiveTradingServiceError,
+from app.services.live_order_submission import (
     ensure_live_entry_intent_is_fresh,
-    validate_live_account_can_start,
     validate_live_entry_risk_guardrails,
 )
+from app.services.live_trading_errors import LiveOrderSubmitError, LiveTradingServiceError
+from app.services.live_trading_service import validate_live_account_can_start
 from app.services.trading_core import TradeIntent
+from tests.fakes.live_modules import patch_live
 
 
 class NoIoSession:
@@ -250,8 +249,8 @@ async def test_account_loss_guards_trip_the_account(
     async def fake_trip(*_args: object, **kwargs: object) -> None:
         tripped.update(kwargs)
 
-    monkeypatch.setattr(live_trading_service, "live_account_loss_state", fake_loss_state)
-    monkeypatch.setattr(live_trading_service, "trip_live_account_risk", fake_trip)
+    patch_live(monkeypatch, "live_account_loss_state", fake_loss_state)
+    patch_live(monkeypatch, "trip_live_account_risk", fake_trip)
 
     with pytest.raises(LiveOrderSubmitError, match=message):
         await validate_live_entry_risk_guardrails(
@@ -275,8 +274,8 @@ async def test_account_loss_guards_allow_entries_below_the_limits(
     async def fail_trip(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("Losses below every limit must not trip the account.")
 
-    monkeypatch.setattr(live_trading_service, "live_account_loss_state", fake_loss_state)
-    monkeypatch.setattr(live_trading_service, "trip_live_account_risk", fail_trip)
+    patch_live(monkeypatch, "live_account_loss_state", fake_loss_state)
+    patch_live(monkeypatch, "trip_live_account_risk", fail_trip)
 
     await validate_live_entry_risk_guardrails(
         CommitSession(),  # type: ignore[arg-type]
@@ -292,7 +291,7 @@ async def test_account_loss_guards_skip_accounts_without_performance_history(
     async def no_history(*_args: object, **_kwargs: object) -> None:
         return None
 
-    monkeypatch.setattr(live_trading_service, "live_account_loss_state", no_history)
+    patch_live(monkeypatch, "live_account_loss_state", no_history)
 
     await validate_live_entry_risk_guardrails(
         CommitSession(),  # type: ignore[arg-type]

@@ -10,7 +10,7 @@ from eth_account import Account
 from app.core.config import Settings
 from app.db.models import TradingAccount
 from app.schemas.ops import OpsLiveSigner
-from app.services import live_trading_service
+from app.services.live_order_submission import validate_live_entry_risk_guardrails
 from app.services.live_signer_service import (
     LIVE_SIGNER_CHECK_INTERVAL,
     LIVE_SIGNER_PAYLOAD_KEY,
@@ -29,13 +29,10 @@ from app.services.live_signer_service import (
     live_signer_entry_block,
     refresh_live_account_signer,
 )
-from app.services.live_trading_service import (
-    LiveOrderSubmitError,
-    LiveTradingServiceError,
-    validate_live_account_can_start,
-    validate_live_entry_risk_guardrails,
-)
+from app.services.live_trading_errors import LiveOrderSubmitError, LiveTradingServiceError
+from app.services.live_trading_service import validate_live_account_can_start
 from app.services.ops_monitoring_service import live_signer_notes
+from tests.fakes.live_modules import patch_live
 
 # Throwaway keys that never hold funds.
 AGENT_KEY = "0x" + "11" * 32
@@ -249,7 +246,7 @@ async def test_the_entry_gate_trips_an_account_that_signs_with_its_main_wallet(
     async def fake_trip(*_args: object, **kwargs: object) -> None:
         tripped.update(kwargs)
 
-    monkeypatch.setattr(live_trading_service, "trip_live_account_risk", fake_trip)
+    patch_live(monkeypatch, "trip_live_account_risk", fake_trip)
     live = guarded(await verified({"role": "user"}, key=MASTER_KEY))
 
     with pytest.raises(LiveOrderSubmitError, match="API wallet"):
@@ -270,7 +267,7 @@ async def test_the_entry_gate_passes_a_verified_api_wallet(
     async def no_history(*_args: object, **_kwargs: object) -> None:
         return None
 
-    monkeypatch.setattr(live_trading_service, "live_account_loss_state", no_history)
+    patch_live(monkeypatch, "live_account_loss_state", no_history)
     live = guarded(await verified(agent_of(MASTER)))
 
     await validate_live_entry_risk_guardrails(
