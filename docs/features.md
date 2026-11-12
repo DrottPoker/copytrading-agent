@@ -878,6 +878,21 @@ What it does:
   scores in the enabled wallet pool, 10 by default.
 - When current drawdown scoring is enabled, allocation only uses wallets whose
   latest score has `current_drawdown_status = "ok"`.
+- Wallets scoring below `trading_copy_min_source_score` are never copy sources.
+  A retained source below it shows the reason `score_below_copy_minimum`.
+- A wallet that is an active copy source keeps its place while it ranks within
+  the best `trading_copy_source_retain_rank` eligible wallets. The places it
+  leaves go to the best ranked other wallets, which always come from the top
+  `trading_copy_top_wallet_count`.
+- Sizes a source on its perp account value when it has a standard account and
+  on its marked-to-market spot USDC balance when it has a unified or portfolio
+  margin account. The account mode is looked up once per source and cached for
+  15 minutes. When the mode or balance cannot be read, entries are skipped
+  with `source_account_mode_unavailable` or `source_unified_equity_unavailable`
+  and retried; exits are still copied.
+- Prices a coin on a builder dex only from that dex, never from a main dex
+  market with the same symbol.
+- Copies a source liquidation or auto-deleveraging fill as a close.
 - Keeps source wallets with open live source-attributed positions subscribed
   until all live copied positions from that source are closed, even if the
   source falls out of the top 10. These sources are shown as `monitored` and
@@ -1305,6 +1320,9 @@ Config:
 
 - `backend/config/trading.json`
 - `trading_copy_top_wallet_count`, defaults to 10 sources
+- `trading_copy_source_retain_rank`, the rank a copied source keeps its place
+  to, defaults to 12 and must be at least the source count
+- `trading_copy_min_source_score`, defaults to 50; 0 disables the floor
 - `trading_copy_max_total_allocation_pct`, the budget split equally between the
   sources, defaults to 200 percent (20 percent per source)
 - `trading_copy_max_source_exposure_multiple`, defaults to 3x the source allocation
@@ -1641,7 +1659,23 @@ What it does:
   A breached loss, drawdown, or order-rate limit moves the account to
   `exit_only`, cancels unsent entries, and records a critical risk event. Exits
   are still copied so exit prices stay equivalent, and no position is force
-  closed. The account stays exit-only until it is started again manually.
+  closed unless the hard stop is set. The account stays exit-only until it is
+  started again manually. Starting an account whose loss limit is breached
+  stores `trading_accounts.loss_limits_reset_at`, and the limits measure from
+  there; the start audit entry records the acknowledged breach.
+- Closes every position and stops the account when drawdown from the peak
+  reaches `live_trading_hard_stop_drawdown_pct`. The check runs after each
+  reconciliation, starts the durable close-all operation, and records one
+  critical `live_hard_stop` risk event. Paper accounts apply the same level on
+  the paper risk pass. It is off while the setting is 0.
+- Closes a copied position that its source no longer holds. Recovery reads the
+  source's account for every open copied position; when the source has held no
+  position on that side for 60 seconds and no close order is pending, a
+  reduce-only close is sent and a `live_source_flat_close` risk event is
+  recorded. Unknown source state never closes a position.
+- Keeps every performance snapshot for 8 days, the span of the loss limit
+  windows, and thins older hours to their last and their highest snapshot, so
+  the index history and the drawdown peak stay exact.
   Expired intents and invalid exchange leverage or slippage values are rejected
   before submission.
 - Calculates account losses from the time-weighted performance index that each
@@ -1707,6 +1741,9 @@ Config:
 - `live_trading_max_daily_loss_pct`, rolling 24 hours, defaults to 10%
 - `live_trading_max_weekly_loss_pct`, rolling 7 days, defaults to 20%
 - `live_trading_max_drawdown_pct`, from the peak performance index, defaults to 25%
+- `live_trading_hard_stop_drawdown_pct`, closes every position and stops the
+  account at this drawdown, defaults to 0 (off) and must otherwise be at least
+  the drawdown limit
 - `live_trading_max_source_loss_pct`, per source over 7 days, defaults to 5%
 - `live_trading_max_orders_per_minute`
 - `live_trading_reduce_only_when_stopped`

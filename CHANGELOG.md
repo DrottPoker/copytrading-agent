@@ -4,6 +4,75 @@ Notable changes, newest first. Dates are UTC. The historical development phases
 at the end describe how the system was built and keep the detailed notes that
 used to live in the README.
 
+## 2026-11-12
+
+### Fixes from a full code review
+
+- **Liquidated sources.** Hyperliquid reports a liquidation or
+  auto-deleveraging with its own fill direction, so those fills were planned
+  as nothing and the live copy stayed open with no source to follow. They are
+  now copied as closes. Live recovery also closes a copied position once its
+  source has held no position on that side for 60 seconds, as paper already
+  did, and records a `live_source_flat_close` risk event. Our own forced exits
+  are recorded as closes instead of opens.
+- **Unified sources.** A unified or portfolio margin account keeps its equity
+  in the spot USDC balance; its perp account value is a fragment. Sizing read
+  that fragment whenever it was positive, which made copies of such sources
+  several times too large. The account mode now decides where the equity is
+  read. On a sample of large leaderboard wallets, 44 of 112 were unified.
+- **Builder dex prices.** The HTTP price fallback matched a coin such as
+  `xyz:BTC` to the main dex market with the same symbol. Prices now come only
+  from the coin's own dex.
+- **Restart after a loss limit.** Drawdown was measured from the highest index
+  ever, so an account stopped by a limit was stopped again at its first entry
+  after a restart. Starting a breached live or paper account now stores
+  `loss_limits_reset_at` (migration `d2a4c6e8f0b3`) and the limits measure
+  from there. The start confirmation says so.
+- **Order expiry.** The exchange client kept the 10 second order expiry and
+  signed later leverage updates and cancels with it. It is cleared after every
+  order.
+- **Performance snapshots.** One was stored at every reconciliation and kept
+  forever. Snapshots older than 8 days are thinned to the last and the highest
+  one per hour, which keeps the index history and the drawdown peak exact.
+
+### Source selection
+
+- No wallet scoring below 50 becomes a copy source
+  (`trading_copy_min_source_score`).
+- A source that is already copied keeps its place while it ranks within the
+  best 12 eligible wallets (`trading_copy_source_retain_rank`). New sources
+  still have to reach the top ten.
+
+### Hard stop
+
+- `live_trading_hard_stop_drawdown_pct` closes every position and stops the
+  account when drawdown from the peak reaches it, for live and paper accounts.
+  It is off by default. The Trading page shows it with the other limits.
+
+### Security and dependencies
+
+- Next.js 15.5.29 fixes the critical advisories reported by `npm audit`; vite
+  and undici move to patched releases. `constraints.txt` gains security floors
+  for certifi, filelock, and msgpack.
+- The API and the deploy script warn when `DASHBOARD_DOMAIN` serves the
+  dashboard over plain HTTP.
+
+### Tests
+
+- The integration test services use host ports 25432 and 26379. The old ports
+  sat in the Windows dynamic range, where reserved blocks move between
+  restarts and could make the runner fail to start Redis.
+
+### Structure
+
+- `live_trading_service` shrinks from 6,700 to 900 lines. Parsing, exchange
+  reads, account state, reconciliation, performance, order submission, and
+  closing each have a module; see the list in
+  [docs/architecture.md](docs/architecture.md).
+- The types both copy engines share are named for what they are:
+  `CopyBatchResult` and `CopySourceAllocation` in `copy_types`, and
+  `refresh_copy_allocations`.
+
 ## 2026-10-24
 
 ### Paper statistics from equity and round trips

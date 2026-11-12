@@ -37,9 +37,12 @@ involved.
    would copy at our size. Wallets with fewer than 20 closed trades in the
    last 60 days are capped at a low score, and scores below 40 trades are
    pulled toward a neutral middle so a short lucky streak cannot top the list.
-4. **Pick the sources.** The ten best ranked wallets become the copy sources.
-   Each gets 20% of the account to copy with. Together that is twice the
-   account, so the exposure caps, not the shares, limit the total size.
+4. **Pick the sources.** The ten best ranked wallets become the copy sources,
+   as long as they score at least 50. A wallet that is already copied keeps
+   its place until it falls below rank 12, so the list does not change every
+   time two scores swap. Each source gets 20% of the account to copy with.
+   Together that is twice the account, so the exposure caps, not the shares,
+   limit the total size.
 5. **Follow them live.** The system subscribes to those wallets' trades in
    realtime over WebSocket. Hyperliquid allows ten wallets this way, so the
    rest of the pool is refreshed by slower periodic polling. A wallet we still
@@ -52,7 +55,9 @@ involved.
    price has already moved too far; exits are never skipped for those reasons.
 7. **Limit the damage.** Exposure caps, loss limits, and per-source limits stop
    new entries when something goes wrong, while still letting existing
-   positions close. See [risk-model.md](risk-model.md).
+   positions close. A copy whose source was liquidated or no longer holds the
+   position is closed. An optional hard stop closes everything at a chosen
+   drawdown. See [risk-model.md](risk-model.md).
 8. **Keep the pool fresh.** Wallets that stop trading, lose money, or score
    poorly are archived. Their history is kept so past selections can be
    checked, and they can be readmitted after 30 days.

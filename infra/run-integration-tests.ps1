@@ -22,14 +22,14 @@ try {
     $env:APP_ENV = "test"
     $env:DATABASE_URL = (
         "postgresql+asyncpg://copyagent_test:copyagent-test-password" +
-        "@127.0.0.1:55432/copyagent_test"
+        "@127.0.0.1:25432/copyagent_test"
     )
     $env:DATABASE_URL_DIRECT = (
         "postgresql://copyagent_test:copyagent-test-password" +
-        "@127.0.0.1:55432/copyagent_test"
+        "@127.0.0.1:25432/copyagent_test"
     )
     $env:TEST_DATABASE_URL = $env:DATABASE_URL
-    $env:REDIS_URL = "redis://127.0.0.1:56379/15"
+    $env:REDIS_URL = "redis://127.0.0.1:26379/15"
     $env:TEST_REDIS_URL = $env:REDIS_URL
     $env:DASHBOARD_AUTH_ENABLED = "false"
     $env:WORKER_RUN_IN_API_PROCESS = "false"

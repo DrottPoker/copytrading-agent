@@ -169,8 +169,11 @@ DASHBOARD_DOMAIN=:80
 `DASHBOARD_DOMAIN=:80` is the supported temporary IP-only mode. Open the
 dashboard at `http://VPS_PUBLIC_IP`. To enable automatic HTTPS, replace `:80`
 with a DNS hostname such as `copy.example.com` after its DNS record points to
-the VPS. Basic Auth over HTTP is not encrypted, so use the DNS and HTTPS mode
-for long-running or broadly exposed deployments.
+the VPS. Basic Auth over HTTP is not encrypted: anyone on the network path can
+read the dashboard password, and the dashboard can start live trading. Use the
+DNS and HTTPS mode before live trading and for any long-running deployment.
+The API logs a warning at startup and `infra/deploy-vps.sh` prints one while
+`DASHBOARD_DOMAIN` is a bare port or an `http://` address.
 
 Production requires a non-empty dashboard username and a custom password other
 than `change-me` with at least 8 characters. The backend refuses to start with

@@ -666,6 +666,10 @@ exchange price and size rounding, minimum order adjustment, adverse slippage,
 close sizing, flip planning, and client order IDs. Frontend tests use Vitest,
 jsdom, and Testing Library, with the time zone pinned to UTC.
 
+Live trading tests replace collaborators with `patch_live` from
+`tests/fakes/live_modules.py`, which applies the replacement to every live
+module that uses the name. A new live module must be added to its list.
+
 GitHub Actions runs three jobs. `backend-quality` runs Ruff lint, Ruff format
 check, mypy, `pip-audit`, and a compile check. `backend-tests` migrates a fresh
 Postgres database and runs every backend test with coverage. `frontend` runs
@@ -1537,6 +1541,30 @@ Live execution has a separate Hyperliquid adapter. The trading worker executes
 live copy only when global live trading, copy execution, and the selected live
 account are enabled. It can also reconcile enabled live accounts when live
 trading is enabled.
+
+Live trading is split by responsibility, lowest layer first:
+
+- `live_trading_constants`, `live_trading_errors`: shared names and errors.
+- `live_exchange_parsing`: pure parsing of exchange fills, positions, funding,
+  and ledger rows.
+- `live_exchange_fetch`: paged reads from the exchange.
+- `live_account_state`, `live_account_access`: what the last reconciliation
+  says about an account, and loading accounts, orders, and positions.
+- `live_position_reconciliation`, `live_fill_reconciliation`: bringing local
+  positions, fills, funding, and order statuses in line with the exchange.
+- `live_performance_service`: the time-weighted performance index and the loss
+  state measured on it.
+- `live_reconciliation_service`: one reconciliation run and its record.
+- `live_order_submission`: the entry gates, the per-account execution lock,
+  and dispatch recovery.
+- `live_close_service`: the close-all operation, the hard stop, and close
+  order pricing.
+- `live_closed_trades`: closed trades rebuilt from fills.
+- `live_trading_service`: the account lifecycle (create, start, stop, disable,
+  delete) and manual closes.
+
+`copy_types` holds the batch result and source allocation both engines share,
+and `hyperliquid_account_mode` reads how an account holds its collateral.
 
 Generic live-ready tables sit beside the legacy paper tables:
 

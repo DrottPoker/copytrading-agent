@@ -65,6 +65,18 @@ different from what live would have done. Both engines now share one decision
 module. And paper filled every order at the mid price, which hid how large
 orders fare in a thin market; it now fills against the real order book.
 
+A full code review in November 2026 found five more gaps, all fixed:
+
+- A source that was liquidated or auto-deleveraged never produced a close we
+  could follow, so the live copy stayed open with nobody to follow.
+- A source with a unified account was sized on a fragment of its equity, which
+  inflated its copies several times over.
+- A coin on a builder dex could be priced from the main dex market with the
+  same symbol.
+- An account stopped by a loss limit could not be started again, because the
+  old loss stopped it at its first new entry.
+- The ten sources were picked again at every scoring, with no minimum score.
+
 ## Position Sizing
 
 Each of the ten copy sources gets 20% of the account: a 200% budget
@@ -81,6 +93,13 @@ target notional = allocation / source account value * source position notional
 The source position is read from the fill itself (`startPosition` plus the
 fill size), so the target follows the source exactly even if we missed earlier
 fills.
+
+The source account value depends on how the source holds its collateral. A
+standard account is sized on its perp account value. A unified or portfolio
+margin account keeps every balance in spot, where the USDC total is marked to
+market; its perp account value is only a fragment and is never used. When the
+account mode or the balance cannot be read, entries from that source wait and
+its exits are still copied.
 
 Each entry buys only the gap between the target and our current position:
 
@@ -103,6 +122,13 @@ Exits follow the source's close ratio: if the source closes 40% of its
 position, we close 40% of ours. When the source has no position left, we close
 ours completely. Partial closes below the minimum order are combined with the
 next ones until they add up to a valid order.
+
+A liquidation or auto-deleveraging of the source is copied as a close. As a
+safety net behind the fills, both engines compare each copied position with
+the source's own account: when the source has held no position on that side
+for 60 seconds and no close is on its way, live closes the copy with a
+reduce-only order and records a `live_source_flat_close` risk event. A source
+whose state cannot be read never closes anything.
 
 ## Exposure Caps
 
@@ -130,6 +156,8 @@ An entry is skipped when:
 - the fill adds to a source position that we never copied, for example one
   the source opened before we started following it;
 - we hold the opposite side in that market;
+- the source's account mode or account value cannot be read, so the copy
+  cannot be sized;
 - another source already holds a copied position in that coin on the same
   account and the two cannot share it. Hyperliquid keeps one net position and
   one leverage and margin setting per account and coin. Live gives each coin
@@ -160,6 +188,25 @@ opens nothing new. Live also cancels unsent entry orders
 and records a critical risk event. The account stays exit-only until someone
 starts it again, so a breach always gets a human look.
 
+Starting a breached account is that look. The limits then measure from the
+start (`loss_limits_reset_at`), so the reviewed loss cannot stop the account
+again at its first new entry, while a new loss of the same size does. Starting
+an account that is inside its limits changes nothing.
+
+## Hard Stop
+
+The loss limits stop new exposure and leave open positions to the sources'
+own exits. The hard stop is the last line behind them: when drawdown from the
+peak reaches `live_trading_hard_stop_drawdown_pct`, every position is closed
+and the account is stopped. Live checks it after each reconciliation and uses
+the durable close-all operation, which is resumed until the account is flat.
+Paper checks it on its risk pass against the equity snapshots.
+
+It is off by default (0). When set, it must be at least the drawdown limit, so
+it never fires before entries have stopped. A forced close realizes the loss at
+the worst moment, so set it to a level you would rather take than keep
+following the sources.
+
 ## Source Loss Limit
 
 New entries from a source stop when that source has lost 5% of account equity
@@ -184,6 +231,13 @@ Scoring decides which wallets we copy, so it is the first line of defense:
   until 40 closed trades, so a short lucky streak cannot reach the top.
 - A wallet with a large open drawdown right now is penalized and capped, and
   allocation only selects wallets whose current drawdown state is `ok`.
+- No wallet scoring below 50 becomes a copy source
+  (`trading_copy_min_source_score`), so a weak pool leaves places empty instead
+  of copying its least bad wallets.
+- A source that is already copied keeps its place while it ranks within the
+  best 12 eligible wallets (`trading_copy_source_retain_rank`). New sources
+  still have to reach the top ten, so the last places do not change hands
+  every time two neighbouring scores swap.
 
 ## Execution Safety
 
@@ -231,6 +285,12 @@ Live keeps one source per coin until the paper results justify the change.
   across sources.
 - **Gaps.** Limits act on the next check. A price gap or an exchange outage can
   move an account past a limit before it trips.
+- **Open positions.** With the hard stop off, no limit closes a position. A
+  source that holds a loser keeps the copy open however far the account falls.
+- **Portfolio margin sources.** Their collateral can be HYPE, BTC, or USDT as
+  well as USDC. Sizing reads only the USDC balance, which understates the
+  equity of a source holding the other assets and makes its copies larger.
+  The exposure caps still bound them.
 - **Leverage.** The copy uses the source's leverage setting. Exposure caps
   bound the size, but a highly leveraged copy can still be liquidated on a move
   the account could have survived at lower leverage.
