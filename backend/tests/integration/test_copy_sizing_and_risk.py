@@ -24,6 +24,7 @@ from app.services.copy_signal_service import (
     SourceAccountState,
     SourceFillPart,
 )
+from app.services.copy_types import CopySourceAllocation
 from app.services.live_order_submission import live_source_net_loss_usd, load_live_copy_exposure
 from app.services.live_performance_service import (
     live_account_loss_state,
@@ -31,10 +32,7 @@ from app.services.live_performance_service import (
     thin_live_account_performance_snapshots,
 )
 from app.services.live_trading_constants import LIVE_EXCHANGE_SOURCE
-from app.services.paper_trading_service import (
-    PaperSourceAllocation,
-    apply_open_part,
-)
+from app.services.paper_trading_service import apply_open_part
 
 pytestmark = pytest.mark.integration
 
@@ -440,8 +438,8 @@ def paper_account() -> PaperTradingAccount:
     )
 
 
-def paper_allocation(source_wallet: str = SOURCE) -> PaperSourceAllocation:
-    return PaperSourceAllocation(
+def paper_allocation(source_wallet: str = SOURCE) -> CopySourceAllocation:
+    return CopySourceAllocation(
         source_wallet=source_wallet,
         source_label="Sizing source",
         rank=1,

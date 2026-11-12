@@ -14,15 +14,13 @@ from app.services.copy_execution_cache import (
     LiveCopyLaneSyncTracker,
     SourceAccountStateCache,
 )
+from app.services.copy_types import CopyBatchResult
 from app.services.live_copy_state_service import (
     LIVE_COPY_ORIGIN_REALTIME,
     LiveCopyProcessingDeferred,
 )
 from app.services.live_copy_work_service import ClaimedLiveCopyWork
 from app.services.live_trading_errors import LiveReconciliationError
-from app.services.paper_trading_service import (
-    PaperCopyBatchResult,
-)
 from app.services.realtime_execution_inbox_service import ClaimedRealtimeExecution
 from app.services.realtime_fill_service import StoredRealtimeFills
 from app.workers import monitor_worker
@@ -105,15 +103,15 @@ async def test_handle_websocket_message_never_executes_live_copy_inline(monkeypa
     async def fake_process_live_copy_fills(
         *_args: object,
         **_kwargs: object,
-    ) -> PaperCopyBatchResult:
+    ) -> CopyBatchResult:
         raise AssertionError("live execution must be consumed from durable live-copy work")
 
     async def fake_process_paper_copy_fills(
         *_args: object,
         **_kwargs: object,
-    ) -> PaperCopyBatchResult:
+    ) -> CopyBatchResult:
         calls.append("paper")
-        return PaperCopyBatchResult(processed_fills=1)
+        return CopyBatchResult(processed_fills=1)
 
     async def fake_publish_event(
         *_args: object,
@@ -176,13 +174,13 @@ async def test_paper_execution_finishes_before_blocked_presentation_events(monke
         ],
     )
 
-    async def fake_live(*_args: object, **_kwargs: object) -> PaperCopyBatchResult:
+    async def fake_live(*_args: object, **_kwargs: object) -> CopyBatchResult:
         raise AssertionError("legacy inbox processing must not execute live copy")
 
-    async def fake_paper(*_args: object, **_kwargs: object) -> PaperCopyBatchResult:
+    async def fake_paper(*_args: object, **_kwargs: object) -> CopyBatchResult:
         sequence.append("paper")
         execution_complete.set()
-        return PaperCopyBatchResult(processed_fills=1)
+        return CopyBatchResult(processed_fills=1)
 
     async def blocking_publish(
         *_args: object,
@@ -250,16 +248,16 @@ async def test_duplicate_realtime_fill_reaches_paper_but_not_inline_live_executi
         *_args: object,
         fills: list[dict[str, Any]],
         **_kwargs: object,
-    ) -> PaperCopyBatchResult:
+    ) -> CopyBatchResult:
         raise AssertionError("live execution must use the live-copy work queue")
 
     async def fake_paper(
         *_args: object,
         fills: list[dict[str, Any]],
         **_kwargs: object,
-    ) -> PaperCopyBatchResult:
+    ) -> CopyBatchResult:
         copied_rows.append(("paper", fills))
-        return PaperCopyBatchResult(processed_fills=1)
+        return CopyBatchResult(processed_fills=1)
 
     async def fake_publish(
         *_args: object,
@@ -331,13 +329,13 @@ async def test_handle_websocket_snapshot_prioritizes_live_recovery(monkeypatch) 
             inserted_rows=[],
         )
 
-    async def fake_live_recovery_once(*_args: object, **kwargs: object) -> PaperCopyBatchResult:
+    async def fake_live_recovery_once(*_args: object, **kwargs: object) -> CopyBatchResult:
         calls.append(("live", kwargs.get("log_lock_contention")))
-        return PaperCopyBatchResult()
+        return CopyBatchResult()
 
-    async def fake_paper_recovery_once(*_args: object, **kwargs: object) -> PaperCopyBatchResult:
+    async def fake_paper_recovery_once(*_args: object, **kwargs: object) -> CopyBatchResult:
         calls.append(("paper", kwargs.get("log_lock_contention")))
-        return PaperCopyBatchResult()
+        return CopyBatchResult()
 
     async def fake_publish_event(*_args: object, **_kwargs: object) -> None:
         return None
@@ -469,13 +467,13 @@ async def test_busy_scheduled_live_reconciliation_is_deferred(monkeypatch, caplo
 async def test_startup_copy_recovery_prioritizes_live_recovery(monkeypatch) -> None:
     calls: list[str] = []
 
-    async def fake_live_recovery_once(*_args: object, **_kwargs: object) -> PaperCopyBatchResult:
+    async def fake_live_recovery_once(*_args: object, **_kwargs: object) -> CopyBatchResult:
         calls.append("live")
-        return PaperCopyBatchResult()
+        return CopyBatchResult()
 
-    async def fake_paper_recovery_once(*_args: object, **_kwargs: object) -> PaperCopyBatchResult:
+    async def fake_paper_recovery_once(*_args: object, **_kwargs: object) -> CopyBatchResult:
         calls.append("paper")
-        return PaperCopyBatchResult()
+        return CopyBatchResult()
 
     monkeypatch.setattr(monitor_worker, "run_live_copy_recovery_once", fake_live_recovery_once)
     monkeypatch.setattr(monitor_worker, "run_paper_copy_recovery_once", fake_paper_recovery_once)
@@ -768,9 +766,9 @@ async def test_live_copy_work_loop_claims_processes_and_completes_durable_work(
     async def fake_load(*_args: object, **_kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(received_at=claimed_at)
 
-    async def fake_process(*_args: object, **kwargs: object) -> PaperCopyBatchResult:
+    async def fake_process(*_args: object, **kwargs: object) -> CopyBatchResult:
         processed.append(kwargs)
-        return PaperCopyBatchResult(processed_fills=1)
+        return CopyBatchResult(processed_fills=1)
 
     async def fake_complete(*_args: object, **kwargs: object) -> bool:
         completed.append(kwargs)
@@ -839,7 +837,7 @@ async def test_live_copy_work_loop_retries_after_processing_failure(monkeypatch)
     async def fake_load(*_args: object, **_kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(received_at=claimed.claimed_at)
 
-    async def failing_process(*_args: object, **_kwargs: object) -> PaperCopyBatchResult:
+    async def failing_process(*_args: object, **_kwargs: object) -> CopyBatchResult:
         raise RuntimeError("exchange temporarily unavailable")
 
     async def fake_retry(*_args: object, **kwargs: object) -> bool:
@@ -912,7 +910,7 @@ async def test_live_copy_work_loop_retries_deferred_processing_without_error_log
     async def fake_load(*_args: object, **_kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(received_at=claimed.claimed_at)
 
-    async def deferred_process(*_args: object, **_kwargs: object) -> PaperCopyBatchResult:
+    async def deferred_process(*_args: object, **_kwargs: object) -> CopyBatchResult:
         raise LiveCopyProcessingDeferred("live_reconciliation_deferred")
 
     async def fake_retry(*_args: object, **kwargs: object) -> bool:
@@ -1181,9 +1179,9 @@ async def test_realtime_paper_copy_receives_the_shared_resources(monkeypatch) ->
         execution_rows=[{"coin": "HYPE", "externalFillId": "fill-1"}],
     )
 
-    async def fake_paper(*_args: object, **kwargs: Any) -> PaperCopyBatchResult:
+    async def fake_paper(*_args: object, **kwargs: Any) -> CopyBatchResult:
         received.append(kwargs)
-        return PaperCopyBatchResult()
+        return CopyBatchResult()
 
     async def fake_publish_batch(*_args: object, **_kwargs: object) -> None:
         return None
@@ -1229,9 +1227,9 @@ async def test_live_copy_work_receives_the_shared_resources(monkeypatch) -> None
     async def fake_load(*_args: object, **_kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(received_at=claimed.claimed_at)
 
-    async def fake_process(*_args: object, **kwargs: Any) -> PaperCopyBatchResult:
+    async def fake_process(*_args: object, **kwargs: Any) -> CopyBatchResult:
         received.append(kwargs)
-        return PaperCopyBatchResult()
+        return CopyBatchResult()
 
     async def fake_complete(*_args: object, **_kwargs: object) -> bool:
         return True
@@ -1284,7 +1282,7 @@ async def test_realtime_wallet_refresh_stores_the_allocation_snapshot(monkeypatc
     async def fake_synchronize(*_args: object, **_kwargs: object) -> set[tuple[str, str]]:
         return set()
 
-    monkeypatch.setattr(monitor_worker, "refresh_paper_copy_allocations", fake_refresh)
+    monkeypatch.setattr(monitor_worker, "refresh_copy_allocations", fake_refresh)
     monkeypatch.setattr(monitor_worker, "load_live_accounts_for_source_copy", fake_accounts)
     monkeypatch.setattr(monitor_worker, "synchronize_live_copy_lanes", fake_synchronize)
 

@@ -22,8 +22,8 @@ from app.services.copy_signal_service import (
     source_fill_age_exceeds_entry_limit,
     warm_source_state_cache,
 )
+from app.services.copy_types import CopyAllocationCache
 from app.services.paper_trading_service import (
-    CopyAllocationCache,
     WalletMonitoringSummary,
     apply_wallet_monitoring_snapshot,
     copy_allocations,
@@ -812,7 +812,7 @@ async def test_copy_allocations_reuse_a_fresh_snapshot(monkeypatch: pytest.Monke
         refreshes.append(1)
         return {"0xsource": SimpleNamespace(active=True)}
 
-    monkeypatch.setattr(paper_trading_service, "refresh_paper_copy_allocations", fake_refresh)
+    monkeypatch.setattr(paper_trading_service, "refresh_copy_allocations", fake_refresh)
     cache: CopyAllocationCache = AllocationSnapshotCache(max_age_seconds=30)
     settings = Settings(_env_file=None)
 

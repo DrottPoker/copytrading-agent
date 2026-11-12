@@ -22,6 +22,7 @@ from app.services.copy_signal_service import (
     SourceCurrentPosition,
     SourceFillPart,
 )
+from app.services.copy_types import CopySourceAllocation
 from app.services.paper_execution_simulator import parse_order_book
 from app.services.paper_risk_service import (
     apply_paper_funding,
@@ -30,7 +31,6 @@ from app.services.paper_risk_service import (
     run_paper_liquidations,
 )
 from app.services.paper_trading_service import (
-    PaperSourceAllocation,
     apply_close_part,
     apply_open_part,
     apply_paper_fill_part,
@@ -76,8 +76,8 @@ def account(**overrides: object) -> PaperTradingAccount:
     return PaperTradingAccount(**values)
 
 
-def allocation() -> PaperSourceAllocation:
-    return PaperSourceAllocation(
+def allocation() -> CopySourceAllocation:
+    return CopySourceAllocation(
         source_wallet=SOURCE,
         source_label="Source",
         rank=1,

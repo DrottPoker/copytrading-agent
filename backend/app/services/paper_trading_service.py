@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
@@ -51,7 +51,6 @@ from app.services.copy_decision import (
     decide_entry,
     entry_precheck,
 )
-from app.services.copy_execution_cache import AllocationSnapshotCache
 from app.services.copy_risk_rules import HARD_STOP_RULE, hard_stop_breached
 from app.services.copy_signal_service import (
     ExecutionContext,
@@ -82,6 +81,12 @@ from app.services.copy_signal_service import (
     source_state_available_for_reconciliation,
     timestamp_ms,
     unique_strings,
+)
+from app.services.copy_types import (
+    CopyAllocationCache,
+    CopyBatchResult,
+    CopySourceAllocation,
+    combine_batch_results,
 )
 from app.services.live_copy_state_service import (
     POSITION_EPSILON as LIVE_POSITION_EPSILON,
@@ -251,37 +256,11 @@ class PaperAccountPerformanceNotFoundError(Exception):
 
 
 @dataclass(frozen=True)
-class PaperSourceAllocation:
-    source_wallet: str
-    source_label: str | None
-    rank: int
-    pool_rank: int | None
-    score: Decimal | None
-    allocation_pct: Decimal
-    active: bool
-    has_realtime_slot: bool
-    status_reason: str
-
-
-@dataclass(frozen=True)
 class WalletMonitoringSummary:
     first_monitored_at: datetime | None
     current_monitoring_started_at: datetime | None
     last_monitored_at: datetime | None
     monitored_seconds: int
-
-
-CopyAllocationCache = AllocationSnapshotCache[dict[str, PaperSourceAllocation]]
-
-
-@dataclass(frozen=True)
-class PaperCopyBatchResult:
-    processed_fills: int = 0
-    skipped_fills: int = 0
-    accounts_updated: int = 0
-    realized_pnl_usd: Decimal = ZERO
-    fee_usd: Decimal = ZERO
-    skip_reasons: dict[str, int] = field(default_factory=dict)
 
 
 async def get_paper_trading_summary(
@@ -294,9 +273,9 @@ async def get_paper_trading_summary(
     refresh_allocations: bool = False,
 ) -> PaperTradingSummaryResponse:
     resolved_settings = settings or get_settings()
-    source_allocations: dict[str, PaperSourceAllocation] = {}
+    source_allocations: dict[str, CopySourceAllocation] = {}
     if refresh_allocations:
-        source_allocations = await refresh_paper_copy_allocations(
+        source_allocations = await refresh_copy_allocations(
             session,
             settings=resolved_settings,
         )
@@ -304,7 +283,7 @@ async def get_paper_trading_summary(
     else:
         source_allocations = {
             allocation.source_wallet.lower(): allocation
-            for allocation in await load_paper_source_allocations(
+            for allocation in await load_copy_source_allocations(
                 session,
                 settings=resolved_settings,
             )
@@ -492,7 +471,7 @@ async def close_paper_position_manually(
     position_id: UUID,
     settings: Settings | None = None,
     client: HyperliquidClient | None = None,
-) -> PaperCopyBatchResult:
+) -> CopyBatchResult:
     resolved_settings = settings or get_settings()
     if client is None:
         async with HyperliquidClient(resolved_settings) as hyperliquid_client:
@@ -621,7 +600,7 @@ async def close_paper_position_manually(
             opened_at=position.opened_at,
         )
     )
-    return PaperCopyBatchResult(
+    return CopyBatchResult(
         processed_fills=1,
         accounts_updated=1,
         realized_pnl_usd=realized_pnl,
@@ -635,7 +614,7 @@ async def close_paper_source_positions_manually(
     source_wallet: str,
     settings: Settings | None = None,
     client: HyperliquidClient | None = None,
-) -> PaperCopyBatchResult:
+) -> CopyBatchResult:
     try:
         normalized_source = normalize_wallet_address(source_wallet)
     except ValueError as exc:
@@ -661,7 +640,7 @@ async def close_paper_source_positions_manually(
     if not position_ids:
         raise PaperPositionNotFoundError("No open paper positions found for this source wallet.")
 
-    total = PaperCopyBatchResult()
+    total = CopyBatchResult()
     for position_id in position_ids:
         close_result = await close_paper_position_manually(
             session,
@@ -679,7 +658,7 @@ async def close_paper_account_positions_manually(
     account_key: str,
     settings: Settings | None = None,
     client: HyperliquidClient | None = None,
-) -> PaperCopyBatchResult:
+) -> CopyBatchResult:
     resolved_settings = settings or get_settings()
     if client is None:
         async with HyperliquidClient(resolved_settings) as hyperliquid_client:
@@ -696,7 +675,7 @@ async def close_paper_account_positions_manually(
         .order_by(PaperPosition.source_wallet.asc(), PaperPosition.coin.asc())
     )
     position_ids = list(result.scalars().all())
-    total = PaperCopyBatchResult()
+    total = CopyBatchResult()
     for position_id in position_ids:
         close_result = await close_paper_position_manually(
             session,
@@ -798,7 +777,7 @@ async def load_paper_allocation_for_position(
     session: AsyncSession,
     *,
     position: PaperPosition,
-) -> PaperSourceAllocation:
+) -> CopySourceAllocation:
     allocation = await session.scalar(
         select(PaperCopyAllocation).where(
             PaperCopyAllocation.account_key == position.account_key,
@@ -807,7 +786,7 @@ async def load_paper_allocation_for_position(
     )
     if allocation is None:
         source_label = await load_paper_source_label(session, position.source_wallet)
-        return PaperSourceAllocation(
+        return CopySourceAllocation(
             source_wallet=position.source_wallet,
             source_label=source_label,
             rank=0,
@@ -818,7 +797,7 @@ async def load_paper_allocation_for_position(
             has_realtime_slot=False,
             status_reason="allocation_missing",
         )
-    return PaperSourceAllocation(
+    return CopySourceAllocation(
         source_wallet=allocation.source_wallet,
         source_label=await load_paper_source_label(session, allocation.source_wallet),
         rank=allocation.rank,
@@ -1013,7 +992,7 @@ def paper_allocation_reads(
     accounts: list[PaperTradingAccount],
     allocations: list[PaperCopyAllocation],
     positions: list[dict[str, Any]],
-    source_allocations: dict[str, PaperSourceAllocation],
+    source_allocations: dict[str, CopySourceAllocation],
     source_labels: dict[str, str],
     realtime_monitoring: RealtimeSubscriptionSnapshot,
 ) -> list[dict[str, Any]]:
@@ -1108,14 +1087,14 @@ def paper_source_allocations_from_copy_rows(
     *,
     allocations: list[PaperCopyAllocation],
     source_labels: dict[str, str],
-) -> dict[str, PaperSourceAllocation]:
-    rows: dict[str, PaperSourceAllocation] = {}
+) -> dict[str, CopySourceAllocation]:
+    rows: dict[str, CopySourceAllocation] = {}
     for allocation in sorted(allocations, key=lambda row: (row.rank, row.account_key)):
         source_wallet = allocation.source_wallet.lower()
         existing = rows.get(source_wallet)
         if existing is not None and (existing.active or not allocation.active):
             continue
-        rows[source_wallet] = PaperSourceAllocation(
+        rows[source_wallet] = CopySourceAllocation(
             source_wallet=source_wallet,
             source_label=source_labels.get(source_wallet),
             rank=allocation.rank,
@@ -1177,7 +1156,7 @@ def paper_allocation_status_reason(
     *,
     source_status: str,
     source_status_reason: str,
-    source_allocation: PaperSourceAllocation | None,
+    source_allocation: CopySourceAllocation | None,
     can_open_new_positions: bool,
     account_enabled: bool | None,
 ) -> str:
@@ -1201,7 +1180,7 @@ def paper_wallet_performance_reads(
     allocations: list[PaperCopyAllocation],
     positions: list[dict[str, Any]],
     source_performance_rows: Sequence[Mapping[str, Any]],
-    source_allocations: dict[str, PaperSourceAllocation],
+    source_allocations: dict[str, CopySourceAllocation],
     source_labels: dict[str, str],
     monitoring_stats: dict[str, WalletMonitoringSummary],
     realtime_monitoring: RealtimeSubscriptionSnapshot,
@@ -1482,14 +1461,14 @@ async def process_paper_copy_fills(
     price_cache: MarketPriceCache | None = None,
     allocation_cache: CopyAllocationCache | None = None,
     source_state_cache: SourceStateCache | None = None,
-) -> PaperCopyBatchResult:
+) -> CopyBatchResult:
     resolved_settings = settings or get_settings()
     if (
         not resolved_settings.paper_trading_enabled
         or not resolved_settings.paper_copy_enabled
         or not fills
     ):
-        return PaperCopyBatchResult()
+        return CopyBatchResult()
 
     normalized_source_wallet = source_wallet.lower()
     allocations = await copy_allocations(
@@ -1499,14 +1478,14 @@ async def process_paper_copy_fills(
     )
     allocation = allocations.get(normalized_source_wallet)
     if allocation is None:
-        return PaperCopyBatchResult(skipped_fills=len(fills))
+        return CopyBatchResult(skipped_fills=len(fills))
 
     accounts = await load_paper_accounts_for_source_copy(
         session,
         source_wallet=normalized_source_wallet,
     )
     if not accounts:
-        return PaperCopyBatchResult(skipped_fills=len(fills))
+        return CopyBatchResult(skipped_fills=len(fills))
 
     if client is None:
         async with HyperliquidClient(resolved_settings) as hyperliquid_client:
@@ -1572,7 +1551,7 @@ async def process_paper_copy_fills(
         for_update=True,
     )
     if not accounts:
-        return PaperCopyBatchResult(skipped_fills=len(fills))
+        return CopyBatchResult(skipped_fills=len(fills))
 
     processed = 0
     skipped = 0
@@ -1656,7 +1635,7 @@ async def process_paper_copy_fills(
                     accounts_updated.add(account.key)
 
     await session.commit()
-    return PaperCopyBatchResult(
+    return CopyBatchResult(
         processed_fills=processed,
         skipped_fills=skipped,
         accounts_updated=len(accounts_updated),
@@ -1674,10 +1653,10 @@ async def process_paper_copy_recovery(
     price_cache: MarketPriceCache | None = None,
     max_sources: int = 100,
     fill_limit_per_source: int = 1000,
-) -> PaperCopyBatchResult:
+) -> CopyBatchResult:
     resolved_settings = settings or get_settings()
     if not resolved_settings.paper_trading_enabled or not resolved_settings.paper_copy_enabled:
-        return PaperCopyBatchResult()
+        return CopyBatchResult()
 
     if client is None:
         async with HyperliquidClient(resolved_settings) as hyperliquid_client:
@@ -1694,13 +1673,13 @@ async def process_paper_copy_recovery(
     if source_wallet:
         source_wallets = [source_wallet.lower()]
     else:
-        await refresh_paper_copy_allocations(session, settings=resolved_settings)
+        await refresh_copy_allocations(session, settings=resolved_settings)
         source_wallets = await load_paper_copy_recovery_sources(
             session,
             max_sources=max_sources,
         )
 
-    total = PaperCopyBatchResult()
+    total = CopyBatchResult()
     for wallet in source_wallets:
         result = await process_paper_copy_recovery_for_source(
             session,
@@ -1768,13 +1747,13 @@ async def process_paper_copy_recovery_for_source(
     client: HyperliquidClient,
     fill_limit: int,
     price_cache: MarketPriceCache | None = None,
-) -> PaperCopyBatchResult:
+) -> CopyBatchResult:
     start_time_ms = await paper_copy_recovery_start_time_ms(
         session,
         source_wallet=source_wallet,
     )
     if start_time_ms is None:
-        return PaperCopyBatchResult()
+        return CopyBatchResult()
 
     fills = await load_wallet_fills_for_paper_copy_recovery(
         session,
@@ -1782,7 +1761,7 @@ async def process_paper_copy_recovery_for_source(
         start_time_ms=start_time_ms,
         limit=fill_limit,
     )
-    replay_result = PaperCopyBatchResult()
+    replay_result = CopyBatchResult()
     if fills:
         replay_result = await process_paper_copy_fills(
             session,
@@ -1850,15 +1829,15 @@ async def reconcile_open_paper_positions_for_source(
     source_wallet: str,
     settings: Settings,
     client: HyperliquidClient,
-) -> PaperCopyBatchResult:
+) -> CopyBatchResult:
     positions = await load_open_paper_positions_for_source(
         session,
         source_wallet=source_wallet,
     )
     if not positions:
-        return PaperCopyBatchResult()
+        return CopyBatchResult()
 
-    await refresh_paper_copy_allocations(session, settings=settings)
+    await refresh_copy_allocations(session, settings=settings)
     allocations = await load_paper_copy_allocations_for_source(
         session,
         source_wallet=source_wallet,
@@ -1885,9 +1864,9 @@ async def reconcile_open_paper_positions_for_source(
         for_update=True,
     )
     if not positions:
-        return PaperCopyBatchResult()
+        return CopyBatchResult()
 
-    result = PaperCopyBatchResult()
+    result = CopyBatchResult()
     updated_accounts: set[str] = set()
     for position in positions:
         source_state = source_states.get(dex_from_coin(position.coin))
@@ -1921,7 +1900,7 @@ async def reconcile_open_paper_positions_for_source(
 
     if result.processed_fills > 0:
         await session.commit()
-    return PaperCopyBatchResult(
+    return CopyBatchResult(
         processed_fills=result.processed_fills,
         skipped_fills=result.skipped_fills,
         accounts_updated=len(updated_accounts),
@@ -1951,15 +1930,15 @@ async def load_paper_copy_allocations_for_source(
     session: AsyncSession,
     *,
     source_wallet: str,
-) -> dict[str, PaperSourceAllocation]:
+) -> dict[str, CopySourceAllocation]:
     result = await session.execute(
         select(PaperCopyAllocation, WatchedWallet.label)
         .outerjoin(WatchedWallet, WatchedWallet.address == PaperCopyAllocation.source_wallet)
         .where(PaperCopyAllocation.source_wallet == source_wallet)
     )
-    rows: dict[str, PaperSourceAllocation] = {}
+    rows: dict[str, CopySourceAllocation] = {}
     for allocation, source_label in result.all():
-        rows[allocation.account_key] = PaperSourceAllocation(
+        rows[allocation.account_key] = CopySourceAllocation(
             source_wallet=allocation.source_wallet,
             source_label=str(source_label) if source_label else None,
             rank=allocation.rank,
@@ -1995,12 +1974,12 @@ async def reconcile_closed_source_position(
     session: AsyncSession,
     *,
     account: PaperTradingAccount,
-    allocation: PaperSourceAllocation,
+    allocation: CopySourceAllocation,
     position: PaperPosition,
     mark_price: Decimal,
     source_perp_equity: Decimal,
     settings: Settings,
-) -> PaperCopyBatchResult:
+) -> CopyBatchResult:
     leverage = safe_leverage(position.leverage)
     execution_price = apply_adverse_slippage(
         price=mark_price,
@@ -2009,7 +1988,7 @@ async def reconcile_closed_source_position(
         slippage_bps=settings.paper_copy_slippage_bps,
     )
     if execution_price <= ZERO or position.size <= POSITION_EPSILON:
-        return PaperCopyBatchResult()
+        return CopyBatchResult()
 
     source_fill_id = f"reconcile-close:{position.id}"
     if await paper_fill_exists(
@@ -2019,7 +1998,7 @@ async def reconcile_closed_source_position(
         source_fill_id=source_fill_id,
         sequence_index=0,
     ):
-        return PaperCopyBatchResult()
+        return CopyBatchResult()
 
     close_size = position.size
     notional_usd = close_size * execution_price
@@ -2080,7 +2059,7 @@ async def reconcile_closed_source_position(
             opened_at=position.opened_at,
         )
     )
-    return PaperCopyBatchResult(
+    return CopyBatchResult(
         processed_fills=1,
         accounts_updated=1,
         realized_pnl_usd=realized_pnl,
@@ -2114,30 +2093,6 @@ def reconciled_close_fill_payload(
             "reason": "source_position_absent",
         },
     }
-
-
-def combine_batch_results(
-    left: PaperCopyBatchResult,
-    right: PaperCopyBatchResult,
-) -> PaperCopyBatchResult:
-    return PaperCopyBatchResult(
-        processed_fills=left.processed_fills + right.processed_fills,
-        skipped_fills=left.skipped_fills + right.skipped_fills,
-        accounts_updated=left.accounts_updated + right.accounts_updated,
-        realized_pnl_usd=left.realized_pnl_usd + right.realized_pnl_usd,
-        fee_usd=left.fee_usd + right.fee_usd,
-        skip_reasons=combine_skip_reasons(left.skip_reasons, right.skip_reasons),
-    )
-
-
-def combine_skip_reasons(
-    left: dict[str, int],
-    right: dict[str, int],
-) -> dict[str, int]:
-    reasons = dict(left)
-    for reason, count in right.items():
-        reasons[reason] = reasons.get(reason, 0) + count
-    return reasons
 
 
 def normalized_wallet_addresses(source_wallets: Iterable[str | None]) -> set[str]:
@@ -2328,15 +2283,15 @@ async def load_wallet_monitoring_stats(
     }
 
 
-async def refresh_paper_copy_allocations(
+async def refresh_copy_allocations(
     session: AsyncSession,
     *,
     settings: Settings,
-) -> dict[str, PaperSourceAllocation]:
+) -> dict[str, CopySourceAllocation]:
     await ensure_open_paper_sources_watched(session)
     accounts = await sync_paper_trading_accounts(session, settings=settings)
     account_keys = [account.key for account in accounts]
-    source_allocations = await load_paper_source_allocations(session, settings=settings)
+    source_allocations = await load_copy_source_allocations(session, settings=settings)
     allocation_refresh_at = datetime.now(UTC)
     active_source_wallets = {
         allocation.source_wallet.lower()
@@ -2432,7 +2387,7 @@ async def refresh_paper_copy_allocations(
 
 def store_copy_allocations(
     cache: CopyAllocationCache | None,
-    allocations: dict[str, PaperSourceAllocation],
+    allocations: dict[str, CopySourceAllocation],
 ) -> None:
     if cache is None:
         return
@@ -2447,14 +2402,14 @@ async def copy_allocations(
     *,
     settings: Settings,
     cache: CopyAllocationCache | None = None,
-) -> dict[str, PaperSourceAllocation]:
+) -> dict[str, CopySourceAllocation]:
     """Use the periodically refreshed allocation snapshot when it is still fresh."""
 
     if cache is not None:
         cached = cache.fresh()
         if cached is not None:
             return cached
-    allocations = await refresh_paper_copy_allocations(session, settings=settings)
+    allocations = await refresh_copy_allocations(session, settings=settings)
     store_copy_allocations(cache, allocations)
     return allocations
 
@@ -2873,11 +2828,11 @@ async def set_paper_trading_account_enabled(
     return account
 
 
-async def load_paper_source_allocations(
+async def load_copy_source_allocations(
     session: AsyncSession,
     *,
     settings: Settings,
-) -> list[PaperSourceAllocation]:
+) -> list[CopySourceAllocation]:
     ranked_pool = (
         select(
             WatchedWallet.address.label("address"),
@@ -2977,14 +2932,14 @@ async def load_paper_source_allocations(
     )
 
     slot_source_set = set(slot_sources)
-    allocations: list[PaperSourceAllocation] = []
+    allocations: list[CopySourceAllocation] = []
     allocation_pct = copy_allocation_pct(settings)
     for row in candidate_rows:
         source_wallet = str(row["address"]).lower()
         pool_rank = int(row["pool_rank"])
         has_realtime_slot = source_wallet in slot_source_set
         allocations.append(
-            PaperSourceAllocation(
+            CopySourceAllocation(
                 source_wallet=source_wallet,
                 source_label=str(row["source_label"]) if row["source_label"] else None,
                 rank=pool_rank,
@@ -3008,7 +2963,7 @@ async def load_paper_source_allocations(
         retained_pool_rank = int_or_none(row["pool_rank"])
         has_realtime_slot = source_wallet in slot_source_set
         allocations.append(
-            PaperSourceAllocation(
+            CopySourceAllocation(
                 source_wallet=source_wallet,
                 source_label=str(row["source_label"]) if row["source_label"] else None,
                 rank=retained_pool_rank or retained_rank,
@@ -3128,7 +3083,7 @@ async def apply_paper_fill_part(
     session: AsyncSession,
     *,
     account: PaperTradingAccount,
-    allocation: PaperSourceAllocation,
+    allocation: CopySourceAllocation,
     fill: dict[str, Any],
     part: SourceFillPart,
     source_perp_equity: Decimal,
@@ -3138,10 +3093,10 @@ async def apply_paper_fill_part(
     source_account_state: SourceAccountState | None = None,
     order_book: OrderBook | None = None,
     mark_prices: dict[str, Decimal] | None = None,
-) -> PaperCopyBatchResult:
+) -> CopyBatchResult:
     source_fill_id = str(fill.get("externalFillId") or "")
     if not source_fill_id:
-        return PaperCopyBatchResult(skipped_fills=1)
+        return CopyBatchResult(skipped_fills=1)
     existing_fill = await load_paper_copy_fill(
         session,
         account_key=account.key,
@@ -3151,7 +3106,7 @@ async def apply_paper_fill_part(
     )
     if existing_fill is not None:
         if not can_retry_existing_paper_fill(existing_fill, part):
-            return PaperCopyBatchResult()
+            return CopyBatchResult()
         await session.delete(existing_fill)
         await session.flush()
 
@@ -3189,7 +3144,7 @@ async def apply_open_part(
     session: AsyncSession,
     *,
     account: PaperTradingAccount,
-    allocation: PaperSourceAllocation,
+    allocation: CopySourceAllocation,
     fill: dict[str, Any],
     part: SourceFillPart,
     source_perp_equity: Decimal,
@@ -3199,13 +3154,13 @@ async def apply_open_part(
     source_account_state: SourceAccountState | None = None,
     order_book: OrderBook | None = None,
     mark_prices: dict[str, Decimal] | None = None,
-) -> PaperCopyBatchResult:
+) -> CopyBatchResult:
     source_leverage = leverage_for_fill(fill=fill, source_leverages=source_leverages)
 
     async def skip(
         reason: str,
         execution_context: ExecutionContext | None = None,
-    ) -> PaperCopyBatchResult:
+    ) -> CopyBatchResult:
         return await record_skip(
             session,
             account=account,
@@ -3412,14 +3367,14 @@ async def apply_open_part(
             book_fill=book_fill,
         )
     )
-    return PaperCopyBatchResult(processed_fills=1, accounts_updated=1, fee_usd=fee)
+    return CopyBatchResult(processed_fills=1, accounts_updated=1, fee_usd=fee)
 
 
 async def apply_close_part(
     session: AsyncSession,
     *,
     account: PaperTradingAccount,
-    allocation: PaperSourceAllocation,
+    allocation: CopySourceAllocation,
     fill: dict[str, Any],
     part: SourceFillPart,
     source_perp_equity: Decimal,
@@ -3428,7 +3383,7 @@ async def apply_close_part(
     settings: Settings,
     source_account_state: SourceAccountState | None = None,
     order_book: OrderBook | None = None,
-) -> PaperCopyBatchResult:
+) -> CopyBatchResult:
     coin = str(fill.get("coin") or "")
     position = await load_paper_position(
         session,
@@ -3446,7 +3401,7 @@ async def apply_close_part(
         reason: str,
         execution_context: ExecutionContext | None = None,
         requested_close_size: Decimal | None = None,
-    ) -> PaperCopyBatchResult:
+    ) -> CopyBatchResult:
         return await record_skip(
             session,
             account=account,
@@ -3602,7 +3557,7 @@ async def apply_close_part(
     session.add(close_fill)
     if decision.aggregated:
         mark_paper_close_skips_aggregated(aggregated_skips, into=close_fill)
-    return PaperCopyBatchResult(
+    return CopyBatchResult(
         processed_fills=1,
         accounts_updated=1,
         realized_pnl_usd=realized_pnl,
@@ -3709,11 +3664,11 @@ async def record_batch_skip(
     session: AsyncSession,
     *,
     accounts: list[PaperTradingAccount],
-    allocation: PaperSourceAllocation,
+    allocation: CopySourceAllocation,
     fills: list[dict[str, Any]],
     reason: str,
     settings: Settings,
-) -> PaperCopyBatchResult:
+) -> CopyBatchResult:
     skipped = 0
     for fill in fills:
         result = await record_skip_for_accounts(
@@ -3725,19 +3680,19 @@ async def record_batch_skip(
             settings=settings,
         )
         skipped += result.skipped_fills
-    return PaperCopyBatchResult(skipped_fills=skipped)
+    return CopyBatchResult(skipped_fills=skipped)
 
 
 async def record_skip_for_accounts(
     session: AsyncSession,
     *,
     accounts: list[PaperTradingAccount],
-    allocation: PaperSourceAllocation,
+    allocation: CopySourceAllocation,
     fill: dict[str, Any],
     reason: str,
     settings: Settings,
-) -> PaperCopyBatchResult:
-    batch_result = PaperCopyBatchResult()
+) -> CopyBatchResult:
+    batch_result = CopyBatchResult()
     part = SourceFillPart(
         action="skip",
         side=side_from_fill_direction(raw_json_from_fill(fill).get("dir")),
@@ -3764,7 +3719,7 @@ async def record_skip(
     session: AsyncSession,
     *,
     account: PaperTradingAccount,
-    allocation: PaperSourceAllocation,
+    allocation: CopySourceAllocation,
     fill: dict[str, Any],
     part: SourceFillPart,
     source_perp_equity: Decimal,
@@ -3773,10 +3728,10 @@ async def record_skip(
     execution_context: ExecutionContext | None = None,
     leverage: Decimal | None = None,
     requested_close_size: Decimal | None = None,
-) -> PaperCopyBatchResult:
+) -> CopyBatchResult:
     source_fill_id = str(fill.get("externalFillId") or "")
     if not source_fill_id:
-        return PaperCopyBatchResult(skipped_fills=1)
+        return CopyBatchResult(skipped_fills=1)
     if await paper_fill_exists(
         session,
         account_key=account.key,
@@ -3784,7 +3739,7 @@ async def record_skip(
         source_fill_id=source_fill_id,
         sequence_index=part.sequence_index,
     ):
-        return PaperCopyBatchResult()
+        return CopyBatchResult()
 
     allocation_usd = max(account.equity_usd, ZERO) * allocation.allocation_pct
     skipped_fill = paper_copy_fill(
@@ -3812,13 +3767,13 @@ async def record_skip(
             "requestedCloseSize": str(requested_close_size),
         }
     session.add(skipped_fill)
-    return PaperCopyBatchResult(skipped_fills=1, skip_reasons={reason: 1})
+    return CopyBatchResult(skipped_fills=1, skip_reasons={reason: 1})
 
 
 def paper_copy_fill(
     *,
     account: PaperTradingAccount,
-    allocation: PaperSourceAllocation,
+    allocation: CopySourceAllocation,
     fill: dict[str, Any],
     part: SourceFillPart,
     action: str,

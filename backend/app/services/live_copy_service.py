@@ -70,6 +70,12 @@ from app.services.copy_signal_service import (
     source_fill_from_wallet_fill,
     source_state_available_for_reconciliation,
 )
+from app.services.copy_types import (
+    CopyAllocationCache,
+    CopyBatchResult,
+    CopySourceAllocation,
+    combine_skip_reasons,
+)
 from app.services.live_account_access import load_live_account
 from app.services.live_account_state import (
     live_reconciliation_is_fresh,
@@ -132,14 +138,7 @@ from app.services.live_trading_errors import (
     LiveTradingServiceError,
 )
 from app.services.market_price_cache import MarketPriceCache, dex_from_coin
-from app.services.paper_trading_service import (
-    CopyAllocationCache,
-    PaperCopyBatchResult,
-    PaperSourceAllocation,
-    combine_skip_reasons,
-    copy_allocations,
-    refresh_paper_copy_allocations,
-)
+from app.services.paper_trading_service import copy_allocations, refresh_copy_allocations
 from app.services.source_fill_ordering import (
     decimal_or_none as source_order_decimal_or_none,
 )
@@ -271,8 +270,8 @@ class LiveCopyPartTerminal(RuntimeError):
         self.reason = reason
 
 
-def live_skip(reason: str, count: int = 1) -> PaperCopyBatchResult:
-    return PaperCopyBatchResult(
+def live_skip(reason: str, count: int = 1) -> CopyBatchResult:
+    return CopyBatchResult(
         skipped_fills=count,
         skip_reasons={reason: count} if count > 0 else {},
     )
@@ -525,10 +524,10 @@ async def process_live_copy_fills(
     allocation_cache: CopyAllocationCache | None = None,
     source_state_cache: SourceStateCache | None = None,
     lane_sync_tracker: LiveCopyLaneSyncTracker | None = None,
-) -> PaperCopyBatchResult:
+) -> CopyBatchResult:
     resolved_settings = settings or get_settings()
     if not fills or not live_copy_processing_enabled(resolved_settings):
-        return PaperCopyBatchResult()
+        return CopyBatchResult()
 
     normalized_source_wallet = source_wallet.lower()
     allocations = await copy_allocations(
@@ -1099,7 +1098,7 @@ async def process_live_copy_fills(
             f"Live copy processing deferred: {reasons}",
             retry_base_seconds=deferred_retry_base_seconds or None,
         )
-    return PaperCopyBatchResult(
+    return CopyBatchResult(
         processed_fills=processed,
         skipped_fills=skipped,
         accounts_updated=len(touched_accounts),
@@ -2060,7 +2059,7 @@ async def process_live_copy_recovery(
     max_sources: int = 100,
     fill_limit_per_source: int = 1000,
     origin: LiveCopyProcessingOrigin = LIVE_COPY_ORIGIN_PERIODIC_RECOVERY,
-) -> PaperCopyBatchResult:
+) -> CopyBatchResult:
     """Seed missing durable work without executing source fills inline.
 
     Realtime, startup, periodic, and snapshot recovery all converge on
@@ -2070,7 +2069,7 @@ async def process_live_copy_recovery(
 
     resolved_settings = settings or get_settings()
     if not live_copy_processing_enabled(resolved_settings):
-        return PaperCopyBatchResult()
+        return CopyBatchResult()
 
     if client is None:
         await session.commit()
@@ -2087,7 +2086,7 @@ async def process_live_copy_recovery(
                 origin=origin,
             )
 
-    allocations = await refresh_paper_copy_allocations(session, settings=resolved_settings)
+    allocations = await refresh_copy_allocations(session, settings=resolved_settings)
     active_source_wallets = {
         source for source, allocation in allocations.items() if allocation.active
     }
@@ -2170,7 +2169,7 @@ async def process_live_copy_recovery(
                 origin=origin,
             )
     await session.commit()
-    return PaperCopyBatchResult(processed_fills=enqueued)
+    return CopyBatchResult(processed_fills=enqueued)
 
 
 async def load_open_live_source_positions(
@@ -2610,7 +2609,7 @@ async def apply_live_copy_part(
     session: AsyncSession,
     *,
     account: TradingAccount,
-    allocation: PaperSourceAllocation,
+    allocation: CopySourceAllocation,
     fill: dict[str, Any],
     part: SourceFillPart,
     source_account_state: SourceAccountState | None,
@@ -2620,7 +2619,7 @@ async def apply_live_copy_part(
     settings: Settings,
     trading_client: HyperliquidLiveTradingClient,
     entry_admission: LiveEntryAdmission | None,
-) -> PaperCopyBatchResult:
+) -> CopyBatchResult:
     source_fill_id = str(fill.get("externalFillId") or "")
     if not source_fill_id:
         return live_skip("live_source_fill_id_missing")
@@ -2631,7 +2630,7 @@ async def apply_live_copy_part(
         source_fill_id=source_fill_id,
         sequence_index=part.sequence_index,
     ):
-        return PaperCopyBatchResult()
+        return CopyBatchResult()
 
     if part.action in {"open", "flip_open"}:
         return await apply_live_open_part(
@@ -2667,7 +2666,7 @@ async def apply_live_open_part(
     session: AsyncSession,
     *,
     account: TradingAccount,
-    allocation: PaperSourceAllocation,
+    allocation: CopySourceAllocation,
     fill: dict[str, Any],
     part: SourceFillPart,
     source_account_state: SourceAccountState | None,
@@ -2677,7 +2676,7 @@ async def apply_live_open_part(
     settings: Settings,
     trading_client: HyperliquidLiveTradingClient,
     entry_admission: LiveEntryAdmission | None,
-) -> PaperCopyBatchResult:
+) -> CopyBatchResult:
     coin = str(fill.get("coin") or "")
     if entry_admission is None or entry_admission.first_observed_at is None:
         raise LiveCopyPartTerminal("live_source_fill_first_observation_missing")
@@ -2845,7 +2844,7 @@ async def apply_live_open_part(
         limit_price: Decimal | None = None,
         decision_context: dict[str, Any] | None = None,
         sized: bool = False,
-    ) -> PaperCopyBatchResult:
+    ) -> CopyBatchResult:
         return await record_live_skip(
             session,
             account=account,
@@ -3001,7 +3000,7 @@ async def apply_live_close_part(
     session: AsyncSession,
     *,
     account: TradingAccount,
-    allocation: PaperSourceAllocation,
+    allocation: CopySourceAllocation,
     fill: dict[str, Any],
     part: SourceFillPart,
     source_account_state: SourceAccountState | None,
@@ -3010,7 +3009,7 @@ async def apply_live_close_part(
     market_prices: ExecutionMarketPrices,
     settings: Settings,
     trading_client: HyperliquidLiveTradingClient,
-) -> PaperCopyBatchResult:
+) -> CopyBatchResult:
     coin = str(fill.get("coin") or "")
     position = await load_live_source_position(
         session,
@@ -3215,7 +3214,7 @@ async def submit_live_copy_intent(
     intent: TradeIntent,
     settings: Settings,
     trading_client: HyperliquidLiveTradingClient,
-) -> PaperCopyBatchResult:
+) -> CopyBatchResult:
     try:
         result = await submit_live_trade_intent(
             session,
@@ -3248,7 +3247,7 @@ async def submit_live_copy_intent(
         return live_skip("live_order_not_submitted")
     if result.order.status in {"rejected", "failed", "canceled"}:
         return live_skip(f"live_order_{result.order.status}")
-    return PaperCopyBatchResult(processed_fills=1 if result.submitted else 0)
+    return CopyBatchResult(processed_fills=1 if result.submitted else 0)
 
 
 def live_submit_failure_reason(error: LiveOrderSubmitError) -> str:
@@ -3324,7 +3323,7 @@ async def record_live_skip(
     session: AsyncSession,
     *,
     account: TradingAccount,
-    allocation: PaperSourceAllocation,
+    allocation: CopySourceAllocation,
     fill: dict[str, Any],
     part: SourceFillPart,
     reason: str,
@@ -3336,7 +3335,7 @@ async def record_live_skip(
     requested_size: Decimal | None = None,
     source_fill_age_seconds: float | None = None,
     decision_context: dict[str, Any] | None = None,
-) -> PaperCopyBatchResult:
+) -> CopyBatchResult:
     source_fill_id = str(fill.get("externalFillId") or "")
     if not source_fill_id:
         return live_skip(reason)
@@ -3413,7 +3412,7 @@ async def record_live_skip(
     if inserted_order_id is not None:
         return live_skip(reason)
     if reason in LIVE_COPY_RETRYABLE_SKIP_REASONS:
-        return PaperCopyBatchResult()
+        return CopyBatchResult()
 
     existing = await session.scalar(
         select(TradingOrder)
@@ -3431,7 +3430,7 @@ async def record_live_skip(
         or existing.error == f"skip:{reason}"
         or not is_retryable_live_order_submit_failure(existing)
     ):
-        return PaperCopyBatchResult()
+        return CopyBatchResult()
 
     existing.coin = coin
     existing.action = part.action
@@ -3588,7 +3587,7 @@ async def filter_live_accounts_for_source_allocation(
     *,
     accounts: list[TradingAccount],
     source_wallet: str,
-    allocation: PaperSourceAllocation | None,
+    allocation: CopySourceAllocation | None,
 ) -> list[TradingAccount]:
     """Keep entry-eligible accounts plus accounts with copied exposure to manage."""
 
@@ -3781,20 +3780,6 @@ def live_close_below_min_order_notional(
 
 async def gather_two(first: Any, second: Any) -> tuple[Any, Any]:
     return await asyncio.gather(first, second)
-
-
-def combine_batch_results(
-    left: PaperCopyBatchResult,
-    right: PaperCopyBatchResult,
-) -> PaperCopyBatchResult:
-    return PaperCopyBatchResult(
-        processed_fills=left.processed_fills + right.processed_fills,
-        skipped_fills=left.skipped_fills + right.skipped_fills,
-        accounts_updated=left.accounts_updated + right.accounts_updated,
-        realized_pnl_usd=left.realized_pnl_usd + right.realized_pnl_usd,
-        fee_usd=left.fee_usd + right.fee_usd,
-        skip_reasons=combine_skip_reasons(left.skip_reasons, right.skip_reasons),
-    )
 
 
 def unique_strings(values: list[str]) -> list[str]:

@@ -23,7 +23,7 @@ from app.services.discovery_service import (
     readmit_archived_wallets,
     upsert_discovery_candidates,
 )
-from app.services.paper_trading_service import load_paper_source_allocations
+from app.services.paper_trading_service import load_copy_source_allocations
 from app.services.score_backtest_service import BacktestConfig, run_score_backtest
 from app.services.source_trade_reconstruction_service import load_source_trade_refresh_candidates
 from app.services.wallet_cleanup_service import prune_min_closed_trades_wallets
@@ -505,7 +505,7 @@ async def test_copied_source_keeps_its_place_near_the_cut_off(
             copied={1, 2, 4},
         )
 
-        allocations = await load_paper_source_allocations(session, settings=settings)
+        allocations = await load_copy_source_allocations(session, settings=settings)
 
     selected = sorted(allocation.source_wallet for allocation in allocations)
     assert selected == sorted(ranked_wallet(rank) for rank in (1, 2, 4))
@@ -528,7 +528,7 @@ async def test_copied_source_below_the_retain_rank_is_replaced(
             copied={1, 2, 5},
         )
 
-        allocations = await load_paper_source_allocations(session, settings=settings)
+        allocations = await load_copy_source_allocations(session, settings=settings)
 
     selected = sorted(allocation.source_wallet for allocation in allocations)
     assert selected == sorted(ranked_wallet(rank) for rank in (1, 2, 3))
@@ -552,6 +552,6 @@ async def test_wallets_below_the_minimum_score_are_never_copy_sources(
             copied={1, 2},
         )
 
-        allocations = await load_paper_source_allocations(session, settings=settings)
+        allocations = await load_copy_source_allocations(session, settings=settings)
 
     assert [allocation.source_wallet for allocation in allocations] == [ranked_wallet(1)]

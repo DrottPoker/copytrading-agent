@@ -23,6 +23,7 @@ from app.services.copy_signal_service import (
     SourceAccountState,
     SourceFillPart,
 )
+from app.services.copy_types import CopyBatchResult, CopySourceAllocation
 from app.services.live_copy_service import (
     finalize_live_copy_fill_disposition,
     process_live_copy_fills,
@@ -52,11 +53,7 @@ from app.services.live_copy_state_service import (
 )
 from app.services.live_order_submission import submit_live_trade_intent
 from app.services.live_trading_errors import LiveCopyEntryLifecycleDeferred
-from app.services.paper_trading_service import (
-    PaperCopyBatchResult,
-    PaperSourceAllocation,
-    refresh_paper_copy_allocations,
-)
+from app.services.paper_trading_service import refresh_copy_allocations
 from app.services.trading_core import build_copy_trade_intent
 from tests.fakes.live_modules import patch_live
 
@@ -111,7 +108,7 @@ async def test_global_source_epoch_activates_a_distinct_live_account_lane(
         )
         await session.flush()
 
-        await refresh_paper_copy_allocations(session, settings=settings)
+        await refresh_copy_allocations(session, settings=settings)
 
         allocation = await session.scalar(
             select(PaperCopyAllocation).where(
@@ -847,7 +844,7 @@ async def test_live_copy_uses_durable_first_observation_for_entry_admission(
         "timestampMs": int(source_fill_at.timestamp() * 1000),
         "rawJson": {"dir": "Open Long", "startPosition": "0"},
     }
-    allocation = PaperSourceAllocation(
+    allocation = CopySourceAllocation(
         source_wallet=source_wallet,
         source_label="Durable observation source",
         rank=1,
@@ -893,9 +890,9 @@ async def test_live_copy_uses_durable_first_observation_for_entry_admission(
     async def fake_unowned_lifecycle(*_args: object, **_kwargs: object) -> bool:
         return False
 
-    async def fake_apply(*_args: object, **kwargs: object) -> PaperCopyBatchResult:
+    async def fake_apply(*_args: object, **kwargs: object) -> CopyBatchResult:
         applied_admissions.append(kwargs["entry_admission"])
-        return PaperCopyBatchResult(processed_fills=1, accounts_updated=1)
+        return CopyBatchResult(processed_fills=1, accounts_updated=1)
 
     async def fake_finalize(*_args: object, **_kwargs: object) -> bool:
         return True

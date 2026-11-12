@@ -32,8 +32,13 @@ from app.services.copy_signal_service import (
     SourceCurrentPosition,
     SourceFillPart,
 )
-from app.services.live_copy_service import (
+from app.services.copy_types import (
+    CopyAllocationCache,
+    CopyBatchResult,
+    CopySourceAllocation,
     combine_batch_results,
+)
+from app.services.live_copy_service import (
     live_close_below_min_order_notional,
     live_copy_account_snapshot_is_stale,
     live_copy_allocation_equity_usd,
@@ -47,12 +52,7 @@ from app.services.live_copy_service import (
 )
 from app.services.live_copy_state_service import LiveCopyPartClaim, LiveCopyProcessingDeferred
 from app.services.live_trading_errors import LiveOrderSubmitError, LiveReconciliationError
-from app.services.paper_trading_service import (
-    CopyAllocationCache,
-    PaperCopyBatchResult,
-    PaperSourceAllocation,
-    store_copy_allocations,
-)
+from app.services.paper_trading_service import store_copy_allocations
 from app.services.trading_core import build_client_order_id, build_copy_trade_intent
 
 
@@ -641,7 +641,7 @@ async def test_expired_entry_preparation_terminalizes_only_without_an_order(
         applied_parts.append(kwargs["part"])
         if not has_existing_order:
             raise AssertionError("Expired entry preparation must not create a TradingOrder.")
-        return PaperCopyBatchResult()
+        return CopyBatchResult()
 
     monkeypatch.setattr(
         live_copy_service,
@@ -714,7 +714,7 @@ async def test_expired_entry_preparation_terminalizes_only_without_an_order(
         assert fill_state.trading_order_id is None
         assert result.skip_reasons == {expected_terminal_reason: 1}
     else:
-        assert result == PaperCopyBatchResult()
+        assert result == CopyBatchResult()
 
 
 @pytest.mark.asyncio
@@ -866,7 +866,7 @@ async def test_unowned_close_becomes_lifecycle_state_without_trading_order(
         trading_client=object(),
     )
 
-    assert result == PaperCopyBatchResult()
+    assert result == CopyBatchResult()
     assert ignored_reasons == [expected_reason]
     assert completed_fill_ids == ["close-1"]
 
@@ -1135,10 +1135,10 @@ async def test_fresh_live_open_is_claimed_once_and_executes_in_normal_pass(
     async def copyable_lifecycle(*_args: object, **_kwargs: object) -> bool:
         return False
 
-    async def fake_apply(*_args: object, **kwargs: object) -> PaperCopyBatchResult:
+    async def fake_apply(*_args: object, **kwargs: object) -> CopyBatchResult:
         applied_parts.append(kwargs["part"])
         applied_admissions.append(kwargs["entry_admission"])
-        return PaperCopyBatchResult(processed_fills=1, accounts_updated=1)
+        return CopyBatchResult(processed_fills=1, accounts_updated=1)
 
     async def fake_mark_terminal(*_args: object, **kwargs: object) -> None:
         terminal_reasons.append(str(kwargs["reason"]))
@@ -1223,7 +1223,7 @@ async def test_fresh_live_open_is_claimed_once_and_executes_in_normal_pass(
     ]
     assert terminal_reasons == []
     assert completed_fill_ids == ["fresh-open"]
-    assert result == PaperCopyBatchResult(processed_fills=1, accounts_updated=1)
+    assert result == CopyBatchResult(processed_fills=1, accounts_updated=1)
 
 
 def test_live_entry_admission_terminalizes_fill_old_at_first_observation() -> None:
@@ -2355,7 +2355,7 @@ async def test_live_entry_defers_when_source_margin_mode_is_missing() -> None:
         await live_copy_service.apply_live_open_part(
             EmptyOrderSession(),
             account=live_account(last_reconciled_at=datetime(2026, 1, 1, tzinfo=UTC)),
-            allocation=PaperSourceAllocation(
+            allocation=CopySourceAllocation(
                 source_wallet="0xsource",
                 source_label="Source",
                 rank=1,
@@ -2420,7 +2420,7 @@ async def test_live_busy_retry_reuses_fresh_persisted_intent_without_current_lev
 
     async def submit_intent(*_args, **kwargs):
         submitted_intents.append(kwargs["intent"])
-        return PaperCopyBatchResult(processed_fills=1)
+        return CopyBatchResult(processed_fills=1)
 
     def unexpected_leverage_lookup(*_args, **_kwargs):
         raise AssertionError("A complete persisted busy intent must not read current leverage.")
@@ -2796,7 +2796,7 @@ async def test_live_partial_close_aggregates_previous_below_min_skips(
 
     async def fake_submit_live_copy_intent(_session, *, account, intent, settings, trading_client):
         submitted_intents.append(intent)
-        return PaperCopyBatchResult(processed_fills=1)
+        return CopyBatchResult(processed_fills=1)
 
     monkeypatch.setattr(
         live_copy_service,
@@ -2822,7 +2822,7 @@ async def test_live_partial_close_aggregates_previous_below_min_skips(
     result = await live_copy_service.apply_live_close_part(
         CaptureSession(),
         account=live_account(last_reconciled_at=datetime(2026, 1, 1, tzinfo=UTC)),
-        allocation=PaperSourceAllocation(
+        allocation=CopySourceAllocation(
             source_wallet="0xsource",
             source_label="Source",
             rank=1,
@@ -2944,7 +2944,7 @@ async def test_final_live_dust_close_submits_min_notional_order(monkeypatch) -> 
 
     async def fake_submit_live_copy_intent(_session, *, account, intent, settings, trading_client):
         submitted_intents.append(intent)
-        return PaperCopyBatchResult(processed_fills=1)
+        return CopyBatchResult(processed_fills=1)
 
     monkeypatch.setattr(
         live_copy_service,
@@ -2965,7 +2965,7 @@ async def test_final_live_dust_close_submits_min_notional_order(monkeypatch) -> 
     result = await live_copy_service.apply_live_close_part(
         object(),
         account=live_account(last_reconciled_at=datetime(2026, 1, 1, tzinfo=UTC)),
-        allocation=PaperSourceAllocation(
+        allocation=CopySourceAllocation(
             source_wallet="0xsource",
             source_label="Source",
             rank=1,
@@ -3041,7 +3041,7 @@ async def test_close_submits_after_safe_source_attribution_recovery(
 
     async def fake_submit_live_copy_intent(_session, *, account, intent, settings, trading_client):
         submitted_intents.append(intent)
-        return PaperCopyBatchResult(processed_fills=1)
+        return CopyBatchResult(processed_fills=1)
 
     monkeypatch.setattr(
         live_copy_service,
@@ -3067,7 +3067,7 @@ async def test_close_submits_after_safe_source_attribution_recovery(
     result = await live_copy_service.apply_live_close_part(
         object(),
         account=live_account(last_reconciled_at=datetime(2026, 1, 1, tzinfo=UTC)),
-        allocation=PaperSourceAllocation(
+        allocation=CopySourceAllocation(
             source_wallet="0xsource",
             source_label="Source",
             rank=1,
@@ -3374,7 +3374,7 @@ async def test_record_live_skip_persists_diagnostic_order() -> None:
     result = await record_live_skip(
         session,
         account=live_account(last_reconciled_at=datetime(2026, 1, 1, tzinfo=UTC)),
-        allocation=PaperSourceAllocation(
+        allocation=CopySourceAllocation(
             source_wallet="0xsource",
             source_label="Source",
             rank=1,
@@ -3454,7 +3454,7 @@ async def test_record_live_skip_does_not_recount_existing_decision() -> None:
     result = await record_live_skip(
         ConflictSession(),
         account=live_account(last_reconciled_at=datetime(2026, 1, 1, tzinfo=UTC)),
-        allocation=PaperSourceAllocation(
+        allocation=CopySourceAllocation(
             source_wallet="0xsource",
             source_label="Source",
             rank=1,
@@ -3483,7 +3483,7 @@ async def test_record_live_skip_does_not_recount_existing_decision() -> None:
         reason="live_price_drift_too_high",
     )
 
-    assert result == PaperCopyBatchResult()
+    assert result == CopyBatchResult()
 
 
 @pytest.mark.asyncio
@@ -3553,8 +3553,8 @@ def live_account(*, last_reconciled_at: datetime | None) -> TradingAccount:
     )
 
 
-def source_allocation() -> PaperSourceAllocation:
-    return PaperSourceAllocation(
+def source_allocation() -> CopySourceAllocation:
+    return CopySourceAllocation(
         source_wallet="0xsource",
         source_label="Source",
         rank=1,
@@ -3913,11 +3913,11 @@ def patch_target_sizing_inputs(
 
     async def submit_intent(*_args, **kwargs):
         captured["intents"].append(kwargs["intent"])
-        return PaperCopyBatchResult(processed_fills=1)
+        return CopyBatchResult(processed_fills=1)
 
     async def record_skip(*_args, **kwargs):
         captured["skips"].append(kwargs)
-        return PaperCopyBatchResult(skipped_fills=1, skip_reasons={kwargs["reason"]: 1})
+        return CopyBatchResult(skipped_fills=1, skip_reasons={kwargs["reason"]: 1})
 
     monkeypatch.setattr(live_copy_service, "load_live_source_position", load_position)
     monkeypatch.setattr(live_copy_service, "live_market_is_reserved_by_other_source", not_reserved)

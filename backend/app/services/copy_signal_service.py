@@ -305,7 +305,7 @@ async def load_source_account_state(
         if not isinstance(clearinghouse_result, Exception):
             raise clearinghouse_result
         logger.warning(
-            "paper copy source account fetch failed wallet=%s dex=%s error=%s",
+            "copy source account fetch failed wallet=%s dex=%s error=%s",
             source_wallet,
             dex or "default",
             clearinghouse_result,
@@ -321,7 +321,7 @@ async def load_source_account_state(
         if not isinstance(collateral, Exception):
             raise collateral
         logger.warning(
-            "paper copy source collateral lookup failed wallet=%s error=%s",
+            "copy source collateral lookup failed wallet=%s error=%s",
             source_wallet,
             collateral,
         )
@@ -393,14 +393,14 @@ async def load_source_collateral(
             user_abstraction = await client.user_abstraction(user=source_wallet)
         except Exception as exc:
             logger.warning(
-                "paper copy source abstraction fetch failed wallet=%s error=%s",
+                "copy source abstraction fetch failed wallet=%s error=%s",
                 source_wallet,
                 exc,
             )
             return SourceCollateral(mode_known=False)
         if normalize_user_abstraction(user_abstraction) is None:
             logger.warning(
-                "paper copy source abstraction was empty wallet=%s",
+                "copy source abstraction was empty wallet=%s",
                 source_wallet,
             )
             return SourceCollateral(mode_known=False)
@@ -412,7 +412,7 @@ async def load_source_collateral(
         spot_state = await client.spot_clearinghouse_state(user=source_wallet)
     except Exception as exc:
         logger.warning(
-            "paper copy source spot state fetch failed wallet=%s error=%s",
+            "copy source spot state fetch failed wallet=%s error=%s",
             source_wallet,
             exc,
         )
@@ -528,7 +528,7 @@ async def load_execution_market_prices(
     try:
         mids = await client.all_mids()
     except Exception as exc:
-        logger.warning("paper copy allMids fetch failed error=%s", exc)
+        logger.warning("copy allMids fetch failed error=%s", exc)
         mids = {}
 
     for coin in missing_coins:
@@ -564,7 +564,7 @@ async def load_dex_market_prices(
     try:
         mids = await client.all_mids(dex=dex)
     except Exception as exc:
-        logger.warning("paper copy dex allMids fetch failed dex=%s error=%s", dex, exc)
+        logger.warning("copy dex allMids fetch failed dex=%s error=%s", dex, exc)
     else:
         prices = market_prices_from_mids(mids)
         if prices:
@@ -573,7 +573,7 @@ async def load_dex_market_prices(
     try:
         payload = await client.meta_and_asset_ctxs(dex=dex)
     except Exception as exc:
-        logger.warning("paper copy dex market price fetch failed dex=%s error=%s", dex, exc)
+        logger.warning("copy dex market price fetch failed dex=%s error=%s", dex, exc)
         return {}
     return market_prices_from_meta_and_asset_ctxs(payload)
 

@@ -34,6 +34,7 @@ from app.services.copy_signal_service import (
     source_fill_from_wallet_fill,
     warm_source_state_cache,
 )
+from app.services.copy_types import CopyAllocationCache, CopyBatchResult
 from app.services.discovery_service import run_discovery_import
 from app.services.job_lock_service import JobLockAlreadyHeldError, job_lock
 from app.services.live_close_service import enforce_live_hard_stop, resume_live_close_all_operations
@@ -74,12 +75,10 @@ from app.services.operation_status_service import (
 )
 from app.services.paper_risk_service import PaperRiskLoopState, run_paper_risk_once
 from app.services.paper_trading_service import (
-    CopyAllocationCache,
-    PaperCopyBatchResult,
     process_paper_copy_fills,
     process_paper_copy_recovery,
     record_wallet_monitoring_snapshot,
-    refresh_paper_copy_allocations,
+    refresh_copy_allocations,
     run_paper_hard_stops,
     store_copy_allocations,
 )
@@ -982,7 +981,7 @@ async def load_realtime_wallets(
 
     if copy_processing_enabled(settings):
         async with sessionmaker() as session:
-            allocations = await refresh_paper_copy_allocations(session, settings=settings)
+            allocations = await refresh_copy_allocations(session, settings=settings)
             live_accounts = await load_live_accounts_for_source_copy(session, source_wallet="")
             owned_account_source_pairs = await synchronize_live_copy_lanes(
                 session,
@@ -1338,7 +1337,7 @@ async def run_paper_copy_recovery_once(
     source_wallet: str | None,
     price_cache: MarketPriceCache | None = None,
     log_lock_contention: bool = True,
-) -> PaperCopyBatchResult:
+) -> CopyBatchResult:
     try:
         async with sessionmaker() as session:
             async with job_lock(
@@ -1382,7 +1381,7 @@ async def run_paper_copy_recovery_once(
     except JobLockAlreadyHeldError as exc:
         log = logger.info if log_lock_contention else logger.debug
         log("paper copy recovery skipped: %s", exc)
-        return PaperCopyBatchResult()
+        return CopyBatchResult()
     except Exception as exc:
         logger.exception("paper copy recovery failed source_wallet=%s", source_wallet or "all")
         await publish_event(
@@ -1392,7 +1391,7 @@ async def run_paper_copy_recovery_once(
             message="Paper copy recovery failed.",
             payload={"sourceWallet": source_wallet, "error": str(exc)},
         )
-        return PaperCopyBatchResult()
+        return CopyBatchResult()
 
 
 async def run_live_copy_recovery_loop(
@@ -1452,7 +1451,7 @@ async def run_live_copy_recovery_once(
     price_cache: MarketPriceCache | None = None,
     log_lock_contention: bool = True,
     origin: LiveCopyProcessingOrigin = LIVE_COPY_ORIGIN_PERIODIC_RECOVERY,
-) -> PaperCopyBatchResult:
+) -> CopyBatchResult:
     try:
         async with sessionmaker() as session:
             async with job_lock(
@@ -1487,7 +1486,7 @@ async def run_live_copy_recovery_once(
     except JobLockAlreadyHeldError as exc:
         log = logger.info if log_lock_contention else logger.debug
         log("live copy recovery skipped: %s", exc)
-        return PaperCopyBatchResult()
+        return CopyBatchResult()
     except Exception as exc:
         logger.exception("live copy recovery failed source_wallet=%s", source_wallet or "all")
         await publish_event(
@@ -1497,7 +1496,7 @@ async def run_live_copy_recovery_once(
             message="Live copy recovery failed.",
             payload={"sourceWallet": source_wallet, "error": str(exc)},
         )
-        return PaperCopyBatchResult()
+        return CopyBatchResult()
 
 
 async def run_live_trading_reconciliation_loop(
