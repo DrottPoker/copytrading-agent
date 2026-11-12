@@ -8,7 +8,7 @@ import pytest
 
 from app.core.config import Settings
 from app.db.models import TradingAccount
-from app.services import live_trading_service
+from app.services import live_performance_service, live_trading_service
 from app.services.live_trading_service import (
     LiveAccountDeleteError,
     LiveReconciliationResult,
@@ -231,7 +231,7 @@ async def test_start_captures_source_baselines_before_enabling_entries(
         "live_account_has_incomplete_close_operation",
         no_incomplete_close,
     )
-    monkeypatch.setattr(live_trading_service, "live_account_loss_state", no_loss_history)
+    monkeypatch.setattr(live_performance_service, "live_account_loss_state", no_loss_history)
     monkeypatch.setattr(
         live_trading_service,
         "load_active_live_copy_source_wallets",
