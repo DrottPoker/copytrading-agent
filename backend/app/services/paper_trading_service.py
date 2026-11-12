@@ -2818,19 +2818,29 @@ async def load_paper_source_allocations(
     candidate_filters = []
     if settings.scoring_current_drawdown_enabled:
         candidate_filters.append(ranked_pool.c.current_drawdown_status == "ok")
+    if settings.trading_copy_min_source_score > ZERO:
+        candidate_filters.append(ranked_pool.c.score >= settings.trading_copy_min_source_score)
     candidate_result = await session.execute(
         select(
             ranked_pool.c.address,
             ranked_pool.c.score,
             ranked_pool.c.pool_rank,
             WatchedWallet.label.label("source_label"),
+            # Set while the wallet is an active copy source.
+            WatchedWallet.copy_eligibility_started_at.is_not(None).label("copied"),
         )
         .join(WatchedWallet, WatchedWallet.address == ranked_pool.c.address)
         .where(*candidate_filters)
         .order_by(ranked_pool.c.pool_rank.asc())
-        .limit(settings.trading_copy_top_wallet_count)
+        .limit(
+            max(settings.trading_copy_source_retain_rank, settings.trading_copy_top_wallet_count)
+        )
     )
-    candidate_rows = list(candidate_result.mappings().all())
+    candidate_rows = select_copy_candidates(
+        list(candidate_result.mappings().all()),
+        top_count=settings.trading_copy_top_wallet_count,
+        retain_rank=settings.trading_copy_source_retain_rank,
+    )
     open_sources = open_copy_source_select().subquery("open_copy_sources")
     open_source_result = await session.execute(
         select(
@@ -2937,6 +2947,28 @@ async def load_paper_source_allocations(
     return allocations
 
 
+def select_copy_candidates[RowT: Mapping[Any, Any]](
+    eligible_rows: Sequence[RowT],
+    *,
+    top_count: int,
+    retain_rank: int,
+) -> list[RowT]:
+    """Pick the copy sources from the eligible wallets, best rank first.
+
+    Wallets that are already copied keep their place while they rank within
+    `retain_rank` among the eligible wallets. The places they leave go to the
+    best ranked other wallets, which therefore always come from the top
+    `top_count`. Without that margin the last places would change hands every
+    time two neighbouring scores swap.
+    """
+
+    kept = [row for row in eligible_rows[:retain_rank] if row["copied"]][:top_count]
+    kept_addresses = {row["address"] for row in kept}
+    newcomers = [row for row in eligible_rows if row["address"] not in kept_addresses]
+    selected = [*kept, *newcomers[: top_count - len(kept)]]
+    return sorted(selected, key=lambda row: row["pool_rank"])
+
+
 def paper_retained_status_reason(
     row: Any,
     *,
@@ -2955,6 +2987,8 @@ def paper_retained_status_reason(
         return "score_not_positive"
     if settings.scoring_current_drawdown_enabled and row["current_drawdown_status"] != "ok":
         return "current_drawdown_blocked"
+    if score < settings.trading_copy_min_source_score:
+        return "score_below_copy_minimum"
     if pool_rank is not None and pool_rank > settings.trading_copy_top_wallet_count:
         return "outside_copy_top_wallet_count"
     if not has_realtime_slot:

@@ -23,6 +23,7 @@ from app.services.discovery_service import (
     readmit_archived_wallets,
     upsert_discovery_candidates,
 )
+from app.services.paper_trading_service import load_paper_source_allocations
 from app.services.score_backtest_service import BacktestConfig, run_score_backtest
 from app.services.source_trade_reconstruction_service import load_source_trade_refresh_candidates
 from app.services.wallet_cleanup_service import prune_min_closed_trades_wallets
@@ -450,3 +451,107 @@ async def test_scoring_run_persists_scores_snapshots_and_new_columns(
     assert [snapshot.wallet_address for snapshot in snapshots] == [WALLET]
     assert snapshots[0].score_payload["tradeCount"] == 25
     assert snapshots[0].score_payload["equityStatus"] == "missing"
+
+
+def ranked_wallet(rank: int) -> str:
+    return "0x" + f"{rank:040x}"
+
+
+async def seed_ranked_pool(
+    session: AsyncSession,
+    *,
+    scores: dict[int, str],
+    copied: set[int],
+) -> None:
+    """Wallets keyed by rank, best score first; `copied` are the active copy sources."""
+
+    now = datetime.now(UTC)
+    for rank in scores:
+        session.add(
+            WatchedWallet(
+                address=ranked_wallet(rank),
+                enabled=True,
+                polling_tier="pool",
+                copy_eligibility_started_at=now if rank in copied else None,
+            )
+        )
+    await session.flush()
+    for rank, score in scores.items():
+        session.add(
+            WalletScore(
+                wallet_address=ranked_wallet(rank),
+                score=Decimal(score),
+                current_drawdown_status="ok",
+            )
+        )
+    await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_copied_source_keeps_its_place_near_the_cut_off(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    settings = Settings(
+        trading_copy_top_wallet_count=3,
+        trading_copy_source_retain_rank=4,
+        trading_copy_min_source_score=Decimal("50"),
+        live_trading_enabled=False,
+    )
+    async with integration_sessionmaker() as session:
+        await seed_ranked_pool(
+            session,
+            # Rank 4 was copied before rank 3 passed it; rank 6 is below the minimum.
+            scores={1: "90", 2: "80", 3: "70", 4: "69", 5: "60", 6: "45"},
+            copied={1, 2, 4},
+        )
+
+        allocations = await load_paper_source_allocations(session, settings=settings)
+
+    selected = sorted(allocation.source_wallet for allocation in allocations)
+    assert selected == sorted(ranked_wallet(rank) for rank in (1, 2, 4))
+
+
+@pytest.mark.asyncio
+async def test_copied_source_below_the_retain_rank_is_replaced(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    settings = Settings(
+        trading_copy_top_wallet_count=3,
+        trading_copy_source_retain_rank=4,
+        trading_copy_min_source_score=Decimal("50"),
+        live_trading_enabled=False,
+    )
+    async with integration_sessionmaker() as session:
+        await seed_ranked_pool(
+            session,
+            scores={1: "90", 2: "80", 3: "70", 4: "69", 5: "60"},
+            copied={1, 2, 5},
+        )
+
+        allocations = await load_paper_source_allocations(session, settings=settings)
+
+    selected = sorted(allocation.source_wallet for allocation in allocations)
+    assert selected == sorted(ranked_wallet(rank) for rank in (1, 2, 3))
+
+
+@pytest.mark.asyncio
+async def test_wallets_below_the_minimum_score_are_never_copy_sources(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    settings = Settings(
+        trading_copy_top_wallet_count=3,
+        trading_copy_source_retain_rank=4,
+        trading_copy_min_source_score=Decimal("50"),
+        live_trading_enabled=False,
+    )
+    async with integration_sessionmaker() as session:
+        await seed_ranked_pool(
+            session,
+            # Even a copied wallet loses its place when its score falls below the minimum.
+            scores={1: "90", 2: "49.9", 3: "30"},
+            copied={1, 2},
+        )
+
+        allocations = await load_paper_source_allocations(session, settings=settings)
+
+    assert [allocation.source_wallet for allocation in allocations] == [ranked_wallet(1)]

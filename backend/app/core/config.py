@@ -300,6 +300,8 @@ SCORING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
 }
 TRADING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("copy", "top_wallet_count"): "trading_copy_top_wallet_count",
+    ("copy", "source_retain_rank"): "trading_copy_source_retain_rank",
+    ("copy", "min_source_score"): "trading_copy_min_source_score",
     ("copy", "max_total_allocation_pct"): "trading_copy_max_total_allocation_pct",
     ("copy", "max_source_exposure_multiple"): "trading_copy_max_source_exposure_multiple",
     ("copy", "max_total_exposure_multiple"): "trading_copy_max_total_exposure_multiple",
@@ -419,6 +421,11 @@ class Settings(BaseSettings):
     live_trading_max_orders_per_minute: int = Field(default=50, ge=0, le=10000)
     live_trading_reduce_only_when_stopped: bool = True
     trading_copy_top_wallet_count: int = Field(default=10, ge=1, le=10)
+    # A source that is already copied keeps its place while it ranks at least this
+    # high among the eligible wallets, so the last places do not flip on every scoring.
+    trading_copy_source_retain_rank: int = Field(default=12, ge=1, le=100)
+    # Wallets scoring below this are never copy sources; 0 disables the floor.
+    trading_copy_min_source_score: Decimal = Field(default=Decimal("50"), ge=0, le=100)
     # Split equally over the copied sources; may exceed 1 because exposure caps bound the risk.
     trading_copy_max_total_allocation_pct: Decimal = Field(default=Decimal("2.00"), gt=0)
     trading_copy_max_source_exposure_multiple: Decimal = Field(default=Decimal("3"), gt=0, le=100)
@@ -914,6 +921,10 @@ class Settings(BaseSettings):
         account_keys = [account.key for account in self.paper_copy_accounts]
         if len(account_keys) != len(set(account_keys)):
             raise ValueError("paper_copy_accounts keys must be unique.")
+        if self.trading_copy_source_retain_rank < self.trading_copy_top_wallet_count:
+            raise ValueError(
+                "trading_copy_source_retain_rank must be at least trading_copy_top_wallet_count."
+            )
         if (
             self.trading_copy_max_total_allocation_pct
             > self.trading_copy_max_total_exposure_multiple

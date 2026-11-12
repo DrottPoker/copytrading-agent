@@ -110,6 +110,7 @@ export function formatSourceStatusReason(reason: string | null) {
     live_trading_disabled: "live trading is turned off",
     outside_copy_top_wallet_count: "no longer in the top ranked wallets",
     paper_account_disabled: "paper account stopped",
+    score_below_copy_minimum: "score is below the minimum for copy sources",
     score_not_positive: "score is not positive",
     score_unavailable: "score unavailable",
     waiting_for_realtime_slot: "waiting for a realtime slot",

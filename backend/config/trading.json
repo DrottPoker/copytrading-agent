@@ -1,6 +1,8 @@
 {
   "copy": {
     "top_wallet_count": 10,
+    "source_retain_rank": 12,
+    "min_source_score": 50,
     "max_total_allocation_pct": 2.0,
     "max_source_exposure_multiple": 3,
     "max_total_exposure_multiple": 3,
