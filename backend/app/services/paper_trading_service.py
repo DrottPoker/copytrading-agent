@@ -256,6 +256,21 @@ class PaperAccountPerformanceNotFoundError(Exception):
 
 
 @dataclass(frozen=True)
+class PaperCloseFailure:
+    coin: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class PaperAccountCloseResult:
+    """Outcome of closing every position of a paper account, one position at a time."""
+
+    requested: int
+    closed: CopyBatchResult
+    failures: tuple[PaperCloseFailure, ...]
+
+
+@dataclass(frozen=True)
 class WalletMonitoringSummary:
     first_monitored_at: datetime | None
     current_monitoring_started_at: datetime | None
@@ -471,7 +486,10 @@ async def close_paper_position_manually(
     position_id: UUID,
     settings: Settings | None = None,
     client: HyperliquidClient | None = None,
+    mark_price: Decimal | None = None,
 ) -> CopyBatchResult:
+    """Close one paper position at market. A positive `mark_price` skips the price fetch."""
+
     resolved_settings = settings or get_settings()
     if client is None:
         async with HyperliquidClient(resolved_settings) as hyperliquid_client:
@@ -480,6 +498,7 @@ async def close_paper_position_manually(
                 position_id=position_id,
                 settings=resolved_settings,
                 client=hyperliquid_client,
+                mark_price=mark_price,
             )
 
     position_snapshot = await session.scalar(
@@ -488,11 +507,12 @@ async def close_paper_position_manually(
     if position_snapshot is None:
         raise PaperPositionNotFoundError("Paper position was not found or is already closed.")
 
-    market_prices = await load_open_position_market_prices(
-        client=client,
-        positions=[position_snapshot],
-    )
-    mark_price = market_prices.get(position_snapshot.coin)
+    if mark_price is None or mark_price <= ZERO:
+        market_prices = await load_open_position_market_prices(
+            client=client,
+            positions=[position_snapshot],
+        )
+        mark_price = market_prices.get(position_snapshot.coin)
     if mark_price is None or mark_price <= ZERO:
         raise PaperPositionCloseUnavailableError("Execution price is unavailable.")
 
@@ -658,7 +678,17 @@ async def close_paper_account_positions_manually(
     account_key: str,
     settings: Settings | None = None,
     client: HyperliquidClient | None = None,
-) -> CopyBatchResult:
+) -> PaperAccountCloseResult:
+    """Close every open position of a paper account, committing each close on its own.
+
+    One transaction per position keeps the lock order of the copy engine (source
+    lock, then account): holding the account lock while taking the next source's
+    lock deadlocks with a copy of that source. A position that cannot be closed,
+    for example without a price, no longer rolls back the others; it is reported
+    in `failures`. A position that is already gone was closed by someone else and
+    is skipped. Commits the session, so call it without pending changes.
+    """
+
     resolved_settings = settings or get_settings()
     if client is None:
         async with HyperliquidClient(resolved_settings) as hyperliquid_client:
@@ -669,22 +699,51 @@ async def close_paper_account_positions_manually(
                 client=hyperliquid_client,
             )
 
-    result = await session.execute(
-        select(PaperPosition.id)
+    rows = await session.execute(
+        select(PaperPosition.id, PaperPosition.coin)
         .where(PaperPosition.account_key == account_key)
         .order_by(PaperPosition.source_wallet.asc(), PaperPosition.coin.asc())
     )
-    position_ids = list(result.scalars().all())
+    targets: list[tuple[UUID, str]] = [(row.id, row.coin) for row in rows]
+    await session.commit()
+    if not targets:
+        return PaperAccountCloseResult(requested=0, closed=CopyBatchResult(), failures=())
+
+    # One price snapshot for every coin; a coin missing from it is fetched again per position.
+    market_prices = await load_mark_prices(client=client, coins=(coin for _, coin in targets))
     total = CopyBatchResult()
-    for position_id in position_ids:
-        close_result = await close_paper_position_manually(
-            session,
-            position_id=position_id,
-            settings=resolved_settings,
-            client=client,
-        )
+    failures: list[PaperCloseFailure] = []
+    for position_id, coin in targets:
+        try:
+            close_result = await close_paper_position_manually(
+                session,
+                position_id=position_id,
+                settings=resolved_settings,
+                client=client,
+                mark_price=market_prices.get(coin),
+            )
+            await session.commit()
+        except PaperPositionNotFoundError:
+            await session.rollback()
+            continue
+        except PaperPositionCloseError as exc:
+            await session.rollback()
+            failures.append(PaperCloseFailure(coin=coin, detail=exc.detail))
+            continue
         total = combine_batch_results(total, close_result)
-    return total
+    return PaperAccountCloseResult(
+        requested=len(targets),
+        closed=total,
+        failures=tuple(failures),
+    )
+
+
+def paper_close_failures_detail(result: PaperAccountCloseResult) -> str:
+    failed = ", ".join(f"{failure.coin} ({failure.detail})" for failure in result.failures)
+    return (
+        f"Closed {result.closed.processed_fills} of {result.requested} positions. "
+        f"Could not close: {failed}"
+    )
 
 
 async def run_paper_hard_stops(
@@ -755,20 +814,17 @@ async def run_paper_hard_stops(
 
     for account_key in breached:
         async with sessionmaker() as session:
-            try:
-                await close_paper_account_positions_manually(
-                    session,
-                    account_key=account_key,
-                    settings=settings,
-                    client=client,
-                )
-                await session.commit()
-            except PaperPositionCloseError as exc:
-                await session.rollback()
+            close_result = await close_paper_account_positions_manually(
+                session,
+                account_key=account_key,
+                settings=settings,
+                client=client,
+            )
+            if close_result.failures:
                 logger.warning(
                     "paper hard stop close deferred account=%s error=%s",
                     account_key,
-                    exc.detail,
+                    paper_close_failures_detail(close_result),
                 )
     return len(breached)
 

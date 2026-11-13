@@ -34,7 +34,7 @@ import {
   buildAccountView,
   latestUpdatedAt,
 } from "@/lib/trading/accounts";
-import { buildLiveCopyDecisionActivities } from "@/lib/trading/live";
+import { buildLiveCopyDecisionActivities, liveCloseAllWarning } from "@/lib/trading/live";
 import {
   buildEquitySeries,
   buildPerformanceTimeline,
@@ -50,7 +50,7 @@ import {
 } from "@/lib/trading/sources";
 import type { AccountOption, AccountSummary, CopySourceRow, PositionRow } from "@/lib/trading/types";
 import type { PaperAccountPerformanceResponse, PaperTradingSummaryResponse } from "@/types/paper";
-import type { TradingAccount, TradingAccountsResponse } from "@/types/trading";
+import type { LiveCloseAllResponse, TradingAccount, TradingAccountsResponse } from "@/types/trading";
 
 import { AccountDetailsPanel, PerformancePanel, RiskPanel } from "./AccountPanels";
 import {
@@ -217,12 +217,13 @@ export function TradingWorkspace({
   /** Runs a mutation, applies a returned paper summary directly, and refreshes everything else. */
   const mutate = useCallback(
     async (path: string, method: "POST" | "DELETE", fallback: string, returnsPaperSummary: boolean) => {
-      const payload = await apiRequest<PaperTradingSummaryResponse | undefined>(path, { fallback, method });
+      const payload = await apiRequest<unknown>(path, { fallback, method });
       if (returnsPaperSummary && payload) {
-        setSummary(payload);
+        setSummary(payload as PaperTradingSummaryResponse);
         setLastRefreshAt(new Date());
       }
       await Promise.all([refresh(), refreshPerformance()]);
+      return payload;
     },
     [refresh, refreshPerformance],
   );
@@ -281,7 +282,10 @@ export function TradingWorkspace({
         } else if (kind === "reconcile") {
           await mutate(`/trading/accounts/${key}/reconcile`, "POST", "Reconcile account failed", false);
         } else {
-          await mutate(`${base}/${key}/${kind}`, "POST", `${actionTitle(kind)} failed`, isPaper);
+          const payload = await mutate(`${base}/${key}/${kind}`, "POST", `${actionTitle(kind)} failed`, isPaper);
+          if (kind === "close-all-and-stop" && !isPaper) {
+            setActionError(liveCloseAllWarning(payload as LiveCloseAllResponse | undefined));
+          }
         }
       } catch (error) {
         setActionError(errorMessage(error, `${actionTitle(kind)} failed.`));
@@ -657,7 +661,15 @@ export function TradingWorkspace({
             <RiskPanel view={view} />
           </div>
 
-          <PositionsPanel closingId={closingPositionId} onClose={(position) => void closePosition(position)} positions={view.positions} />
+          <PositionsPanel
+            closingAll={action === "close-all-and-stop"}
+            closingId={closingPositionId}
+            onClose={(position) => void closePosition(position)}
+            onCloseAll={() => void runAccountAction(selected, "close-all-and-stop")}
+            positions={view.positions}
+            stopsTrading={accountRunning(selected)}
+            busy={action !== null || closingPositionId !== null}
+          />
 
           <SourcesPanel
             accountType={view.accountType}
@@ -752,7 +764,7 @@ function AccountHeader({
   summary: AccountSummary;
 }) {
   const isPaper = option.accountType === "paper";
-  const running = isPaper ? option.paper.enabled : option.live.status === "enabled";
+  const running = accountRunning(option);
   const exitOnlyLive = !isPaper && option.live.status === "exit_only";
   const liveArchivable = isPaper || option.live.status === "disabled";
   const busy = action !== null;
@@ -888,6 +900,10 @@ function ReconcileStat({
       }
     />
   );
+}
+
+function accountRunning(option: AccountOption) {
+  return option.accountType === "paper" ? option.paper.enabled : option.live.status === "enabled";
 }
 
 function actionTitle(kind: AccountAction) {

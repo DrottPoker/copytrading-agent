@@ -268,3 +268,13 @@ export type TradingAccountsResponse = {
   sourceMetadata: TradingSourceMetadata[];
   updatedAt: string;
 };
+
+export type LiveCloseAllResponse = {
+  accountKey: string;
+  operationId: string;
+  operationStatus: "pending" | "running" | "partially_completed" | "completed" | "failed";
+  submittedOrders: number;
+  failedOrders: number;
+  status: "disabled" | "enabled" | "exit_only";
+  updatedAt: string;
+};

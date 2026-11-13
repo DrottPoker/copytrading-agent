@@ -1176,8 +1176,8 @@ sequenceDiagram
   UI->>API: POST /paper-trading/accounts/{account_key}/close-all-and-stop
   API->>DB: disable new entries and adds for that account
   API->>HL: current market prices for that account's open paper positions
-  API->>DB: close every open paper position for that account
-  API-->>UI: refreshed paper trading summary
+  API->>DB: close each open paper position in its own transaction
+  API-->>UI: refreshed paper trading summary, or 409 naming positions left open
   UI->>API: POST /paper-trading/positions/{position_id}/close
   API->>HL: current market price for that paper position
   API->>DB: apply slippage, fee, realized PnL, and close fill
@@ -1414,7 +1414,13 @@ included when an existing open position for the source needs a reduce or exit
 fill. Live accounts use `enabled`, `exit_only`, and `disabled` status. The
 close-all-and-stop route sets the selected account to exit-only first, closes
 open positions for that account, and disables the account only after a fresh
-exchange reconciliation confirms no exchange positions remain. Account deletion
+exchange reconciliation confirms no exchange positions remain. Paper close-all
+loads one price snapshot and then closes each position in its own transaction.
+Each close takes the source lock before the account lock, like the copy engine;
+closing every position in one transaction held the account lock while waiting
+for the next source's lock and deadlocked with a copy of that source. A
+position that cannot close, for example without a price, stays open and is
+named in a 409 response while the other closes are kept. Account deletion
 removes local database state for the selected account. Paper deletion removes
 paper positions, fills, allocations, and account history. Live deletion removes
 local live account, order, fill, and position snapshots only, requires the

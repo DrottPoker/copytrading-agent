@@ -26,6 +26,7 @@ from app.services.paper_trading_service import (
     delete_paper_trading_account,
     get_paper_account_performance,
     get_paper_trading_summary,
+    paper_close_failures_detail,
     reset_paper_trading_account_balance,
     set_paper_trading_account_enabled,
 )
@@ -272,20 +273,21 @@ async def close_all_and_stop_paper_account_trading_route(
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
     async with HyperliquidClient(settings) as client:
-        try:
-            await close_paper_account_positions_manually(
-                session,
-                account_key=account_key,
-                settings=settings,
-                client=client,
-            )
-            await session.commit()
-        except PaperPositionCloseError as exc:
-            await session.rollback()
+        # Each position closes in its own transaction; one that fails leaves the rest closed.
+        close_result = await close_paper_account_positions_manually(
+            session,
+            account_key=account_key,
+            settings=settings,
+            client=client,
+        )
+        if close_result.failures:
             raise HTTPException(
-                status_code=exc.status_code,
-                detail=f"Account trading was stopped, but position close failed: {exc.detail}",
-            ) from exc
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Account trading was stopped, but not every position closed. "
+                    f"{paper_close_failures_detail(close_result)}"
+                ),
+            )
 
         return await get_paper_trading_summary(
             session,

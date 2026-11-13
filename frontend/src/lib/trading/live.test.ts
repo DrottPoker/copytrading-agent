@@ -8,9 +8,34 @@ import {
   buildLiveCopyDecisionActivities,
   buildLiveFillExecution,
   displayLivePositions,
+  liveCloseAllWarning,
   liveCopyDecisionStatusPills,
   liveOrderResultLabel,
 } from "./live";
+
+describe("live close-all warning", () => {
+  const result = {
+    accountKey: "live",
+    operationId: "op-1",
+    submittedOrders: 3,
+    status: "exit_only" as const,
+    updatedAt: "2026-11-13T12:00:00Z",
+  };
+
+  it("says nothing once the account is flat", () => {
+    expect(liveCloseAllWarning({ ...result, operationStatus: "completed", failedOrders: 0 })).toBeNull();
+    expect(liveCloseAllWarning(undefined)).toBeNull();
+  });
+
+  it("explains that an unfinished close-all keeps running", () => {
+    expect(liveCloseAllWarning({ ...result, operationStatus: "partially_completed", failedOrders: 2 })).toBe(
+      "Close all is still running: 2 positions not closed yet. The account stays exit-only and the worker retries until the exchange account is flat.",
+    );
+    expect(liveCloseAllWarning({ ...result, operationStatus: "partially_completed", failedOrders: 0 })).toContain(
+      "not flat yet",
+    );
+  });
+});
 
 describe("live liquidation activity", () => {
   it("shows a proven liquidation and its attributed source wallet", () => {
