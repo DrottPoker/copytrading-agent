@@ -9,6 +9,7 @@ import {
   formatPrice,
   formatSize,
   formatUsd,
+  pluralize,
   shortAddress,
   shortId,
 } from "@/lib/format";
@@ -23,12 +24,23 @@ import {
 } from "./labels";
 import type { AccountNotice, ExecutionRow, TradeFlag } from "./types";
 import type {
+  LiveCloseAllResponse,
   LiveCopyDecision,
   TradingAccount,
   TradingFill,
   TradingOrder,
   TradingPosition,
 } from "@/types/trading";
+
+/** Live close-all can return before every position is flat; the worker keeps retrying it. */
+export function liveCloseAllWarning(result: LiveCloseAllResponse | undefined): string | null {
+  if (!result || result.operationStatus === "completed") {
+    return null;
+  }
+  const remaining =
+    result.failedOrders > 0 ? `${pluralize(result.failedOrders, "position")} not closed yet` : "not flat yet";
+  return `Close all is still running: ${remaining}. The account stays exit-only and the worker retries until the exchange account is flat.`;
+}
 
 export function liveAccountEquity(account: TradingAccount) {
   return decimal(

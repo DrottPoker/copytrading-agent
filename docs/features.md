@@ -1266,7 +1266,13 @@ What it does:
   moves the account to exit-only, submits reduce-only closes, and disables the
   account only after reconciliation confirms no exchange positions remain.
   Exit-only live accounts offer Verify flat and disable. Other accounts are not
-  disabled or closed.
+  disabled or closed. Paper close-all closes each position on its own, so one
+  position without a price no longer keeps the others open; the error names
+  the positions left open. When a live close-all returns before the exchange
+  account is flat, the dashboard says how many positions are still open and
+  that the worker keeps retrying.
+- The Open positions panel has a Close all button that runs the same close all
+  and stop action. On a running account it reads Close all and stop.
 - The account menu can reset a paper balance, reconcile a live account, and
   delete or archive the account. Reset restores the starting balance and clears
   account-level realized PnL and fees without deleting copied fills. It

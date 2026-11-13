@@ -4,6 +4,23 @@ Notable changes, newest first. Dates are UTC. The historical development phases
 at the end describe how the system was built and keep the detailed notes that
 used to live in the README.
 
+## 2026-11-13
+
+### Close all
+
+- **Paper close-all deadlock.** Close all and stop closed every paper position
+  in one transaction. It held the account lock while waiting for the next
+  source wallet's lock, which deadlocked with a copy of that source, so the
+  whole close rolled back after the account had already been stopped. Each
+  position now closes in its own transaction. A position that cannot close,
+  for example without a price, stays open and is named in the error while the
+  others stay closed. The paper hard stop uses the same path.
+- **Live close-all feedback.** When a live close-all returns before the
+  exchange account is flat, the dashboard now says so instead of showing
+  nothing.
+- **Close all in Open positions.** The Open positions panel has a Close all
+  button for the selected account.
+
 ## 2026-11-12
 
 ### Fixes from a full code review

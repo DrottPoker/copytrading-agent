@@ -1,10 +1,11 @@
 """Paper risk limits, market simulation, and shared exit rules on a real database."""
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
@@ -34,7 +35,10 @@ from app.services.paper_trading_service import (
     apply_close_part,
     apply_open_part,
     apply_paper_fill_part,
+    close_paper_account_positions_manually,
     close_paper_position_manually,
+    lock_paper_source_mutation,
+    paper_close_failures_detail,
     reset_paper_trading_account_balance,
     run_paper_hard_stops,
     set_paper_trading_account_enabled,
@@ -718,3 +722,93 @@ async def test_the_hard_stop_leaves_positions_alone_until_it_is_reached(
     assert remaining == 1
     assert paper_account is not None
     assert paper_account.enabled is True
+
+
+SECOND_SOURCE = "0x" + "6" * 40
+WAITING_ADVISORY_LOCKS = text(
+    "select count(*) from pg_locks where locktype = 'advisory' and not granted"
+)
+
+
+async def seed_two_sources(session: AsyncSession, *, second_coin: str) -> None:
+    session.add(WatchedWallet(address=SECOND_SOURCE, enabled=True))
+    await seed(
+        session,
+        position(margin_mode="cross"),
+        position(margin_mode="cross", source_wallet=SECOND_SOURCE, coin=second_coin),
+    )
+
+
+@pytest.mark.asyncio
+async def test_close_all_closes_what_it_can_and_reports_the_rest(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    async with integration_sessionmaker() as session:
+        # MidsClient has no ETH price, so only the BTC position can close.
+        await seed_two_sources(session, second_coin="ETH")
+        result = await close_paper_account_positions_manually(
+            session,
+            account_key=ACCOUNT,
+            settings=settings(),
+            client=MidsClient(),  # type: ignore[arg-type]
+        )
+    async with integration_sessionmaker() as session:
+        remaining = (await session.scalars(select(PaperPosition.coin))).all()
+
+    assert result.requested == 2
+    assert result.closed.processed_fills == 1
+    assert [(failure.coin, failure.detail) for failure in result.failures] == [
+        ("ETH", "Execution price is unavailable.")
+    ]
+    assert remaining == ["ETH"]
+    assert "Closed 1 of 2 positions. Could not close: ETH" in paper_close_failures_detail(result)
+
+
+@pytest.mark.asyncio
+async def test_close_all_does_not_hold_the_account_while_waiting_for_the_next_source(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    async with integration_sessionmaker() as session:
+        await seed_two_sources(session, second_coin="BTC")
+
+    async with integration_sessionmaker() as copier:
+        # A copy of the second source holds its source lock, then needs the account.
+        await lock_paper_source_mutation(copier, source_wallet=SECOND_SOURCE)
+
+        async def close_all() -> object:
+            async with integration_sessionmaker() as session:
+                return await close_paper_account_positions_manually(
+                    session,
+                    account_key=ACCOUNT,
+                    settings=settings(),
+                    client=MidsClient(),  # type: ignore[arg-type]
+                )
+
+        closing = asyncio.create_task(close_all())
+        async with integration_sessionmaker() as observer:
+            for _ in range(100):
+                waiting = await observer.scalar(WAITING_ADVISORY_LOCKS)
+                await observer.rollback()
+                if waiting:
+                    break
+                await asyncio.sleep(0.05)
+        assert waiting == 1
+
+        # Close-all waits for the second source without holding the account row.
+        await asyncio.wait_for(
+            copier.execute(
+                select(PaperTradingAccount.key)
+                .where(PaperTradingAccount.key == ACCOUNT)
+                .with_for_update()
+            ),
+            timeout=5,
+        )
+        await copier.commit()
+        result = await asyncio.wait_for(closing, timeout=10)
+
+    async with integration_sessionmaker() as session:
+        remaining = await session.scalar(select(func.count()).select_from(PaperPosition))
+
+    assert result.closed.processed_fills == 2  # type: ignore[attr-defined]
+    assert result.failures == ()  # type: ignore[attr-defined]
+    assert remaining == 0

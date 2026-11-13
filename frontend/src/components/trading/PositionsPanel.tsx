@@ -17,13 +17,22 @@ import {
 import type { PositionRow } from "@/lib/trading/types";
 
 export function PositionsPanel({
+  busy,
+  closingAll,
   closingId,
   onClose,
+  onCloseAll,
   positions,
+  stopsTrading,
 }: {
+  busy: boolean;
+  closingAll: boolean;
   closingId: string | null;
   onClose: (position: PositionRow) => void;
+  onCloseAll: () => void;
   positions: PositionRow[];
+  /** Closing all also stops a running account, so it cannot reopen what it just closed. */
+  stopsTrading: boolean;
 }) {
   const unrealized = positions.reduce((total, position) => total + (position.unrealizedPnlUsd ?? 0), 0);
   return (
@@ -40,6 +49,24 @@ export function PositionsPanel({
         ) : undefined
       }
       description="Oldest first. Each position follows its source wallet out; closing by hand overrides that."
+      actions={
+        positions.length > 0 ? (
+          <button
+            type="button"
+            onClick={onCloseAll}
+            disabled={busy}
+            title={
+              stopsTrading
+                ? "Close every open position at market and stop trading this account"
+                : "Close every open position at market"
+            }
+            className={buttonClass({ size: "xs", variant: "danger" })}
+          >
+            {closingAll ? <Spinner className="h-3 w-3" /> : null}
+            {stopsTrading ? "Close all and stop" : "Close all"}
+          </button>
+        ) : undefined
+      }
     >
       {positions.length === 0 ? (
         <EmptyState title="No open positions">
@@ -127,7 +154,7 @@ export function PositionsPanel({
                     <button
                       type="button"
                       onClick={() => onClose(position)}
-                      disabled={closingId !== null || position.closeDisabledReason !== null}
+                      disabled={busy || position.closeDisabledReason !== null}
                       title={position.closeDisabledReason ?? `Close ${position.coin} at market`}
                       className={buttonClass({ size: "xs", variant: "danger" })}
                     >
