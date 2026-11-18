@@ -4,6 +4,49 @@ Notable changes, newest first. Dates are UTC. The historical development phases
 at the end describe how the system was built and keep the detailed notes that
 used to live in the README.
 
+## 2026-11-18
+
+### More candidates and a recalibrated score
+
+A review of the pool of 2026-10-12 found two reasons for a thin pool with few
+scores above 70. Discovery read 146 of the 47,827 wallets on the Hyperliquid
+leaderboard, the top 100 by PnL per window, with a median account value of 11
+million USD. And the low-score prune archived wallets below 70 while the
+highest score in the pool was 76.6, so 92 of 122 archived wallets fell to that
+one rule.
+
+- **Leaderboard screen.** The new `hyperliquid_leaderboard_screen` source
+  filters every leaderboard row on account size, month return, turnover, and
+  track record, using only the download discovery already makes. On
+  2026-11-18 the default screen matched 527 wallets, 2 of which were among the
+  146 the windowed sources read. It takes at most 150 new candidates per run.
+- **Rejections expire.** A rejected candidate that a source lists again is
+  evaluated again after `import.retry_rejected_after_days`, 14 by default. A
+  rejection used to be permanent, although the most common reasons are
+  temporary.
+- **Per-source limits.** `import.source_limits` overrides the import limit per
+  source. The three Hyperdash profitable cohorts, the sources with the highest
+  share of promoted candidates, now read 300 rows instead of 100.
+- **Low-score prune at 55.** The cutoff drops from 70 to 55, just above the
+  copy minimum of 50. On the reviewed pool, 53 of 106 wallets with at least 40
+  closed trades score 55 or more, against 9 at or above 70 before.
+- **Score calibration.** Full-score points move to about the 90th percentile
+  of the pool: equity return from 10% to 30%, trade ROI from 4% to 2%, profit
+  distribution from 0.75 to 0.5. The highest score on the reviewed pool rises
+  from 76.6 to 83.4.
+- **Averaging down outweighs a clean loss record.** Adds into losing
+  positions cost nothing up to 20% and up to 35 points at 60%, from 20 points
+  at 40%. Loss ratio drops from 40 to 25 points and losing trade rate from 15
+  to 10. Four of the ten highest ranked wallets had a win rate of at least 80%
+  with at least 40% of their notional added at a loss; after the change none
+  of the top ten do.
+- **Not validated by backtest.** The score backtest on the same data does not
+  show the top ten beating a random selection, before or after these changes
+  (14 day horizon: 3.3% before, 3.8% after, against 10.9% for all wallets).
+  That test is weak: its wallets were admitted with hindsight and a recompute
+  has no equity history. Run it on the production snapshots before trusting
+  the ranking further.
+
 ## 2026-11-13
 
 ### Close all

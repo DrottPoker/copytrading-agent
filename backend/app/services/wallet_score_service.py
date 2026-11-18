@@ -1970,8 +1970,9 @@ def risk_score_items(
             penalty=underwater_add_penalty(metrics.underwater_add_ratio, settings=settings),
             detail=(
                 "Share of closed-trade entry notional added while the position was at "
-                "a loss. Averaging down hides losses until the trade closes. Full "
-                f"penalty of {settings.scoring_risk_underwater_add_penalty_max} points at "
+                "a loss. Averaging down hides losses until the trade closes. Penalty "
+                f"starts at {settings.scoring_risk_underwater_add_penalty_start_ratio:.0%} "
+                f"and reaches {settings.scoring_risk_underwater_add_penalty_max} points at "
                 f"{settings.scoring_risk_underwater_add_full_penalty_ratio:.0%}."
             ),
         ),
@@ -2062,7 +2063,7 @@ def equity_drawdown_penalty(drawdown_pct: Decimal | None, *, settings: Settings)
 def underwater_add_penalty(ratio: Decimal | None, *, settings: Settings) -> Decimal:
     return ramp_penalty(
         ratio,
-        start=ZERO,
+        start=settings.scoring_risk_underwater_add_penalty_start_ratio,
         full=settings.scoring_risk_underwater_add_full_penalty_ratio,
         maximum=settings.scoring_risk_underwater_add_penalty_max,
     )

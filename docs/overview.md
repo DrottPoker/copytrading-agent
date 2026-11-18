@@ -28,7 +28,10 @@ involved.
 
 1. **Find candidates.** The system collects wallets from Hyperliquid
    leaderboards and vaults, HyperTracker, and Hyperdash, and filters out
-   accounts below 1,000 USD and wallets that trade only spot.
+   accounts below 1,000 USD and wallets that trade only spot. It also screens
+   the whole Hyperliquid leaderboard for mid-sized accounts with a steady
+   record, not only the largest winners. A rejected wallet gets a new look
+   after two weeks if a source still lists it.
 2. **Import their history.** For each wallet in the pool it downloads past
    trades and stores them, so wallets can be judged on what they actually did.
 3. **Rank them.** Each wallet gets a score from its own history: the return

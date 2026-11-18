@@ -28,6 +28,33 @@ DISCOVERY_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("sources", "hyperliquid", "sort_metric"): "discovery_hyperliquid_sort_metric",
     ("sources", "hyperliquid", "url"): "discovery_hyperliquid_leaderboard_url",
     ("sources", "hyperliquid", "vaults_url"): "discovery_hyperliquid_vaults_url",
+    ("sources", "hyperliquid", "screen", "min_account_value_usd"): (
+        "discovery_hyperliquid_screen_min_account_value_usd"
+    ),
+    ("sources", "hyperliquid", "screen", "max_account_value_usd"): (
+        "discovery_hyperliquid_screen_max_account_value_usd"
+    ),
+    ("sources", "hyperliquid", "screen", "min_month_pnl_usd"): (
+        "discovery_hyperliquid_screen_min_month_pnl_usd"
+    ),
+    ("sources", "hyperliquid", "screen", "min_month_roi"): (
+        "discovery_hyperliquid_screen_min_month_roi"
+    ),
+    ("sources", "hyperliquid", "screen", "max_month_roi"): (
+        "discovery_hyperliquid_screen_max_month_roi"
+    ),
+    ("sources", "hyperliquid", "screen", "min_month_turnover"): (
+        "discovery_hyperliquid_screen_min_month_turnover"
+    ),
+    ("sources", "hyperliquid", "screen", "max_month_turnover"): (
+        "discovery_hyperliquid_screen_max_month_turnover"
+    ),
+    ("sources", "hyperliquid", "screen", "min_all_time_to_month_pnl_ratio"): (
+        "discovery_hyperliquid_screen_min_all_time_to_month_pnl_ratio"
+    ),
+    ("sources", "hyperliquid", "screen", "require_positive_week_pnl"): (
+        "discovery_hyperliquid_screen_require_positive_week_pnl"
+    ),
     ("sources", "hyperdash", "urls", "copytrading"): ("discovery_hyperdash_copytrading_url"),
     ("sources", "hyperdash", "urls", "cohorts"): ("discovery_hyperdash_cohorts_url"),
     ("sources", "hyperdash", "urls", "very_profitable"): (
@@ -39,6 +66,8 @@ DISCOVERY_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
     ("sources", "hyperdash", "urls", "tagged"): ("discovery_hyperdash_tagged_url"),
     ("sources", "hypertracker", "static_base_url"): ("discovery_hypertracker_static_base_url"),
     ("import", "limit"): "discovery_import_limit",
+    ("import", "source_limits"): "discovery_import_source_limits",
+    ("import", "retry_rejected_after_days"): "discovery_import_retry_rejected_after_days",
     ("import", "interval_seconds"): "discovery_import_interval_seconds",
     ("import", "run_on_worker_start"): "discovery_import_on_worker_start",
     ("import", "subaccounts", "enabled"): "discovery_import_subaccounts_enabled",
@@ -223,6 +252,9 @@ SCORING_CONFIG_PATH_MAP: dict[tuple[str, ...], str] = {
         "scoring_risk_equity_drawdown_full_penalty_ratio"
     ),
     ("risk", "equity_drawdown", "penalty_max"): "scoring_risk_equity_drawdown_penalty_max",
+    ("risk", "underwater_adds", "penalty_start_ratio"): (
+        "scoring_risk_underwater_add_penalty_start_ratio"
+    ),
     ("risk", "underwater_adds", "full_penalty_ratio"): (
         "scoring_risk_underwater_add_full_penalty_ratio"
     ),
@@ -482,14 +514,37 @@ class Settings(BaseSettings):
             "hypertracker_humble_earner",
             "hypertracker_avg_daily_perp_pnl",
         ],
-        max_length=16,
+        max_length=24,
     )
     discovery_import_limit: int = Field(default=100, ge=1, le=500)
+    # Per-source override of the import limit, keyed by source name.
+    discovery_import_source_limits: dict[str, int] = Field(default_factory=dict)
+    # A rejected candidate a source lists again is evaluated again after this
+    # many days. 0 keeps a rejection permanent.
+    discovery_import_retry_rejected_after_days: int = Field(default=14, ge=0, le=3650)
     discovery_import_interval_seconds: int = Field(default=3600, ge=3600)
     discovery_import_on_worker_start: bool = True
     discovery_hyperliquid_sort_metric: Literal["pnl", "roi"] = "pnl"
     discovery_hyperliquid_leaderboard_url: str | None = None
     discovery_hyperliquid_vaults_url: str | None = None
+    # Thresholds of the hyperliquid_leaderboard_screen source, which reads every
+    # leaderboard row instead of the top rows by PnL.
+    discovery_hyperliquid_screen_min_account_value_usd: Decimal = Field(
+        default=Decimal("5000"), gt=0
+    )
+    discovery_hyperliquid_screen_max_account_value_usd: Decimal = Field(
+        default=Decimal("2000000"), gt=0
+    )
+    discovery_hyperliquid_screen_min_month_pnl_usd: Decimal = Field(default=Decimal("1000"), ge=0)
+    discovery_hyperliquid_screen_min_month_roi: Decimal = Field(default=Decimal("0.05"), ge=0)
+    discovery_hyperliquid_screen_max_month_roi: Decimal = Field(default=Decimal("1.5"), gt=0)
+    # Month volume divided by account value.
+    discovery_hyperliquid_screen_min_month_turnover: Decimal = Field(default=Decimal("3"), ge=0)
+    discovery_hyperliquid_screen_max_month_turnover: Decimal = Field(default=Decimal("300"), gt=0)
+    discovery_hyperliquid_screen_min_all_time_to_month_pnl_ratio: Decimal = Field(
+        default=Decimal("2"), ge=0
+    )
+    discovery_hyperliquid_screen_require_positive_week_pnl: bool = True
     discovery_import_subaccounts_enabled: bool = True
     discovery_import_max_subaccounts_per_wallet: int = Field(default=10, ge=0, le=50)
     discovery_import_subaccounts_recheck_hours: int = Field(default=24, ge=0, le=720)
@@ -787,6 +842,12 @@ class Settings(BaseSettings):
         ge=0,
         le=100,
     )
+    # Scaling into a position below its entry is normal up to this share.
+    scoring_risk_underwater_add_penalty_start_ratio: Decimal = Field(
+        default=Decimal("0"),
+        ge=0,
+        le=1,
+    )
     scoring_risk_underwater_add_full_penalty_ratio: Decimal = Field(
         default=Decimal("0.40"),
         gt=0,
@@ -959,6 +1020,20 @@ class Settings(BaseSettings):
                 "discovery_prefilter_min_account_value_usd must be less than or "
                 "equal to discovery_prefilter_max_account_value_usd."
             )
+        for low_name, high_name in (
+            ("min_account_value_usd", "max_account_value_usd"),
+            ("min_month_roi", "max_month_roi"),
+            ("min_month_turnover", "max_month_turnover"),
+        ):
+            low_field = f"discovery_hyperliquid_screen_{low_name}"
+            high_field = f"discovery_hyperliquid_screen_{high_name}"
+            if getattr(self, low_field) > getattr(self, high_field):
+                raise ValueError(f"{low_field} must be less than or equal to {high_field}.")
+        for source, source_limit in self.discovery_import_source_limits.items():
+            if not 1 <= source_limit <= 500:
+                raise ValueError(
+                    f"discovery_import_source_limits[{source!r}] must be between 1 and 500."
+                )
         if (
             self.discovery_quality_min_average_trade_notional_usd is not None
             and self.discovery_quality_max_average_trade_notional_usd is not None
@@ -1024,6 +1099,14 @@ class Settings(BaseSettings):
             raise ValueError(
                 "scoring_current_drawdown_score_cap_start_ratio must be less than "
                 "scoring_current_drawdown_score_cap_zero_ratio."
+            )
+        if (
+            self.scoring_risk_underwater_add_penalty_start_ratio
+            >= self.scoring_risk_underwater_add_full_penalty_ratio
+        ):
+            raise ValueError(
+                "scoring_risk_underwater_add_penalty_start_ratio must be less than "
+                "scoring_risk_underwater_add_full_penalty_ratio."
             )
         if (
             self.scoring_risk_equity_drawdown_penalty_start_ratio

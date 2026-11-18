@@ -34,10 +34,10 @@
       "median_trade_roi": 0.3
     },
     "equity_return": {
-      "full_score_at": 0.1
+      "full_score_at": 0.3
     },
     "roi_score": {
-      "full_score_at": 0.04
+      "full_score_at": 0.02
     },
     "average_trade_roi": {
       "cap_min": -0.05,
@@ -54,7 +54,7 @@
       "max_inactive_gap": 0.1
     },
     "profit_distribution": {
-      "full_score_ratio": 0.75
+      "full_score_ratio": 0.5
     },
     "largest_win_dependency": {
       "full_score_at_or_below": 0.15,
@@ -78,8 +78,8 @@
   },
   "risk": {
     "loss_ratio": {
-      "penalty_per_ratio": 40,
-      "penalty_max": 40
+      "penalty_per_ratio": 25,
+      "penalty_max": 25
     },
     "equity_drawdown": {
       "penalty_start_ratio": 0.05,
@@ -91,11 +91,12 @@
       "penalty_max": 35
     },
     "underwater_adds": {
-      "full_penalty_ratio": 0.4,
-      "penalty_max": 20
+      "penalty_start_ratio": 0.2,
+      "full_penalty_ratio": 0.6,
+      "penalty_max": 35
     },
     "losing_trade_rate": {
-      "penalty_per_ratio": 15
+      "penalty_per_ratio": 10
     },
     "current_drawdown": {
       "enabled": true,

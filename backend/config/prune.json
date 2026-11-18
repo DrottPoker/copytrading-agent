@@ -11,7 +11,7 @@
     },
     "low_score": {
       "min_closed_trades": 40,
-      "threshold": 70,
+      "threshold": 55,
       "operator": "lt"
     }
   },

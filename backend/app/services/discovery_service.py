@@ -41,9 +41,11 @@ from app.services.fill_import_service import (
     target_fills_for_pages,
 )
 from app.services.hyperliquid_leaderboard_source import (
+    LeaderboardScreen,
     MasterSubaccount,
     fetch_master_subaccounts,
     get_window,
+    screen_leaderboard_rows,
     select_ranked_rows,
     string_or_none,
     subaccount_wallet_candidates,
@@ -80,6 +82,8 @@ HYPERLIQUID_LEADERBOARD_SOURCES = {
     "hyperliquid_leaderboard_month": "month",
     "hyperliquid_leaderboard_all_time": "allTime",
 }
+# Every leaderboard row that passes a local screen, instead of the top rows by PnL.
+HYPERLIQUID_SCREEN_SOURCE = "hyperliquid_leaderboard_screen"
 HYPERLIQUID_VAULT_SOURCES = {
     "hyperliquid_vault_leaders_week": "week",
     "hyperliquid_vault_leaders": "month",
@@ -216,6 +220,7 @@ SOURCE_LABELS = {
     "hyperliquid_leaderboard_week": "Hyperliquid 7D leaderboard",
     "hyperliquid_leaderboard_month": "Hyperliquid 30D leaderboard",
     "hyperliquid_leaderboard_all_time": "Hyperliquid all-time leaderboard",
+    HYPERLIQUID_SCREEN_SOURCE: "Hyperliquid leaderboard screen",
     "hyperliquid_vault_leaders_week": "Hyperliquid 7D vault leaders",
     "hyperliquid_vault_leaders": "Hyperliquid 30D vault leaders",
     "hyperdash_copytrading": "Hyperdash copytrading",
@@ -265,6 +270,8 @@ class DiscoverySourceResult:
     skip_reasons: dict[str, int]
     candidates: list[DiscoveryCandidate]
     metadata: dict[str, Any]
+    # Set by a source that returns every match: caps the new candidates of one run.
+    max_new: int | None = None
 
 
 @dataclass(frozen=True)
@@ -273,6 +280,8 @@ class DiscoveryUpsertResult:
     updated: int
     skipped: int
     skip_reasons: dict[str, int]
+    # Rejected candidates evaluated again because their retry interval passed.
+    retried: int = 0
 
 
 @dataclass(frozen=True)
@@ -455,7 +464,11 @@ async def list_discovery_sources(
     items: list[DiscoverySourceRead] = []
 
     for source in KNOWN_DISCOVERY_SOURCES:
-        if source in HYPERLIQUID_LEADERBOARD_SOURCES or source in HYPERLIQUID_VAULT_SOURCES:
+        if (
+            source in HYPERLIQUID_LEADERBOARD_SOURCES
+            or source in HYPERLIQUID_VAULT_SOURCES
+            or source == HYPERLIQUID_SCREEN_SOURCE
+        ):
             provider = "hyperliquid"
         elif source in HYPERDASH_URL_SETTINGS:
             provider = "hyperdash"
@@ -539,7 +552,7 @@ async def run_discovery_import(
         response = await _run_discovery_import(
             session,
             sources=requested_sources,
-            limit=requested_limit,
+            limit=limit,
             run_pipeline=run_pipeline,
             operation_payload=payload,
             settings=resolved_settings,
@@ -805,7 +818,7 @@ async def _run_discovery_import(
     session: AsyncSession,
     *,
     sources: list[str],
-    limit: int,
+    limit: int | None,
     run_pipeline: bool,
     operation_payload: dict[str, Any],
     settings: Settings,
@@ -850,11 +863,16 @@ async def _run_discovery_import(
                     "sourceCount": source_count,
                 },
             )
+            source_limit = discovery_source_limit(
+                source,
+                requested_limit=limit,
+                settings=settings,
+            )
             run = DiscoveryImportRun(
                 id=uuid4(),
                 source=source,
                 status="running",
-                requested_limit=limit,
+                requested_limit=source_limit,
             )
             session.add(run)
             await session.flush()
@@ -862,7 +880,7 @@ async def _run_discovery_import(
             try:
                 source_result = await fetch_discovery_source(
                     source,
-                    limit=limit,
+                    limit=source_limit,
                     settings=settings,
                     context=fetch_context,
                 )
@@ -878,6 +896,8 @@ async def _run_discovery_import(
                     readmit_archived_after_days=(
                         settings.discovery_promotion_readmit_archived_after_days
                     ),
+                    retry_rejected_after_days=(settings.discovery_import_retry_rejected_after_days),
+                    max_new=source_result.max_new,
                 )
                 merge_counts(skip_reasons, source_result.skip_reasons)
                 merge_counts(skip_reasons, upsert_result.skip_reasons)
@@ -894,6 +914,7 @@ async def _run_discovery_import(
                 run.run_metadata = {
                     **source_result.metadata,
                     "skipReasons": run_skip_reasons,
+                    "retriedRejected": upsert_result.retried,
                 }
                 await store_subaccount_checks(
                     session,
@@ -935,7 +956,7 @@ async def _run_discovery_import(
                     id=run.id,
                     source=source,
                     status="failed",
-                    requested_limit=limit,
+                    requested_limit=source_limit,
                     error=error_message,
                     finished_at=datetime.now(UTC),
                     run_metadata={"source": source},
@@ -1131,7 +1152,7 @@ async def _run_discovery_import(
 
     return DiscoveryImportResponse(
         requested_sources=sources,
-        limit=limit,
+        limit=limit if limit is not None else settings.discovery_import_limit,
         runs=runs,
         candidates=candidate_models,
         fetched=sum(run.fetched_count for run in runs),
@@ -1227,6 +1248,19 @@ def clamp_progress(value: int | float) -> int:
     return max(0, min(100, int(round(value))))
 
 
+def discovery_source_limit(
+    source: str,
+    *,
+    requested_limit: int | None,
+    settings: Settings,
+) -> int:
+    """The caller's limit, else the source's own limit, else the import default."""
+
+    if requested_limit is not None:
+        return requested_limit
+    return settings.discovery_import_source_limits.get(source, settings.discovery_import_limit)
+
+
 async def fetch_discovery_source(
     source: str,
     *,
@@ -1245,6 +1279,12 @@ async def fetch_discovery_source(
     if source in HYPERLIQUID_LEADERBOARD_SOURCES:
         return await fetch_hyperliquid_leaderboard_source(
             source,
+            limit=limit,
+            settings=settings,
+            context=context,
+        )
+    if source == HYPERLIQUID_SCREEN_SOURCE:
+        return await fetch_hyperliquid_leaderboard_screen_source(
             limit=limit,
             settings=settings,
             context=context,
@@ -1369,6 +1409,91 @@ async def fetch_hyperliquid_leaderboard_source(
                 context.subaccount_lookups_skipped - subaccount_lookups_skipped_before
             ),
         },
+    )
+
+
+async def fetch_hyperliquid_leaderboard_screen_source(
+    *,
+    limit: int,
+    settings: Settings,
+    context: DiscoveryFetchContext,
+) -> DiscoverySourceResult:
+    """Every leaderboard wallet that passes the configured screen.
+
+    The windowed leaderboard sources read the top rows by PnL, which are mostly
+    accounts too large to copy at our size. The screen instead filters the whole
+    download on account size, month return, turnover, and track record. It returns
+    all matches and lets the import take the first ``limit`` new ones per run, so
+    later runs work through the rest. Subaccounts are not expanded: a lookup per
+    match would cost more request budget than the screen saves.
+    """
+
+    source = HYPERLIQUID_SCREEN_SOURCE
+    rows = await context.leaderboard_rows()
+    matched_rows = screen_leaderboard_rows(rows, screen=leaderboard_screen(settings))
+    candidates: list[DiscoveryCandidate] = []
+    skipped = 0
+    skip_reasons: dict[str, int] = {}
+
+    for rank, row in enumerate(matched_rows, start=1):
+        raw_address = row.get("ethAddress")
+        if not isinstance(raw_address, str):
+            skipped += 1
+            add_count(skip_reasons, "missing_address")
+            continue
+        try:
+            address = normalize_wallet_address(raw_address)
+        except ValueError:
+            skipped += 1
+            add_count(skip_reasons, "invalid_address")
+            continue
+
+        performance = get_window(row, "month") or {}
+        display_name = row.get("displayName") if isinstance(row.get("displayName"), str) else None
+        candidates.append(
+            DiscoveryCandidate(
+                wallet_address=address,
+                source=source,
+                source_rank=rank,
+                source_label=display_name or f"HL screen #{rank}",
+                source_cohort="Screen",
+                account_value=decimal_or_none(row.get("accountValue")),
+                source_pnl=decimal_or_none(performance.get("pnl")),
+                source_roi=decimal_or_none(performance.get("roi")),
+                account_role="master",
+                raw_payload=compact_leaderboard_payload(row, window="month"),
+            )
+        )
+
+    return DiscoverySourceResult(
+        fetched=len(matched_rows),
+        skipped=skipped,
+        skip_reasons=skip_reasons,
+        candidates=candidates,
+        metadata={
+            "provider": "hyperliquid",
+            "sourceType": "leaderboard_screen",
+            "leaderboardRows": len(rows),
+            "matchedRows": len(matched_rows),
+            "maxNewPerRun": limit,
+        },
+        max_new=limit,
+    )
+
+
+def leaderboard_screen(settings: Settings) -> LeaderboardScreen:
+    return LeaderboardScreen(
+        min_account_value_usd=settings.discovery_hyperliquid_screen_min_account_value_usd,
+        max_account_value_usd=settings.discovery_hyperliquid_screen_max_account_value_usd,
+        min_month_pnl_usd=settings.discovery_hyperliquid_screen_min_month_pnl_usd,
+        min_month_roi=settings.discovery_hyperliquid_screen_min_month_roi,
+        max_month_roi=settings.discovery_hyperliquid_screen_max_month_roi,
+        min_month_turnover=settings.discovery_hyperliquid_screen_min_month_turnover,
+        max_month_turnover=settings.discovery_hyperliquid_screen_max_month_turnover,
+        min_all_time_to_month_pnl_ratio=(
+            settings.discovery_hyperliquid_screen_min_all_time_to_month_pnl_ratio
+        ),
+        require_positive_week_pnl=settings.discovery_hyperliquid_screen_require_positive_week_pnl,
     )
 
 
@@ -2010,7 +2135,18 @@ async def upsert_discovery_candidates(
     run_id: UUID,
     candidates: list[DiscoveryCandidate],
     readmit_archived_after_days: int = 30,
+    retry_rejected_after_days: int = 0,
+    max_new: int | None = None,
 ) -> DiscoveryUpsertResult:
+    """Store the candidates no earlier import already settled.
+
+    A wallet that is in the pool, is a candidate, or was archived recently is
+    skipped. Two kinds of earlier verdict expire: an archived wallet past its
+    cooldown and, when ``retry_rejected_after_days`` is positive, a rejection
+    that old. Both are evaluated again from scratch. ``max_new`` keeps only the
+    first new candidates in the order the source ranked them.
+    """
+
     deduped: dict[str, DiscoveryCandidate] = {}
     for candidate in candidates:
         if candidate.wallet_address not in deduped:
@@ -2059,6 +2195,36 @@ async def upsert_discovery_candidates(
         existing_candidate_addresses -= readmittable_addresses
     ignored_addresses = await load_ignored_wallet_addresses(session)
     address_set = set(addresses)
+    retryable_addresses = await load_retryable_rejected_addresses(
+        session,
+        addresses=sorted(
+            existing_candidate_addresses
+            - existing_pool_addresses
+            - archived_cooldown_addresses
+            - ignored_addresses
+        ),
+        retry_rejected_after_days=retry_rejected_after_days,
+    )
+    if max_new is not None:
+        # Only retries that fit in this run lose their old verdict.
+        retryable_addresses = retryable_addresses_within_limit(
+            deduped,
+            retryable_addresses=retryable_addresses,
+            settled_addresses=(
+                existing_candidate_addresses
+                | existing_pool_addresses
+                | archived_cooldown_addresses
+                | ignored_addresses
+            ),
+            max_new=max_new,
+        )
+    if retryable_addresses:
+        await session.execute(
+            delete(DiscoveryWalletCandidate).where(
+                DiscoveryWalletCandidate.wallet_address.in_(retryable_addresses)
+            )
+        )
+        existing_candidate_addresses -= retryable_addresses
     already_pool = existing_pool_addresses & address_set
     already_candidate = (
         existing_candidate_addresses - existing_pool_addresses - archived_cooldown_addresses
@@ -2077,6 +2243,9 @@ async def upsert_discovery_candidates(
     new_candidates = [
         candidate for address, candidate in deduped.items() if address not in skipped_addresses
     ]
+    if max_new is not None and len(new_candidates) > max_new:
+        add_count(skip_reasons, "over_new_candidate_limit", len(new_candidates) - max_new)
+        new_candidates = new_candidates[:max_new]
     if not new_candidates:
         return DiscoveryUpsertResult(
             inserted=0,
@@ -2107,7 +2276,57 @@ async def upsert_discovery_candidates(
         updated=updated,
         skipped=skipped,
         skip_reasons=skip_reasons,
+        retried=len(retryable_addresses),
     )
+
+
+async def load_retryable_rejected_addresses(
+    session: AsyncSession,
+    *,
+    addresses: list[str],
+    retry_rejected_after_days: int,
+) -> set[str]:
+    """Addresses whose every candidate row is a rejection older than the retry interval.
+
+    Rejections rest on conditions that change, such as a short trade history or a
+    negative month, so a wallet a source still lists gets another evaluation.
+    """
+
+    if retry_rejected_after_days <= 0 or not addresses:
+        return set()
+    cutoff = datetime.now(UTC) - timedelta(days=retry_rejected_after_days)
+    result = await session.execute(
+        select(DiscoveryWalletCandidate.wallet_address)
+        .where(DiscoveryWalletCandidate.wallet_address.in_(addresses))
+        .group_by(DiscoveryWalletCandidate.wallet_address)
+        .having(
+            func.bool_and(DiscoveryWalletCandidate.status == "rejected"),
+            func.max(DiscoveryWalletCandidate.updated_at) <= cutoff,
+        )
+    )
+    return set(result.scalars().all())
+
+
+def retryable_addresses_within_limit(
+    candidates: dict[str, DiscoveryCandidate],
+    *,
+    retryable_addresses: set[str],
+    settled_addresses: set[str],
+    max_new: int,
+) -> set[str]:
+    """The retryable addresses among the first ``max_new`` candidates a run can take."""
+
+    within_limit: set[str] = set()
+    taken = 0
+    for address in candidates:
+        if taken >= max_new:
+            break
+        if address in retryable_addresses:
+            within_limit.add(address)
+        elif address in settled_addresses:
+            continue
+        taken += 1
+    return within_limit
 
 
 async def list_discovery_candidates(

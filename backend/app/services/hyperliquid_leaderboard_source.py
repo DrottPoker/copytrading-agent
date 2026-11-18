@@ -52,6 +52,74 @@ def select_ranked_rows(
     )[:limit]
 
 
+@dataclass(frozen=True)
+class LeaderboardScreen:
+    """Thresholds a leaderboard row must meet to become a screened candidate."""
+
+    min_account_value_usd: Decimal
+    max_account_value_usd: Decimal
+    min_month_pnl_usd: Decimal
+    min_month_roi: Decimal
+    max_month_roi: Decimal
+    # Month volume divided by account value.
+    min_month_turnover: Decimal
+    max_month_turnover: Decimal
+    min_all_time_to_month_pnl_ratio: Decimal
+    require_positive_week_pnl: bool
+
+
+def screen_leaderboard_rows(rows: list[Any], *, screen: LeaderboardScreen) -> list[dict[str, Any]]:
+    """Rows passing the screen, highest month ROI first.
+
+    The screen reads only what the leaderboard download already holds, so it can
+    look at every listed wallet without spending any Hyperliquid request budget.
+    """
+
+    passing: list[tuple[Decimal, dict[str, Any]]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        month_roi = leaderboard_screen_month_roi(row, screen=screen)
+        if month_roi is not None:
+            passing.append((month_roi, row))
+    passing.sort(key=lambda item: item[0], reverse=True)
+    return [row for _, row in passing]
+
+
+def leaderboard_screen_month_roi(
+    row: dict[str, Any],
+    *,
+    screen: LeaderboardScreen,
+) -> Decimal | None:
+    """The row's month ROI when it passes the screen, otherwise None."""
+
+    account_value = decimal_value(row.get("accountValue"))
+    if account_value <= Decimal("0"):
+        return None
+    if not screen.min_account_value_usd <= account_value <= screen.max_account_value_usd:
+        return None
+    month = get_window(row, "month") or {}
+    month_pnl = decimal_value(month.get("pnl"))
+    if month_pnl <= Decimal("0") or month_pnl < screen.min_month_pnl_usd:
+        return None
+    month_roi = decimal_value(month.get("roi"))
+    if not screen.min_month_roi <= month_roi <= screen.max_month_roi:
+        return None
+    # Too little volume is a held position, too much is a market maker.
+    month_turnover = decimal_value(month.get("vlm")) / account_value
+    if not screen.min_month_turnover <= month_turnover <= screen.max_month_turnover:
+        return None
+    if screen.require_positive_week_pnl:
+        week = get_window(row, "week") or {}
+        if decimal_value(week.get("pnl")) <= Decimal("0"):
+            return None
+    # A month that outweighs the whole history is one good month, not a record.
+    all_time = get_window(row, "allTime") or {}
+    if decimal_value(all_time.get("pnl")) < month_pnl * screen.min_all_time_to_month_pnl_ratio:
+        return None
+    return month_roi
+
+
 def leaderboard_sort_value(row: dict[str, Any], *, window: str, metric: str) -> Decimal:
     performance = get_window(row, window)
     if performance is None:

@@ -200,7 +200,10 @@ def test_prune_config_loads_low_score_rule(monkeypatch: pytest.MonkeyPatch) -> N
     settings = Settings(_env_file=None, **config)
 
     assert settings.wallet_prune_low_score_min_closed_trades == 40
-    assert settings.wallet_prune_low_score_threshold == Decimal("70")
+    # Just above the copy minimum of 50: prune clears the bottom, the copy
+    # ranking picks the top.
+    assert settings.wallet_prune_low_score_threshold == Decimal("55")
+    assert settings.wallet_prune_low_score_threshold > settings.trading_copy_min_source_score
     assert settings.wallet_prune_low_score_operator == "lt"
 
 
@@ -228,6 +231,40 @@ def test_discovery_config_rechecks_leaderboard_subaccounts_daily(
     assert settings.discovery_import_subaccounts_recheck_hours == 24
 
 
+def test_discovery_config_screens_the_leaderboard_and_retries_rejections(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_live_env_overrides(monkeypatch)
+    config = load_app_config()
+    settings = Settings(_env_file=None, **config)
+
+    assert "hyperliquid_leaderboard_screen" in settings.discovery_default_sources
+    assert settings.discovery_import_source_limits["hyperliquid_leaderboard_screen"] == 150
+    assert settings.discovery_import_source_limits["hyperdash_cohorts"] == 300
+    assert settings.discovery_import_retry_rejected_after_days == 14
+    assert settings.discovery_hyperliquid_screen_min_account_value_usd == Decimal("5000")
+    assert settings.discovery_hyperliquid_screen_max_account_value_usd == Decimal("2000000")
+    assert settings.discovery_hyperliquid_screen_require_positive_week_pnl is True
+
+
+def test_leaderboard_screen_bounds_must_be_ordered() -> None:
+    with pytest.raises(ValueError, match="discovery_hyperliquid_screen_min_month_roi"):
+        Settings(
+            _env_file=None,
+            discovery_hyperliquid_screen_min_month_roi=Decimal("2"),
+            discovery_hyperliquid_screen_max_month_roi=Decimal("1"),
+        )
+
+
+def test_underwater_add_penalty_must_start_below_its_full_ratio() -> None:
+    with pytest.raises(ValueError, match="scoring_risk_underwater_add_penalty_start_ratio"):
+        Settings(
+            _env_file=None,
+            scoring_risk_underwater_add_penalty_start_ratio=Decimal("0.6"),
+            scoring_risk_underwater_add_full_penalty_ratio=Decimal("0.6"),
+        )
+
+
 def test_strategy_scoring_config_is_loaded_from_files(monkeypatch: pytest.MonkeyPatch) -> None:
     _clear_live_env_overrides(monkeypatch)
     config = load_app_config()
@@ -238,9 +275,15 @@ def test_strategy_scoring_config_is_loaded_from_files(monkeypatch: pytest.Monkey
     assert settings.scoring_equity_refresh_hours == 6
     assert settings.scoring_equity_max_wallets_per_run == 60
     assert settings.scoring_profitability_weight_equity_return == Decimal("0.5")
-    assert settings.scoring_profitability_equity_return_full_score_at == Decimal("0.1")
+    assert settings.scoring_profitability_equity_return_full_score_at == Decimal("0.3")
+    assert settings.scoring_profitability_roi_full_score_at == Decimal("0.02")
+    assert settings.scoring_consistency_profit_distribution_full_score_ratio == Decimal("0.5")
+    assert settings.scoring_risk_loss_ratio_penalty_max == Decimal("25")
+    assert settings.scoring_risk_losing_trade_rate_penalty_per_ratio == Decimal("10")
     assert settings.scoring_risk_equity_drawdown_full_penalty_ratio == Decimal("0.4")
-    assert settings.scoring_risk_underwater_add_penalty_max == Decimal("20")
+    assert settings.scoring_risk_underwater_add_penalty_start_ratio == Decimal("0.2")
+    assert settings.scoring_risk_underwater_add_full_penalty_ratio == Decimal("0.6")
+    assert settings.scoring_risk_underwater_add_penalty_max == Decimal("35")
     assert settings.scoring_copyability_reference_equity_usd == Decimal("1000")
     assert settings.scoring_copyability_small_copy_min_ratio == Decimal("0.5")
     assert settings.scoring_shrinkage_full_credibility_trades == 40

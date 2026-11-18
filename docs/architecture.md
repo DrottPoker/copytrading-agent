@@ -295,7 +295,10 @@ Maintenance worker responsibilities:
 
 - Run configured discovery imports every 6 hours by default.
 - Import candidates from Hyperliquid leaderboard, HyperTracker segment,
-  HyperTracker leaderboard, and Hyperdash discovery sources.
+  HyperTracker leaderboard, and Hyperdash discovery sources. The leaderboard
+  screen source filters every leaderboard row locally and takes a capped number
+  of new candidates per run. A rejected candidate that a source lists again is
+  evaluated again after `import.retry_rejected_after_days`.
 - Fetch each source once per run: the leaderboard windows share one
   leaderboard download and one subaccount lookup per master, both vault sources
   share one vault list, and masters checked within the subaccount recheck
@@ -912,8 +915,9 @@ most `equity.max_wallets_per_run` wallets per run, highest stored score first,
 and failed reads retry after an hour. A refresh failure never blocks scoring.
 
 Profitability combines the 30 day equity return (50%, full score at
-`profitability.equity_return.full_score_at`, 10%), capped average trade ROI
-(20%), and median trade ROI (30%). Return on traded notional and absolute net
+`profitability.equity_return.full_score_at`, 30%), capped average trade ROI
+(20%), and median trade ROI (30%), both ROI inputs reaching full score at
+`profitability.roi_score.full_score_at`, 2%. Return on traded notional and absolute net
 PnL are shown as reference data only. Without equity history the equity return
 input scores zero.
 Recency score uses the latest non-liquidation trading fill in the scoring
@@ -924,10 +928,13 @@ Risk subtracts the equity-curve drawdown (no penalty up to 5%, full 35 points
 at 40%), falling back to the realized closed-trade drawdown only when equity
 history is unavailable. It also subtracts adds into losing positions: the share
 of closed-trade entry notional added while the position was at a loss, which
-reveals averaging down that closed-trade statistics hide (full 20 points at
-40%). Reconstruction records this per trade in
-`source_trades.underwater_add_notional_usd`. Loss ratio, losing rate, live
-drawdown, margin stress, and forced exits are unchanged.
+reveals averaging down that closed-trade statistics hide (no penalty up to
+`risk.underwater_adds.penalty_start_ratio`, 20%, full 35 points at 60%).
+Reconstruction records this per trade in
+`source_trades.underwater_add_notional_usd`. Loss ratio costs up to 25 points
+and losing rate up to 10, less than averaging down, since a wallet that never
+closes a loser scores well on both. Live drawdown, margin stress, and forced
+exits also subtract.
 
 Copyability measures whether trades are practical to follow at our size. Each
 closed trade's entry notional is scaled by our per-source allocation divided by
@@ -1075,7 +1082,7 @@ deletes.
   drawdown is at or above `rules.max_drawdown.max_equity_drawdown_pct` (50%).
 - Low-score pruning archives polled, scored wallets whose reconstructed closed
   trade count is at least the configured minimum and whose final score matches
-  the configured cutoff in `backend/config/prune.json`.
+  the configured cutoff in `backend/config/prune.json` (40 trades, below 55).
 - Current drawdown is not part of `POST /wallets/prune-all`. It is handled by
   wallet scoring and paper allocation filters during normal operation. The
   standalone `POST /wallets/prune-current-drawdown` endpoint remains available

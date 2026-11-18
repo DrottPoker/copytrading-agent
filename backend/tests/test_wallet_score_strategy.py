@@ -65,6 +65,25 @@ def test_adds_into_losing_positions_are_penalized() -> None:
     assert penalty.contribution == Decimal("10.00")
 
 
+def test_adds_into_losing_positions_are_free_up_to_the_start_ratio() -> None:
+    config = Settings(
+        _env_file=None,
+        scoring_risk_underwater_add_penalty_start_ratio=Decimal("0.2"),
+        scoring_risk_underwater_add_full_penalty_ratio=Decimal("0.6"),
+        scoring_risk_underwater_add_penalty_max=Decimal("35"),
+    )
+
+    def penalty_at(ratio: str) -> Decimal:
+        metrics = healthy_metrics(underwater_add_ratio=Decimal(ratio))
+        item = item_by_key(risk_score_items(metrics, settings=config), "underwater_adds")
+        return item.contribution
+
+    # Scaling into an entry is normal; heavy averaging down takes the full penalty.
+    assert penalty_at("0.15") == Decimal("0.00")
+    assert penalty_at("0.40") == Decimal("17.50")
+    assert penalty_at("0.70") == Decimal("35.00")
+
+
 def test_equity_return_drives_profitability() -> None:
     config = settings()
     strong = healthy_metrics(equity_return_pct=Decimal("0.10"))
