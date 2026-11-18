@@ -7,10 +7,13 @@ from app.core.config import Settings
 from app.services import discovery_service
 from app.services.discovery_service import (
     HYPERDASH_PNL_COHORT_SOURCES,
+    HYPERLIQUID_SCREEN_SOURCE,
     HYPERTRACKER_LEADERBOARD_SOURCES,
     HYPERTRACKER_SEGMENT_SOURCES,
+    DiscoveryCandidate,
     DiscoveryFetchContext,
     candidate_backfill_covers_pool_import,
+    discovery_source_limit,
     fetch_hyperliquid_leaderboard_source,
     hyperdash_cohort_id_from_url,
     hypertracker_leaderboard_candidate,
@@ -18,8 +21,13 @@ from app.services.discovery_service import (
     hypertracker_segment_candidate,
     hypertracker_segment_wallets_url,
     normalize_requested_sources,
+    retryable_addresses_within_limit,
 )
-from app.services.hyperliquid_leaderboard_source import fetch_master_subaccounts
+from app.services.hyperliquid_leaderboard_source import (
+    LeaderboardScreen,
+    fetch_master_subaccounts,
+    screen_leaderboard_rows,
+)
 
 MASTER_A = "0x" + "a" * 40
 MASTER_B = "0x" + "b" * 40
@@ -442,3 +450,153 @@ class FakeSubaccountLookupClient:
         assert payload["type"] == "subAccounts"
         self.lookups.append(payload["user"])
         return self.subaccounts_by_master.get(payload["user"])
+
+
+def screen_row(address: str, **overrides: str) -> dict[str, Any]:
+    values = {
+        "account_value": "50000",
+        "week_pnl": "1500",
+        "month_pnl": "6000",
+        "month_roi": "0.12",
+        "month_vlm": "1000000",
+        "all_time_pnl": "40000",
+    }
+    values.update(overrides)
+    return {
+        "ethAddress": address,
+        "accountValue": values["account_value"],
+        "displayName": None,
+        "windowPerformances": [
+            ["week", {"pnl": values["week_pnl"], "roi": "0.03", "vlm": "200000"}],
+            [
+                "month",
+                {
+                    "pnl": values["month_pnl"],
+                    "roi": values["month_roi"],
+                    "vlm": values["month_vlm"],
+                },
+            ],
+            ["allTime", {"pnl": values["all_time_pnl"], "roi": "0.8", "vlm": "9000000"}],
+        ],
+    }
+
+
+def default_screen() -> LeaderboardScreen:
+    return discovery_service.leaderboard_screen(Settings(_env_file=None))
+
+
+def test_leaderboard_screen_keeps_copyable_wallets_with_a_track_record() -> None:
+    rows = [
+        screen_row(MASTER_A, month_roi="0.12"),
+        screen_row(MASTER_B, month_roi="0.30"),
+        "not a row",
+    ]
+
+    selected = screen_leaderboard_rows(rows, screen=default_screen())
+
+    # Highest month ROI first.
+    assert [row["ethAddress"] for row in selected] == [MASTER_B, MASTER_A]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"account_value": "4000"},
+        {"account_value": "3000000"},
+        {"account_value": "0"},
+        {"month_pnl": "500"},
+        {"month_roi": "0.02"},
+        {"month_roi": "2.5"},
+        # A held position: the month's volume is below three times the account.
+        {"month_vlm": "100000"},
+        # A market maker: the month's volume is above 300 times the account.
+        {"month_vlm": "20000000"},
+        {"week_pnl": "-1"},
+        # One good month: the whole history is less than twice the month.
+        {"all_time_pnl": "9000"},
+    ],
+)
+def test_leaderboard_screen_rejects_rows_outside_a_threshold(overrides: dict[str, str]) -> None:
+    rows = [screen_row(MASTER_A, **overrides)]
+
+    assert screen_leaderboard_rows(rows, screen=default_screen()) == []
+
+
+@pytest.mark.asyncio
+async def test_leaderboard_screen_source_returns_every_match_and_caps_new_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    leaderboard = FakeLeaderboardClient(
+        [
+            screen_row(MASTER_A, month_roi="0.10"),
+            screen_row(MASTER_B, month_roi="0.40"),
+            screen_row(MASTER_C, account_value="90000000"),
+        ]
+    )
+    subaccount_client = FakeSubaccountLookupClient({})
+    monkeypatch.setattr(discovery_service, "HyperliquidLeaderboardClient", leaderboard)
+    monkeypatch.setattr(discovery_service, "HyperliquidClient", subaccount_client)
+    settings = Settings(_env_file=None)
+
+    async with DiscoveryFetchContext(settings) as context:
+        result = await discovery_service.fetch_discovery_source(
+            HYPERLIQUID_SCREEN_SOURCE,
+            limit=1,
+            settings=settings,
+            context=context,
+        )
+
+    assert [candidate.wallet_address for candidate in result.candidates] == [MASTER_B, MASTER_A]
+    assert result.candidates[0].source == HYPERLIQUID_SCREEN_SOURCE
+    assert result.candidates[0].source_rank == 1
+    assert result.candidates[0].source_pnl == Decimal("6000")
+    assert result.candidates[0].source_roi == Decimal("0.40")
+    assert result.candidates[0].account_value == Decimal("50000")
+    assert result.fetched == 2
+    # The limit caps new candidates in the import, not the rows the screen returns.
+    assert result.max_new == 1
+    assert result.metadata["leaderboardRows"] == 3
+    # The screen never spends request budget on subaccount lookups.
+    assert subaccount_client.lookups == []
+
+
+def test_leaderboard_screen_is_a_known_discovery_source() -> None:
+    assert normalize_requested_sources([HYPERLIQUID_SCREEN_SOURCE]) == [HYPERLIQUID_SCREEN_SOURCE]
+
+
+def test_a_source_uses_its_own_limit_unless_the_caller_sets_one() -> None:
+    settings = Settings(
+        _env_file=None,
+        discovery_import_limit=100,
+        discovery_import_source_limits={"hyperdash_cohorts": 300},
+    )
+
+    def limit_for(source: str, requested: int | None) -> int:
+        return discovery_source_limit(source, requested_limit=requested, settings=settings)
+
+    assert limit_for("hyperdash_cohorts", None) == 300
+    assert limit_for("hyperliquid_leaderboard_day", None) == 100
+    assert limit_for("hyperdash_cohorts", 25) == 25
+
+
+def test_source_limits_must_stay_within_the_import_bounds() -> None:
+    with pytest.raises(ValueError, match="discovery_import_source_limits"):
+        Settings(_env_file=None, discovery_import_source_limits={"hyperdash_cohorts": 501})
+
+
+def test_only_retries_that_fit_the_new_candidate_limit_lose_their_verdict() -> None:
+    candidates = {
+        address: DiscoveryCandidate(wallet_address=address, source=HYPERLIQUID_SCREEN_SOURCE)
+        for address in (MASTER_A, MASTER_B, MASTER_C, SUBACCOUNT)
+    }
+
+    within_limit = retryable_addresses_within_limit(
+        candidates,
+        retryable_addresses={MASTER_B, SUBACCOUNT},
+        # A settled wallet is skipped and takes no slot.
+        settled_addresses={MASTER_A, MASTER_B, SUBACCOUNT},
+        max_new=2,
+    )
+
+    # MASTER_B and MASTER_C fill the two slots, so SUBACCOUNT keeps its rejection.
+    assert within_limit == {MASTER_B}

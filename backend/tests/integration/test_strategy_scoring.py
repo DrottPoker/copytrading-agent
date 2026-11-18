@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.config import Settings
 from app.db.models import (
     DiscoveryImportRun,
+    DiscoveryWalletCandidate,
     SourceTrade,
     TradingAccount,
     WalletEquityMetric,
@@ -264,6 +265,122 @@ async def test_archived_wallets_reenter_discovery_only_after_the_cooldown(
     assert restored is not None
     assert restored.archived_at is None
     assert restored.enabled is True
+
+
+def rejected_candidate(address: str, *, days_ago: int, **overrides: object) -> object:
+    values: dict = {
+        "wallet_address": address,
+        "source": "hyperdash_cohorts",
+        "status": "rejected",
+        "fail_reason": "too_few_closed_trades",
+        "updated_at": datetime.now(UTC) - timedelta(days=days_ago),
+    }
+    values.update(overrides)
+    return DiscoveryWalletCandidate(**values)
+
+
+@pytest.mark.asyncio
+async def test_rejected_candidates_are_evaluated_again_after_the_retry_interval(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    async with integration_sessionmaker() as session:
+        run = DiscoveryImportRun(source="hyperliquid_leaderboard_week", requested_limit=10)
+        session.add_all(
+            [
+                run,
+                rejected_candidate(WALLET, days_ago=20),
+                rejected_candidate(OTHER_WALLET, days_ago=3),
+                # Old, but not a rejection: a promoted candidate is never retried.
+                rejected_candidate(
+                    PROTECTED_WALLET,
+                    days_ago=20,
+                    status="promoted",
+                    fail_reason=None,
+                ),
+            ]
+        )
+        await session.flush()
+
+        candidates = [
+            DiscoveryCandidate(wallet_address=address, source="hyperliquid_leaderboard_week")
+            for address in (WALLET, OTHER_WALLET, PROTECTED_WALLET)
+        ]
+        permanent = await upsert_discovery_candidates(
+            session,
+            run_id=run.id,
+            candidates=candidates,
+            retry_rejected_after_days=0,
+        )
+        result = await upsert_discovery_candidates(
+            session,
+            run_id=run.id,
+            candidates=candidates,
+            retry_rejected_after_days=14,
+        )
+        rows = (
+            (
+                await session.execute(
+                    select(DiscoveryWalletCandidate).order_by(
+                        DiscoveryWalletCandidate.wallet_address
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        await session.commit()
+
+    assert (permanent.inserted, permanent.retried) == (0, 0)
+    assert (result.inserted, result.retried) == (1, 1)
+    assert result.skip_reasons.get("already_in_candidates") == 2
+    assert [(row.wallet_address, row.status, row.source) for row in rows] == [
+        (WALLET, "discovered", "hyperliquid_leaderboard_week"),
+        (OTHER_WALLET, "rejected", "hyperdash_cohorts"),
+        (PROTECTED_WALLET, "promoted", "hyperdash_cohorts"),
+    ]
+    assert rows[0].fail_reason is None
+
+
+@pytest.mark.asyncio
+async def test_a_new_candidate_limit_takes_the_first_ranked_and_leaves_the_rest(
+    integration_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    async with integration_sessionmaker() as session:
+        run = DiscoveryImportRun(source="hyperliquid_leaderboard_screen", requested_limit=2)
+        # Ranked third, so its retry has to wait for a later run.
+        session.add_all([run, rejected_candidate(PROTECTED_WALLET, days_ago=20)])
+        await session.flush()
+
+        result = await upsert_discovery_candidates(
+            session,
+            run_id=run.id,
+            candidates=[
+                DiscoveryCandidate(wallet_address=address, source="hyperliquid_leaderboard_screen")
+                for address in (WALLET, OTHER_WALLET, PROTECTED_WALLET, "0x" + "4" * 40)
+            ],
+            retry_rejected_after_days=14,
+            max_new=2,
+        )
+        statuses = dict(
+            (
+                await session.execute(
+                    select(
+                        DiscoveryWalletCandidate.wallet_address,
+                        DiscoveryWalletCandidate.status,
+                    )
+                )
+            ).all()
+        )
+        await session.commit()
+
+    assert (result.inserted, result.retried) == (2, 0)
+    assert result.skip_reasons.get("over_new_candidate_limit") == 1
+    assert result.skip_reasons.get("already_in_candidates") == 1
+    assert statuses == {
+        WALLET: "discovered",
+        OTHER_WALLET: "discovered",
+        PROTECTED_WALLET: "rejected",
+    }
 
 
 @pytest.mark.asyncio

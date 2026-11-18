@@ -5,6 +5,7 @@
       "hyperliquid_leaderboard_day",
       "hyperliquid_leaderboard_week",
       "hyperliquid_leaderboard_month",
+      "hyperliquid_leaderboard_screen",
       "hyperliquid_vault_leaders_week",
       "hyperliquid_vault_leaders",
       "hypertracker_money_printer",
@@ -21,7 +22,18 @@
     "hyperliquid": {
       "sort_metric": "pnl",
       "url": null,
-      "vaults_url": null
+      "vaults_url": null,
+      "screen": {
+        "min_account_value_usd": 5000,
+        "max_account_value_usd": 2000000,
+        "min_month_pnl_usd": 1000,
+        "min_month_roi": 0.05,
+        "max_month_roi": 1.5,
+        "min_month_turnover": 3,
+        "max_month_turnover": 300,
+        "min_all_time_to_month_pnl_ratio": 2,
+        "require_positive_week_pnl": true
+      }
     },
     "hyperdash": {
       "urls": {
@@ -38,6 +50,13 @@
   },
   "import": {
     "limit": 100,
+    "source_limits": {
+      "hyperliquid_leaderboard_screen": 150,
+      "hyperdash_cohorts": 300,
+      "hyperdash_cohorts_very_profitable": 300,
+      "hyperdash_cohorts_extremely_profitable": 300
+    },
+    "retry_rejected_after_days": 14,
     "interval_seconds": 21600,
     "run_on_worker_start": true,
     "subaccounts": {

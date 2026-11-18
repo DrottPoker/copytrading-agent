@@ -285,13 +285,35 @@ What it does:
 - Collects wallet candidates before quality-controlled pool admission.
 - Skips wallet addresses that already exist in discovery candidates or in the
   wallet pool, so previously processed wallets are not reprocessed by new imports.
+- A rejection expires. When a source lists a wallet whose candidate rows are
+  all rejections older than `import.retry_rejected_after_days` (14 by
+  default), the old rows are removed and the wallet is evaluated again from
+  scratch. Rejections rest on conditions that change, such as too few closed
+  trades or a negative month. Each run's metadata reports the count as
+  `retriedRejected`. Set the interval to 0 to keep rejections permanent.
 - Tags every candidate with the source that found it, source rank, cohort/label,
   `source_account_value_usd`, `source_pnl_usd`, `source_roi_pct`, copy score
   when available, and account role.
 - Stores discovery import runs so source quality can be measured over time.
 - Supports Hyperliquid 1D, 7D, 30D, and all-time leaderboard sources.
-- Defaults to Hyperliquid 1D, 7D, and 30D leaderboard discovery, Hyperliquid
-  7D and 30D vault leaders, leaderboard subaccounts, HyperTracker PnL
+- `hyperliquid_leaderboard_screen` reads every row of the same leaderboard
+  download instead of the top rows by PnL, which are mostly accounts far too
+  large to copy at our size. A row passes the screen in
+  `sources.hyperliquid.screen` when its account value is 5,000 to 2,000,000
+  USD, its month PnL is at least 1,000 USD with a month ROI of 5% to 150%, its
+  week PnL is positive, its month volume is 3 to 300 times its account value,
+  and its all-time PnL is at least twice its month PnL. The screen uses only
+  the download, so it spends no Hyperliquid request budget. Matches are ranked
+  by month ROI. The source returns all of them and the import takes at most
+  its limit of new candidates per run (150 by default), reported as
+  `over_new_candidate_limit` for the rest, so later runs work through the
+  list. It does not expand subaccounts.
+- `import.source_limits` overrides `import.limit` per source. The defaults
+  read 300 rows from each Hyperdash profitable cohort, which page 100 rows at
+  a time. A limit passed to the import endpoint applies to every source.
+- Defaults to Hyperliquid 1D, 7D, and 30D leaderboard discovery, the
+  leaderboard screen, Hyperliquid 7D and 30D vault leaders, leaderboard
+  subaccounts of the windowed sources, HyperTracker PnL
   segments, HyperTracker avg daily perp PnL leaderboard, and configured
   Hyperdash profitable cohorts.
   All-time leaderboard discovery remains available manually, but is not enabled
@@ -632,7 +654,10 @@ What it does:
   trade count at or above the configured minimum.
 - Compares final score with the configured threshold using `lt`, `lte`, `gt`,
   or `gte`. The default is `lt`, so the default rule prunes wallets with at
-  least 50 closed trades and score below 50.
+  least 40 closed trades and score below 55. The cutoff sits just above the
+  copy minimum of 50: pruning clears the bottom of the pool and the copy
+  ranking picks the top. A cutoff near the top of the reachable score range
+  archives almost every wallet once it has enough trades to be judged.
 - Excludes copy-enabled, active, exit-only, and never-polled wallets.
 - Runs as a dry run by default and supports `dry_run=false` to archive.
 
@@ -2063,10 +2088,18 @@ Phase A behavior:
   withdrawals do not count as returns. Curves refresh at most every 6 hours for
   up to 60 wallets per run, highest score first; failed reads retry after an
   hour.
-- Profitability combines the 30 day equity return (50%, full score at 10%),
-  capped average trade ROI (20%), and median trade ROI (30%). Return on traded
+- Profitability combines the 30 day equity return (50%, full score at 30%),
+  capped average trade ROI (20%), and median trade ROI (30%), the two ROI
+  inputs reaching full score at 2% per trade. Return on traded
   notional and absolute dollar PnL are reference data only. Without equity
   history the equity return input scores zero.
+- Full-score points sit near the 90th percentile of the wallet pool, so an
+  input separates good wallets from average ones. A point most wallets pass
+  saturates and a point none reach caps the score: on the pool of 2026-10-12,
+  61% of wallets were above the earlier 10% equity return and the 90th
+  percentile of median trade ROI was 2.1% against an earlier target of 4%.
+  Profit distribution reaches full score at a ratio of 0.5 for the same
+  reason.
 - Consistency score measures repeatability and evenness, not profitability or
   win rate. It combines profit distribution, largest-win dependency, closed-trade
   ROI stability, downside ROI stability, active-day regularity, and max inactive
@@ -2091,8 +2124,13 @@ Phase A behavior:
   missing. `equity_return_pct`, `copy_size_ratio`, and `underwater_add_ratio`
   are stored as well.
 - Risk penalizes adds into losing positions: the share of closed-trade entry
-  notional added while the position was at a loss, up to 20 points at 40%.
-  Equity drawdown costs nothing up to 5% and the full 35 points at 40%.
+  notional added while the position was at a loss. Up to 20% costs nothing,
+  because scaling into an entry is normal, and the penalty reaches 35 points
+  at 60%. Equity drawdown costs nothing up to 5% and the full 35 points at 40%.
+- Loss ratio costs up to 25 points and losing trade rate up to 10. Together
+  they weigh less than averaging down, because a wallet that never closes a
+  loser shows a near-zero loss ratio and losing rate while it carries the
+  largest hidden risk.
 - When `scoring_current_drawdown_enabled` is true, scoring fetches live perp state
   from Hyperliquid for default perp and any perp dexes already observed in stored
   wallet fills, then checks `userAbstraction` and stores `current_drawdown_pct`
