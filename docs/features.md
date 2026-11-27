@@ -802,6 +802,24 @@ What it does:
   wallet list changes or a requested wallet was not acknowledged within one
   refresh interval.
 - Processes initial snapshot messages safely.
+- Catches up on fills missed while the worker was stopped or disconnected.
+  A `userFills` snapshot holds only the wallet's newest fills, so before
+  snapshot recovery runs, the worker compares the snapshot's oldest fill with
+  the wallet's `last_polled_at`, the time until which its stored history is
+  complete. When the snapshot reaches back past it, nothing is missing and
+  `last_polled_at` moves to the snapshot time without a request. Otherwise
+  the missing stretch, from `last_polled_at` minus
+  `pool_fill_import_overlap_seconds`, is imported through `userFillsByTime`
+  with the pool import's page budget and background request priority. Exits
+  and reductions made during the downtime are then replayed by recovery, while
+  entries older than the entry age window are still skipped. A failed request
+  returns the snapshot to the durable inbox for retry. When the page budget
+  cannot reach the oldest missed fill, a `fill_catch_up` warning names the
+  wallet and `python -m app.cli.repair_fill_gaps` fetches the rest. Never
+  polled wallets are left to their first pool import.
+- Realtime fills update `last_seen_fill_at` but never `last_polled_at`, because
+  a WebSocket stream cannot prove that no fill is missing. Only a complete
+  REST read or a snapshot that overlaps the stored history moves it.
 - Stores realtime fills in Postgres with the same dedupe logic as historical import.
 - Commits each realtime fill batch and a matching execution payload to
   `realtime_execution_inbox` in one transaction. The bounded in-process queue is
@@ -1111,7 +1129,8 @@ What it does:
 - Persists paper accounts, positions, allocations, and copied fill IDs in
   Postgres so Docker restarts do not reset paper trading state.
 - Runs paper-copy recovery on trading-worker start, WebSocket snapshots, and the
-  configured periodic recovery interval.
+  configured periodic recovery interval. Snapshot recovery runs after the
+  missed fills of the downtime are imported, so it replays them too.
   Recovery focuses on sources with open paper positions and current monitored
   allocation sources. For open-exposure sources, it replays fills from the oldest
   open paper position with a small overlap and relies on copied fill IDs to avoid

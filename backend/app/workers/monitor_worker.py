@@ -36,6 +36,8 @@ from app.services.copy_signal_service import (
 )
 from app.services.copy_types import CopyAllocationCache, CopyBatchResult
 from app.services.discovery_service import run_discovery_import
+from app.services.fill_catch_up_service import catch_up_fills_after_snapshot
+from app.services.fill_import_service import FillImportStorageLimitError
 from app.services.job_lock_service import JobLockAlreadyHeldError, job_lock
 from app.services.live_close_service import enforce_live_hard_stop, resume_live_close_all_operations
 from app.services.live_copy_service import (
@@ -2226,6 +2228,76 @@ def discard_live_copy_work_wakeup(
     work_queue.task_done()
 
 
+async def catch_up_snapshot_fills(
+    stored: StoredRealtimeFills,
+    *,
+    sessionmaker: Any,
+    redis: Any,
+    settings: Any,
+) -> None:
+    """Store the fills between the last complete poll and a snapshot."""
+
+    try:
+        async with sessionmaker() as session, HyperliquidClient(settings) as client:
+            result = await catch_up_fills_after_snapshot(
+                session,
+                wallet_address=stored.wallet_address,
+                oldest_snapshot_fill_ms=stored.oldest_fill_time_ms,
+                observed_at=stored.observed_at or datetime.now(UTC),
+                settings=settings,
+                client=client,
+            )
+    except FillImportStorageLimitError as exc:
+        # Retrying cannot help while the database is full; recovery still runs.
+        logger.warning(
+            "fill catch-up skipped wallet=%s error=%s",
+            stored.wallet_address,
+            exc,
+        )
+        await publish_event(
+            redis,
+            event_type="fill_catch_up_skipped",
+            channel="events:system",
+            message="Missed fills were not fetched because database storage is low.",
+            payload={"walletAddress": stored.wallet_address, "error": str(exc)},
+            severity="warning",
+        )
+        return
+
+    if result.status != "imported":
+        return
+    logger.info(
+        "fill catch-up wallet=%s inserted=%s complete=%s start_time_ms=%s",
+        stored.wallet_address,
+        result.inserted,
+        result.history_complete,
+        result.start_time_ms,
+    )
+    if result.inserted == 0 and result.history_complete:
+        return
+    await publish_event(
+        redis,
+        event_type="fill_catch_up",
+        channel="events:fills" if result.history_complete else "events:system",
+        message=(
+            f"Fetched {result.inserted} missed fills for {short_address(stored.wallet_address)}."
+            if result.history_complete
+            else (
+                f"Fetched {result.inserted} missed fills for "
+                f"{short_address(stored.wallet_address)}, but older missed fills remain. "
+                "Run app.cli.repair_fill_gaps to fetch them."
+            )
+        ),
+        payload={
+            "walletAddress": stored.wallet_address,
+            "inserted": result.inserted,
+            "historyComplete": result.history_complete,
+            "startTimeMs": result.start_time_ms,
+        },
+        severity="info" if result.history_complete else "warning",
+    )
+
+
 async def process_stored_realtime_fills(
     stored: StoredRealtimeFills,
     *,
@@ -2237,6 +2309,14 @@ async def process_stored_realtime_fills(
 ) -> None:
     presentation_events: list[dict[str, Any]] = []
     if stored.is_snapshot:
+        # Recovery below replays stored fills, so the fills the snapshot left out
+        # must be stored first. A failure raises and retries this inbox item.
+        await catch_up_snapshot_fills(
+            stored,
+            sessionmaker=sessionmaker,
+            redis=redis,
+            settings=settings,
+        )
         if live_copy_processing_enabled(settings):
             await run_live_copy_recovery_once(
                 sessionmaker=sessionmaker,

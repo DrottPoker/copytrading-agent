@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import RealtimeExecutionInbox, WalletFill, WatchedWallet
 from app.schemas.wallet import normalize_wallet_address
-from app.services.fill_import_service import build_fill_record
+from app.services.fill_import_service import build_fill_record, fill_timestamp_ms
 from app.services.live_copy_state_service import LIVE_COPY_ORIGIN_REALTIME
 from app.services.live_copy_work_service import enqueue_live_copy_work_for_wallet_fills
 
@@ -26,6 +26,8 @@ class StoredRealtimeFills:
     inbox_id: str | None = None
     observed_at: datetime | None = None
     live_copy_work_enqueued: int = 0
+    # Oldest fill in the message, any market; a snapshot covers everything after it.
+    oldest_fill_time_ms: int | None = None
 
     @property
     def rows_for_execution(self) -> list[dict[str, Any]]:
@@ -44,6 +46,7 @@ class StoredRealtimeFills:
             "insertedRows": self.inserted_rows,
             "executionRows": self.rows_for_execution,
             "observedAt": self.observed_at.isoformat() if self.observed_at is not None else None,
+            "oldestFillTimeMs": self.oldest_fill_time_ms,
         }
 
     @classmethod
@@ -59,6 +62,7 @@ class StoredRealtimeFills:
         execution_rows = payload.get("executionRows", inserted_rows)
         is_snapshot = payload.get("isSnapshot")
         latest_fill_time_ms = payload.get("latestFillTimeMs")
+        oldest_fill_time_ms = payload.get("oldestFillTimeMs")
         observed_at = parse_execution_observed_at(
             payload.get("observedAt"),
             fallback=fallback_observed_at,
@@ -77,6 +81,8 @@ class StoredRealtimeFills:
             raise ValueError("Realtime execution payload has invalid isSnapshot.")
         if latest_fill_time_ms is not None and not isinstance(latest_fill_time_ms, int):
             raise ValueError("Realtime execution payload has invalid latestFillTimeMs.")
+        if oldest_fill_time_ms is not None and not isinstance(oldest_fill_time_ms, int):
+            raise ValueError("Realtime execution payload has invalid oldestFillTimeMs.")
         return cls(
             wallet_address=wallet_address,
             fetched=payload_int(payload, "fetched"),
@@ -88,6 +94,7 @@ class StoredRealtimeFills:
             execution_rows=execution_rows,
             inbox_id=inbox_id,
             observed_at=observed_at,
+            oldest_fill_time_ms=oldest_fill_time_ms,
         )
 
 
@@ -118,6 +125,10 @@ async def store_realtime_fills(
     inserted_rows: list[dict[str, Any]] = []
     execution_rows = [_record_to_execution_dict(record) for record in records]
     latest_fill_time_ms = max((record["timestamp_ms"] for record in records), default=None)
+    oldest_fill_time_ms = min(
+        (timestamp for fill in fills if (timestamp := fill_timestamp_ms(fill)) > 0),
+        default=None,
+    )
 
     if records:
         stmt = (
@@ -163,7 +174,8 @@ async def store_realtime_fills(
         select(WatchedWallet).where(WatchedWallet.address == normalized_address)
     )
     if wallet is not None:
-        wallet.last_polled_at = observed_at
+        # last_polled_at is left alone: a snapshot may leave a hole, and only a
+        # complete read may claim the history is stored (see fill_catch_up_service).
         if latest_fill_time_ms is not None:
             wallet.last_seen_fill_at = datetime.fromtimestamp(latest_fill_time_ms / 1000, tz=UTC)
 
@@ -178,6 +190,7 @@ async def store_realtime_fills(
         execution_rows=execution_rows,
         observed_at=observed_at,
         live_copy_work_enqueued=live_copy_work_enqueued,
+        oldest_fill_time_ms=oldest_fill_time_ms,
     )
     if is_snapshot or execution_rows:
         inbox = RealtimeExecutionInbox(

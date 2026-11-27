@@ -176,6 +176,9 @@ Trading worker responsibilities:
 - Subscribe to Hyperliquid `allMids` over WebSocket and maintain a short-lived
   price cache for copy execution.
 - Store snapshot and realtime fills in Postgres.
+- On each snapshot, import the fills between the wallet's last complete poll
+  and the snapshot before recovery runs, so a restart or dropped connection
+  leaves no hole that recovery would miss.
 - Persist every valid non-snapshot WebSocket fill in the durable execution
   payload even when the same wallet fill was inserted first by polling. The
   database inserted and duplicate counts stay accurate, while copy execution
