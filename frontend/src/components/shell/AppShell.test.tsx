@@ -64,6 +64,8 @@ describe("AppShell", () => {
     expect(await screen.findByText("Wallet scoring")).toBeInTheDocument();
     expect(screen.getByText("40%")).toBeInTheDocument();
     expect(screen.getByRole("main")).toHaveAttribute("id", "main-content");
+    // Builds outside a VPS deployment carry no version.
+    expect(screen.getByTitle("Version dev")).toHaveTextContent("dev");
   });
 
   it("scales the interface with the text size setting and remembers it", () => {

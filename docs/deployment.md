@@ -381,7 +381,9 @@ The script:
 4. lists changed configuration templates (`.env.example`, `backend/config`,
    `frontend/config`) and asks before continuing, so `.env` can be updated
    first;
-5. builds the images, stops the application services, and starts the stack, so
+5. builds the images with `APP_VERSION` set to the commit date and short hash,
+   which the dashboard sidebar and the System page show, stops the
+   application services, and starts the stack, so
    the `migrate` service applies migrations while nothing else uses the
    database;
 6. checks that the database is at the Alembic head and waits for the backend

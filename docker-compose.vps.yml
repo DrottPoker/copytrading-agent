@@ -4,6 +4,12 @@ x-logging: &default_logging
     max-size: "10m"
     max-file: "5"
 
+# infra/deploy-vps.sh sets APP_VERSION to the commit date and hash.
+x-backend-build: &backend_build
+  context: ./backend
+  args:
+    APP_VERSION: ${APP_VERSION:-dev}
+
 x-app-database-environment: &app_database_environment
   APP_ENV: production
   DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-copyagent}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-copyagent}
@@ -11,8 +17,7 @@ x-app-database-environment: &app_database_environment
 
 services:
   migrate:
-    build:
-      context: ./backend
+    build: *backend_build
     command: python -m alembic upgrade head
     environment:
       <<: *app_database_environment
@@ -31,8 +36,7 @@ services:
     logging: *default_logging
 
   backend:
-    build:
-      context: ./backend
+    build: *backend_build
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     env_file:
       - .env
@@ -71,8 +75,7 @@ services:
     logging: *default_logging
 
   trading-worker:
-    build:
-      context: ./backend
+    build: *backend_build
     command: python -m app.workers.monitor_worker
     stop_grace_period: 40s
     env_file:
@@ -96,8 +99,7 @@ services:
     logging: *default_logging
 
   maintenance-worker:
-    build:
-      context: ./backend
+    build: *backend_build
     command: python -m app.workers.monitor_worker
     stop_grace_period: 40s
     env_file:
@@ -123,6 +125,8 @@ services:
   frontend:
     build:
       context: ./frontend
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
     environment:
       APP_ENV: production
       SERVER_API_BASE_URL: http://backend:8000
