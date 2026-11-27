@@ -15,6 +15,7 @@ from app.services.copy_execution_cache import (
     SourceAccountStateCache,
 )
 from app.services.copy_types import CopyBatchResult
+from app.services.fill_catch_up_service import FillCatchUpResult
 from app.services.live_copy_state_service import (
     LIVE_COPY_ORIGIN_REALTIME,
     LiveCopyProcessingDeferred,
@@ -340,7 +341,11 @@ async def test_handle_websocket_snapshot_prioritizes_live_recovery(monkeypatch) 
     async def fake_publish_event(*_args: object, **_kwargs: object) -> None:
         return None
 
+    async def fake_catch_up(*_args: object, **_kwargs: object) -> None:
+        calls.append(("catch_up", None))
+
     monkeypatch.setattr(monitor_worker, "store_realtime_fills", fake_store_realtime_fills)
+    monkeypatch.setattr(monitor_worker, "catch_up_snapshot_fills", fake_catch_up)
     monkeypatch.setattr(monitor_worker, "run_live_copy_recovery_once", fake_live_recovery_once)
     monkeypatch.setattr(monitor_worker, "run_paper_copy_recovery_once", fake_paper_recovery_once)
     monkeypatch.setattr(monitor_worker, "publish_event", fake_publish_event)
@@ -367,7 +372,113 @@ async def test_handle_websocket_snapshot_prioritizes_live_recovery(monkeypatch) 
         settings=settings,
     )
 
-    assert calls == [("live", False), ("paper", False)]
+    # Missed fills are stored before recovery replays them.
+    assert calls == [("catch_up", None), ("live", False), ("paper", False)]
+
+
+class FakeCatchUpClient:
+    def __init__(self, _settings: object) -> None:
+        return None
+
+    async def __aenter__(self) -> FakeCatchUpClient:
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+
+def snapshot_for_catch_up() -> StoredRealtimeFills:
+    return StoredRealtimeFills(
+        wallet_address="0xsource",
+        fetched=1,
+        inserted=1,
+        duplicate=0,
+        is_snapshot=True,
+        latest_fill_time_ms=2_000,
+        inserted_rows=[],
+        observed_at=datetime(2026, 11, 27, tzinfo=UTC),
+        oldest_fill_time_ms=1_000,
+    )
+
+
+@pytest.mark.asyncio
+async def test_snapshot_catch_up_passes_the_snapshot_coverage(monkeypatch) -> None:
+    received: dict[str, Any] = {}
+    published: list[tuple[str, str]] = []
+
+    async def fake_catch_up(_session: object, **kwargs: Any) -> Any:
+        received.update(kwargs)
+        return FillCatchUpResult(
+            status="imported", inserted=0, history_complete=False, start_time_ms=500
+        )
+
+    async def fake_publish(
+        *_args: object, event_type: str, severity: str, **_kwargs: object
+    ) -> None:
+        published.append((event_type, severity))
+
+    monkeypatch.setattr(monitor_worker, "HyperliquidClient", FakeCatchUpClient)
+    monkeypatch.setattr(monitor_worker, "catch_up_fills_after_snapshot", fake_catch_up)
+    monkeypatch.setattr(monitor_worker, "publish_event", fake_publish)
+
+    await monitor_worker.catch_up_snapshot_fills(
+        snapshot_for_catch_up(),
+        sessionmaker=dummy_sessionmaker,
+        redis=object(),
+        settings=SimpleNamespace(),
+    )
+
+    assert received["wallet_address"] == "0xsource"
+    assert received["oldest_snapshot_fill_ms"] == 1_000
+    assert received["observed_at"] == datetime(2026, 11, 27, tzinfo=UTC)
+    # Older missed fills that did not fit the page budget are reported.
+    assert published == [("fill_catch_up", "warning")]
+
+
+@pytest.mark.asyncio
+async def test_snapshot_catch_up_skips_when_storage_is_low(monkeypatch) -> None:
+    published: list[str] = []
+
+    async def full_database(*_args: object, **_kwargs: object) -> Any:
+        raise monitor_worker.FillImportStorageLimitError("Database storage is too low.")
+
+    async def fake_publish(*_args: object, event_type: str, **_kwargs: object) -> None:
+        published.append(event_type)
+
+    monkeypatch.setattr(monitor_worker, "HyperliquidClient", FakeCatchUpClient)
+    monkeypatch.setattr(monitor_worker, "catch_up_fills_after_snapshot", full_database)
+    monkeypatch.setattr(monitor_worker, "publish_event", fake_publish)
+
+    await monitor_worker.catch_up_snapshot_fills(
+        snapshot_for_catch_up(),
+        sessionmaker=dummy_sessionmaker,
+        redis=object(),
+        settings=SimpleNamespace(),
+    )
+
+    assert published == ["fill_catch_up_skipped"]
+
+
+@pytest.mark.asyncio
+async def test_snapshot_catch_up_failure_retries_the_snapshot(monkeypatch) -> None:
+    async def unreachable(*_args: object, **_kwargs: object) -> Any:
+        raise RuntimeError("Hyperliquid is unreachable.")
+
+    monkeypatch.setattr(monitor_worker, "HyperliquidClient", FakeCatchUpClient)
+    monkeypatch.setattr(monitor_worker, "catch_up_fills_after_snapshot", unreachable)
+
+    # The error reaches the inbox loop, which schedules a durable retry.
+    with pytest.raises(RuntimeError, match="unreachable"):
+        await monitor_worker.process_stored_realtime_fills(
+            snapshot_for_catch_up(),
+            sessionmaker=dummy_sessionmaker,
+            redis=object(),
+            settings=SimpleNamespace(
+                live_trading_enabled=False,
+                paper_trading_enabled=True,
+                paper_copy_enabled=True,
+            ),
+        )
 
 
 @pytest.mark.asyncio

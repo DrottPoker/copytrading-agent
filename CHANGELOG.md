@@ -6,6 +6,26 @@ used to live in the README.
 
 ## 2026-11-27
 
+### Catch up on fills missed during a restart
+
+A `userFills` snapshot after a restart or reconnect holds only a wallet's
+newest fills, and it also marked the wallet as polled until now. Fills between
+the last poll and the snapshot were therefore never fetched, so an exit or
+reduction a source made during a long downtime could be missed.
+
+- **Snapshot catch-up.** Before snapshot recovery runs, the trading worker
+  imports the fills between the wallet's last complete poll and the snapshot
+  through `userFillsByTime`, then recovery replays them. A snapshot that
+  already reaches back into the stored history needs no request. A failed
+  request retries the snapshot from the durable inbox.
+- **Honest poll time.** Realtime and snapshot fills no longer move
+  `last_polled_at`; only a complete read does. The hourly pool import therefore
+  also polls the monitored sources again. When the page budget cannot reach
+  the oldest missed fill, a `fill_catch_up` warning names the wallet for
+  `python -m app.cli.repair_fill_gaps`.
+- Entries older than the 20 second entry window are still skipped, so the
+  copy never opens a position at a price the source did not get.
+
 ### Automatic VPS deployment
 
 - **Deploy on green CI.** `infra/install-auto-deploy.sh` installs a systemd
