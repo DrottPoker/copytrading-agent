@@ -2,16 +2,18 @@
 # Update a VPS deployment: back up, pull, build, migrate, restart, and verify.
 #
 # Usage from the repository root:
-#   bash infra/deploy-vps.sh          # asks before building when config templates changed
-#   bash infra/deploy-vps.sh --yes    # never asks
+#   bash infra/deploy-vps.sh                  # asks before building when config templates changed
+#   bash infra/deploy-vps.sh --yes            # never asks
+#   bash infra/deploy-vps.sh --commit <sha>   # fast-forwards to a fetched commit instead of pulling
 set -euo pipefail
 
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.vps.yml}"
+DEPLOY_STATE_DIR="${DEPLOY_STATE_DIR:-.deploy-state}"
 APP_SERVICES=(backend trading-worker maintenance-worker frontend caddy)
+# Environment copies to keep; older ones are deleted because each holds secrets.
+ENV_COPIES_TO_KEEP=20
 ASSUME_YES=false
-if [ "${1:-}" = "--yes" ]; then
-  ASSUME_YES=true
-fi
+TARGET_COMMIT=""
 
 compose() {
   docker compose -f "$COMPOSE_FILE" "$@"
@@ -22,8 +24,28 @@ fail() {
   exit 1
 }
 
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --yes) ASSUME_YES=true ;;
+    --commit)
+      [ "$#" -ge 2 ] || fail "--commit needs a commit hash."
+      TARGET_COMMIT="$2"
+      shift
+      ;;
+    *) fail "Unknown option: $1" ;;
+  esac
+  shift
+done
+
 [ -f "$COMPOSE_FILE" ] || fail "Run this script from the repository root or set COMPOSE_FILE."
 [ -f .env ] || fail "The .env file is missing. Use the first install steps in docs/deployment.md."
+
+# One deployment at a time. infra/auto-deploy-vps.sh takes this lock itself and passes it on.
+if [ "${DEPLOY_LOCK_HELD:-}" != 1 ]; then
+  mkdir -p "$DEPLOY_STATE_DIR"
+  exec 9>"$DEPLOY_STATE_DIR/lock"
+  flock -n 9 || fail "Another deployment is running. Wait for it to finish."
+fi
 
 dashboard_domain="$(sed -n 's/^DASHBOARD_DOMAIN=//p' .env | tail -n 1)"
 case "$dashboard_domain" in
@@ -44,11 +66,22 @@ backup="$(COMPOSE_FILE="$COMPOSE_FILE" bash infra/postgres-backup-local.sh)"
 env_copy=".env.before-update-$(date -u +%Y%m%dT%H%M%SZ)"
 cp .env "$env_copy"
 chmod 600 "$env_copy"
+# Glob results sort by name, and the timestamp format puts the newest last.
+shopt -s nullglob
+env_copies=(.env.before-update-*)
+shopt -u nullglob
+if [ "${#env_copies[@]}" -gt "$ENV_COPIES_TO_KEEP" ]; then
+  rm -f -- "${env_copies[@]:0:${#env_copies[@]}-ENV_COPIES_TO_KEEP}"
+fi
 echo "Database backup: $backup"
 echo "Environment copy: $env_copy"
 
 previous_commit="$(git rev-parse HEAD)"
-git pull --ff-only
+if [ -n "$TARGET_COMMIT" ]; then
+  git merge --ff-only --quiet "$TARGET_COMMIT"
+else
+  git pull --ff-only
+fi
 current_commit="$(git rev-parse HEAD)"
 if [ "$previous_commit" = "$current_commit" ]; then
   echo "Already at $(git rev-parse --short HEAD); rebuilding and restarting anyway."
@@ -100,6 +133,8 @@ for _ in $(seq 1 24); do
     "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read()" \
     >/dev/null 2>&1; then
     compose ps
+    # A successful deployment releases any commit infra/auto-deploy-vps.sh held.
+    rm -f "$DEPLOY_STATE_DIR/held-commit"
     echo "Update complete."
     exit 0
   fi

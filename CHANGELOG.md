@@ -4,6 +4,22 @@ Notable changes, newest first. Dates are UTC. The historical development phases
 at the end describe how the system was built and keep the detailed notes that
 used to live in the README.
 
+## 2026-11-27
+
+### Automatic VPS deployment
+
+- **Deploy on green CI.** `infra/install-auto-deploy.sh` installs a systemd
+  timer that runs `infra/auto-deploy-vps.sh` every five minutes. It fetches
+  `main`, waits for the `CI` workflow on the new commit, and runs the deploy
+  script only when CI succeeded. The VPS polls GitHub, so no port, SSH key, or
+  webhook secret is needed.
+- **Held commits.** A commit is held instead of deployed when the configuration
+  templates changed, when the deployment failed, or when `main` no longer
+  fast-forwards. `--status` shows the reason and `--retry` tries again.
+- **Deploy script.** `infra/deploy-vps.sh --commit <sha>` deploys an exact
+  fetched commit, a lock keeps two deployments from running at once, and only
+  the 20 newest `.env.before-update-*` copies are kept.
+
 ## 2026-11-18
 
 ### More candidates and a recalibrated score

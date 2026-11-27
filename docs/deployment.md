@@ -373,10 +373,11 @@ bash infra/deploy-vps.sh
 
 The script:
 
-1. stops if tracked files have local changes;
+1. stops if tracked files have local changes or another deployment is running;
 2. writes a database backup with `infra/postgres-backup-local.sh` and copies
-   `.env` to `.env.before-update-<time>`;
-3. pulls with `git pull --ff-only`;
+   `.env` to `.env.before-update-<time>`, keeping the 20 newest copies;
+3. pulls with `git pull --ff-only`, or with `--commit <sha>` fast-forwards to
+   that already fetched commit;
 4. lists changed configuration templates (`.env.example`, `backend/config`,
    `frontend/config`) and asks before continuing, so `.env` can be updated
    first;
@@ -390,6 +391,87 @@ When the migration fails, the backend and workers stay stopped. Read
 `docker compose -f docker-compose.vps.yml logs migrate`, fix the cause, and run
 the script again. A PostgreSQL deadlock is rolled back, so a rerun is safe. Use
 `bash infra/deploy-vps.sh --yes` to skip the question in step 4.
+
+### Automatic Deployment
+
+A systemd timer can run the update by itself whenever a new commit on `main`
+has passed CI. The VPS checks GitHub; GitHub never connects to the VPS. No
+port is opened and no SSH key is stored in GitHub, which matters on a server
+that may hold a live trading key.
+
+Install it once, as the deployment user and from the repository root, after
+the first install works:
+
+```bash
+bash infra/install-auto-deploy.sh
+```
+
+It needs `git`, `curl`, `python3`, and `flock`, which Ubuntu includes. The
+timer `copytrading-auto-deploy.timer` starts two minutes after boot and after
+the install, then runs `infra/auto-deploy-vps.sh` five minutes after each run
+ends. Set `AUTO_DEPLOY_INTERVAL`, for example `AUTO_DEPLOY_INTERVAL=15min`,
+before the install command to change that. Each run:
+
+1. does nothing while another deployment runs, manual or automatic;
+2. fetches `origin/main` and stops when it matches the checkout;
+3. reads the newest push run of the `CI` workflow (`ci.yml`) for that commit
+   from the GitHub API, waits while it runs, and skips the commit when it did
+   not succeed. A rerun that passes is deployed on the next check;
+4. holds the commit when `.env.example`, `backend/config`, or
+   `frontend/config` changed, because `.env` may need edits first;
+5. runs `infra/deploy-vps.sh --yes --commit <sha>`, so a commit pushed after
+   the CI check is never deployed unchecked.
+
+A deployment restarts the trading worker, so copying pauses for a minute or
+two on every push to `main`. Copy recovery catches up afterwards. Every
+deployment also writes a database backup, and backups older than
+`BACKUP_RETENTION_DAYS` are deleted, so many pushes in a week use more disk.
+
+Follow and inspect it:
+
+```bash
+journalctl -u copytrading-auto-deploy.service -f
+bash infra/auto-deploy-vps.sh --status
+systemctl list-timers copytrading-auto-deploy.timer
+```
+
+A message is logged once, not on every check, so the journal stays readable.
+State lives in `.deploy-state/`, which Git ignores.
+
+A held commit stays undeployed until a newer commit arrives, a deployment
+succeeds, or it is retried. `--status` shows the reason:
+
+- `config-changed`: compare `.env` with `.env.example`, review the config
+  files, and run `bash infra/deploy-vps.sh`. Later commits stay held until
+  then, since the changed templates remain in the update.
+- `deploy-failed`: the deploy script failed after its backup, and the
+  application may be stopped. Read the journal and
+  `docker compose -f docker-compose.vps.yml logs migrate`, fix the cause, and
+  run `bash infra/auto-deploy-vps.sh --retry`, or push a fix.
+- `not-fast-forward`: `main` was rewritten. Inspect the checkout by hand; never
+  reset the VPS away from local changes.
+
+The check also stops, without holding a commit, while the checkout is not on
+`main` or has local changes to tracked files.
+
+The repository is public, so the CI query needs no token and stays far below
+the 60 unauthenticated GitHub API requests per hour, since it only runs when a
+new commit is waiting. For a private repository, save a fine-grained token
+with read access to Actions in `.deploy-state/github-token` with
+`chmod 600`. The VPS also needs its own read access to `git fetch` then.
+
+Pause and resume it, or remove it:
+
+```bash
+sudo systemctl stop copytrading-auto-deploy.timer
+sudo systemctl start copytrading-auto-deploy.timer
+bash infra/install-auto-deploy.sh --remove
+```
+
+`stop` lasts until the next reboot. Use
+`sudo systemctl disable --now copytrading-auto-deploy.timer` to pause across
+reboots and `sudo systemctl enable --now copytrading-auto-deploy.timer` to
+resume.
 
 ### Manual Update
 
