@@ -12,7 +12,8 @@ used to live in the README.
   timer that runs `infra/auto-deploy-vps.sh` every five minutes. It fetches
   `main`, waits for the `CI` workflow on the new commit, and runs the deploy
   script only when CI succeeded. The VPS polls GitHub, so no port, SSH key, or
-  webhook secret is needed.
+  webhook secret is needed. The installer runs as root or with `sudo`, and the
+  timer runs as the user that owns the checkout.
 - **Held commits.** A commit is held instead of deployed when the configuration
   templates changed, when the deployment failed, or when `main` no longer
   fast-forwards. `--status` shows the reason and `--retry` tries again.
