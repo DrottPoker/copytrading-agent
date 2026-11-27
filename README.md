@@ -22,8 +22,8 @@ before you turn it on.
 - [Architecture](docs/architecture.md): services, workers, data flows, and the
   database.
 - [Development](docs/development.md): local setup, configuration, and tests.
-- [Deployment](docs/deployment.md): VPS install, updates, live trading
-  activation, and backups.
+- [Deployment](docs/deployment.md): VPS install, manual and automatic updates,
+  live trading activation, and backups.
 - [Changelog](CHANGELOG.md): what changed and when, including the original
   development phases.
 
