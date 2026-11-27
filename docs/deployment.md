@@ -399,8 +399,10 @@ has passed CI. The VPS checks GitHub; GitHub never connects to the VPS. No
 port is opened and no SSH key is stored in GitHub, which matters on a server
 that may hold a live trading key.
 
-Install it once, as the deployment user and from the repository root, after
-the first install works:
+Install it once from the repository root, after the first install works. Run
+it as root or as a user with `sudo`. The timer runs as the user that owns the
+checkout, so a checkout in `/root` deploys as root and one in a user's home
+deploys as that user, who must be in the `docker` group:
 
 ```bash
 bash infra/install-auto-deploy.sh

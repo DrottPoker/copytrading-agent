@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Install or remove the systemd timer that runs infra/auto-deploy-vps.sh.
 #
-# Run from the repository root as the deployment user (not root); it uses sudo:
+# Run from the repository root, as root or as a user with sudo. The timer runs
+# as the user that owns the checkout, so deployments never leave files owned by
+# another user behind:
 #   bash infra/install-auto-deploy.sh            # install and start the timer
 #   bash infra/install-auto-deploy.sh --remove   # stop and remove the timer
 set -euo pipefail
@@ -16,10 +18,18 @@ fail() {
   exit 1
 }
 
+as_root() {
+  if [ "$(id -u)" -eq 0 ]; then
+    "$@"
+  else
+    sudo "$@"
+  fi
+}
+
 if [ "${1:-}" = "--remove" ]; then
-  sudo systemctl disable --now "$UNIT.timer" 2>/dev/null || true
-  sudo rm -f "$SERVICE_PATH" "$TIMER_PATH"
-  sudo systemctl daemon-reload
+  as_root systemctl disable --now "$UNIT.timer" 2>/dev/null || true
+  as_root rm -f "$SERVICE_PATH" "$TIMER_PATH"
+  as_root systemctl daemon-reload
   echo "Removed $UNIT. Deploy manually with bash infra/deploy-vps.sh."
   exit 0
 fi
@@ -29,18 +39,19 @@ if [ ! -f docker-compose.vps.yml ] || [ ! -f infra/auto-deploy-vps.sh ]; then
   fail "Run this script from the repository root."
 fi
 [ -f .env ] || fail "The .env file is missing. Finish the first install in docs/deployment.md."
-[ "$(id -u)" -ne 0 ] || fail "Run this as the deployment user, not as root."
-id -nG | tr ' ' '\n' | grep -qx docker \
-  || fail "$(id -un) is not in the docker group. See the first install steps."
-for tool in git curl python3 flock systemctl; do
+for tool in git curl python3 flock systemctl stat; do
   command -v "$tool" >/dev/null || fail "$tool is required."
 done
 
 repo_dir="$(pwd -P)"
-user="$(id -un)"
+user="$(stat -c %U "$repo_dir")"
+if [ "$user" != root ]; then
+  id -nG "$user" | tr ' ' '\n' | grep -qx docker \
+    || fail "$user owns $repo_dir but is not in the docker group. See the first install steps."
+fi
 bash_path="$(command -v bash)"
 
-sudo tee "$SERVICE_PATH" >/dev/null <<EOF
+as_root tee "$SERVICE_PATH" >/dev/null <<EOF
 [Unit]
 Description=Deploy new copytrading-agent commits that passed CI
 Wants=network-online.target
@@ -55,7 +66,7 @@ ExecStart=$bash_path infra/auto-deploy-vps.sh
 TimeoutStartSec=45min
 EOF
 
-sudo tee "$TIMER_PATH" >/dev/null <<EOF
+as_root tee "$TIMER_PATH" >/dev/null <<EOF
 [Unit]
 Description=Check for copytrading-agent updates every $INTERVAL
 
@@ -68,7 +79,7 @@ OnUnitInactiveSec=$INTERVAL
 WantedBy=timers.target
 EOF
 
-sudo systemctl daemon-reload
-sudo systemctl enable --now "$UNIT.timer"
+as_root systemctl daemon-reload
+as_root systemctl enable --now "$UNIT.timer"
 echo "Installed $UNIT for $user in $repo_dir, checking every $INTERVAL."
 echo "Follow it with: journalctl -u $UNIT.service -f"
