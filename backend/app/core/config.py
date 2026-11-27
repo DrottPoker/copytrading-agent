@@ -393,7 +393,8 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "Hyperliquid Copy Agent"
-    app_version: str = "0.1.0"
+    # Commit date and hash baked into the image by infra/deploy-vps.sh.
+    app_version: str = "dev"
     app_env: str = "development"
     log_level: str = "info"
     worker_run_in_api_process: bool = True

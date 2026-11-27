@@ -195,8 +195,23 @@ function Sidebar({ pathname }: { pathname: string }) {
       <div className="grid gap-2 border-t border-line px-3 py-3">
         <TextSizeToggle />
         <ThemeToggle />
+        <AppVersion />
       </div>
     </>
+  );
+}
+
+// Commit date and hash of the deployed build; "dev" outside a VPS deployment.
+const APP_VERSION =process.env.NEXT_PUBLIC_APP_VERSION || "dev";
+
+function AppVersion() {
+  return (
+    <p className="flex items-center justify-between gap-2 text-xs text-fg-3">
+      <span>Version</span>
+      <span className="truncate font-mono text-fg-2" title={`Version ${APP_VERSION}`}>
+        {APP_VERSION}
+      </span>
+    </p>
   );
 }
 

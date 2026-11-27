@@ -105,6 +105,11 @@ else
   fi
 fi
 
+# Commit date (UTC) and short hash, shown in the dashboard sidebar and on the System page.
+APP_VERSION="$(TZ=UTC git log -1 --abbrev=7 --date=format-local:%Y.%m.%d --format=%cd-%h HEAD)"
+export APP_VERSION
+echo "Version: $APP_VERSION"
+
 compose config --quiet
 compose build
 compose up -d postgres redis

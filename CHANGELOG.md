@@ -6,6 +6,14 @@ used to live in the README.
 
 ## 2026-11-27
 
+### Version in the sidebar
+
+- The bottom of the dashboard sidebar shows the running version: the commit
+  date (UTC) and short hash, such as `2026.11.27-ae25439`. The deploy script
+  bakes it into the frontend and backend images, so `/health` and the System
+  page report the same value instead of a fixed `0.1.0`. Builds outside the
+  deploy script show `dev`.
+
 ### Catch up on fills missed during a restart
 
 A `userFills` snapshot after a restart or reconnect holds only a wallet's

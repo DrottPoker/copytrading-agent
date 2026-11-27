@@ -105,6 +105,12 @@ Behavior:
   bigger). The choice is stored in the browser and applied before the first
   paint. Wide tables scroll sideways at the larger sizes instead of hiding
   columns.
+- The bottom of the sidebar shows the running version, the commit date (UTC)
+  and short hash, for example `2026.11.27-ae25439`. `infra/deploy-vps.sh`
+  passes it to the image builds as `APP_VERSION`; the frontend bakes it in
+  as `NEXT_PUBLIC_APP_VERSION`, and the backend reports the same value in
+  `/health` and on the System page. Builds outside the deploy script show
+  `dev`.
 - Numbers use en-US formatting: `$1,234.56`, a real minus sign for negative
   values, compact `$601.2M` for large totals, `12.3%`, and `2.5×`. Times show as
   short dates (`Oct 10, 23:51`) or relative times (`4m ago`) with the full

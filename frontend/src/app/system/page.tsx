@@ -143,7 +143,7 @@ function HealthContent({ ops, operations }: { ops: OpsHealthResponse; operations
         />
         <Stat
           label="Version"
-          value={`v${ops.version}`}
+          value={ops.version}
           sub={`${ops.config.environment}, ${ops.config.hyperliquidNetwork}`}
         />
       </StatStrip>

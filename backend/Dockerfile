@@ -15,6 +15,10 @@ COPY --chown=app:app app ./app
 COPY --chown=app:app config ./config
 COPY --chown=app:app alembic.ini ./
 
+# Set last so a new version does not rebuild the dependency layers.
+ARG APP_VERSION=dev
+ENV APP_VERSION=$APP_VERSION
+
 USER app
 
 EXPOSE 8000
