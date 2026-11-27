@@ -202,7 +202,7 @@ function Sidebar({ pathname }: { pathname: string }) {
 }
 
 // Commit date and hash of the deployed build; "dev" outside a VPS deployment.
-const APP_VERSION =process.env.NEXT_PUBLIC_APP_VERSION || "dev";
+const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || "dev";
 
 function AppVersion() {
   return (
